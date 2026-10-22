@@ -58,10 +58,10 @@ static int crash_dump_notice_policy_tests() {
         !strstr(text, "... and 5 older") ||
         strstr(text, "Windows Error Reporting dumps") ||
         !strstr(text, "PowerShell as administrator") ||
-        !strstr(text, "$dst = \"C:\\Me\\crash-dumps\"") ||
-        !strstr(text, "\"C:\\Svc\\*.dmp\"") ||
-        !strstr(text, "\"C:\\Svc\\greencurve_crash.txt\"") ||
-        !strstr(text, "\"C:\\Svc\\WerDumps\\*.dmp\"")) return 7142;
+        !strstr(text, "$dst = 'C:\\Me\\crash-dumps'; $svc = 'C:\\Svc'; $wer = 'C:\\Svc\\WerDumps';") ||
+        !strstr(text, "Get-ChildItem -LiteralPath $svc, $wer -Filter *.dmp -File") ||
+        !strstr(text, "Copy-Item -LiteralPath (Join-Path $svc 'greencurve_crash.txt') -Destination $dst") ||
+        strstr(text, "\"C:\\")) return 7142;
 
     // 7143: WER dumps alone are announced too, without an "older" tail.
     GcCrashDumpNoticeEntry wer[1] = {
@@ -78,6 +78,55 @@ static int crash_dump_notice_policy_tests() {
     if (!gc_crash_dump_notice_format("C:\\Svc", "C:\\Svc\\WerDumps", dumps, 2, 2, wer, 1, 1,
                                      "C:\\Me", small, 48) ||
         strlen(small) != 47 || small[48] != 'x') return 7144;
+
+    // 7148: folder names from the user's profile reach an administrator's
+    // PowerShell as inert single-quoted literals: $, $() and backticks stay
+    // text, and every single quote PowerShell accepts (ASCII and U+2018..201B)
+    // is doubled.  Before the fix "$(40+2)" sat in a double-quoted string and
+    // PowerShell evaluated it.
+    char literal[128];
+    bool overflow = false;
+    literal[0] = 0;
+    gc_powershell_append_literal(literal, sizeof(literal), 0,
+        "D:\\a$(40+2)`b\\O'Neil\\x\xE2\x80\x99y\xE2\x80\x98z\xE2\x80\x9A\xE2\x80\x9B", &overflow);
+    if (overflow || strcmp(literal,
+            "'D:\\a$(40+2)`b\\O''Neil\\x\xE2\x80\x99\xE2\x80\x99y\xE2\x80\x98\xE2\x80\x98"
+            "z\xE2\x80\x9A\xE2\x80\x9A\xE2\x80\x9B\xE2\x80\x9B'") != 0) return 7148;
+    // Other multi-byte text (here U+2026 and U+00E9) passes through untouched.
+    literal[0] = 0;
+    gc_powershell_append_literal(literal, sizeof(literal), 0,
+        "C:\\\xE2\x80\xA6\\\xC3\xA9", &overflow);
+    if (overflow || strcmp(literal, "'C:\\\xE2\x80\xA6\\\xC3\xA9'") != 0) return 7148;
+    // A literal that does not fit reports overflow; a doubled quote is never
+    // split into a lone one that would end the literal.
+    char tight[5];
+    tight[0] = 0;
+    gc_powershell_append_literal(tight, sizeof(tight), 0, "ab'c", &overflow);
+    if (!overflow || strcmp(tight, "'ab") != 0) return 7148;
+    if (!gc_crash_dump_notice_format("C:\\Svc", "C:\\Svc\\WerDumps", dumps, 2, 2, nullptr, 0, 0,
+                                     "D:\\Profiles\\a$(40+2)\\Green Curve\\crash-dumps", text,
+                                     sizeof(text)) ||
+        !strstr(text, "$dst = 'D:\\Profiles\\a$(40+2)\\Green Curve\\crash-dumps';")) return 7148;
+
+    // 7149: the elevated command is all or nothing.  When it does not fit,
+    // the notice still lists the dumps and says where they are, but never
+    // ends in a cut-off command that could still run.
+    char path[300];
+    memset(path, 'p', sizeof(path) - 1);
+    path[0] = 'C';
+    path[1] = ':';
+    path[2] = '\\';
+    path[sizeof(path) - 1] = 0;
+    char limited[1200];
+    if (!gc_crash_dump_notice_format("C:\\Svc", "C:\\Svc\\WerDumps", dumps, 2, 2, nullptr, 0, 0,
+                                     path, limited, sizeof(limited)) ||
+        !strstr(limited, "pid164") || strstr(limited, "$dst") ||
+        !strstr(limited, "open the folders above as an administrator.\r\n")) return 7149;
+    // The same notice with room for the command carries all of it.
+    if (!gc_crash_dump_notice_format("C:\\Svc", "C:\\Svc\\WerDumps", dumps, 2, 2, nullptr, 0, 0,
+                                     path, text, sizeof(text)) ||
+        !strstr(text, "$dst = 'C:\\ppp") ||
+        !strstr(text, "-Destination $dst -ErrorAction SilentlyContinue\r\n")) return 7149;
     return 0;
 }
 

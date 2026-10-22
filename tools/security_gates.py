@@ -1095,14 +1095,22 @@ def check_path_protection_gates(ctx, require_text, service_ipc_cpp):
     require_text(os.path.join(ctx.SOURCE_DIR, "ui_main_window.cpp"),
         "gc_path_protection_requires_acknowledgment",
         "the GUI service-install confirmation carries the path risk")
-    # A remedy line the user pastes: every path quote-closed, /setowner its own
+    # A remedy line the user pastes: every path a quoted literal, /setowner its own
     # invocation (icacls rejects it combined with /grant with error 87), every
     # SID:permission argument quoted so PowerShell does not read (OI)(CI) as a
     # subexpression.
     require_text(path_chain_policy, "GC_PATH_PROTECTION_REMEDY_TAIL_PATH",
         "the icacls remedy issues /setowner as its own command")
-    require_text(path_chain_policy, "\\\" /setowner \\\"*S-1-5-32-544\\\"",
-        "the remedy closes the path quote before /setowner and quotes the SID")
+    require_text(path_chain_policy, "\" /setowner \\\"*S-1-5-32-544\\\"\"",
+        "/setowner follows the path literal and quotes the SID")
+    # Every path in the pasted command is a PowerShell single-quoted literal:
+    # in double quotes "D:\Apps$Old" expands to "D:\Apps" and the elevated
+    # icacls would re-ACL another folder.
+    require_text(path_chain_policy, "gc_powershell_append_literal(out, outSize, used, component, &overflow)",
+        "the remedy quotes every path as a PowerShell literal")
+    require_text(os.path.join(ctx.SOURCE_DIR, "installer_ui_pages.cpp"),
+        "gc_path_protection_format_remedy(component,",
+        "the folder page composes the remedy through the tested formatter")
     # Registering the service REWRITES the install directory's DACL. Which
     # folders that may be done to is a gate, not a warning, and it has to stand
     # in front of every path that reaches the hardening: the portable/GUI path

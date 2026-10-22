@@ -6221,37 +6221,33 @@ static int run_all_tests(int argc, char** argv) {
         if (gc_path_protection_extra_note(&p, 3)[0] != 0) return 5608;
 
         // The remediation line is a command a user PASTES, so its shape is
-        // part of the contract.  Both spellings are assembled here exactly as
-        // the folder page assembles them and checked for the three ways the
-        // original was unusable: an unbalanced quote around the path, a
-        // /setowner folded into the /grant invocation (icacls answers "Invalid
-        // parameter", error 87), and unquoted (OI)(CI) permission arguments,
-        // which PowerShell parses as a subexpression.
+        // part of the contract.  Both spellings come from the formatter the
+        // folder page uses and are checked for the ways the original was
+        // unusable: an unbalanced quote around the path, a /setowner folded
+        // into the /grant invocation (icacls answers "Invalid parameter",
+        // error 87), unquoted (OI)(CI) permission arguments, which PowerShell
+        // parses as a subexpression, and (5688) a path in double quotes,
+        // where PowerShell expands "$Old" and backticks.
         {
             const char* kPath = "D:\\Apps\\Green Curve";
             char existing[1024] = {};
             char create[1024] = {};
-            snprintf(existing, sizeof(existing), "%s%s%s%s%s",
-                     GC_PATH_PROTECTION_REMEDY_BEFORE_PATH, kPath,
-                     GC_PATH_PROTECTION_REMEDY_AFTER_PATH, kPath,
-                     GC_PATH_PROTECTION_REMEDY_TAIL_PATH);
-            snprintf(create, sizeof(create), "%s%s%s%s%s%s%s",
-                     GC_PATH_PROTECTION_REMEDY_CREATE_BEFORE_PATH, kPath,
-                     GC_PATH_PROTECTION_REMEDY_CREATE_MID_PATH, kPath,
-                     GC_PATH_PROTECTION_REMEDY_AFTER_PATH, kPath,
-                     GC_PATH_PROTECTION_REMEDY_TAIL_PATH);
+            if (!gc_path_protection_format_remedy(kPath, false, existing, sizeof(existing)) ||
+                !gc_path_protection_format_remedy(kPath, true, create, sizeof(create)))
+                return 5609;
             const char* spellings[] = { existing, create };
             for (const char* spelling : spellings) {
-                int quotes = 0;
+                int quotes = 0, apostrophes = 0;
                 for (const char* scan = spelling; *scan; scan++) {
                     if (*scan == '"') quotes++;
+                    if (*scan == '\'') apostrophes++;
                 }
-                if (quotes % 2 != 0) return 5609;
-                // Every occurrence of the path is quote-wrapped.
+                if (quotes % 2 != 0 || apostrophes % 2 != 0) return 5609;
+                // Every occurrence of the path is a single-quoted literal.
                 for (const char* hit = strstr(spelling, kPath); hit;
                      hit = strstr(hit + 1, kPath)) {
-                    if (hit == spelling || hit[-1] != '"') return 5610;
-                    if (hit[strlen(kPath)] != '"') return 5611;
+                    if (hit == spelling || hit[-1] != '\'') return 5610;
+                    if (hit[strlen(kPath)] != '\'') return 5611;
                 }
                 if (strstr(spelling, "(OI)(CI)F\"") == nullptr) return 5612;
                 if (strstr(spelling, "\"*S-1-5-32-544:(OI)(CI)F\"") == nullptr) return 5613;
@@ -6272,6 +6268,29 @@ static int run_all_tests(int argc, char** argv) {
             // command; the existing-folder spelling never does.
             if (strstr(create, "mkdir") == nullptr) return 5618;
             if (strstr(existing, "mkdir") != nullptr) return 5619;
+
+            // 5688: a folder name PowerShell would expand inside double quotes
+            // ("$Old" -> "", backtick escapes) stays literal, an apostrophe is
+            // doubled, and every copy of the path is the same literal.
+            const char* kTricky = "D:\\Apps$Old\\O'Neil `x";
+            const char* kLiteral = "'D:\\Apps$Old\\O''Neil `x'";
+            char tricky[1024] = {};
+            if (!gc_path_protection_format_remedy(kTricky, true, tricky, sizeof(tricky)))
+                return 5688;
+            int copies = 0;
+            for (const char* hit = strstr(tricky, kLiteral); hit; hit = strstr(hit + 1, kLiteral))
+                copies++;
+            if (copies != 3 || strchr(tricky, '"') == nullptr ||
+                strstr(tricky, "\"D:\\") != nullptr) return 5688;
+            // 5689: all or nothing -- a line that does not fit is not cut off
+            // mid-path (that could target a shorter, different folder).
+            char shortLine[96];
+            memset(shortLine, 'x', sizeof(shortLine));
+            if (gc_path_protection_format_remedy(kPath, true, shortLine, sizeof(shortLine)) ||
+                shortLine[0] != 0 ||
+                gc_path_protection_format_remedy("", false, existing, sizeof(existing)) ||
+                gc_path_protection_format_remedy(nullptr, false, existing, sizeof(existing)))
+                return 5689;
         }
 
         // Damage rules vs. protection: the syntax gate still accepts every

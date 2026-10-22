@@ -42,6 +42,11 @@
 #ifndef GREEN_CURVE_SERVICE_PATH_CHAIN_POLICY_H
 #define GREEN_CURVE_SERVICE_PATH_CHAIN_POLICY_H
 
+#include <stddef.h>
+#include <string.h>
+
+#include "powershell_literal.h"
+
 // Windows allows far deeper chains; anything past this is refused as unproven
 // rather than walked, which keeps the fact tables statically sized.
 #define GC_PATH_CHAIN_MAX_COMPONENTS 64
@@ -159,26 +164,60 @@ struct GcPathProtectionReport {
 // permissions - that one is created protected in the same breath.
 //
 // The exact spelling matters, because this is a line a user pastes:
-//   * every path is quote-CLOSED (BEFORE opens the quote, AFTER closes it);
+//   * every path is a PowerShell single-quoted literal
+//     (gc_powershell_append_literal): inside double quotes "D:\Apps$Old"
+//     would expand to "D:\Apps", and the pasted elevated icacls would strip
+//     the inheritance of ANOTHER folder;
 //   * `/setowner` is its OWN icacls invocation - icacls rejects it combined
 //     with /grant or /inheritance with "Invalid parameter" (error 87);
 //   * every SID:permission argument is quoted, because an unquoted `(OI)(CI)F`
 //     is a subexpression to PowerShell, the project's default shell;
 //   * `;` separates the invocations, which is what PowerShell wants.
+// Compose it only through gc_path_protection_format_remedy().
 #define GC_PATH_PROTECTION_REMEDY_GRANTS \
-    "\" /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\"" \
-    " /grant:r \"*S-1-5-32-545:(OI)(CI)RX\"; icacls \""
+    " /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\"" \
+    " /grant:r \"*S-1-5-32-545:(OI)(CI)RX\"; icacls "
 #define GC_PATH_PROTECTION_REMEDY_BEFORE_PATH \
-    "To fully protect this location, run in an elevated PowerShell: icacls \""
+    "To fully protect this location, run in an elevated PowerShell: icacls "
 #define GC_PATH_PROTECTION_REMEDY_AFTER_PATH \
     GC_PATH_PROTECTION_REMEDY_GRANTS
 #define GC_PATH_PROTECTION_REMEDY_TAIL_PATH \
-    "\" /setowner \"*S-1-5-32-544\""
+    " /setowner \"*S-1-5-32-544\""
 #define GC_PATH_PROTECTION_REMEDY_CREATE_BEFORE_PATH \
-    "To fully protect this location, run in an elevated PowerShell: mkdir \""
+    "To fully protect this location, run in an elevated PowerShell: mkdir "
 #define GC_PATH_PROTECTION_REMEDY_CREATE_MID_PATH \
-    "\"; icacls \""
+    "; icacls "
 // Both spellings end with AFTER_PATH, the path again, then TAIL_PATH.
+
+// The remedy line for the folder `component` (UTF-8): the existing-folder
+// spelling, or with `create` the one that makes the folder first.  All or
+// nothing: a line that does not fit `out` leaves it empty and returns false,
+// because a cut-off command could still run against a shorter path.
+static inline bool gc_path_protection_format_remedy(const char* component, bool create,
+                                                    char* out, size_t outSize) {
+    if (!out || outSize == 0) return false;
+    out[0] = 0;
+    if (!component || !component[0]) return false;
+    bool overflow = false;
+    size_t used = 0;
+    auto text = [&](const char* piece) {
+        const size_t n = strlen(piece);
+        if (used >= outSize || n > outSize - used - 1) { overflow = true; return; }
+        memcpy(out + used, piece, n + 1);
+        used += n;
+    };
+    auto path = [&]() { used = gc_powershell_append_literal(out, outSize, used, component, &overflow); };
+    if (create) {
+        text(GC_PATH_PROTECTION_REMEDY_CREATE_BEFORE_PATH); path();
+        text(GC_PATH_PROTECTION_REMEDY_CREATE_MID_PATH); path();
+    } else {
+        text(GC_PATH_PROTECTION_REMEDY_BEFORE_PATH); path();
+    }
+    text(GC_PATH_PROTECTION_REMEDY_AFTER_PATH); path();
+    text(GC_PATH_PROTECTION_REMEDY_TAIL_PATH);
+    if (overflow) out[0] = 0;
+    return !overflow;
+}
 #define GC_PATH_PROTECTION_ACKNOWLEDGMENT_LABEL \
     "I understand the risk and want to install here anyway"
 

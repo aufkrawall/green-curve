@@ -132,6 +132,13 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
     for needle in ("CopyFile", "MoveFile", "write_text_file_atomic"):
         forbid_text(notice_cpp, needle,
                     "the notice never copies dumps or writes with the service's own rights")
+    # The notice hands an administrator a command built from folder names the
+    # user controls: every path goes in as a single-quoted literal.
+    notice_policy_h = _p(ctx, "crash_dump_notice_policy.h")
+    require_text_count(notice_policy_h, "gc_powershell_append_literal(out, outSize, used,", 3,
+                       "every path in the elevated command is a PowerShell literal")
+    forbid_text(notice_policy_h, "= \\\"%s\\\"",
+                "no path is formatted into an expandable PowerShell string")
     require_order(main_cpp,
                   "install_crash_handlers(false);",
                   "service_try_dispatch_controlled_restart_helper(&helperExitCode)",

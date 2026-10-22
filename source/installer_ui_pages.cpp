@@ -262,25 +262,20 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
                 gc_wide_to_utf8(wizard->folderProtection.firstUnsafeComponent, component,
                                 (int)sizeof(component));
                 // Three copies of the path in the create spelling (mkdir,
-                // icacls grants, icacls /setowner), so the buffer holds three;
-                // a short buffer would truncate the command mid-path and hand
-                // the user something that silently targets the wrong folder.
-                char remedy[sizeof(component) * 3 + 512] = {};
-                if (gc_path_protection_remedy_needs_create(&wizard->folderProtection.facts,
-                                                          protection)) {
-                    snprintf(remedy, sizeof(remedy), "%s%s%s%s%s%s%s",
-                             GC_PATH_PROTECTION_REMEDY_CREATE_BEFORE_PATH, component,
-                             GC_PATH_PROTECTION_REMEDY_CREATE_MID_PATH, component,
-                             GC_PATH_PROTECTION_REMEDY_AFTER_PATH, component,
-                             GC_PATH_PROTECTION_REMEDY_TAIL_PATH);
-                } else {
-                    snprintf(remedy, sizeof(remedy), "%s%s%s%s%s",
-                             GC_PATH_PROTECTION_REMEDY_BEFORE_PATH, component,
-                             GC_PATH_PROTECTION_REMEDY_AFTER_PATH, component,
-                             GC_PATH_PROTECTION_REMEDY_TAIL_PATH);
+                // icacls grants, icacls /setowner), each a quoted literal that
+                // may double its quotes, so the buffer holds three doubled
+                // copies.  The formatter is all or nothing: a cut-off command
+                // could silently target the wrong folder.
+                char remedy[sizeof(component) * 6 + 512] = {};
+                const size_t noted = strlen(notes);
+                if (gc_path_protection_format_remedy(component,
+                        gc_path_protection_remedy_needs_create(&wizard->folderProtection.facts,
+                                                               protection),
+                        remedy, sizeof(remedy)) &&
+                    strlen(remedy) + (noted ? 1 : 0) < GC_ARRAY_COUNT(notes) - noted) {
+                    if (notes[0]) StringCchCatA(notes, GC_ARRAY_COUNT(notes), " ");
+                    StringCchCatA(notes, GC_ARRAY_COUNT(notes), remedy);
                 }
-                if (notes[0]) StringCchCatA(notes, GC_ARRAY_COUNT(notes), " ");
-                StringCchCatA(notes, GC_ARRAY_COUNT(notes), remedy);
             }
             if (notes[0]) {
                 gc_draw_text(dc, wizard->fonts.small_text, COL_PENDING, notes,

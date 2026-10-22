@@ -17,6 +17,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "powershell_literal.h"
+
 #define GC_CRASH_DUMP_NOTICE_FILE_NAME "greencurve_service_crash_dumps.txt"
 // Newest entries listed per kind; the totals are always reported.
 #define GC_CRASH_DUMP_NOTICE_MAX_LISTED 5u
@@ -106,16 +108,38 @@ static inline bool gc_crash_dump_notice_format(
             "Windows Error Reporting dumps", werDir, werDumps, werListed, werTotal);
         used = gc_crash_dump_notice_append(out, outSize, used, "\r\n");
     }
-    char command[1024];
-    snprintf(command, sizeof(command),
+    // The elevated command.  Every path is a single-quoted literal and is only
+    // ever passed as a literal path, so neither PowerShell expansion nor
+    // wildcard matching ([, ], *) can reinterpret a folder name.  The command
+    // is all or nothing: a cut-off command could still run, so when it does
+    // not fit it is replaced by a plain instruction.
+    const size_t commandStart = used;
+    bool overflow = false;
+    used = gc_crash_dump_notice_append(out, outSize, used,
         "To copy them here, open PowerShell as administrator and run:\r\n"
         "\r\n"
-        "  $dst = \"%s\"; New-Item -ItemType Directory -Force $dst | Out-Null; "
-        "Copy-Item \"%s\\*.dmp\", \"%s\\greencurve_crash.txt\", \"%s\\*.dmp\" $dst "
-        "-ErrorAction SilentlyContinue\r\n",
-        copyDestination ? copyDestination : ".", serviceDir ? serviceDir : ".",
-        serviceDir ? serviceDir : ".", werDir ? werDir : ".");
-    gc_crash_dump_notice_append(out, outSize, used, command);
+        "  $dst = ");
+    used = gc_powershell_append_literal(out, outSize, used,
+        copyDestination ? copyDestination : ".", &overflow);
+    used = gc_crash_dump_notice_append(out, outSize, used, "; $svc = ");
+    used = gc_powershell_append_literal(out, outSize, used,
+        serviceDir ? serviceDir : ".", &overflow);
+    used = gc_crash_dump_notice_append(out, outSize, used, "; $wer = ");
+    used = gc_powershell_append_literal(out, outSize, used,
+        werDir ? werDir : ".", &overflow);
+    static const char kCommandTail[] =
+        "; New-Item -ItemType Directory -Force -Path $dst | Out-Null; "
+        "Get-ChildItem -LiteralPath $svc, $wer -Filter *.dmp -File -ErrorAction SilentlyContinue "
+        "| Copy-Item -Destination $dst; "
+        "Copy-Item -LiteralPath (Join-Path $svc 'greencurve_crash.txt') -Destination $dst "
+        "-ErrorAction SilentlyContinue\r\n";
+    if (overflow || outSize - used <= sizeof(kCommandTail) - 1) {
+        out[commandStart] = 0;
+        gc_crash_dump_notice_append(out, outSize, commandStart,
+            "To copy them, open the folders above as an administrator.\r\n");
+        return true;
+    }
+    gc_crash_dump_notice_append(out, outSize, used, kCommandTail);
     return true;
 }
 
