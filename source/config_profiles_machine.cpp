@@ -98,7 +98,8 @@ static bool configured_gpu_selections_equal(
     if (!a || !b || a->legacyIndex != b->legacyIndex ||
         a->stableIdentityPresent != b->stableIdentityPresent) return false;
     if (!a->stableIdentityPresent) return true;
-    return configured_gpu_base_identity_matches(&a->identity, &b->identity) &&
+    return a->locationRole == b->locationRole &&
+        configured_gpu_base_identity_matches(&a->identity, &b->identity) &&
         configured_gpu_identity_has_bdf(&a->identity) ==
             configured_gpu_identity_has_bdf(&b->identity) &&
         (!configured_gpu_identity_has_bdf(&a->identity) ||

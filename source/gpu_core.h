@@ -481,14 +481,7 @@ struct GpuAdapterInfo {
     char name[128];
 };
 
-// Durable GPU selection. legacyIndex preserves compatibility with existing
-// configs, while a present stable identity prevents adapter enumeration order
-// changes from redirecting an automatic profile apply to another GPU.
-struct ConfiguredGpuSelection {
-    gc_bool8 stableIdentityPresent;
-    unsigned int legacyIndex;
-    GpuAdapterInfo identity;
-};
+#include "configured_gpu_selection.h"
 
 struct DesiredSettings {
     gc_bool8 hasCurvePoint[VF_NUM_POINTS];

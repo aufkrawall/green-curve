@@ -598,20 +598,7 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot,
     if (selectedGpuChanged)
         gui_mutation_advance_gpu_epoch("service snapshot GPU identity");
     sync_applied_profile_from_service_metadata();
-    // Auto-save the GPU selection for single-GPU systems when no [gpu]
-    // section exists yet.  The GPU selector combo is disabled when there is
-    // only one adapter, so the user cannot trigger a save through the UI.
-    // Without this, share/unshare operations fail because they verify that a
-    // GPU binding is present in the config before publishing to the shared
-    // profile bank.
-    if (g_app.adapterCount == 1 && g_app.adapters[0].valid &&
-        g_app.configPath[0] && !config_section_has_keys(g_app.configPath, "gpu")) {
-        char gpuErr[256] = {};
-        if (!save_configured_gpu_selection_atomic(0, gpuErr, sizeof(gpuErr))) {
-            debug_log("gpu selection: auto-save failed for single adapter: %s\n",
-                gpuErr[0] ? gpuErr : "unknown error");
-        }
-    }
+    maintain_configured_gpu_selection_record();
 #endif
 }
 

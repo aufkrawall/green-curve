@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "app_shared.h"
+#include "gpu_selection_policy.h"
 
 // trim_ascii, streqi_ascii, parse_int_strict, set_message, parse_cli_point_arg_w,
 // parse_fan_value and config_section_header_matches_ascii moved to
@@ -412,6 +413,32 @@ static bool read_config_int_value_locked(const char* path, const char* section,
     return parse_int_strict(text, valueOut);
 }
 
+// The key is absent in records written before the role existed; that reads
+// as GPU_LOCATION_ROLE_UNRECORDED. Any other spelling is malformed rather than
+// silently weakened or strengthened.
+static bool read_config_location_role_locked(const char* path,
+    const char* section, GpuLocationRole* roleOut) {
+    if (!path || !section || !roleOut) return false;
+    char text[32] = {};
+    DWORD length = gc_GetPrivateProfileStringUtf8(section,
+        "selected_pci_location_role", "", text, ARRAY_COUNT(text), path);
+    if (length >= ARRAY_COUNT(text) - 1) return false;
+    trim_ascii(text);
+    if (!text[0]) {
+        *roleOut = GPU_LOCATION_ROLE_UNRECORDED;
+        return true;
+    }
+    if (_stricmp(text, "advisory") == 0) {
+        *roleOut = GPU_LOCATION_ROLE_ADVISORY;
+        return true;
+    }
+    if (_stricmp(text, "required") == 0) {
+        *roleOut = GPU_LOCATION_ROLE_REQUIRED;
+        return true;
+    }
+    return false;
+}
+
 bool load_configured_gpu_selection_from_section(const char* path,
     const char* section, ConfiguredGpuSelection* selectionOut,
     char* err, size_t errSize) {
@@ -439,6 +466,7 @@ bool load_configured_gpu_selection_from_section(const char* path,
     if (ok && identityVersion == 1) {
         int bdfValid = 0;
         int domain = 0, bus = 0, device = 0, function = 0;
+        GpuLocationRole locationRole = GPU_LOCATION_ROLE_UNRECORDED;
         GpuAdapterInfo identity = {};
         ok = parse_config_uint_hex_locked(path, section, "selected_device_id", &identity.deviceId) &&
             parse_config_uint_hex_locked(path, section, "selected_subsystem_id", &identity.subSystemId) &&
@@ -453,7 +481,8 @@ bool load_configured_gpu_selection_from_section(const char* path,
                 read_config_int_value_locked(path, section, "selected_pci_function", 0, &function) &&
                 domain >= 0 && domain <= 0xFFFF && bus >= 0 && bus <= 255 &&
                 device >= 0 && device <= 31 && function >= 0 && function <= 7 &&
-                (domain != 0 || bus != 0 || device != 0 || function != 0);
+                (domain != 0 || bus != 0 || device != 0 || function != 0) &&
+                read_config_location_role_locked(path, section, &locationRole);
             if (ok) {
                 identity.pciDomain = (unsigned int)domain;
                 identity.pciBus = (unsigned int)bus;
@@ -466,6 +495,7 @@ bool load_configured_gpu_selection_from_section(const char* path,
             identity.pciInfoValid = true;
             selectionOut->stableIdentityPresent = true;
             selectionOut->identity = identity;
+            selectionOut->locationRole = locationRole;
         }
     }
     leave_config_storage_lock(configMutex);
@@ -505,6 +535,19 @@ bool format_configured_gpu_selection_section(const char* section,
         set_message(err, errSize, "Configured GPU stable identity is incomplete");
         return false;
     }
+    // The role only qualifies a stored location; an unrecorded role writes no
+    // key, so the record keeps reading exactly as it was written.
+    char roleLine[64] = {};
+    if (bdf && selection->locationRole != GPU_LOCATION_ROLE_UNRECORDED) {
+        if (selection->locationRole != GPU_LOCATION_ROLE_ADVISORY &&
+            selection->locationRole != GPU_LOCATION_ROLE_REQUIRED) {
+            set_message(err, errSize, "Configured GPU location role is invalid");
+            return false;
+        }
+        StringCchPrintfA(roleLine, ARRAY_COUNT(roleLine),
+            "selected_pci_location_role=%s\r\n",
+            configured_gpu_location_role_name(selection->locationRole));
+    }
     HRESULT result = StringCchPrintfA(out, outSize,
         "[%s]\r\n"
         "selected_index=%u\r\n"
@@ -517,7 +560,8 @@ bool format_configured_gpu_selection_section(const char* section,
         "selected_pci_domain=%u\r\n"
         "selected_pci_bus=%u\r\n"
         "selected_pci_device=%u\r\n"
-        "selected_pci_function=%u\r\n\r\n",
+        "selected_pci_function=%u\r\n"
+        "%s\r\n",
         section, selection->legacyIndex, stable ? 1 : 0,
         stable ? identity.deviceId : 0u,
         stable ? identity.subSystemId : 0u,
@@ -527,7 +571,8 @@ bool format_configured_gpu_selection_section(const char* section,
         bdf ? identity.pciDomain : 0u,
         bdf ? identity.pciBus : 0u,
         bdf ? identity.pciDevice : 0u,
-        bdf ? identity.pciFunction : 0u);
+        bdf ? identity.pciFunction : 0u,
+        roleLine);
     if (FAILED(result)) {
         if (outSize) out[0] = 0;
         set_message(err, errSize, "Configured GPU section serialization overflow");

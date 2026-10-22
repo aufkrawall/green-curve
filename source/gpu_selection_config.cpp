@@ -52,7 +52,15 @@ static bool save_configured_gpu_selection_atomic(unsigned int index,
     ConfiguredGpuSelection configured = {};
     configured.legacyIndex = index;
     configured.stableIdentityPresent = stableIdentity;
-    if (stableIdentity) configured.identity = target;
+    if (stableIdentity) {
+        configured.identity = target;
+        configured.locationRole = configured_gpu_location_role_for_selection(
+            &target, g_app.adapters, g_app.adapterCount);
+    }
+    debug_log("gpu selection: persisting nvapi=%u stable=%d bdf=%d location role=%s adapters=%u\n",
+        index, stableIdentity ? 1 : 0, hasBdf ? 1 : 0,
+        configured_gpu_location_role_name(configured.locationRole),
+        g_app.adapterCount);
     char section[1024] = {};
     if (!format_configured_gpu_selection_section("gpu", &configured,
             section, ARRAY_COUNT(section), err, errSize)) {
@@ -116,6 +124,11 @@ static bool validate_configured_gpu_selection_for_client(
         resolved >= g_app.adapterCount || resolved >= MAX_GPU_ADAPTERS ||
         !g_app.adapters[resolved].valid) {
         g_app.configuredGpuSelectionUnresolved = true;
+        char resolutionDetail[256] = {};
+        format_configured_gpu_resolution_detail(&configured, g_app.adapters,
+            g_app.adapterCount, resolutionDetail, sizeof(resolutionDetail));
+        debug_log("gpu selection: client validation failed result=%d (%s)\n",
+            (int)resolution, resolutionDetail);
         set_message(err, errSize,
             resolution == CONFIGURED_GPU_RESOLVE_LEGACY_ORDINAL
                 ? "Legacy GPU ordinal is unsafe with multiple adapters; select the intended GPU again"
@@ -133,3 +146,74 @@ static bool validate_configured_gpu_selection_for_client(
     g_app.configuredGpuSelectionUnresolved = false;
     return true;
 }
+
+#ifndef GREEN_CURVE_SERVICE_BINARY
+// Keeps [gpu] in step with live enumeration; GUI only, because the account
+// config belongs to the user and the service never writes it.
+//  - A single adapter with no record gets one. The selector is disabled with
+//    one adapter, so the user cannot save it, and share/unshare refuse to
+//    publish without a GPU binding.
+//  - A record that resolves but whose model moved to a new PCI location, or
+//    whose location role predates the role, is rewritten from the adapter it
+//    resolved to. That records the decision the resolver already made, with
+//    the GPU's current location and whether that location now tells it apart
+//    from an identical adapter. An older build reading the refreshed record
+//    finds its exact location again.
+// An unresolved record is never rewritten: it waits for an explicit selection.
+// Runs on every service snapshot, but reads the record only when the adapter
+// list differs from the one it last checked: locations change at boot or on a
+// driver re-enumeration, never between two snapshots of the same adapters.
+static void maintain_configured_gpu_selection_record() {
+    if (!g_app.configPath[0] || g_app.adapterCount == 0) return;
+    char err[256] = {};
+    if (!config_section_has_keys(g_app.configPath, "gpu")) {
+        if (g_app.adapterCount == 1 && g_app.adapters[0].valid &&
+            !save_configured_gpu_selection_atomic(0, err, sizeof(err))) {
+            debug_log("gpu selection: auto-save failed for single adapter: %s\n",
+                err[0] ? err : "unknown error");
+        }
+        return;
+    }
+    static GpuAdapterInfo checkedAdapters[MAX_GPU_ADAPTERS];
+    static unsigned int checkedAdapterCount;
+    bool adaptersChanged = checkedAdapterCount != g_app.adapterCount;
+    for (unsigned int i = 0; !adaptersChanged && i < g_app.adapterCount &&
+            i < MAX_GPU_ADAPTERS; ++i) {
+        adaptersChanged = !gpu_adapter_info_equal(&checkedAdapters[i],
+            &g_app.adapters[i]);
+    }
+    if (!adaptersChanged) return;
+    memcpy(checkedAdapters, g_app.adapters, sizeof(checkedAdapters));
+    checkedAdapterCount = g_app.adapterCount;
+    ConfiguredGpuSelection configured = {};
+    unsigned int resolved = 0;
+    if (!load_configured_gpu_selection(g_app.configPath, &configured,
+            err, sizeof(err))) {
+        debug_log("gpu selection: record refresh skipped; the record is unreadable: %s\n",
+            err[0] ? err : "unknown error");
+        return;
+    }
+    if (!configured.stableIdentityPresent ||
+        !configured_gpu_identity_has_bdf(&configured.identity) ||
+        resolve_configured_gpu_selection(&configured, g_app.adapters,
+            g_app.adapterCount, &resolved) != CONFIGURED_GPU_RESOLVE_STABLE ||
+        resolved >= g_app.adapterCount || resolved >= MAX_GPU_ADAPTERS ||
+        !configured_gpu_identity_has_bdf(&g_app.adapters[resolved])) {
+        return;
+    }
+    const bool moved = configured_gpu_selection_location_moved(
+        &configured, &g_app.adapters[resolved]);
+    if (!moved && configured.locationRole != GPU_LOCATION_ROLE_UNRECORDED)
+        return;
+    char detail[256] = {};
+    format_configured_gpu_resolution_detail(&configured, g_app.adapters,
+        g_app.adapterCount, detail, sizeof(detail));
+    if (!save_configured_gpu_selection_atomic(resolved, err, sizeof(err))) {
+        debug_log("gpu selection: refreshing the durable record failed for nvapi=%u: %s (%s)\n",
+            resolved, err[0] ? err : "unknown error", detail);
+        return;
+    }
+    debug_log("gpu selection: refreshed the durable record for nvapi=%u moved=%d (was %s)\n",
+        resolved, moved ? 1 : 0, detail);
+}
+#endif

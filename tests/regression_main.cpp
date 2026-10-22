@@ -1000,6 +1000,9 @@ int run_restart_snapshot_cleanup_tests();
 int run_driver_recovery_sequence_tests();
 // Linux serve-loop stall rationing (tests/peer_stall_tests.cpp, 7240-7279).
 int run_peer_stall_tests();
+// Durable GPU selection across PCI bus renumbering
+// (tests/gpu_location_role_tests.cpp, 7300-7339).
+int run_gpu_location_role_tests(const char* scratchConfigPath);
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -2616,6 +2619,10 @@ static int run_all_tests(int argc, char** argv) {
     if (parse_int_strict("-999999999999999999999999", &parsedInt)) return 15;
 
     if (argc < 2 || !argv[1] || !argv[1][0]) return 31;
+    if (int locationFailure = run_gpu_location_role_tests(argv[1])) {
+        fprintf(stderr, "regression assertion failed: code %d\n", locationFailure);
+        return locationFailure;
+    }
 #if defined(_WIN32)
     // Win32 config storage: the named-mutex lock and the Unicode INI writer.
     // Linux config storage is a different implementation (linux_port.cpp).
