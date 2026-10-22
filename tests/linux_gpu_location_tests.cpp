@@ -6,7 +6,8 @@
 // committed and startup records, requests built from them) carry a PCI
 // location that firmware may renumber at boot.  A known model must always
 // match; the location only picks between adapters that share it, and a moved
-// model is followed only where the location role allows it.
+// model is followed only where the location role allows it.  config.ini's
+// selection reaches the daemon only as the live adapter it resolved to.
 
 #include <stdio.h>
 #include <string.h>
@@ -229,6 +230,138 @@ int detail_tests() {
     return 0;
 }
 
+LinuxConfiguredGpu configured_at(unsigned int bus, GpuLocationRole role) {
+    LinuxConfiguredGpu gpu = {};
+    gpu.target = gpu_at(kModel, bus);
+    gpu.role = role;
+    gpu.status = LINUX_CONFIGURED_GPU_PENDING;
+    return gpu;
+}
+
+int configured_gpu_tests() {
+    bool moved = false;
+    const GpuAdapterInfo* target = nullptr;
+
+    // 7371: one of two identical GPUs was selected (role required) and the
+    // selected card is gone.  config.ini's GPU does not resolve, and the
+    // record keeps naming its old location.
+    {
+        GpuAdapterInfo remaining[] = {gpu_at(kModel, 6)};
+        LinuxConfiguredGpu gpu = configured_at(7, GPU_LOCATION_ROLE_REQUIRED);
+        if (linux_configured_gpu_resolve(&gpu, remaining, 1, &moved) != -1 ||
+            gpu.status != LINUX_CONFIGURED_GPU_NOT_PRESENT ||
+            gpu.target.pciBus != 7 || moved) return 7371;
+        // 7372: why the client must stop the write itself.  The daemon
+        // resolves a request target without the role and follows the stale
+        // record to the remaining card; an untargeted write reaches that lone
+        // adapter too.
+        if (linux_resolve_stored_gpu_target(&gpu.target,
+                GPU_LOCATION_ROLE_UNRECORDED, remaining, 1, nullptr) != 0 ||
+            !linux_gpu_init_selection(nullptr, remaining, 1).writeResolved)
+            return 7372;
+        // 7373: so neither goes out: a write stops, a read goes untargeted.
+        target = &remaining[0];
+        if (linux_configured_gpu_request_target(&gpu, true, &target) ||
+            target != nullptr) return 7373;
+        target = &remaining[0];
+        if (!linux_configured_gpu_request_target(&gpu, false, &target) ||
+            target != nullptr) return 7373;
+        // Every other unresolved outcome stops a write the same way.
+        const LinuxConfiguredGpuStatus unresolved[] = {
+            LINUX_CONFIGURED_GPU_PENDING, LINUX_CONFIGURED_GPU_UNVALIDATED,
+            LINUX_CONFIGURED_GPU_AMBIGUOUS};
+        for (LinuxConfiguredGpuStatus status : unresolved) {
+            gpu.status = status;
+            if (linux_configured_gpu_request_target(&gpu, true, &target) ||
+                target != nullptr) return 7373;
+        }
+    }
+
+    // 7374: a resolved selection names the live adapter, never the record.
+    {
+        GpuAdapterInfo live[] = {gpu_at(kOtherModel, 1), gpu_at(kModel, 6)};
+        LinuxConfiguredGpu gpu = configured_at(7, GPU_LOCATION_ROLE_ADVISORY);
+        if (linux_configured_gpu_resolve(&gpu, live, 2, &moved) != 1 ||
+            !moved || gpu.status != LINUX_CONFIGURED_GPU_RESOLVED ||
+            gpu.target.pciBus != 6) return 7374;
+        if (!linux_configured_gpu_request_target(&gpu, true, &target) ||
+            target != &gpu.target) return 7374;
+    }
+
+    // 7375: no record writes untargeted (the daemon's lone-adapter rule); an
+    // explicit choice is sent as it is, but never without a target.
+    {
+        LinuxConfiguredGpu none = {};
+        target = &none.target;
+        if (!linux_configured_gpu_request_target(&none, true, &target) ||
+            target != nullptr) return 7375;
+        if (!linux_configured_gpu_request_target(nullptr, true, &target) ||
+            target != nullptr) return 7375;
+        LinuxConfiguredGpu chosen = configured_at(6, GPU_LOCATION_ROLE_UNRECORDED);
+        chosen.status = LINUX_CONFIGURED_GPU_EXPLICIT;
+        if (!linux_configured_gpu_request_target(&chosen, true, &target) ||
+            target != &chosen.target) return 7375;
+        chosen.target.valid = false;
+        if (linux_configured_gpu_request_target(&chosen, true, &target) ||
+            target != nullptr) return 7375;
+    }
+
+    // 7376: a TUI started without the daemon (or with no GPU listed) keeps
+    // the record unvalidated and resolves it once an adapter list arrives.
+    {
+        GpuAdapterInfo live[] = {gpu_at(kModel, 7)};
+        LinuxConfiguredGpu gpu = configured_at(7, GPU_LOCATION_ROLE_REQUIRED);
+        if (linux_configured_gpu_resolve(&gpu, nullptr, 0, &moved) != -1 ||
+            gpu.status != LINUX_CONFIGURED_GPU_UNVALIDATED) return 7376;
+        if (linux_configured_gpu_resolve(&gpu, live, 0, &moved) != -1 ||
+            gpu.status != LINUX_CONFIGURED_GPU_UNVALIDATED) return 7376;
+        if (linux_configured_gpu_resolve(&gpu, live, 1, &moved) != 0 ||
+            gpu.status != LINUX_CONFIGURED_GPU_RESOLVED || moved) return 7376;
+    }
+
+    // 7377: not present and ambiguous are final; only an explicit selection
+    // replaces them, so a later adapter list does not quietly re-target.
+    {
+        GpuAdapterInfo live[] = {gpu_at(kModel, 7)};
+        LinuxConfiguredGpu gpu = configured_at(7, GPU_LOCATION_ROLE_REQUIRED);
+        gpu.status = LINUX_CONFIGURED_GPU_NOT_PRESENT;
+        if (linux_configured_gpu_resolve(&gpu, live, 1, &moved) != -1 ||
+            gpu.status != LINUX_CONFIGURED_GPU_NOT_PRESENT) return 7377;
+        gpu.status = LINUX_CONFIGURED_GPU_EXPLICIT;
+        if (linux_configured_gpu_resolve(&gpu, live, 1, &moved) != -1 ||
+            gpu.status != LINUX_CONFIGURED_GPU_EXPLICIT) return 7377;
+    }
+
+    // 7378: a unique GPU joined by a twin, neither at the stored location.
+    {
+        GpuAdapterInfo twins[] = {gpu_at(kModel, 6), gpu_at(kModel, 8)};
+        LinuxConfiguredGpu gpu = configured_at(7, GPU_LOCATION_ROLE_ADVISORY);
+        if (linux_configured_gpu_resolve(&gpu, twins, 2, &moved) != -1 ||
+            gpu.status != LINUX_CONFIGURED_GPU_AMBIGUOUS) return 7378;
+    }
+
+    // 7379: every status has a stable log name and a user-facing reason.
+    {
+        const LinuxConfiguredGpuStatus all[] = {
+            LINUX_CONFIGURED_GPU_NONE, LINUX_CONFIGURED_GPU_EXPLICIT,
+            LINUX_CONFIGURED_GPU_PENDING, LINUX_CONFIGURED_GPU_RESOLVED,
+            LINUX_CONFIGURED_GPU_UNVALIDATED, LINUX_CONFIGURED_GPU_NOT_PRESENT,
+            LINUX_CONFIGURED_GPU_AMBIGUOUS};
+        for (LinuxConfiguredGpuStatus status : all) {
+            const char* name = linux_configured_gpu_status_name(status);
+            if (!name[0] || strcmp(name, "invalid") == 0 ||
+                !strstr(linux_configured_gpu_problem(status), "config.ini"))
+                return 7379;
+        }
+        if (!strstr(linux_configured_gpu_problem(
+                        LINUX_CONFIGURED_GPU_NOT_PRESENT), "not present") ||
+            !strstr(linux_configured_gpu_problem(
+                        LINUX_CONFIGURED_GPU_AMBIGUOUS), "ambiguous"))
+            return 7379;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int run_linux_gpu_location_tests() {
@@ -237,5 +370,6 @@ int run_linux_gpu_location_tests() {
     if (int r = daemon_request_tests()) return r;
     if (int r = role_tests()) return r;
     if (int r = detail_tests()) return r;
+    if (int r = configured_gpu_tests()) return r;
     return 0;
 }

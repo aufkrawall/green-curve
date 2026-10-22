@@ -251,6 +251,102 @@ static inline GpuLocationRole linux_gpu_location_role_for_selection(
     return models == 1 ? GPU_LOCATION_ROLE_ADVISORY : GPU_LOCATION_ROLE_REQUIRED;
 }
 
+// config.ini's GPU in the client, from loading the record to the requests that
+// name it.  NOT_PRESENT and AMBIGUOUS are final for the process: only an
+// explicit selection (`--gpu`, the TUI selector) replaces them, as on Windows.
+enum LinuxConfiguredGpuStatus {
+    LINUX_CONFIGURED_GPU_NONE = 0,     // no record: requests go untargeted
+    LINUX_CONFIGURED_GPU_EXPLICIT,     // `--gpu` or a TUI selection
+    LINUX_CONFIGURED_GPU_PENDING,      // loaded, not resolved yet
+    LINUX_CONFIGURED_GPU_RESOLVED,     // `target` is the live adapter
+    LINUX_CONFIGURED_GPU_UNVALIDATED,  // no live adapter list to resolve against
+    LINUX_CONFIGURED_GPU_NOT_PRESENT,
+    LINUX_CONFIGURED_GPU_AMBIGUOUS,
+};
+
+struct LinuxConfiguredGpu {
+    GpuAdapterInfo target;  // the record until it resolves, then the live adapter
+    GpuLocationRole role;
+    LinuxConfiguredGpuStatus status;
+};
+
+static inline const char* linux_configured_gpu_status_name(
+    LinuxConfiguredGpuStatus status) {
+    switch (status) {
+    case LINUX_CONFIGURED_GPU_NONE: return "none";
+    case LINUX_CONFIGURED_GPU_EXPLICIT: return "explicit";
+    case LINUX_CONFIGURED_GPU_PENDING: return "pending";
+    case LINUX_CONFIGURED_GPU_RESOLVED: return "resolved";
+    case LINUX_CONFIGURED_GPU_UNVALIDATED: return "unvalidated";
+    case LINUX_CONFIGURED_GPU_NOT_PRESENT: return "not-present";
+    case LINUX_CONFIGURED_GPU_AMBIGUOUS: return "ambiguous";
+    }
+    return "invalid";
+}
+
+// Resolves a PENDING or UNVALIDATED selection against one live adapter list
+// with the recorded role.  Returns the adapter index once RESOLVED (`target`
+// then holds that adapter), otherwise -1; any other status is left alone.
+static inline int linux_configured_gpu_resolve(LinuxConfiguredGpu* gpu,
+    const GpuAdapterInfo* adapters, unsigned int count, bool* movedOut) {
+    if (movedOut) *movedOut = false;
+    if (!gpu || (gpu->status != LINUX_CONFIGURED_GPU_PENDING &&
+                 gpu->status != LINUX_CONFIGURED_GPU_UNVALIDATED)) return -1;
+    if (!adapters || count == 0) {
+        gpu->status = LINUX_CONFIGURED_GPU_UNVALIDATED;
+        return -1;
+    }
+    int index = linux_resolve_stored_gpu_target(&gpu->target, gpu->role,
+                                                adapters, count, movedOut);
+    if (index < 0) {
+        gpu->status = index == -2 ? LINUX_CONFIGURED_GPU_AMBIGUOUS
+                                  : LINUX_CONFIGURED_GPU_NOT_PRESENT;
+        return -1;
+    }
+    gpu->target = adapters[index];
+    gpu->status = LINUX_CONFIGURED_GPU_RESOLVED;
+    return index;
+}
+
+// What a request may name for config.ini's GPU; false when it must not go
+// out.  Only a live adapter is ever sent.  The daemon resolves a request
+// target without the location role (UNRECORDED follows a moved model to the
+// one adapter left), and a request without a target reaches a lone adapter,
+// so a stale record sent as it is, or dropped, can land on the identical GPU
+// that a `required` role exists to tell apart.  A write therefore stops on
+// every outcome but NONE, EXPLICIT and RESOLVED; a read goes untargeted and
+// shows the daemon's current GPU without selecting another.
+static inline bool linux_configured_gpu_request_target(
+    const LinuxConfiguredGpu* gpu, bool write,
+    const GpuAdapterInfo** targetOut) {
+    if (targetOut) *targetOut = nullptr;
+    if (!gpu || gpu->status == LINUX_CONFIGURED_GPU_NONE) return true;
+    if ((gpu->status == LINUX_CONFIGURED_GPU_EXPLICIT ||
+         gpu->status == LINUX_CONFIGURED_GPU_RESOLVED) && gpu->target.valid) {
+        if (targetOut) *targetOut = &gpu->target;
+        return true;
+    }
+    return !write;
+}
+
+// Why a write stopped, for the CLI error and the TUI status line.
+static inline const char* linux_configured_gpu_problem(
+    LinuxConfiguredGpuStatus status) {
+    switch (status) {
+    case LINUX_CONFIGURED_GPU_NOT_PRESENT:
+        return "the GPU saved in config.ini is not present";
+    case LINUX_CONFIGURED_GPU_AMBIGUOUS:
+        return "the GPU saved in config.ini is ambiguous";
+    case LINUX_CONFIGURED_GPU_UNVALIDATED:
+        return "the GPU saved in config.ini could not be checked against the "
+               "daemon's GPUs";
+    case LINUX_CONFIGURED_GPU_PENDING:
+        return "the GPU saved in config.ini has not been checked yet";
+    default:
+        return "the GPU saved in config.ini is unavailable";
+    }
+}
+
 // One bounded diagnostic line for a stored-target resolution: the stored
 // model, location and role, then the first four live adapters.
 static inline void linux_format_stored_gpu_detail(
