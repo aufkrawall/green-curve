@@ -872,8 +872,18 @@ The location gate recognizes the current account's redirected known folders
 by identity and other accounts' standard folders under UserProfiles by their
 resolved path. Do not describe this gate as proof that every chosen existing
 folder belongs to Green Curve; it is the prevention for known destructive
-destinations, alongside the dedicated-folder instruction. Its remaining
-coverage limits are tracked in the maintainer's private notes.
+destinations, alongside the dedicated-folder instruction.
+
+Design limit: a known folder that ANOTHER account has redirected outside the
+UserProfiles root is not recognized. Where it points is that account's own
+setting, answered by `SHGetKnownFolderPath` only with that account's token,
+which the approving administrator's process does not hold, and loading the
+account's hive is avoided for the same reason as in the Run-value sweep (it
+can corrupt `ntuser.dat` if that user signs in meanwhile). The ownership test
+above still refuses such a folder while it holds anything that is not Green
+Curve's, so only an empty one can get through, chosen by the administrator,
+and the result is that account losing write access to it, not anyone gaining
+access. The dedicated-folder instruction covers the rest.
 
 The admin trust set (SYSTEM, Administrators, TrustedInstaller, direct members
 of the local group) is built **once per process** behind `InitOnceExecuteOnce`.

@@ -382,8 +382,9 @@ copy. That asymmetry is what made hardening a drive root unrecoverable.
 - The known-folder identity check has read-only native tests for long/8.3
   names and an ancestor junction (5671-5673, 5680-5683). Other-account
   standard and OneDrive profile folders have a pure path-shape suite
-  (5674-5679, 5684-5687). The coverage limits of the cross-account check are
-  tracked in the maintainer's private notes.
+  (5674-5679, 5684-5687). Design limit: another account's known folder
+  redirected outside the UserProfiles root is not recognized (installer.md,
+  location gate).
 - A final-path or machine UserProfiles-root lookup failure refuses an existing
   target rather than skipping the cross-account check.
 - `GC_SVC_ADMIN_HELPER_TIMEOUT_MS` at 150 s is a bound, not a measurement. No

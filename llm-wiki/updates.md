@@ -1706,8 +1706,8 @@ be started, the closed GUIs are not relaunched.
   verified for the published x64 setup (Sigstore bundle binds
   `release.yml` workflow_dispatch at `358793a`), commit status
   `Provenance & Attestation` posted `success`, and the tag is SSH-signed with
-  the `Verified` badge. The version is spelled `0.28` (short form); operator-side notes for this
-  release are kept in the maintainer's private notes. Manual checklist items NOT rerun and recorded as release risk:
+  the `Verified` badge. The version is spelled `0.28` (short form); operator-side notes belong
+  in the gitignored runbook. Manual checklist items NOT rerun and recorded as release risk:
   disposable-elevated upgrade/move/uninstall (the 2026-10-05 two-hop clone
   simulation live-verified the upgrade hop, settings handoff, and service
   lifecycle), live post-stop rollback fault injection (covered by pure fault

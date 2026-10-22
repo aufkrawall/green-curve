@@ -869,7 +869,7 @@ refs on the public repo is never an option (it rewrites history and can disturb
 forks); a bad publish is undone with `git revert`. Releases are published only
 by the manual `release.yml` workflow. The operator-side publication and
 backup/restore procedure is kept out of this page, in the gitignored
-`update-procedure.md` and the maintainer's private notes.
+`update-procedure.md`.
 
 ## Known hardening limitations
 

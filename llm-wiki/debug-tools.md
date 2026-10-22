@@ -413,3 +413,15 @@ an unparseable command line) used to replace the whole file, so each logon
 erased the previous logon's record. `tools/log_gates.py` forbids any
 `write_text_file_atomic(cli_log_path()` again; tests 6730-6746 cover append,
 rotation and refusals.
+
+Where an elevated CLI run writes (reviewed 2026-10-22): a non-service CLI,
+elevated or not, resolves the CLI, debug and error logs through
+`resolve_data_paths()` as `SHGetKnownFolderPath(FOLDERID_LocalAppData)` with
+its own process token, so the files are always in the running account's own
+profile. An administrator approving a UAC prompt for a standard user's session
+writes into the administrator's profile, not the user's; no other account can
+place a file or link there. The logs are opened by name; only code already
+running as that same account could interpose there, and Green Curve does not
+treat elevation within one account as a boundary. The SYSTEM service is
+different: it writes into user profiles and does so under that user's
+impersonation token (see the routing list above, `debug_log_identity.h`).

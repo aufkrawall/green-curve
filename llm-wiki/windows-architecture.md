@@ -19,8 +19,11 @@ also deny honest accounts. Account leases bound silent-header and body/write
 stalls without cooldowns, sleeps, or timing assumptions. Same-account traffic
 shares its two slots. Native silent-pipe fixtures exercise pre-read SID
 capture and six hostile lease attempts; pure fixtures prove another account
-still acquires capacity. This is not a claim of absolute fairness; residual
-availability limits are tracked in the maintainer's private notes.
+still acquires capacity. This is not a claim of absolute fairness. Design
+limits: leases are per account, so several local accounts acting together can
+occupy all six workers, and an admitted request whose serialized handler is
+expensive delays every other request while it runs. Both need accounts the
+service already authenticates, and neither crosses an authorization check.
 
 Open question (2026-10-01 review): a lease refusal disconnects before the
 header, so the client cannot be told "busy". If the client's write lands first
