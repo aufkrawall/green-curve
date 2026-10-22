@@ -656,9 +656,17 @@ the regression harness asserts on either host.
   (scan, atomic write), `main_service_crash_notice.cpp` (identity glue,
   called from `resolve_service_user_data_paths()`). Log line:
   `crash dump notice: written|none (notice removed) serviceDumps= werDumps= ok= error=`.
-  Tests 7140-7147 (`tests/crash_dump_notice_tests.cpp`, real scan/write in a
+  Tests 7140-7149 (`tests/crash_dump_notice_tests.cpp`, real scan/write in a
   `%TEMP%` scratch folder); gates in `tools/crash_artifacts.py` pin the
-  scan-before-impersonation order and forbid copying dumps. Field note: WER
+  scan-before-impersonation order and forbid copying dumps. The copy command
+  goes to an ADMINISTRATOR but embeds folder names the user controls (profile,
+  redirected known folder), so every path is a PowerShell single-quoted
+  literal (nothing expands; `'` and U+2018..U+201B doubled) used only as a
+  literal path (`Get-ChildItem -LiteralPath ... -Filter *.dmp`, never a
+  wildcard source), and the command is all or nothing: if it does not fit the
+  notice buffer it is replaced by a plain instruction, never cut off
+  (2026-10-22, tests 7148-7149; verified end to end in pwsh with `$()`,
+  backtick, quote and bracket folder names). Field note: WER
   LocalDumps wrote a service dump even with WER reporting disabled
   machine-wide (`...\Windows Error Reporting\Disabled=1`). Not yet observed
   live: the notice after a real service crash.

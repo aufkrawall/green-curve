@@ -132,6 +132,14 @@ existing format. Regression anchors: `tests/diagnostics_followup_tests.cpp`
 and `tools/log_gates.py`. These are correlation fingerprints, not cryptographic
 anonymization of predictable input.
 
+Since 2026-10-22 (tests 7048-7049): a `/word` counts as a Unix path only when
+another `/` follows inside the same word (`/home/<name>/...`), so command
+switches (`schtasks /delete exit=1`, `/tn`) keep the rest of the line; and wide
+paths/identifiers are hashed as their UTF-8 encoding, so the same text gets the
+same token whether logged wide, narrow, or caught by the line redaction. To
+keep fields AFTER a path on the same line, quote the path in the format
+string (`'%ls'`); an unquoted path is tokenized to the line end.
+
 `source/log_redaction_policy.h` turns account names, SIDs, authentication LUIDs
 and user-profile paths into stable non-reversible tokens — `[path #<16 hex>]`
 and `[id #<16 hex>]` — so two events for one account stay correlatable without
@@ -152,7 +160,8 @@ because the gate scans source rather than sampled logs. Add to
 `IDENTITY_BEARING_LOG_ARGUMENTS` when a new identity-bearing global appears.
 
 `gc_log_wide_identifier_token()` is the UTF-16 variant, added for the task name;
-it hashes code units directly so it stays pure and assertable on a Linux host.
+it encodes to UTF-8 inline (no Win32 conversion) so it stays pure and
+assertable on a Linux host, and matches the narrow token for the same text.
 
 **Reading a tokenized log:** the token is stable per input, so grouping by token
 still tells you "these lines are about the same account/path". To confirm WHICH

@@ -5,6 +5,42 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22 (later): CI 7087 fix and review follow-ups for 0ac74a7..31b78d4
+
+- CI run 39685286761 (Windows, UBSan step) stopped at 7087: the shell-link
+  fixture compared the link target with an 8.3-spelled `%TEMP%` path by text
+  (runners use `RUNNER~1`; the shell returns the long form). Now compared by
+  file identity. Reproduced locally by pointing `TEMP`/`TMP` at an 8.3
+  spelling; every later CI step had never run on Windows for these commits,
+  so `--test`, `--test --asan`, `--tidy`, `--check --target all` and `--fuzz`
+  were all rerun that way.
+- Crash-dump notice: the elevated copy command now takes every path as a
+  PowerShell single-quoted literal and is all or nothing (7148-7149; verified
+  end to end in pwsh with `$()`, backtick, quote and bracket folder names).
+  The same class existed in setup's icacls remedy (double-quoted install
+  folder, `D:\Apps$Old` -> `D:\Apps`); both use `powershell_literal.h` now
+  (5688-5689, AST-checked in pwsh).
+- Driver-update waiver: the disk side compared the native ARM64 image's
+  recorded version with `System32\nvapi64.dll` (x64 emulation copy). Loader
+  and proof now share `nvapi_module_first()` (2189). The "in-process" version
+  was a path read, so after an in-place replace both sides read the new file;
+  it is read from the mapped image's resource directory now (7180-7188, hand
+  walk, no new resource-API imports in the service). Helpers moved to the
+  new shard `main_service_driver_version.cpp` (identity shard was at 800).
+- From a second review pass: a fault/wedge inside a FIRST apply restarted
+  plainly (no intent, no snapshot yet) and re-applied every logon; the plan
+  now weighs the ownership marker (7163). The recovery helper's failure
+  cleanup could delete a newer generation's snapshot; it is nonce-bound now
+  (source gate only). Log redaction: `/delete`-style switches no longer
+  swallow the rest of the line (7049); wide and narrow tokens agree (7048).
+- OPEN (maintainer decision): an exempted driver-update replay records a
+  fresh stamp with the NEW driver version, so a second device restart from
+  the same install within 10 minutes latches UNSTABLE_APPLY. Whether driver
+  installs restart the device twice is unconfirmed; a time-bounded waiver
+  would need a stamp format change.
+- None of the runtime paths is live-verified (no ARM64 hardware, no real
+  driver update, no SCM race reproduced).
+
 ## 2026-10-22: The engineering log became public; private/ frozen
 
 Policy decided by the maintainer: `llm-wiki/log/` (this file and its archives) is

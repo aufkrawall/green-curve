@@ -267,8 +267,13 @@ in a child the harness re-launches with CET shadow stacks forced on, via the
 `--veh-driver-fault-child` argument `main()` dispatches first, plus the
 declined-thread child and the portable poisoned-runtime exit plan; see
 [gpu-backend](gpu-backend.md)), `tests/crash_dump_notice_tests.cpp` (7140-7159:
-the service crash-dump notice text, plus the real scan and atomic write in a
-`%TEMP%` scratch folder; see [windows-architecture](windows-architecture.md)); `service_install_tests.cpp` owns
+the service crash-dump notice text incl. the PowerShell-literal escaping and
+the all-or-nothing command, plus the real scan and atomic write in a
+`%TEMP%` scratch folder; see [windows-architecture](windows-architecture.md)),
+`tests/module_version_tests.cpp` (7180-7189: the mapped-image version reader
+against synthesised PE32/PE32+ images and their malformed mutations, and on
+Windows a real image moved away under its mapping and replaced by another
+version; see [gpu-backend](gpu-backend.md)); `service_install_tests.cpp` owns
 assertions 5720-5786: SCM checkpoint-wait policy, the location content rule,
 the exact-DACL predicate, handle-bound hardening with propagation to existing
 files, the release-to-inherited contract, and the native location verdicts;
@@ -1829,6 +1834,13 @@ The table below names the physical source shard that owns each rule:
   dead and forced the untheme-able system grey-text on the disabled label —
   require both runtime re-fit calls, and require the renderer and the fit to read
   the same inset/gap metrics.
+- **Never compare a `%TEMP%`-derived path by text.** GitHub's Windows runners
+  spell `%TEMP%` with an 8.3 component (`RUNNER~1`), while the shell, the
+  loader and most resolvers hand back the long form. Compare file identity
+  (volume serial + file index; see `same_file_object()` in
+  `service_install_tests.cpp`) instead. 7087 failed on CI only for this
+  reason (2026-10-22). To reproduce locally, point `TEMP`/`TMP` at the 8.3
+  spelling of a long-named scratch folder before `python build.py --test`.
 - New tests must be deterministic and avoid sleeps, polling, or wall-clock
   thresholds. The obsolete RC6d wall-clock serialization test was removed;
   runtime-lock behavior is now pinned by policy tests and operation-scoped
@@ -2716,6 +2728,18 @@ deliberately as the cheaper control for the properties that matter most.
 
 ## Last Verified
 
+- 2026-10-22: CI run 39685286761 failed at 7087 (shell-link target compared to
+  an 8.3-spelled `%TEMP%` path by text); fixed by file-identity comparison and
+  reproduced/verified locally with an 8.3 `TEMP`. Added 2189 (shared NvAPI
+  module walk), 7148-7149 (PowerShell-literal notice command, all or nothing)
+  and 7180-7188 (`tests/module_version_tests.cpp`), plus from a follow-up
+  review 7163 (a fault inside a first apply latches), 7048-7049 (wide/narrow
+  log tokens agree; command switches are not paths) and 5688-5689 (the
+  installer's icacls remedy quotes paths as PowerShell literals, all or
+  nothing). The full suite, `--test --asan`, `--tidy`, `--check --target all`
+  and `--fuzz --fuzz-runs 5000` were run under the 8.3 `TEMP` as well, since a
+  CI stop at 7087 leaves every later step unexecuted there. Not executable:
+  the recovery helper's nonce-bound cleanup (source gate only).
 - 2026-09-15 (second pass, CI run 34997735796): the same root cause one level
   up. `--fuzz` builds the Linux targets only on a Linux host, so
   `FUZZ_LINUX_EXTRA_SOURCES` was unproven off CI and `service_request` was

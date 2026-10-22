@@ -828,7 +828,11 @@ Green Curve's DACL) are refused — so `D:\Apps` as a target is refused while
   otherwise create under inheritable danger two or more levels down. This
   recipe is how a custom path becomes Program Files-equivalent. Its exact
   spelling is part of the contract, because it is a line a user pastes: every
-  path is quote-closed, `/setowner` is its OWN `icacls` invocation (icacls
+  path is a PowerShell single-quoted literal (since 2026-10-22,
+  `gc_path_protection_format_remedy()` + `powershell_literal.h`, tests
+  5688-5689: in double quotes `D:\Apps$Old` expanded to `D:\Apps`, so the
+  elevated `icacls /inheritance:r` would have re-ACLed a different folder;
+  the line is all or nothing, never cut mid-path), `/setowner` is its OWN `icacls` invocation (icacls
   answers `Invalid parameter` / error 87 when it is combined with `/grant` or
   `/inheritance`), every `SID:permission` argument is quoted so PowerShell does
   not read `(OI)(CI)F` as a subexpression, and `;` separates the invocations.

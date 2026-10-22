@@ -419,7 +419,15 @@ This uses a nonce-bound controlled-restart protocol, not a reusable marker:
    helper alive; it touches no hardware, leaves the authorization alone and
    stops with ERROR_RETRY so the next failure action stays the fallback if the
    helper dies. Waiting through any other generation is harmless: an ordinary
-   start that does not yield deletes the authorization while starting. Log
+   start that does not yield deletes the authorization while starting. The
+   helper's fail-closed cleanup is therefore bound to its own nonce
+   (`service_clear_controlled_recovery_files_if_owned`, 2026-10-22): it
+   removes the authorization and snapshot only while the authorization still
+   names its nonce (checked and deleted through one handle held without delete
+   sharing); otherwise a newer generation owns them, and the old unconditional
+   clear used to delete that generation's snapshot after its first apply.
+   Source-gated only (no executable SCM fixture). Log line:
+   `controlled recovery helper: cleared its own continuation files|authorization belongs to another generation; ...`. Log
    line: `controlled recovery: failure-action start (reason=) pending=
    previousGone= helperAlive= -> ...`. The helper then revalidates the
    protected authorization and makes exactly one `StartServiceW` call with
@@ -490,8 +498,11 @@ that logon-event redundancy is degraded.
    proof stamp (v4) records the NvAPI image version the apply ran under, and a
    different version on disk at recovery waives the window
    (`service_driver_recovery_proof_accepts()`, tests 7138-7139, log line
-   `oc stabilization: proof age ... driver at apply ..., on disk ... -> ...`).
-   A pre-v4 stamp fails closed; the next successful apply writes v4.
+   `oc stabilization: proof age ... driver at apply ..., on disk (<image>) ... -> ...`).
+   A pre-v4 stamp fails closed; the next successful apply writes v4. Both sides
+   name the same image: the stamp reads the mapped module, the disk side takes
+   the loader's module walk (`nvapia64.dll` on ARM64, never the x64 copy beside
+   it; 2026-10-22, see [gpu-backend](gpu-backend.md)).
 6. Prerequisite waiting may repeat; a real hardware write may not.
 7. Expected live VF drift never triggers correction or changes profile
    ownership.

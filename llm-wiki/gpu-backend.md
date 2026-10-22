@@ -358,6 +358,26 @@ codes 2180–2188 (which also test the arm64 ordering from an x64 host, since it
 is otherwise untestable without the hardware). Loading lives in
 `source/nvapi_loader.cpp`.
 
+Every consumer that names "the NvAPI image" takes the same walk,
+`nvapi_module_first(arch, accept)` (2026-10-22, code 2189): the loader accepts
+"it loaded", the driver-update proof's disk side
+(`service_get_nvapi_disk_path()`, `main_service_driver_version.cpp`) accepts
+"it is in System32". A fixed `nvapi64.dll` there compared the native ARM64
+image's recorded version against the x64 emulation copy, which versions on its
+own (and may be absent). `tools/crash_artifacts.py` forbids the fixed name.
+
+The "in-process" version of NvAPI/NVML is read from the **mapped image's**
+version resource (`version_resource_policy.h` + `module_version_win32.h`, tests
+7180-7188), not via `GetModuleFileNameW` + `GetFileVersionInfoW`: the loader
+keeps the load-time path, and once an update has replaced the file there, a
+path read reports the new driver for both sides of the comparison. Test 7185-7188
+reproduces that with a real image moved away under its mapping and replaced. The
+resource directory is walked by hand, bounded by `SizeOfImage`, so the SYSTEM
+service gains no FindResource/LoadResource/LockResource/SizeofResource imports
+(see [antivirus-heuristics](antivirus-heuristics.md)). Unverified: whether a
+real driver update replaces the System32 images in place while the old service
+still runs (the diagnostic `driverChanged=` field now tells).
+
 ### NvAPI entry-point id scan (settles the arm64 OC surface)
 
 `nvapi_QueryInterface` is NVAPI's only export; every function Green Curve uses
@@ -1136,7 +1156,15 @@ predicate and the recorder.
   and stop, as before. It used to latch AUTOMATIC_APPLY_FAILED whenever the
   helper could not be prepared, which after a Reset meant a driver update
   silently blocked the next logon's profile. Tests 7130-7134. Log line:
-  `controlled recovery: poisoned runtime exit plan=<n> corroborated= snapshot= liveIntent=`.
+  `controlled recovery: poisoned runtime exit plan=<n> corroborated= snapshot= liveIntent= ownedState=`.
+  Correction (2026-10-22, test 7163): "no snapshot and no live intent" is
+  also what a FIRST Apply or logon apply looks like while its write is in
+  flight (intent and the snapshot only follow a success), so a fault or wedge
+  inside it restarted plainly and re-applied at every logon. The plan now also
+  weighs the ownership marker (`service_ownership_marker_committed()`, committed
+  before the first write, retired by a successful Reset or handback): owned
+  state without a snapshot latches like any failed apply. A driver update with
+  no profile applied still restarts plainly.
 - Field dump (2026-10-21, RTX 5070): the faulting thread was the fan runtime
   thread (`service_fan_runtime_thread_proc` -> `apply_fan_curve_tick` ->
   `nvml_read_temperature` -> `nvmlDeviceGetTemperature`); all ten VEH dumps
@@ -1396,6 +1424,11 @@ hardware_initialize` snapshots and no apply/reset would work.
      the on-disk file; the loader's mapping table reference is released by
      `FreeLibrary`). `version.lib` is now linked into both `greencurve.exe` and
      `greencurve-service.exe`.
+   - **Corrected 2026-10-22:** that "in-process" read was a PATH read, so after
+     an in-place replace both sides read the new file and the detector could
+     not fire; it now reads the mapped image's own resource, and the NvAPI disk
+     side follows the loader's module walk. See "NVAPI module selection per
+     architecture" above.
 
 **New globals** (declared in `app_shared.h`, defined in `app_shared.cpp`):
 - `g_serviceInitInProgress` (volatile LONG): 1 while the recovery's own re-init
@@ -1803,7 +1836,7 @@ device-reconnect or driver-upgrade), two bugs left the service non-functional:
 - `source/main_state_sync.cpp`: `populate_service_snapshot`, `apply_service_snapshot_to_app`, `hardware_initialize`
 - `source/main_crash_artifacts.cpp` `green_curve_vectored_handler`: VEH crash **detector** — invalidates NVML via `service_close_nvml_without_shutdown()`, increments `g_nvmlCrashCount`, `ExitThread`s the faulting thread; keeps the RC7/RC8a reapply-thread cleanup (build 228 removed the RC5a recovery-thread cleanup since the recovery thread is gone)
 - `source/main_service_recovery.cpp`: startup coordinator and restart-snapshot reapply selection
-- `source/main_service_runtime.cpp`: `launch_recovery_thread()` (now just `request_service_restart`), `service_reapply_thread_proc` / `service_check_reapply_thread_health` (event-driven reapply: post-restart / resume / logon retries — NOT drift), `service_nvml/nvapi_disk_version_changed` (version-change detect)
+- `source/main_service_runtime.cpp`: `launch_recovery_thread()` (now just `request_service_restart`), `service_reapply_thread_proc` / `service_check_reapply_thread_health` (event-driven reapply: post-restart / resume / logon retries — NOT drift); `service_nvml/nvapi_disk_version_changed` (version-change detect, diagnostic only) now live in `source/main_service_driver_version.cpp`
 - (removed in 0.18) `source/main_service_vf_drift.cpp` — the continuous `service_check_active_vf_drift_monitor` is gone; no periodic drift correction exists
 - `source/main.cpp`: `request_service_restart()` (snapshot + record + signal exit, no NVML), `g_serviceRestartRequested`
 - `source/main_service_server.cpp`: `service_main` restart-exit branch (non-zero `ExitProcess`, no NVML teardown), `service_configure_failure_actions` / `service_ensure_failure_actions_configured` (SCM auto-restart at install + every start), device-event handler, fan-pulse wedge watchdog → `request_service_restart`
