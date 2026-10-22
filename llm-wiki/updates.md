@@ -1244,10 +1244,26 @@ Two things this must get right or it proves nothing:
   subcommand refuses the production repository (read from `update_url_policy.h`)
   before any remote call. `init` records the installed client's
   `[updates] highest_seen_version`; `teardown` restores it in place (same file,
-  so its protected ACL stays) when elevated, otherwise prints the exact
-  elevated `teardown --restore-seen-only` command; the running service keeps
-  its in-memory value, so restart it before its next check. Do not reuse a
-  simulated version number for a real release.
+  so its protected ACL stays). The service loads that value once at start and
+  writes its in-memory copy back on EVERY settings save (a failed check
+  included), so the restore is a transaction: stop `GreenCurveService`, write,
+  read back, start it again (`_write_with_service_stopped()` in
+  `tools/simulate_release_guards.py`; SCM waits in
+  `tools/windows_service_control.py` follow the product's
+  `service_scm_wait_policy.h` protocol, constants asserted equal). A service
+  that does not stop is never written under; a failed write still restarts it;
+  a service already stopping is waited for and not restarted. From a normal
+  prompt teardown asks for elevation once and runs `teardown
+  --restore-seen-only --no-elevate --report <json>` as an elevated child
+  (`run_elevated_restore()`); `--no-elevate` only prints the command. Exit 2
+  until the restore has happened, and the record
+  (`dist/test-simulation/pre-simulation-state.json`) survives until then.
+  Why (2026-10-22): the earlier teardown edited the file under a running
+  service and, unelevated, only printed a command; a real build installed
+  after the simulation then kept the hop-2 version (`0.29.1`) as its mark and
+  reported the public `0.29.0` as "the update channel is offering an older
+  release" on every check. Do not reuse a simulated version number for a real
+  release.
 
   The seen-version editor preserves unrelated bytes, original CR/LF endings
   and an unterminated final line. `init` records the original `[updates]` layout
@@ -1265,7 +1281,12 @@ Two things this must get right or it proves nothing:
   first. `tools/simulate_release_tests.py` covers byte preservation, absent
   section/key restoration, unrelated update-setting retention, an edit
   completed before lock acquisition, refusal before I/O, and native Windows
-  mutual exclusion/release on a scratch mutex. Last verified: 2026-10-17.
+  mutual exclusion/release on a scratch mutex; since 2026-10-22 also the
+  stop/write/start order (a fake service records the seen value at each call),
+  no write under a service that did not stop, restart after a failed write, the
+  elevated-child report round trip and its failure messages, and the SCM wait
+  verdicts. Last verified: 2026-10-22 (fakes only; no live elevated teardown
+  run yet).
 
 Everything else is repo-independent and therefore faithful: asset names carry
 the version and arch but not the repo, and the host allowlist is unchanged

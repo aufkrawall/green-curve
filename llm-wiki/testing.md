@@ -68,9 +68,19 @@ fixture completes another edit before acquisition and asserts that the
 subsequent read/write stays inside the shared mutex. Native Windows tests prove
 exclusion and release (including exception unwinding) on a scratch mutex; a
 contract check ties its name and descriptor to `source/config_utils.cpp`.
-Source: `tools/simulate_release_tests.py`, `tools/windows_config_lock.py`;
-verified 2026-10-17. Linux CI injects a lock only for the byte-editor fixtures;
-the native fixture is Windows-only.
+The restore runs with the owning service stopped: a fake service records
+the seen value at each stop/start (stopped before the write, started after
+it), and the suite covers no write under a service that did not stop, a
+restart after a failed write, a stopping service waited for but not
+restarted, the elevated-child report round trip, and the SCM wait verdicts of
+`tools/windows_service_control.py` (constants asserted equal to
+`service_scm_wait_policy.h`). Mutation-checked: with the old file-only write
+three of these fail. `HighestSeenRestoreTests` patches the service controller
+in `setUp`, so no test reaches the real SCM; the one native SCM test only
+queries. Source: `tools/simulate_release_tests.py`,
+`tools/windows_config_lock.py`, `tools/windows_service_control.py`; verified
+2026-10-22. Linux CI injects a lock only for the byte-editor fixtures; the
+native fixtures are Windows-only.
 
 Arch recipe checks run through Linux packaging source gates on every host.
 They verify actual local source bytes and real remote checksum pins, with

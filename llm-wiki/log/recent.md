@@ -5,6 +5,24 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: Simulation teardown restores the seen version for real
+
+- Symptom: after the 2-hop release simulation, the real build warned on every
+  check that the update channel offers an older release. The machine config
+  still held the hop-2 version (`0.29.1`) while the public channel advertised
+  `0.29.0`; the pre-simulation record from the simulation was never consumed.
+- Causes: an unelevated teardown only printed an elevated command (exit 2,
+  easy to miss, and the runbook's teardown step did not mention it), and an
+  elevated one edited the file under a running service, which writes its
+  in-memory value back on every settings save.
+- Fix (updates.md, "Testing a release without publishing one"): teardown
+  stops `GreenCurveService`, writes and reads back, and starts it again; from
+  a normal prompt it asks for elevation once and runs that as a child. New
+  `tools/windows_service_control.py` ports the product's SCM wait protocol.
+  Runbook step 5 rewritten (gitignored local file).
+- Not verified: no live elevated teardown has run (fakes and a read-only SCM
+  query only).
+
 ## 2026-10-22: Stall rationing counts successful exchanges and both phases
 
 - Review follow-up to F-LNX-STALL (linux-scaffold.md). The hold was decided

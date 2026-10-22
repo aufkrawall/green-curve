@@ -12,12 +12,15 @@ or the real channel:
   key a release build trusts or the release key's own path;
 - no step may target the production repository;
 - the installed client's [updates] highest_seen_version is recorded before a
-  simulation and restored afterwards.
+  simulation and restored afterwards, with the service that owns it stopped,
+  and from an elevated child when teardown itself is not elevated.
 """
 
+import ctypes
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -27,6 +30,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import update_signing
+import windows_service_control
 from windows_config_lock import config_storage_lock
 
 SIMULATION_KEY_NAME = "simulation-update-signing-key.txt"
@@ -180,6 +184,13 @@ def patch_update_keys(source_dir, pubkey_hex):
 # mark to the simulated version.  Left there, the next real release (numbered
 # below the simulated one) would be reported as the channel going backwards.
 # init records the value before anything is published and teardown restores it.
+#
+# The restore only sticks while the service is stopped: the service loads the
+# value once at start and writes its in-memory copy back on every settings
+# save (a failed check included).  The restore used to edit the file under a
+# running service and print "restart it before its next check"; a teardown run
+# from a normal prompt only printed an elevated command.  Both were easy to
+# miss, and the real build then warned about an older release on every check.
 
 def machine_config_path():
     program_data = os.environ.get("ProgramData") or r"C:\ProgramData"
@@ -387,7 +398,8 @@ def record_pre_simulation_state(state_path=None, ini_path=None):
     state_path = Path(state_path or default_state_path())
     ini_path = Path(ini_path or machine_config_path())
     if state_path.exists():
-        log(f"pre-simulation state already recorded in {state_path}; keeping it")
+        log(f"pre-simulation state already recorded in {state_path}; keeping it "
+            "(an earlier teardown has not finished its seen-version restore)")
         return json.loads(state_path.read_text(encoding="utf-8"))
     with config_storage_lock():
         value, layout = _read_highest_seen_locked(ini_path)
@@ -413,14 +425,68 @@ def is_elevated():
         return False
 
 
-def restore_command(state_path):
+def restore_command(state_path, override=None):
     """The exact command an elevated prompt must run to finish the restore."""
-    return (f'"{sys.executable}" "{SIMULATE_SCRIPT}" teardown '
-            f'--restore-seen-only --state "{Path(state_path).resolve()}"')
+    command = (f'"{sys.executable}" "{SIMULATE_SCRIPT}" teardown '
+               f'--restore-seen-only --state "{Path(state_path).resolve()}"')
+    if override is not None:
+        command += f' --seen-version "{override}"'
+    return command
 
 
-def restore_highest_seen(state_path=None, ini_path=None, override=None, elevated=None):
-    """Put highest_seen_version back; returns (restored, message)."""
+def service_controller():
+    """The service that owns the machine configuration (replaced by the tests)."""
+    return windows_service_control.default_controller()
+
+
+def _write_with_service_stopped(ini_path, target, layout, service):
+    """Stop the owning service, write and verify, then start it again.
+
+    Returns the service steps taken.  Raises when the value cannot be made to
+    stick: a service that does not stop is never written under, and a write
+    that fails still restarts the service.
+    """
+    state = service.query_state()
+    stop = state is not None and state != windows_service_control.STATE_STOPPED
+    # A service already on its way down is waited for, not brought back.
+    restart = stop and state != windows_service_control.STATE_STOP_PENDING
+    steps = []
+    if stop:
+        service.stop()
+        steps.append(f"stopped {service.name} "
+                     f"(was {windows_service_control.state_name(state)})")
+    error = None
+    try:
+        set_highest_seen(ini_path, target, layout if target is None else None)
+        current = read_highest_seen(ini_path)
+        if current != target:
+            raise RuntimeError(f"{SEEN_KEY} reads back as {current or '<absent>'}, "
+                               f"not {target or '<absent>'}")
+    except (OSError, RuntimeError, ValueError) as exc:
+        error = exc
+    if restart:
+        try:
+            service.start()
+        except (OSError, RuntimeError) as exc:
+            outcome = f"the restore failed ({error}) and" if error else \
+                f"{SEEN_KEY} was restored, but"
+            raise RuntimeError(f"{outcome} {service.name} did not start again: {exc}. "
+                               f"Start it with: sc start {service.name}") from exc
+        steps.append(f"started {service.name}")
+    if error:
+        raise error
+    return steps
+
+
+def restore_highest_seen(state_path=None, ini_path=None, override=None, elevated=None,
+                         service=None, elevate=None):
+    """Put highest_seen_version back; returns (restored, message).
+
+    Elevated, the write happens with the owning service stopped.  Not
+    elevated, `elevate(state_path, override)` runs the same restore in an
+    elevated child and returns its result; without it the message carries
+    the exact command to run.
+    """
     state_path = Path(state_path or default_state_path())
     layout = None
     if override is not None:
@@ -439,31 +505,144 @@ def restore_highest_seen(state_path=None, ini_path=None, override=None, elevated
     if cleanup_possible:
         with config_storage_lock():
             cleanup_needed = _absent_key_cleanup_needed_locked(ini_path, layout)
+    if current == target and not cleanup_needed:
+        return True, f"highest_seen_version already {target or '<absent>'}; nothing to restore"
     if current == target:
-        if not cleanup_needed:
-            return True, f"highest_seen_version already {target or '<absent>'}; nothing to restore"
-        if elevated is None:
-            elevated = is_elevated()
-        if not elevated:
-            command = restore_command(state_path)
-            return False, ("highest_seen_version is already "
-                           f"{target or '<absent>'}, but removing simulation-only "
-                           f"configuration scaffolding needs an elevated prompt. Run:\n  {command}")
-        set_highest_seen(ini_path, None, layout)
-        return True, ("highest_seen_version was already absent; removed "
-                      "simulation-only configuration scaffolding")
+        change = ("highest_seen_version is already absent, but simulation-only "
+                  "configuration scaffolding remains")
+    else:
+        change = (f"highest_seen_version is {current or '<absent>'}, "
+                  f"recorded {target or '<absent>'}")
     if elevated is None:
         elevated = is_elevated()
     if not elevated:
-        command = restore_command(state_path)
-        if override is not None:
-            command += f' --seen-version "{override}"'
-        return False, ("restoring highest_seen_version "
-                       f"({current or '<absent>'} -> {target or '<absent>'}) needs an elevated "
-                       f"prompt. Run:\n  {command}")
+        if elevate is not None:
+            return elevate(state_path, override)
+        return False, (f"{change}; restoring it needs an elevated prompt. Run:\n  "
+                       f"{restore_command(state_path, override)}")
     if not ini_path.exists():
         return False, f"{ini_path} does not exist; nothing to restore"
-    set_highest_seen(ini_path, target, layout if target is None else None)
-    return True, (f"restored highest_seen_version {current or '<absent>'} -> "
-                  f"{target or '<absent>'}. Restart the Green Curve service (or reboot) "
-                  "before its next update check, or it writes its in-memory value back.")
+    service = service or service_controller()
+    try:
+        steps = _write_with_service_stopped(ini_path, target, layout, service)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return False, f"{change}; the restore did not complete: {exc}"
+    done = (f"restored highest_seen_version {current or '<absent>'} -> {target or '<absent>'}"
+            if current != target else "removed simulation-only configuration scaffolding")
+    if steps:
+        return True, f"{done}; {', '.join(steps)}"
+    return True, f"{done}; {service.name} was not running, so its next start loads it"
+
+
+# ---------------------------------------------------------------------------
+# Elevated restore child
+# ---------------------------------------------------------------------------
+#
+# The machine configuration and the service need an elevated token, and a
+# teardown run from a normal prompt used to stop at printing a command.  It now
+# asks for elevation once (UAC) and runs `teardown --restore-seen-only` as an
+# elevated child.  The child's console is its own, so it reports through a
+# JSON file next to the pre-simulation record.
+
+RESTORE_REPORT_NAME = "teardown-restore-report.json"
+# The child stops and starts the service (each wait bounded at 60 s by the SCM
+# protocol) and waits up to 5 s for the configuration mutex.
+ELEVATED_RESTORE_WAIT_MS = 180000
+
+
+def elevated_restore_args(state_path, report_path, override=None):
+    args = [str(SIMULATE_SCRIPT), "teardown", "--restore-seen-only", "--no-elevate",
+            "--state", str(Path(state_path).resolve()), "--report", str(report_path)]
+    if override is not None:
+        args += ["--seen-version", override]
+    return args
+
+
+class _ShellExecuteInfo(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint32), ("fMask", ctypes.c_ulong),
+                ("hwnd", ctypes.c_void_p), ("lpVerb", ctypes.c_wchar_p),
+                ("lpFile", ctypes.c_wchar_p), ("lpParameters", ctypes.c_wchar_p),
+                ("lpDirectory", ctypes.c_wchar_p), ("nShow", ctypes.c_int),
+                ("hInstApp", ctypes.c_void_p), ("lpIDList", ctypes.c_void_p),
+                ("lpClass", ctypes.c_wchar_p), ("hkeyClass", ctypes.c_void_p),
+                ("dwHotKey", ctypes.c_uint32), ("hIconOrMonitor", ctypes.c_void_p),
+                ("hProcess", ctypes.c_void_p)]
+
+
+def _shell_execute_elevated(executable, args, cwd):
+    """Run `executable args` elevated, wait for it, and return its exit code.
+
+    Raises OSError when elevation is declined or the launch fails, and
+    TimeoutError when the child outlives ELEVATED_RESTORE_WAIT_MS.
+    """
+    if os.name != "nt":
+        raise OSError("elevated relaunch is only implemented on Windows")
+    shell = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    shell.ShellExecuteExW.argtypes = [ctypes.POINTER(_ShellExecuteInfo)]
+    shell.ShellExecuteExW.restype = ctypes.c_int
+    kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel.WaitForSingleObject.restype = ctypes.c_uint32
+    kernel.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    kernel.GetExitCodeProcess.restype = ctypes.c_int
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel.CloseHandle.restype = ctypes.c_int
+    info = _ShellExecuteInfo()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = 0x00000040 | 0x00000100  # SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC
+    info.lpVerb = "runas"
+    info.lpFile = str(executable)
+    info.lpParameters = subprocess.list2cmdline([str(a) for a in args])
+    info.lpDirectory = str(cwd)
+    info.nShow = 7  # SW_SHOWMINNOACTIVE: visible in the taskbar, never steals focus
+    if not shell.ShellExecuteExW(ctypes.byref(info)):
+        error = ctypes.get_last_error()
+        if error == 1223:  # ERROR_CANCELLED
+            raise OSError(error, "elevation was declined")
+        raise ctypes.WinError(error)
+    if not info.hProcess:
+        raise OSError("the elevated child started without a process handle")
+    try:
+        wait = kernel.WaitForSingleObject(info.hProcess, ELEVATED_RESTORE_WAIT_MS)
+        if wait == 258:  # WAIT_TIMEOUT
+            raise TimeoutError(f"the elevated restore was still running after "
+                               f"{ELEVATED_RESTORE_WAIT_MS // 1000} s")
+        if wait != 0:
+            raise ctypes.WinError(ctypes.get_last_error())
+        code = ctypes.c_uint32()
+        if not kernel.GetExitCodeProcess(info.hProcess, ctypes.byref(code)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return code.value
+    finally:
+        kernel.CloseHandle(info.hProcess)
+
+
+def run_elevated_restore(state_path, override=None, launch=None):
+    """Run the restore in an elevated child; returns its (restored, message)."""
+    state_path = Path(state_path)
+    report = state_path.with_name(RESTORE_REPORT_NAME)
+    # An override restore may run with no record (and so no folder) at all.
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.unlink(missing_ok=True)
+    command = restore_command(state_path, override)
+    log(f"requesting elevation (UAC) to restore {SEEN_KEY} with the Green Curve "
+        "service stopped...")
+    try:
+        exit_code = (launch or _shell_execute_elevated)(
+            sys.executable, elevated_restore_args(state_path, report, override), ROOT_DIR)
+    except OSError as exc:
+        return False, (f"the elevated restore did not run ({exc}). "
+                       f"Run from an elevated prompt:\n  {command}")
+    try:
+        result = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        result = None
+    finally:
+        report.unlink(missing_ok=True)
+    if not isinstance(result, dict):
+        return False, (f"the elevated restore exited with code {exit_code} and left no "
+                       f"report. Run from an elevated prompt:\n  {command}")
+    message = f"elevated: {result.get('message', '')}"
+    if exit_code != 0 or result.get("restored") is not True:
+        return False, f"{message}\nRun from an elevated prompt:\n  {command}"
+    return True, message

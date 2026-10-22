@@ -14,7 +14,8 @@ Supported subcommands:
                   manifests with offline key, publish release to test repo, and verify.
   publish-hop2    Build follow-up setup (bumping version) repointed to test repo, sign,
                   publish to test repo as latest, and verify non-regression.
-  teardown        Delete test releases and tags from test repo; restore private visibility.
+  teardown        Delete test releases and tags from test repo; restore private visibility
+                  and the installed client's seen version (service stopped meanwhile).
 
 Invariants enforced:
 - Repointed repository constants AND the trusted update keys are modified ONLY
@@ -26,7 +27,8 @@ Invariants enforced:
 - The baseline client is built from the released stable tag, not from HEAD.
 - Test repository must be public for anonymous WinHTTP fetches; reverted to private on teardown.
 - init records the installed client's [updates] highest_seen_version and teardown
-  restores it (or prints the exact elevated command).
+  restores it with the Green Curve service stopped, asking for elevation once
+  when needed; teardown exits 2 until the restore has happened.
 """
 
 import argparse
@@ -58,6 +60,7 @@ from simulate_release_guards import (  # noqa: E402  (after the sys.path insert)
     record_pre_simulation_state,
     require_simulation_repo,
     restore_highest_seen,
+    run_elevated_restore,
     simulation_pubkey_hex,
 )
 
@@ -512,7 +515,10 @@ def cmd_publish_hop2(args):
     print("1. In your newly updated Green Curve GUI, click 'Check now'.")
     print(f"2. Confirm that the new updater implementation detects '{version}'.")
     print("3. Click 'Install' and confirm the update applies seamlessly.")
-    print("4. Once verified, run teardown to clean up the test repository.")
+    print("4. Once verified, run teardown. It cleans up the test repository and restores")
+    print("   the installed client's seen version (one UAC prompt; the service restarts).")
+    print("   Until it reports 'teardown complete', a real build warns that the update")
+    print("   channel is offering an older release.")
     print("=" * 70 + "\n")
     return 0
 
@@ -542,14 +548,31 @@ def cmd_teardown(args):
             run_command(["gh", "repo", "edit", args.repo, "--visibility", "private", "--accept-visibility-change-consequences"], check=False)
             log("test repository visibility reverted to private")
 
+    # The restore stops the Green Curve service, writes, and starts it again;
+    # from a normal prompt it asks for elevation once and runs as a child.
     state_path = Path(args.state) if args.state else default_state_path()
-    restored, message = restore_highest_seen(state_path, override=args.seen_version)
+    try:
+        restored, message = restore_highest_seen(
+            state_path, override=args.seen_version,
+            elevate=None if args.no_elevate else run_elevated_restore)
+    except (OSError, RuntimeError, ValueError) as exc:
+        restored, message = False, f"the seen-version restore failed: {exc}"
     log(message)
     if restored and args.seen_version is None and state_path.exists():
         state_path.unlink()
         log(f"removed the pre-simulation record {state_path}")
+    if args.report:
+        # An elevated child's console is its own; its parent reads this.
+        Path(args.report).write_text(json.dumps({"restored": restored, "message": message}),
+                                     encoding="utf-8")
 
-    log("teardown complete." if restored else "teardown complete except the seen-version restore.")
+    if restored:
+        log("teardown complete; the installed client's seen version is back to its "
+            "pre-simulation value.")
+    else:
+        log("teardown INCOMPLETE: the installed Green Curve still remembers a simulated "
+            "release and will warn that the update channel offers an older release "
+            "until the seen-version restore above is finished.")
     return 0 if restored else 2
 
 
@@ -610,7 +633,11 @@ def main():
     p_tear.add_argument("--seen-version", default=None,
                         help="Restore highest_seen_version to this value instead of the record ('' removes it)")
     p_tear.add_argument("--restore-seen-only", action="store_true",
-                        help="Only restore highest_seen_version (run elevated); no GitHub calls")
+                        help="Only restore highest_seen_version; no GitHub calls")
+    p_tear.add_argument("--no-elevate", action="store_true",
+                        help="Do not request elevation; print the elevated command instead")
+    p_tear.add_argument("--report", default=None,
+                        help="Internal: where an elevated restore child writes its result")
     p_tear.set_defaults(private=True)
 
     args = parser.parse_args()

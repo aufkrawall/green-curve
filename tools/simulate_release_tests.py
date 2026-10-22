@@ -27,6 +27,39 @@ import simulate_release
 import simulate_release_guards as guards
 import update_signing
 import windows_config_lock
+import windows_service_control as scm
+
+
+class FakeService:
+    """A service that records each call with the seen value it found then."""
+
+    name = "GreenCurveService"
+
+    def __init__(self, ini, state=None, stop_error=None, start_error=None):
+        self.ini = ini
+        self.state = state
+        self.stop_error = stop_error
+        self.start_error = start_error
+        self.calls = []
+
+    def query_state(self):
+        self.calls.append(("query", guards.read_highest_seen(self.ini)))
+        return self.state
+
+    def stop(self):
+        self.calls.append(("stop", guards.read_highest_seen(self.ini)))
+        if self.stop_error:
+            raise self.stop_error
+        self.state = scm.STATE_STOPPED
+
+    def start(self):
+        self.calls.append(("start", guards.read_highest_seen(self.ini)))
+        if self.start_error:
+            raise self.start_error
+        self.state = scm.STATE_RUNNING
+
+    def steps(self):
+        return [name for name, _ in self.calls if name != "query"]
 
 
 class SimulateReleaseTests(unittest.TestCase):
@@ -263,6 +296,10 @@ class HighestSeenRestoreTests(unittest.TestCase):
         self.ini = self.tmp / "shared-profiles.ini"
         self.ini.write_bytes(INI.encode("latin-1"))
         self.state = self.tmp / "state.json"
+        self.service = FakeService(self.ini)
+        service_patch = patch.object(guards, "service_controller", lambda: self.service)
+        service_patch.start()
+        self.addCleanup(service_patch.stop)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -446,7 +483,7 @@ class HighestSeenRestoreTests(unittest.TestCase):
         restored, message = guards.restore_highest_seen(self.state, self.ini, elevated=True)
         self.assertTrue(restored)
         self.assertEqual(guards.read_highest_seen(self.ini), "0.28")
-        self.assertIn("Restart", message)
+        self.assertIn("was not running", message)
         restored, _ = guards.restore_highest_seen(self.state, self.ini, elevated=False)
         self.assertTrue(restored)  # already equal: nothing to do, no elevation needed
 
@@ -469,7 +506,8 @@ class HighestSeenRestoreTests(unittest.TestCase):
         self.state.write_text(json.dumps({"highest_seen_version": "0.28"}), encoding="utf-8")
         args = argparse.Namespace(repo=simulate_release.DEFAULT_TEST_REPO, versions=None,
                                   all_sim=False, private=True, state=str(self.state),
-                                  seen_version=None, restore_seen_only=True)
+                                  seen_version=None, restore_seen_only=True,
+                                  no_elevate=False, report=None)
         with patch.object(simulate_release, "run_command",
                           side_effect=AssertionError("no GitHub call expected")), \
              patch.object(guards, "machine_config_path", return_value=self.ini), \
@@ -477,12 +515,222 @@ class HighestSeenRestoreTests(unittest.TestCase):
             self.assertEqual(simulate_release.cmd_teardown(args), 0)
         self.assertEqual(guards.read_highest_seen(self.ini), "0.28")
         self.assertFalse(self.state.exists())
-        # Unelevated: the record stays and the exit code says it is unfinished.
+        # Unelevated with elevation declined: the record stays and the exit
+        # code says it is unfinished.
         self.state.write_text(json.dumps({"highest_seen_version": "0.27.0"}), encoding="utf-8")
+        declined = []
+
+        def decline(state, override):
+            declined.append(state)
+            return False, "elevation was declined"
+
         with patch.object(guards, "machine_config_path", return_value=self.ini), \
-             patch.object(guards, "is_elevated", return_value=False):
+             patch.object(guards, "is_elevated", return_value=False), \
+             patch.object(simulate_release, "run_elevated_restore", decline):
             self.assertEqual(simulate_release.cmd_teardown(args), 2)
+        self.assertEqual(declined, [self.state])
         self.assertTrue(self.state.exists())
+        self.assertEqual(guards.read_highest_seen(self.ini), "0.28")
+        # --no-elevate never asks; an elevated child reports through --report.
+        report = self.tmp / "report.json"
+        args.no_elevate, args.report = True, str(report)
+        with patch.object(guards, "machine_config_path", return_value=self.ini), \
+             patch.object(guards, "is_elevated", return_value=False), \
+             patch.object(simulate_release, "run_elevated_restore",
+                          side_effect=AssertionError("no elevation expected")):
+            self.assertEqual(simulate_release.cmd_teardown(args), 2)
+        self.assertEqual(json.loads(report.read_text(encoding="utf-8"))["restored"], False)
+        with patch.object(guards, "machine_config_path", return_value=self.ini), \
+             patch.object(guards, "is_elevated", return_value=True):
+            self.assertEqual(simulate_release.cmd_teardown(args), 0)
+        result = json.loads(report.read_text(encoding="utf-8"))
+        self.assertTrue(result["restored"])
+        self.assertIn("0.28 -> 0.27.0", result["message"])
+        self.assertFalse(self.state.exists())
+
+    # --- the restore holds only with the owning service stopped -------------
+
+    def _record(self, value="0.28"):
+        self.state.write_text(json.dumps({"highest_seen_version": value}), encoding="utf-8")
+
+    def test_restore_stops_writes_verifies_and_restarts_a_running_service(self):
+        # The defect: the running service wrote its in-memory simulated mark
+        # back over a file-only restore at its next settings save.
+        self._record()
+        self.service.state = scm.STATE_RUNNING
+        restored, message = guards.restore_highest_seen(self.state, self.ini, elevated=True)
+        self.assertTrue(restored, message)
+        # Stopped while it still held the old value, started after the write.
+        self.assertEqual([c for c in self.service.calls if c[0] != "query"],
+                         [("stop", "0.28.1"), ("start", "0.28")])
+        self.assertIn("stopped GreenCurveService (was running)", message)
+        self.assertIn("started GreenCurveService", message)
+
+    def test_restore_leaves_a_stopped_or_absent_service_alone(self):
+        for state in (None, scm.STATE_STOPPED):
+            with self.subTest(state=state):
+                self.ini.write_bytes(INI.encode("latin-1"))
+                self._record()
+                self.service = FakeService(self.ini, state)
+                restored, message = guards.restore_highest_seen(self.state, self.ini,
+                                                                elevated=True)
+                self.assertTrue(restored, message)
+                self.assertEqual(self.service.steps(), [])
+                self.assertEqual(guards.read_highest_seen(self.ini), "0.28")
+
+    def test_restore_waits_out_a_stopping_service_without_restarting_it(self):
+        self._record()
+        self.service.state = scm.STATE_STOP_PENDING
+        restored, _ = guards.restore_highest_seen(self.state, self.ini, elevated=True)
+        self.assertTrue(restored)
+        self.assertEqual(self.service.steps(), ["stop"])
+
+    def test_restore_never_writes_under_a_service_that_did_not_stop(self):
+        self._record()
+        self.service = FakeService(self.ini, scm.STATE_RUNNING,
+                                   stop_error=RuntimeError("did not reach stopped (stalled)"))
+        restored, message = guards.restore_highest_seen(self.state, self.ini, elevated=True)
+        self.assertFalse(restored)
+        self.assertIn("stalled", message)
+        self.assertEqual(self.service.steps(), ["stop"])
+        self.assertEqual(guards.read_highest_seen(self.ini), "0.28.1")
+
+    def test_failed_write_still_restarts_the_service(self):
+        self._record()
+        self.service.state = scm.STATE_RUNNING
+        with patch.object(guards, "set_highest_seen", side_effect=OSError("disk full")):
+            restored, message = guards.restore_highest_seen(self.state, self.ini,
+                                                            elevated=True)
+        self.assertFalse(restored)
+        self.assertIn("disk full", message)
+        self.assertEqual(self.service.steps(), ["stop", "start"])
+
+    def test_write_that_does_not_read_back_is_a_failure(self):
+        self._record()
+        with patch.object(guards, "set_highest_seen", return_value=True):
+            restored, message = guards.restore_highest_seen(self.state, self.ini,
+                                                            elevated=True)
+        self.assertFalse(restored)
+        self.assertIn("reads back as 0.28.1", message)
+
+    def test_service_that_does_not_start_again_is_reported(self):
+        self._record()
+        self.service = FakeService(self.ini, scm.STATE_RUNNING,
+                                   start_error=OSError("access denied"))
+        restored, message = guards.restore_highest_seen(self.state, self.ini, elevated=True)
+        self.assertFalse(restored)
+        self.assertIn("was restored, but GreenCurveService did not start again", message)
+        self.assertIn("sc start GreenCurveService", message)
+        self.assertEqual(guards.read_highest_seen(self.ini), "0.28")
+
+    def test_unelevated_restore_hands_over_to_the_elevation_hook(self):
+        self._record()
+        asked = []
+
+        def elevate(state, override):
+            asked.append((state, override))
+            return True, "child restored"
+
+        restored, message = guards.restore_highest_seen(
+            self.state, self.ini, override="0.27.0", elevated=False, elevate=elevate)
+        self.assertEqual((restored, message), (True, "child restored"))
+        self.assertEqual(asked, [(self.state, "0.27.0")])
+        self.assertEqual(self.service.calls, [])
+        self.assertEqual(guards.read_highest_seen(self.ini), "0.28.1")
+
+    def test_elevated_child_round_trip(self):
+        launched = []
+
+        def launch(executable, args, cwd):
+            launched.append(args)
+            report = Path(args[args.index("--report") + 1])
+            report.write_text(json.dumps({"restored": True, "message": "restored x"}),
+                              encoding="utf-8")
+            return 0
+
+        restored, message = guards.run_elevated_restore(self.state, "", launch=launch)
+        self.assertTrue(restored)
+        self.assertEqual(message, "elevated: restored x")
+        args = launched[0]
+        self.assertEqual(args[1:4], ["teardown", "--restore-seen-only", "--no-elevate"])
+        self.assertEqual(args[args.index("--state") + 1], str(self.state.resolve()))
+        self.assertEqual(args[args.index("--seen-version") + 1], "")
+        self.assertFalse((self.tmp / guards.RESTORE_REPORT_NAME).exists())
+        # The empty override survives the command line as an empty argument.
+        self.assertIn('--seen-version ""', subprocess.list2cmdline(args))
+
+    def test_elevated_child_failures_print_the_command(self):
+        def declined(executable, args, cwd):
+            raise OSError(1223, "elevation was declined")
+
+        def silent(executable, args, cwd):
+            return 1
+
+        def refused(executable, args, cwd):
+            Path(args[args.index("--report") + 1]).write_text(
+                json.dumps({"restored": False, "message": "stalled"}), encoding="utf-8")
+            return 2
+
+        for launch, expected in ((declined, "declined"), (silent, "left no report"),
+                                 (refused, "stalled")):
+            with self.subTest(expected=expected):
+                restored, message = guards.run_elevated_restore(self.state, launch=launch)
+                self.assertFalse(restored)
+                self.assertIn(expected, message)
+                self.assertIn("--restore-seen-only", message)
+
+
+class ServiceControlTests(unittest.TestCase):
+    """tools/windows_service_control.py: the product's SCM wait protocol."""
+
+    def test_constants_match_the_product(self):
+        header = (ROOT_DIR / "source" / "service_scm_wait_policy.h").read_text(encoding="utf-8")
+        defines = dict(re.findall(r"#define (GC_SCM_\w+) (\d+)u?l{0,2}", header))
+        self.assertEqual(int(defines["GC_SCM_WAIT_NO_HINT_STALL_MS"]), scm.NO_HINT_STALL_MS)
+        self.assertEqual(int(defines["GC_SCM_WAIT_MIN_STALL_MS"]), scm.MIN_STALL_MS)
+        self.assertEqual(int(defines["GC_SCM_WAIT_MAX_TOTAL_MS"]), scm.MAX_TOTAL_MS)
+        self.assertEqual(int(defines["GC_SCM_STATE_STOP_PENDING"]), scm.STATE_STOP_PENDING)
+        self.assertEqual(int(defines["GC_SCM_STATE_RUNNING"]), scm.STATE_RUNNING)
+        common = (ROOT_DIR / "source" / "installer_common.h").read_text(encoding="utf-8")
+        self.assertIn(f'#define GC_SETUP_SERVICE_NAME L"{scm.SERVICE_NAME}"', common)
+
+    def test_wait_verdicts(self):
+        stop, stopped = scm.STATE_STOP_PENDING, scm.STATE_STOPPED
+        tracker = scm.WaitTracker(1000)
+        self.assertEqual(tracker.step(1000, stop, 1, 3000, stopped), scm.WAIT_CONTINUE)
+        # Quiet for exactly the hint is still alive; past it, stalled.
+        self.assertEqual(tracker.step(4000, stop, 1, 3000, stopped), scm.WAIT_CONTINUE)
+        self.assertEqual(tracker.step(4001, stop, 1, 3000, stopped), scm.WAIT_STALLED)
+        # A checkpoint advance is progress.
+        tracker = scm.WaitTracker(0)
+        for now, check in ((0, 1), (2500, 2), (5000, 3)):
+            self.assertEqual(tracker.step(now, stop, check, 3000, stopped), scm.WAIT_CONTINUE)
+        self.assertEqual(tracker.step(5100, stopped, 0, 0, stopped), scm.WAIT_REACHED)
+        # Settling somewhere else ends the wait at once.
+        self.assertEqual(scm.WaitTracker(0).step(10, scm.STATE_RUNNING, 0, 0, stopped),
+                         scm.WAIT_SETTLED_ELSEWHERE)
+        # Progress never extends one wait past the overall bound.
+        tracker = scm.WaitTracker(0)
+        for now in range(0, scm.MAX_TOTAL_MS, 1000):
+            self.assertEqual(tracker.step(now, stop, now, 3000, stopped), scm.WAIT_CONTINUE)
+        self.assertEqual(tracker.step(scm.MAX_TOTAL_MS, stop, 99999, 3000, stopped),
+                         scm.WAIT_OVERALL_TIMEOUT)
+
+    def test_budgets_and_interval(self):
+        self.assertEqual(scm.stall_budget_ms(0), scm.NO_HINT_STALL_MS)
+        self.assertEqual(scm.stall_budget_ms(10), scm.MIN_STALL_MS)
+        self.assertEqual(scm.stall_budget_ms(10 ** 9), scm.MAX_TOTAL_MS)
+        self.assertEqual(scm.poll_interval_ms(0), 250)
+        self.assertEqual(scm.poll_interval_ms(4000), 400)
+        self.assertEqual(scm.poll_interval_ms(60000), 500)
+
+    @unittest.skipUnless(os.name == "nt", "Windows SCM")
+    def test_native_query_is_read_only_and_names_absence(self):
+        self.assertIsNone(scm.WindowsServiceController(
+            f"GreenCurveAbsentFixture{os.getpid()}").query_state())
+        # Always installed on Windows; querying needs no elevation.
+        self.assertIn(scm.WindowsServiceController("EventLog").query_state(),
+                      scm.STATE_NAMES)
 
 
 class WindowsConfigLockTests(unittest.TestCase):
@@ -520,7 +768,7 @@ def run_tests():
     loader = unittest.defaultTestLoader
     suite = unittest.TestSuite()
     for case in (SimulateReleaseTests, SimulationGuardTests, HighestSeenRestoreTests,
-                 WindowsConfigLockTests):
+                 ServiceControlTests, WindowsConfigLockTests):
         suite.addTests(loader.loadTestsFromTestCase(case))
     result = unittest.TextTestRunner(stream=sys.stderr).run(suite)
     # Raised, like the sibling release suites: the release self-test chain
