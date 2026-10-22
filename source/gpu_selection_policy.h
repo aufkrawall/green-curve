@@ -49,6 +49,34 @@ static inline const char* configured_gpu_location_role_name(
     return "invalid";
 }
 
+// Reads the persisted spelling of a role, case-insensitively. Empty text is a
+// record written before the role existed; any other spelling is malformed and
+// returns false rather than silently weakening or strengthening the record.
+static inline bool configured_gpu_location_role_parse(const char* text,
+                                                      GpuLocationRole* roleOut) {
+    if (!text || !roleOut) return false;
+    if (!text[0]) {
+        *roleOut = GPU_LOCATION_ROLE_UNRECORDED;
+        return true;
+    }
+    const GpuLocationRole written[] = {
+        GPU_LOCATION_ROLE_ADVISORY, GPU_LOCATION_ROLE_REQUIRED};
+    for (GpuLocationRole role : written) {
+        const char* name = configured_gpu_location_role_name(role);
+        size_t i = 0;
+        for (; name[i] && text[i]; ++i) {
+            char c = text[i];
+            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+            if (c != name[i]) break;
+        }
+        if (!name[i] && !text[i]) {
+            *roleOut = role;
+            return true;
+        }
+    }
+    return false;
+}
+
 // The role a selection of `target` records: advisory when no other enumerated
 // adapter shares its model identity, required when one does. A target without
 // a PCI location records nothing, because there is no location to weigh.

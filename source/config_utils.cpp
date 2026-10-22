@@ -424,19 +424,7 @@ static bool read_config_location_role_locked(const char* path,
         "selected_pci_location_role", "", text, ARRAY_COUNT(text), path);
     if (length >= ARRAY_COUNT(text) - 1) return false;
     trim_ascii(text);
-    if (!text[0]) {
-        *roleOut = GPU_LOCATION_ROLE_UNRECORDED;
-        return true;
-    }
-    if (_stricmp(text, "advisory") == 0) {
-        *roleOut = GPU_LOCATION_ROLE_ADVISORY;
-        return true;
-    }
-    if (_stricmp(text, "required") == 0) {
-        *roleOut = GPU_LOCATION_ROLE_REQUIRED;
-        return true;
-    }
-    return false;
+    return configured_gpu_location_role_parse(text, roleOut);
 }
 
 bool load_configured_gpu_selection_from_section(const char* path,
