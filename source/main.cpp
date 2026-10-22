@@ -312,7 +312,6 @@ static void service_prepare_controlled_recovery_startup(DWORD argc, LPWSTR* argv
 static void service_arm_validated_controlled_recovery();
 static bool service_discard_validated_controlled_recovery_locked(
     const char* reason);
-static bool service_lifecycle_post_validated_driver_recovery();
 static void service_maybe_launch_recovery_from_main_loop(const char* source);
 static void service_fail_closed_controlled_restart(const char* reason);
 static void mark_service_telemetry_cache_updated(const char* source);

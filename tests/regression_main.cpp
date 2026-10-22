@@ -994,6 +994,10 @@ int run_crash_dump_notice_tests();
 int run_module_version_tests();
 // Handle-bound restart snapshot cleanup (7190-7198, native Windows).
 int run_restart_snapshot_cleanup_tests();
+// A driver update scripted through driver_recovery_flow.h with the real
+// reducer and recovery policies (tests/driver_recovery_sequence_tests.cpp,
+// 7210-7239).
+int run_driver_recovery_sequence_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -1823,6 +1827,10 @@ int main(int argc, char** argv) {
     if (int cleanupFailure = run_restart_snapshot_cleanup_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", cleanupFailure);
         return cleanupFailure;
+    }
+    if (int sequenceFailure = run_driver_recovery_sequence_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", sequenceFailure);
+        return sequenceFailure;
     }
     if (int correctionFailure = run_apply_correction_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", correctionFailure);

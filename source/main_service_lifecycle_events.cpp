@@ -416,51 +416,6 @@ static void service_lifecycle_post_resume(DWORD powerEventType) {
     service_lifecycle_signal();
 }
 
-static bool service_lifecycle_post_validated_driver_recovery() {
-    DWORD lockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
-    ULONGLONG proofAgeMs = 0;
-    if (!service_auto_restore_allowed_after_driver_event(
-            &lockoutReason, &proofAgeMs)) {
-        service_disable_automatic_restore(
-            lockoutReason != SERVICE_AUTO_RESTORE_LOCKOUT_NONE
-                ? lockoutReason
-                : SERVICE_AUTO_RESTORE_LOCKOUT_UNSTABLE_APPLY,
-            "controlled driver recovery did not satisfy the awake-time proof");
-        EnterCriticalSection(&g_appLock);
-        ServiceLifecycleEvent lockout = {};
-        lockout.type = SERVICE_LIFECYCLE_EVENT_LOCKOUT;
-        service_lifecycle_reduce_locked(&lockout);
-        LeaveCriticalSection(&g_appLock);
-        return false;
-    }
-    unsigned int recentRecoveries = service_count_recent_restarts();
-    if (recentRecoveries >= SERVICE_RESTART_LOOP_THRESHOLD) {
-        service_disable_automatic_restore(
-            SERVICE_AUTO_RESTORE_LOCKOUT_TDR_SPAM,
-            "persistent recovery ledger reached the spam threshold");
-        EnterCriticalSection(&g_appLock);
-        ServiceLifecycleEvent lockout = {};
-        lockout.type = SERVICE_LIFECYCLE_EVENT_LOCKOUT;
-        service_lifecycle_reduce_locked(&lockout);
-        LeaveCriticalSection(&g_appLock);
-        return false;
-    }
-
-    bool wake = false;
-    EnterCriticalSection(&g_appLock);
-    ServiceLifecycleEvent event = {};
-    event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_RECOVERY;
-    event.driverProofReady = true;
-    ServiceLifecycleDecision decision = service_lifecycle_reduce_locked(&event);
-    wake = decision.wakeWorker != 0;
-    LeaveCriticalSection(&g_appLock);
-    debug_log("lifecycle driver recovery: validated proofAgeMs=%llu ledger=%u/%u wake=%d\n",
-        (unsigned long long)proofAgeMs, recentRecoveries,
-        (unsigned int)SERVICE_RESTART_LOOP_THRESHOLD, wake ? 1 : 0);
-    if (wake) service_lifecycle_signal();
-    return wake;
-}
-
 static void service_lifecycle_cancel_automatic_work(const char* reason) {
     EnterCriticalSection(&g_appLock);
     ServiceLifecycleEvent event = {};

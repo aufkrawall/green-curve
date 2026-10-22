@@ -215,9 +215,14 @@ def check_auto_apply_failure_notice(ctx, require_text):
     # AUTOMATIC_APPLY_FAILED lockout silently.  Every such site records its
     # cause for the GUI (protocol v29), and the GUI announces the new lockout.
     lifecycle = _read(_p(ctx, "main_service_lifecycle_apply.cpp"))
-    if lifecycle.count("service_lifecycle_latch_write_failure(") != 4:
+    if lifecycle.count("service_lifecycle_latch_write_failure(") != 3:
         _fail("main_service_lifecycle_apply.cpp: each failed automatic write "
-              "(logon, standby, driver recovery) must record its cause")
+              "(logon, standby) must record its cause")
+    # The driver-recovery write runs driver_recovery_flow.h, whose
+    # latch_write_failure step the service binds here.
+    if _read(_p(ctx, "main_service_driver_recovery.cpp")).count(
+            "service_lifecycle_latch_write_failure(SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY,") != 1:
+        _fail("main_service_driver_recovery.cpp: a failed driver-recovery write must record its cause")
     require_text(_p(ctx, "gpu_backend_apply_failure.h"), "GC_APPLY_RECOVERY_VERIFIED_TEXT",
                  "the apply's recovery sentence is the shared constant the service matches")
     require_text(_p(ctx, "main_service_pipe_switch.cpp"), "service_auto_apply_failure_clear();",
@@ -280,6 +285,7 @@ def check_auto_apply_failure_notice(ctx, require_text):
                      f"{name} announces the driver-restart lockouts")
     # A validated recovery that will not run drops its provisional intent, so
     # the published phase cannot stay at REAPPLYING ("GPU reconnecting").
-    require_text(_p(ctx, "main_service_controlled_restart.cpp"),
+    # The refusal path itself is driver_recovery_flow.h (sequence-tested).
+    require_text(_p(ctx, "main_service_driver_recovery.cpp"),
                  "service_drop_provisional_recovery_intent(",
                  "a refused controlled recovery leaves no REAPPLYING state behind")

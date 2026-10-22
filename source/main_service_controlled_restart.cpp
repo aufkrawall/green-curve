@@ -767,34 +767,3 @@ static bool service_discard_validated_controlled_recovery_locked(
         reason && reason[0] ? reason : "explicit supersession");
     return true;
 }
-
-static void service_arm_validated_controlled_recovery() {
-    if (!g_serviceControlledRecoveryValidated) return;
-    lock_service_runtime();
-    g_serviceActiveDesired = g_serviceControlledRecoveryDesired;
-    g_serviceActiveDesiredGpu = g_serviceControlledRecoveryTargetGpu;
-    g_serviceHasActiveDesired = true;
-    InterlockedExchange(&g_serviceReapplyInProgress, 1);
-    // Ownership is published only after the hardware reapply succeeds.
-    g_serviceActiveProfileSource = SERVICE_PROFILE_SOURCE_NONE;
-    g_serviceActiveProfileSlot = 0;
-    unlock_service_runtime();
-    if (!service_lifecycle_post_validated_driver_recovery()) {
-        DWORD lockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
-        if (!service_auto_restore_is_locked_out(&lockoutReason)) {
-            service_disable_automatic_restore(
-                SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,
-                "validated controlled recovery could not be queued");
-        } else {  // locked out already: the intent must not keep publishing REAPPLYING
-            service_drop_provisional_recovery_intent("recovery refused under an existing lockout");
-        }
-        g_serviceControlledRecoveryValidated = false;
-        memset(&g_serviceControlledRecoveryDesired, 0,
-            sizeof(g_serviceControlledRecoveryDesired));
-        memset(&g_serviceControlledRecoveryTargetGpu, 0,
-            sizeof(g_serviceControlledRecoveryTargetGpu));
-        g_serviceControlledRecoveryProfileSource =
-            SERVICE_PROFILE_SOURCE_NONE;
-        g_serviceControlledRecoveryProfileSlot = 0;
-    }
-}

@@ -148,7 +148,7 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
                  "the loader logs the driver version it runs under")
     require_text(_p(ctx, "main_service_persist.cpp"), "; outgoing driver=%s",
                  "a controlled restart logs the driver of the process it replaces")
-    require_text(_p(ctx, "main_service_lifecycle_apply.cpp"), "priorAgeMs=%llu driver=%s detail=%s",
+    require_text(_p(ctx, "main_service_driver_recovery.cpp"), "priorAgeMs=%llu driver=%s detail=%s",
                  "the driver-recovery outcome names the driver it restored under")
     require_text(identity_cpp, "gc_driver_version_label(g_app.nvapiImageVersionMs, g_app.nvapiImageVersionLs)",
                  "recovery log lines name the version the loader recorded")

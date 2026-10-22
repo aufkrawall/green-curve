@@ -347,6 +347,9 @@ static void unlock_all() {
 #include "main_service_lifecycle_events.cpp"
 #include "main_service_dxgi_readiness.cpp"
 #include "main_service_lifecycle_apply.cpp"
+// The driver-recovery flow binding: after the write-failure latch above,
+// before the lifecycle worker that runs it.
+#include "main_service_driver_recovery.cpp"
 // After the selected-GPU epoch and lifecycle shards it uses, before the
 // lifecycle worker that runs it.
 #include "main_service_ownership_handback.cpp"
