@@ -1,5 +1,26 @@
 # Testing
 
+## GPU selection across PCI bus renumbering (2026-10-22)
+
+Source anchors: `tests/gpu_location_role_tests.cpp`,
+`source/gpu_selection_policy.h`, `source/configured_gpu_selection.h`,
+`source/config_utils.cpp`, `tests/regression_main.cpp`, `build.py`,
+`tools/security_gates.py`.
+Fixtures 7300-7316 drive the pure resolver: the reported single-GPU bus move
+with a role-less record (7300; NOT_FOUND on the previous resolver, checked by
+compiling the scenario against the previous headers), a unique model followed
+among different models, identical twins failing closed, an added identical
+card, model/subsystem mismatches, an unreadable live location, duplicate live
+locations, role selection, the move table and role-aware equality. 7317-7319
+bound the diagnostic line. 7320-7329 (native Windows only: Win32 INI storage)
+round-trip the `[gpu]` record: a role-less record resolves after the move, both
+roles parse case-insensitively, an unknown role is malformed, and the
+serializer writes the role only beside a valid location. The native and Linux
+cross-linked harnesses compile the file; the persistence half is `_WIN32` only.
+Not covered automatically: the GUI-side record refresh
+(`maintain_configured_gpu_selection_record()`) and the logon path against a
+real renumbered bus.
+
 ## Stable 0.30.0 update eligibility (2026-10-22)
 
 Source anchors: `tests/update_release_030_tests.cpp`,

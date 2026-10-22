@@ -27,6 +27,24 @@
 
 # Changelog
 
+## Unreleased
+
+Hardware changes elsewhere in the PC no longer cost Green Curve its selected GPU.
+
+### Fixed
+
+- **Selected GPU after hardware changes:** disabling or adding a device such as an on-board network adapter no longer makes Green Curve report the GPU as missing and stop applying your profile.
+
+### Compatibility notes
+
+Existing configuration and profiles remain compatible; with identical GPUs installed, a moved card still has to be selected again.
+
+### Downloads and verification
+
+These changes are in development; no new public release has been published. Current downloads and verification information remain in the latest release section below.
+
+**Full changelog:** [0.30.0...HEAD](https://github.com/aufkrawall/green-curve/compare/0.30.0...HEAD)
+
 ## 0.30.0
 
 Driver-update recovery, diagnostic privacy and local protections improve while existing installations and GPU support remain compatible.

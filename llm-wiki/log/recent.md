@@ -5,6 +5,22 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: A PCI bus renumbering no longer orphans the selected GPU
+
+- Disabling an on-board NIC in the firmware setup moved a single RTX 5070 from
+  bus 07 to bus 06. The `[gpu]` record required an exact bus match, so logon
+  apply stayed pending ("configured GPU identity is not present") and the GUI
+  refused Apply/Save with "missing or ambiguous" on a one-GPU system.
+- The location is now a tiebreaker between identical adapters; a new
+  `selected_pci_location_role` records whether it was one at selection time.
+  Role-less records move only with exactly one adapter present. The GUI
+  refreshes a moved or role-less record after the service snapshot. See
+  config-profiles.md, "The PCI location is a tiebreaker, not the identity".
+- Fixtures 7300-7329 (testing.md); 7300 fails on the previous resolver.
+  Resolution diagnostics now name stored and live locations in one line.
+- Linux has a related but different limitation (stale BDF target, no heal path);
+  recorded as an open question in linux-scaffold.md, not changed here.
+
 ## 2026-10-22: Stable 0.30.0 publication verified
 
 - Published `bba83d97bb4e11da517855f1d9076088cd7a7a35` through CI `39830049166` and release workflow `39832643745`.

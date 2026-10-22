@@ -1533,6 +1533,23 @@ escaped" was true only of the shell layer; read it that way.
 
 ## Open questions / stale-risk
 
+- **The Linux GPU selection treats the PCI location as the identity**
+  (code review, 2026-10-22; not exercised on hardware). `[gpu]` stores
+  `selected_bdf` plus device/subsystem IDs, and `linux_gpu_identity_matches()`
+  requires the exact BDF, so a firmware bus renumbering (the Windows case in
+  config-profiles.md, "The PCI location is a tiebreaker") leaves a stale
+  target. With one adapter, `linux_backend_init()` still sets
+  `writeIdentityResolved` for any target, so boot restore and the fan worker
+  keep working on the new bus, but a client request carrying the stale target
+  is refused by `select_request_gpu()` while an intent is active ("has active
+  Green Curve settings; Reset it before selecting ..."), nothing heals the
+  config (only `--gpu` rewrites it), and the one-adapter shortcut does not
+  compare device IDs, so a swapped-in different model would also receive the
+  stored intent. With two identical boards, an unrelated board that lands on
+  the stale BDF matches it. The Windows location-role rule is the intended
+  model; porting it needs the role in the Linux record, a model check on the
+  one-adapter shortcut, and a heal path.
+
 - **Profile boot apply is hardware-exercised.** On the RTX 5070 (2026-07-28),
   a configured profile startup applied and verified its five phases and the
   immediate post-apply readback still showed the custom VF tail. A separately

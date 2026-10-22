@@ -724,11 +724,66 @@ exercised on a live service with a deliberately squatted folder.
   reordering does not redirect writes. Missing or ambiguous identity fails
   closed and requires explicit reselection. A legacy ordinal-only selection is
   accepted only when exactly one NVIDIA adapter is present.
+
+### The PCI location is a tiebreaker, not the identity (2026-10-22)
+
+Firmware assigns PCI bus numbers at boot. Disabling an on-board NIC in the
+firmware setup moved a single GPU from bus 07 to bus 06; the resolver then
+required an exact bus match, so logon apply, Apply and profile save all failed
+closed with "The configured GPU identity is missing or ambiguous" although the
+same card was the only one present. Adding or removing any upstream device
+(NVMe drive, capture card, bifurcation change) can do the same.
+
+- The model identity (device, subsystem, revision, extended device) must always
+  match. The location only picks between adapters that share it.
+- `selected_pci_location_role` (`advisory` | `required`, written only beside a
+  valid location) records what the location did when the GPU was selected:
+  `advisory` when no other enumerated adapter had the same model, `required`
+  when an identical one did (`configured_gpu_location_role_for_selection()`).
+  The version stays 1: older builds ignore the key and keep the strict rule, and
+  any other spelling is malformed.
+- `resolve_configured_gpu_selection()`: one adapter at the stored location wins;
+  two adapters claiming it are AMBIGUOUS. If the stored location no longer
+  holds the model, the model is followed to its one live adapter when
+  `configured_gpu_location_may_move()` allows it: always for `advisory`, never
+  for `required`, and for a record without a role (`UNRECORDED`, every record
+  written before this change) only while exactly one adapter is present (the
+  legacy-ordinal tolerance). Several adapters of the model and no location
+  match is AMBIGUOUS when moving is allowed, NOT_FOUND otherwise.
+- `maintain_configured_gpu_selection_record()` (GUI only, after each service
+  snapshot whose adapter list differs from the last one checked) rewrites a
+  record that resolved but moved, or has no role, from the adapter it resolved
+  to. That makes the location current again (so an older build reading the
+  file matches too) and records the role. It never rewrites an unresolved
+  record, never runs in the service (the account config is the user's), and
+  skips an adapter whose location is unreadable. It also owns the older
+  single-adapter auto-save of a missing `[gpu]`.
+- Published machine slots carry the role through the same serializer, and the
+  publication readback compares it. The service never rewrites them; a stale
+  shared binding keeps resolving under the same rules.
+- Deliberately preserved: identical cards whose locations all changed fail
+  closed (only a per-board ID such as the NVML UUID could tell them apart), and
+  an identical card that later lands exactly on a stale stored location is
+  indistinguishable from the original, as before. The refresh shortens that
+  window to the first GUI start after the move.
+- Diagnostics: `format_configured_gpu_resolution_detail()` prints one bounded
+  line (stored model@location, role, first four live adapters). It is logged by
+  the in-process enumeration on failure and on a move, by the service logon
+  path once per distinct picture, by the shared-binding resolver, by client
+  validation failures, and by each persist (`location role=`) and refresh.
+- Tests: `tests/gpu_location_role_tests.cpp` (7300-7329); 7300 is the reported
+  case and fails on the previous resolver.
 - Service apply/reset requests carry the selected `GpuAdapterInfo`, so a stale GUI or mismatched service target cannot silently apply to a different active adapter.
 - Published machine slots use the same serialized identity schema under
   `[profileN_gpu]`; one parser/formatter owns both formats.
 
 ## Source of truth
+
+- `source/configured_gpu_selection.h` (`ConfiguredGpuSelection`,
+  `GpuLocationRole`), `source/gpu_selection_policy.h` (resolver, location role,
+  diagnostics line), `source/gpu_selection_config.cpp` (GUI persist, client
+  validation, record refresh), and the `[gpu]` reader/writer in
+  `source/config_utils.cpp`
 
 - `source/config_utils.cpp`: INI primitives, cross-session mutex, atomic
   logon-selection transaction, combo item-data mapping, and service-profile to
