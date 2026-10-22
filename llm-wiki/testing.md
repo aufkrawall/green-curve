@@ -1,5 +1,17 @@
 # Testing
 
+## Stable 0.30.0 update eligibility (2026-10-22)
+
+Source anchors: `tests/update_release_030_tests.cpp`,
+`source/update_manifest_policy.h`, `tests/diagnostics_followup_tests.cpp`,
+`build.py`, `tools/security_gates.py`.
+Fixtures 7290-7295 execute the production parser, decision and filename policy
+for the floorless 0.30.0 release shape. Both Windows architectures offer it to
+every public updater-bearing release, treat 0.30 and 0.30.0 as current, reject
+newer installed versions and preserve the exact three-component asset names.
+The native and Linux cross-linked regression harnesses include the fixture.
+This adds release coverage without changing runtime behavior or diagnostics.
+
 ## GPU-family wire representation (2026-10-22)
 
 Source anchors: `source/gpu_core.h` (`GpuFamily`),

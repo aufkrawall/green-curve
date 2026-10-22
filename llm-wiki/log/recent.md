@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: Stable 0.30.0 preparation and two-hop update verification
+
+- Versioned notes and installation examples use the exact 0.30.0 asset spelling.
+  The release remains floorless and retains existing GPU support and profiles.
+- Fixtures 7290-7295 cover all public updater-bearing installed versions, both
+  Windows architectures, current/newer version decisions and exact asset names;
+  see testing.md, "Stable 0.30.0 update eligibility".
+- An isolated stable 0.29.0 baseline completed two signed update hops. CLI and
+  service-protocol commands exercised download, verification, installation and
+  production settings replay; all 334 captured fields matched after both hops
+  and normal-client restoration. Successful teardown restored the seen version
+  and applied settings, and removed the test publications. Update-dialog button
+  capture was not automated; see updates.md, "Testing a release without publishing one".
+
 ## 2026-10-22: GPU-family wire validation is defined for every input
 
 - Linux CI's response fuzzer stopped in the envelope validator while reading an

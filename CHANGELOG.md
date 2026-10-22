@@ -27,7 +27,7 @@
 
 # Changelog
 
-## 0.30
+## 0.30.0
 
 Driver-update recovery, diagnostic privacy and local protections improve while existing installations and GPU support remain compatible.
 
@@ -66,7 +66,7 @@ Existing installation paths, service-location choices, GPU support and update se
 - **Linux:** install the Arch package, or extract `.tar.xz` and run `greencurve-setup.sh`.
 - **Verification:** packages include SHA-256 files and [GitHub build attestations](https://github.com/aufkrawall/green-curve/attestations); verify with `gh attestation verify <artifact> --repo aufkrawall/green-curve`.
 
-**Full changelog:** [0.29.0...0.30](https://github.com/aufkrawall/green-curve/compare/0.29.0...0.30)
+**Full changelog:** [0.29.0...0.30.0](https://github.com/aufkrawall/green-curve/compare/0.29.0...0.30.0)
 
 ## 0.29.0
 

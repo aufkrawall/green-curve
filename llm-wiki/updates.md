@@ -1304,7 +1304,14 @@ Two things this must get right or it proves nothing:
   `teardown --restore-seen-only` ran from a normal prompt BEFORE the carry-over
   existed: the restore itself worked, and the bare restart returned the GPU to
   stock and dropped the applied profile, which is how the gap was found. The
-  carry-over has not run live yet.
+  carry-over was subsequently verified live on 2026-10-22: the isolated stable
+  0.29.0 baseline completed two signed update hops through CLI/service-protocol
+  commands, with all 334 captured settings and profile-identity fields unchanged.
+  The export CLI prepared the version-bound handoff; production replay consumed
+  it after each install. Teardown returned success, restored the original seen
+  version and re-applied the same settings after the service restart. This
+  verifies the updater and replay paths; update-dialog button capture was not
+  automated.
 
 Everything else is repo-independent and therefore faithful: asset names carry
 the version and arch but not the repo, and the host allowlist is unchanged
