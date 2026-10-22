@@ -59,19 +59,39 @@ static inline const char* gc_log_identifier_token(
     return out;
 }
 
-// UTF-16 identifiers (the Windows Task Scheduler task name is
-// "Green Curve Startup - <DOMAIN_account>", which is identity-bearing).  Hashes
-// the code units directly rather than converting, so this stays pure and the
-// regression harness can pin it on a Linux host with no Win32 API.
+// Wide identifiers and paths (the Windows Task Scheduler task name is
+// "Green Curve Startup - <DOMAIN_account>", which is identity-bearing), hashed
+// as their UTF-8 encoding: the same text then gets the same token whether it
+// was logged wide, narrow, or caught by the line redaction
+// (log_path_redaction.h), so one log can correlate them.  Hashing the raw
+// code units gave every wide spelling a token of its own.  Encoded here rather
+// than through WideCharToMultiByte so this stays pure and the harness can pin
+// it on a Linux host (32-bit wchar_t); a lone surrogate hashes as U+FFFD, as
+// the Win32 conversion produces.
 static inline unsigned long long gc_log_fingerprint_wide(const wchar_t* value) {
     unsigned long long hash = 1469598103934665603ULL;
-    if (value) {
-        while (*value) {
-            unsigned long long unit = (unsigned long long)(unsigned int)*value++;
-            for (unsigned int shift = 0; shift < 32; shift += 8) {
-                hash ^= static_cast<unsigned char>((unit >> shift) & 0xffU);
-                hash *= 1099511628211ULL;
-            }
+    auto mix = [&hash](unsigned long byte) {
+        hash ^= static_cast<unsigned char>(byte & 0xffU);
+        hash *= 1099511628211ULL;
+    };
+    while (value && *value) {
+        unsigned long cp = (unsigned long)(unsigned int)*value++;
+        const unsigned long next = (unsigned long)(unsigned int)*value;
+        if (cp >= 0xD800 && cp <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF) {
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (next - 0xDC00);
+            ++value;
+        } else if ((cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF) {
+            cp = 0xFFFD;
+        }
+        if (cp < 0x80) {
+            mix(cp);
+        } else if (cp < 0x800) {
+            mix(0xC0 | (cp >> 6)); mix(0x80 | (cp & 0x3F));
+        } else if (cp < 0x10000) {
+            mix(0xE0 | (cp >> 12)); mix(0x80 | ((cp >> 6) & 0x3F)); mix(0x80 | (cp & 0x3F));
+        } else {
+            mix(0xF0 | (cp >> 18)); mix(0x80 | ((cp >> 12) & 0x3F));
+            mix(0x80 | ((cp >> 6) & 0x3F)); mix(0x80 | (cp & 0x3F));
         }
     }
     return hash;

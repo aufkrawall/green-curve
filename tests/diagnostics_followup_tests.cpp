@@ -71,6 +71,32 @@ int run_log_path_redaction_tests() {
     const char* id = gc_log_identifier(L"sample account");
     if (a == b || b == id || !strstr(a, "[path #") || !strstr(b, "[path #") ||
         !strstr(id, "[id #") || !strcmp(a, b)) return 7046;
+
+    // 7049: command switches are not paths.  "/delete" used to start a "Unix
+    // path" that swallowed the rest of the line, exit code included.
+    for (const char* kept : {"schtasks /delete exit=1 error=5", "schtasks /query /tn task exit=0",
+                             "setup /S /D=target"}) {
+        char out[128] = {};
+        gc_log_redact_paths(kept, out, sizeof(out));
+        if (strcmp(out, kept)) return 7049;
+    }
+    char unixPath[128] = {};
+    gc_log_redact_paths("open /home/testuser/settings.ini exit=1", unixPath, sizeof(unixPath));
+    if (strstr(unixPath, "testuser") || !strstr(unixPath, "open [path #")) return 7049;
+
+    // 7048: one text, one token: narrow, wide, and the line redaction agree,
+    // also beyond ASCII (U+00E9, and U+1F600 as a UTF-16 surrogate pair).
+    char quoted[128] = {};
+    gc_log_redact_paths("open 'X:\\first' (error 5)", quoted, sizeof(quoted));
+    const char* narrow = gc_log_path("X:\\first");
+    if (strcmp(narrow, gc_log_path(L"X:\\first")) || !strstr(quoted, narrow) ||
+        strcmp(gc_log_path("X:\\\xC3\xA9\\\xF0\x9F\x98\x80"), gc_log_path(L"X:\\\u00E9\\\U0001F600"))) return 7048;
+    char narrowId[32] = {}, wideId[32] = {};
+    if (strcmp(gc_log_identifier_token("HOST_sample", narrowId, sizeof(narrowId)),
+               gc_log_wide_identifier_token(L"HOST_sample", wideId, sizeof(wideId)))) return 7048;
+    // A lone surrogate hashes as U+FFFD, as the Win32 conversion produces.
+    const wchar_t lone[] = { L'x', (wchar_t)0xD800, L'y', 0 };
+    if (strcmp(gc_log_path(lone), gc_log_path("x\xEF\xBF\xBDy"))) return 7048;
     return 0;
 }
 

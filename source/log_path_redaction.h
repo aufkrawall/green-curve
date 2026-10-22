@@ -18,8 +18,14 @@ static inline bool gc_log_path_start(const char* text, size_t at) {
     if (p[0] == '\\' && p[1] == '\\') return true;
     if (p[0] == '.' && (p[1] == '\\' || p[1] == '/')) return true;
     if (p[0] != '/' || !p[1] || p[1] == '/' || p[1] == ' ' || p[1] == '\n') return false;
-    // Preserve single-letter Windows command switches in recorded help text.
-    return !(p[1] >= 'A' && p[1] <= 'Z' && (gc_log_path_boundary(p[2]) || p[2] == 0));
+    // A Unix path names a folder AND an entry in it ("/home/<name>", "/tmp/x"):
+    // its first component is followed by another '/'.  A lone "/word" is a
+    // command switch ("schtasks /delete", "/tn", "/S"); taking it for a path
+    // tokenized the rest of the line, exit codes included.
+    for (size_t i = 1; p[i] && !gc_log_path_boundary(p[i]) && p[i] != '\r' && p[i] != '\n'; ++i) {
+        if (p[i] == '/') return true;
+    }
+    return false;
 }
 
 // Paths in formatted error messages are not always quoted. Conservatively
