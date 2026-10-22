@@ -93,6 +93,10 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
     # evidence of a failed apply, not "nothing to restore".
     require_text(recovery_cpp, "corroboratedDriverFailure, snapshot, liveIntent, ownedState);",
                  "the poisoned-runtime plan weighs GPU state this process owns")
+    # The helper may wait while a newer generation runs; its cleanup removes
+    # only files still bound to its own nonce.
+    require_text_count(restart_cpp, "service_clear_controlled_recovery_files_if_owned(nonceHex);", 4,
+                       "every recovery-helper failure path clears only its own generation's files")
 
     # A driver update stops/starts the selected GPU without removing it; the
     # exact-device arrival decides through the shared, tested policy.

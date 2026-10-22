@@ -241,7 +241,7 @@ static int service_run_controlled_restart_helper(DWORD parentProcessId,
     if (!valid) {
         debug_log("controlled recovery helper: initial nonce/parent validation failed for pid=%lu\n",
             (unsigned long)parentProcessId);
-        service_clear_controlled_recovery_files();
+        service_clear_controlled_recovery_files_if_owned(nonceHex);
         SecureZeroMemory(&authorization, sizeof(authorization));
         return 2;
     }
@@ -250,7 +250,7 @@ static int service_run_controlled_restart_helper(DWORD parentProcessId,
     if (!SetEvent(readyEvent)) {
         debug_log("controlled recovery helper: parent handshake signal failed (error=%lu)\n",
             GetLastError());
-        service_clear_controlled_recovery_files();
+        service_clear_controlled_recovery_files_if_owned(nonceHex);
         SecureZeroMemory(&authorization, sizeof(authorization));
         return 3;
     }
@@ -270,7 +270,7 @@ static int service_run_controlled_restart_helper(DWORD parentProcessId,
             GetLastError());
         CloseHandle(parentProcess);
         parentProcess = nullptr;
-        service_clear_controlled_recovery_files();
+        service_clear_controlled_recovery_files_if_owned(nonceHex);
         SecureZeroMemory(&authorization, sizeof(authorization));
         return 4;
     }
@@ -299,7 +299,7 @@ static int service_run_controlled_restart_helper(DWORD parentProcessId,
     SecureZeroMemory(&authorization, sizeof(authorization));
     if (!valid) {
         debug_log("controlled recovery helper: restart handoff failed closed; clearing continuation state\n");
-        service_clear_controlled_recovery_files();
+        service_clear_controlled_recovery_files_if_owned(nonceHex);
         return 5;
     }
     debug_log("controlled recovery helper: SCM accepted nonce-bound restart\n");

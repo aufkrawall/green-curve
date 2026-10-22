@@ -99,6 +99,53 @@ static ServicePoisonedRuntimeExit service_poisoned_runtime_plan_or_exit(
     return plan;
 }
 
+// The recovery helper's fail-closed cleanup.  It may only remove the
+// continuation files of ITS generation: while it waits (up to the
+// authorization's lifetime) a start that does not yield may already run, and
+// every such start removes the authorization at once and later writes its own
+// snapshot after its first apply.  So the files are the helper's exactly while
+// the authorization still names its nonce.  The authorization stays open
+// without delete sharing from that check to its own handle-bound delete, so it
+// cannot be replaced in between.
+static void service_clear_controlled_recovery_files_if_owned(const char* nonceHex) {
+    char path[MAX_PATH] = {};
+    BYTE nonce[SERVICE_CONTROLLED_RECOVERY_NONCE_BYTES] = {};
+    if (!service_controlled_recovery_authorization_path(path, sizeof(path)) ||
+        !service_parse_controlled_recovery_nonce(nonceHex, nonce)) {
+        debug_log("controlled recovery helper: cleanup skipped (no authorization path or nonce)\n");
+        return;
+    }
+    HANDLE file = gc_CreateFileUtf8(path, GENERIC_READ | DELETE, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        debug_log("controlled recovery helper: no authorization to clear (error=%lu); continuation files left alone\n",
+            GetLastError());
+        SecureZeroMemory(nonce, sizeof(nonce));
+        return;
+    }
+    ServiceControlledRecoveryAuthorization authorization = {};
+    DWORD read = 0;
+    const bool owned = ReadFile(file, &authorization, sizeof(authorization), &read, nullptr) &&
+        read == sizeof(authorization) && authorization.magic == SERVICE_CONTROLLED_RECOVERY_MAGIC &&
+        service_controlled_recovery_nonce_equal(nonce, authorization.nonce);
+    bool deleted = false;
+    if (owned) {
+        service_clear_restart_reapply_snapshot();
+        FILE_DISPOSITION_INFO disposition = {};
+        disposition.DeleteFile = TRUE;
+        deleted = SetFileInformationByHandle(file, FileDispositionInfo, &disposition,
+            sizeof(disposition)) != FALSE;
+    }
+    const DWORD error = owned && !deleted ? GetLastError() : ERROR_SUCCESS;
+    CloseHandle(file);
+    SecureZeroMemory(&authorization, sizeof(authorization));
+    SecureZeroMemory(nonce, sizeof(nonce));
+    debug_log("controlled recovery helper: %s (authorizationDeleted=%d error=%lu)\n",
+        owned ? "cleared its own continuation files"
+              : "authorization belongs to another generation; continuation files left alone",
+        deleted ? 1 : 0, (unsigned long)error);
+}
+
 // A validated controlled recovery that will not run must not leave its
 // provisional intent behind: g_serviceReapplyInProgress keeps the published GPU
 // phase at REAPPLYING ("GPU reconnecting") until something clears it, and
