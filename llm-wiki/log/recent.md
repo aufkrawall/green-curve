@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-23: An unresolved Linux config.ini GPU stops client writes
+
+- Review of the post-0.30.0 commits found that a config.ini selection that
+  failed to resolve was still sent stale (CLI) or adopted as the TUI target.
+  The daemon resolves requests without the role, so a `required` twin record
+  whose card was removed could reach the remaining identical card; dropping
+  the target instead would hit the untargeted lone-adapter rule.
+- Client writes (CLI Apply/Reset/startup bind, TUI Apply/Reset/bind) now stop
+  unless the selection resolved or was chosen explicitly; reads go
+  untargeted. See linux-scaffold.md, "GPU selection across PCI bus
+  renumbering".
+- Fixtures 7371-7379 (testing.md); `check_gpu_location()` guards extended.
+  Left as is: a malformed `[gpu]` record (bad BDF or role spelling) is still
+  ignored, so it writes untargeted like no record; Windows blocks it instead.
+
 ## 2026-10-22: Linux follows a renumbered GPU too
 
 - Windows fix verified on the reporting system after updating: the service

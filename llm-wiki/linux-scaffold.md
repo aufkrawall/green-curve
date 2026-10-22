@@ -696,21 +696,45 @@ boot recovery rebind) keep the exact `linux_gpu_identity_matches()`.
 - Client (`linux_gpu_target_config.cpp`): config.ini `[gpu]` gains
   `selected_pci_location_role` (same spellings and parser,
   `configured_gpu_location_role_parse()`, as Windows; an unknown spelling
-  makes the whole selection ignored). Before the first daemon request that
-  names config.ini's GPU (`clientTarget()` in `linux_main.cpp`: dump-live,
-  startup-policy bind, apply, reset, TUI), the client resolves it against an
-  untargeted snapshot with the recorded role, rewrites a moved or role-less
-  record (never as root: an unasked rewrite could hand the file to root), and
-  sends the live adapter. `--gpu` records the role
+  makes the whole selection ignored). The client holds the selection as a
+  `LinuxConfiguredGpu` (`linux_gpu_selection.h`: record, role, status).
+  Before the first CLI request that names it (`linux_gpu_target_for_read()` /
+  `linux_gpu_target_for_write()` in `linux_main.cpp`: dump-live, startup-policy
+  bind, apply, reset) the client resolves it against an untargeted snapshot
+  with the recorded role, rewrites a moved or role-less record (never as
+  root: an unasked rewrite could hand the file to root), and sends the live
+  adapter. `--gpu` records the role
   (`linux_gpu_location_role_for_selection()`). The in-process `--self-test`
   keeps the raw stored target and the init rule.
+- **An unresolved selection stops every client write** (2026-10-23,
+  `linux_configured_gpu_request_target()`). Invariant: config.ini's GPU
+  reaches the daemon only as the live adapter it resolved to. The daemon
+  resolves request targets without the role (`UNRECORDED` follows a moved
+  model to the one adapter left) and an untargeted write reaches a lone
+  adapter, so sending the stale record, or dropping it, let a `required`
+  record whose card was removed write the remaining identical card. Not
+  present, ambiguous, or unchecked (snapshot failed, no adapters) now ends
+  Apply/Reset/bind with "Not sent to the daemon: ..." and exit 1; a read goes
+  untargeted (the daemon's current GPU) with a stderr warning. Same rule as
+  Windows `validate_configured_gpu_selection_for_client()`. Not present and
+  ambiguous are final for the process; only an explicit selection replaces
+  them.
+- TUI: `linux_run_tui()` takes the loaded `LinuxConfiguredGpu`, and
+  `tui_adopt_configured_gpu()` resolves it at the end of every answered
+  refresh until it resolves (at start, or on the reconnect after a start
+  without the daemon; the stored record is no longer adopted as `targetGpu`).
+  While unresolved, Apply, Reset and a startup-profile bind are blocked
+  (`tui_configured_gpu_allows_write()`); clicking the GPU name selects one
+  explicitly for the session and lifts the block. The TUI selection is not
+  persisted (`--gpu` is).
 - Diagnostics: `linux_format_stored_gpu_detail()` (stored model@BDF, role,
   first four live adapters) in the backend's "stored GPU target ..." line, the
   client's "gpu selection:" lines and the persist line; the daemon logs a moved
   request target on the first occurrence and every 100th after.
-- Tests: `tests/linux_gpu_location_tests.cpp` (7340-7370, pure; run natively
+- Tests: `tests/linux_gpu_location_tests.cpp` (7340-7379, pure; run natively
   and in the Linux cross-link). Guards: `check_gpu_location()` in
-  `tools/linux_gates.py`.
+  `tools/linux_gates.py` (no `clientTarget()`, every CLI verb through the
+  write gate, TUI writes gated, the TUI never adopts the stored record).
 
 ## Automatic restore: crash-loop guard, resume, and reset-before-apply
 
@@ -1592,7 +1616,19 @@ escaped" was true only of the shell layer; read it that way.
   lands exactly on a stale stored BDF matches it. Only a per-board ID (the NVML
   UUID) could close this; the client refresh and the daemon's re-commits keep
   the window to the first run after the move. Also unexercised on hardware:
-  the renumbering itself on Linux (fixtures 7340-7370 only).
+  the renumbering itself on Linux (fixtures 7340-7379 only), and the TUI
+  write block (source-guarded; no harness drives the TUI state machine).
+- **The daemon cannot enforce a `required` role** (design limit). Requests
+  carry no role, so the daemon resolves every stored request target as
+  `UNRECORDED`; the guarantee rests on the client sending only live adapters.
+  A client binary from before this rule that speaks the same protocol
+  version would still send the stale record. Carrying the role would need a
+  shared protocol field.
+- **A malformed `[gpu]` record is ignored, not blocking** (open question). An
+  unparsable BDF or role spelling loads as no record, so writes go untargeted
+  (the daemon's lone-adapter rule); Windows blocks writes on an incoherent
+  record. Blocking would also catch records some older builds may have
+  written without a location, which is unverified.
 
 - **Profile boot apply is hardware-exercised.** On the RTX 5070 (2026-07-28),
   a configured profile startup applied and verified its five phases and the

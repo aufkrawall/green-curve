@@ -15,10 +15,21 @@ init write decision (7357: a different model on a one-GPU system no longer
 receives the stored intent, which the old `adapterCount == 1` shortcut
 allowed). 7361-7362 model the daemon's resolve-then-compare request check.
 7363-7367 cover role selection and the shared role parser; 7368-7370 bound the
-diagnostic line. The old 614-618 assertions now run against the new resolver
-with the `required` role. Not covered automatically: config.ini persistence
-of the role (no harness links `linux_port_profiles.cpp`; source-guarded) and
-any run on real renumbered hardware.
+diagnostic line. 7371-7379 (2026-10-23) drive the client's `LinuxConfiguredGpu`
+gate: a `required` twin record whose card was removed is NOT_PRESENT (7371),
+the daemon's role-less resolver and the untargeted lone-adapter init would
+both reach the remaining card (7372, the reason for the gate), and every
+unresolved status stops a write while a read goes untargeted (7373); resolved
+and explicit selections send the live adapter (7374-7375), an unvalidated
+record resolves once adapters arrive (7376), not present is final (7377),
+twins without the stored location are ambiguous (7378), and every status has
+a log name and reason (7379). The old 614-618 assertions now run against the
+new resolver with the `required` role. Not covered automatically: config.ini
+persistence of the role (no harness links `linux_port_profiles.cpp`;
+source-guarded), the snapshot-fetching client wrapper and the TUI adoption
+(`linux_gpu_target_config.cpp`, `linux_tui_refresh.cpp`; source-guarded, the
+wrapper checked once with a mocked daemon on 2026-10-23), and any run on real
+renumbered hardware.
 
 ## GPU selection across PCI bus renumbering (2026-10-22)
 
