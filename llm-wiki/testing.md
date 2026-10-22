@@ -309,7 +309,12 @@ all-or-nothing format, first start / unchanged / changed / unreadable; see
 (7210-7229: a driver update scripted through `driver_recovery_flow.h` with a
 simulated service and the real reducer and recovery policies -- one write,
 ordering, every refusal with zero writes; mutation-checked; see
-[auto-restore-policy](auto-restore-policy.md)); `service_install_tests.cpp` owns
+[auto-restore-policy](auto-restore-policy.md)), `tests/peer_stall_tests.cpp`
+(7240-7257: Linux serve-loop stall rationing -- hold arithmetic,
+`service_ipc_hold()` table rules, and a simulated peer stalling every
+connection, ~100% of the loop on the bucket alone versus at most a third with
+the hold; mutation-checked; see [linux-scaffold](linux-scaffold.md));
+`service_install_tests.cpp` owns
 assertions 5720-5786: SCM checkpoint-wait policy, the location content rule,
 the exact-DACL predicate, handle-bound hardening with propagation to existing
 files, the release-to-inherited contract, and the native location verdicts;
