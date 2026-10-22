@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: Snapshot retirement binds to the authorized file object
+
+- Recovery cleanup proves the snapshot's volume/file identity, content, length
+  and timestamp independently of its nonce-bound authorization. Verification and
+  deletion share one handle; delete sharing permits replacement by a newer
+  service generation. Transient authorization format v4 carries file identity;
+  saved profile and snapshot payload formats are unchanged.
+- Native production-helper fixtures 7190-7195 cover replacement before and after
+  snapshot open, including identical bytes and timestamps, input bounds and
+  observable deletion failure. Helper diagnostics report snapshot retirement
+  separately from authorization retirement. The full UBSan regression run passes;
+  omitting file identity fails fixture 7191. Live SCM orchestration is unverified.
+
 ## 2026-10-22 (later): CI 7087 fix and review follow-ups for 0ac74a7..31b78d4
 
 - CI run 39685286761 (Windows, UBSan step) stopped at 7087: the shell-link

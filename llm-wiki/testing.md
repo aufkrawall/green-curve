@@ -1,5 +1,20 @@
 # Testing
 
+## Restart snapshot retirement (2026-10-22)
+
+Source anchors: `tests/restart_snapshot_cleanup_tests.cpp`,
+`source/restart_snapshot_file_win32.h`, `source/main_service_recovery.cpp`,
+`source/main_service_persist.cpp`, `tools/crash_artifacts.py`.
+Native Windows fixtures 7190-7195 execute the production handle fingerprint and
+cleanup helpers. They cover a matching snapshot, each changed identity field,
+an authorization pinned while ordinary startup's read/delete fails, replacement
+before snapshot open with identical bytes and timestamp, replacement while the
+old snapshot remains open, invalid/empty/oversized input, and deletion failure.
+All interleavings use explicit file operations without sleeps. A standalone
+`GC_RESTART_SNAPSHOT_FIXTURE_MAIN` build runs the same fixture. The regular and
+ASan harnesses include it; non-Windows hosts compile a no-op native entry point.
+These tests establish file ownership and retirement, not live SCM recovery.
+
 ## Scalar measurement retention and curve rebuild identity (2026-10-17)
 
 Source anchors: `tests/scalar_shift_retention_tests.cpp`,

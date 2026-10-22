@@ -97,6 +97,19 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
     # only files still bound to its own nonce.
     require_text_count(restart_cpp, "service_clear_controlled_recovery_files_if_owned(nonceHex);", 4,
                        "every recovery-helper failure path clears only its own generation's files")
+    require_text(recovery_cpp, "gc_restart_snapshot_cleanup(snapshot,",
+                 "helper cleanup verifies and deletes the pinned snapshot object")
+    require_text(recovery_cpp, "FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,",
+                 "snapshot cleanup permits a newer generation to replace the pathname")
+    ctx.forbid_text_in_operation(recovery_cpp,
+        "static void service_clear_controlled_recovery_files_if_owned(",
+        "service_clear_restart_reapply_snapshot();",
+        "helper cleanup never unconditionally deletes a snapshot by pathname")
+    snapshot_file_h = _p(ctx, "restart_snapshot_file_win32.h")
+    require_text(snapshot_file_h, "gc_restart_snapshot_identity_equal(actual, expected)",
+                 "retirement requires the authorized snapshot's identity and content")
+    require_text(snapshot_file_h, "SetFileInformationByHandle(file, FileDispositionInfo,",
+                 "snapshot verification and deletion name the same open object")
 
     # A driver update stops/starts the selected GPU without removing it; the
     # exact-device arrival decides through the shared, tested policy.

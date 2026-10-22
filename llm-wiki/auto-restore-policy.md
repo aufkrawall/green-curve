@@ -418,16 +418,22 @@ This uses a nonce-bound controlled-restart protocol, not a reusable marker:
    same-boot helper-validated authorization, the old process gone and the
    helper alive; it touches no hardware, leaves the authorization alone and
    stops with ERROR_RETRY so the next failure action stays the fallback if the
-   helper dies. Waiting through any other generation is harmless: an ordinary
-   start that does not yield deletes the authorization while starting. The
-   helper's fail-closed cleanup is therefore bound to its own nonce
-   (`service_clear_controlled_recovery_files_if_owned`, 2026-10-22): it
-   removes the authorization and snapshot only while the authorization still
-   names its nonce (checked and deleted through one handle held without delete
-   sharing); otherwise a newer generation owns them, and the old unconditional
-   clear used to delete that generation's snapshot after its first apply.
-   Source-gated only (no executable SCM fixture). Log line:
-   `controlled recovery helper: cleared its own continuation files|authorization belongs to another generation; ...`. Log
+   helper dies. A start that does not yield attempts to clear the authorization;
+   it may continue if another handle prevents that deletion. The helper therefore
+   proves ownership of each continuation file separately
+   (`service_clear_controlled_recovery_files_if_owned`, 2026-10-22): its nonce
+   authorizes deleting only its pinned authorization. Snapshot retirement also
+   requires the recorded volume/file identity, content fingerprint, length and
+   last-write time, all read and deleted through the same snapshot handle
+   (`restart_snapshot_file_win32.h`). Delete sharing permits a newer generation
+   to replace the pathname while the helper holds the old object. Even identical
+   bytes and timestamps do not transfer retirement authority to a replacement.
+   Authorization format v4 carries this file identity; older transient
+   authorizations are rejected, without changing saved profile formats.
+   Native fixtures 7190-7195 cover both publication orders, matching content and
+   timestamps, invalid input and deletion failure; SCM orchestration remains
+   source-gated. The one-line helper diagnostic includes `snapshotCleanup=` and
+   `snapshotError=` alongside the authorization result. Log
    line: `controlled recovery: failure-action start (reason=) pending=
    previousGone= helperAlive= -> ...`. The helper then revalidates the
    protected authorization and makes exactly one `StartServiceW` call with

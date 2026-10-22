@@ -991,6 +991,8 @@ int run_veh_driver_fault_child(int argc, char** argv, bool* isChild);
 int run_crash_dump_notice_tests();
 // Mapped-image driver version (tests/module_version_tests.cpp, 7180-7189).
 int run_module_version_tests();
+// Handle-bound restart snapshot cleanup (7190-7198, native Windows).
+int run_restart_snapshot_cleanup_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -1816,6 +1818,10 @@ int main(int argc, char** argv) {
     if (int moduleVersionFailure = run_module_version_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", moduleVersionFailure);
         return moduleVersionFailure;
+    }
+    if (int cleanupFailure = run_restart_snapshot_cleanup_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", cleanupFailure);
+        return cleanupFailure;
     }
     if (int correctionFailure = run_apply_correction_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", correctionFailure);

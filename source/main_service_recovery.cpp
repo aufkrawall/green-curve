@@ -100,13 +100,11 @@ static ServicePoisonedRuntimeExit service_poisoned_runtime_plan_or_exit(
 }
 
 // The recovery helper's fail-closed cleanup.  It may only remove the
-// continuation files of ITS generation: while it waits (up to the
-// authorization's lifetime) a start that does not yield may already run, and
-// every such start removes the authorization at once and later writes its own
-// snapshot after its first apply.  So the files are the helper's exactly while
-// the authorization still names its nonce.  The authorization stays open
-// without delete sharing from that check to its own handle-bound delete, so it
-// cannot be replaced in between.
+// continuation files of ITS generation. The authorization is nonce-bound and
+// pinned without delete sharing. The snapshot is independently fingerprinted
+// and deleted through its own handle: startup can proceed even if clearing the
+// authorization failed, so its pathname alone never proves ownership. Snapshot
+// delete sharing lets a newer generation replace it without waiting for us.
 static void service_clear_controlled_recovery_files_if_owned(const char* nonceHex) {
     char path[MAX_PATH] = {};
     BYTE nonce[SERVICE_CONTROLLED_RECOVERY_NONCE_BYTES] = {};
@@ -127,10 +125,31 @@ static void service_clear_controlled_recovery_files_if_owned(const char* nonceHe
     DWORD read = 0;
     const bool owned = ReadFile(file, &authorization, sizeof(authorization), &read, nullptr) &&
         read == sizeof(authorization) && authorization.magic == SERVICE_CONTROLLED_RECOVERY_MAGIC &&
+        authorization.version == SERVICE_CONTROLLED_RECOVERY_VERSION &&
+        authorization.size == sizeof(authorization) &&
         service_controlled_recovery_nonce_equal(nonce, authorization.nonce);
     bool deleted = false;
+    GcRestartSnapshotCleanup snapshotCleanup = GC_RESTART_SNAPSHOT_PRESERVED;
+    DWORD snapshotError = ERROR_SUCCESS;
     if (owned) {
-        service_clear_restart_reapply_snapshot();
+        char snapshotPath[MAX_PATH] = {};
+        if (service_active_desired_persist_path(snapshotPath, sizeof(snapshotPath))) {
+            HANDLE snapshot = gc_CreateFileUtf8(snapshotPath, GENERIC_READ | DELETE,
+                FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+            if (snapshot != INVALID_HANDLE_VALUE) {
+                snapshotCleanup = gc_restart_snapshot_cleanup(snapshot,
+                    authorization.snapshot, &snapshotError);
+                CloseHandle(snapshot);
+            } else {
+                snapshotError = GetLastError();
+                if (snapshotError != ERROR_FILE_NOT_FOUND && snapshotError != ERROR_PATH_NOT_FOUND)
+                    snapshotCleanup = GC_RESTART_SNAPSHOT_CLEANUP_FAILED;
+            }
+        } else {
+            snapshotCleanup = GC_RESTART_SNAPSHOT_CLEANUP_FAILED;
+            snapshotError = ERROR_PATH_NOT_FOUND;
+        }
         FILE_DISPOSITION_INFO disposition = {};
         disposition.DeleteFile = TRUE;
         deleted = SetFileInformationByHandle(file, FileDispositionInfo, &disposition,
@@ -140,10 +159,10 @@ static void service_clear_controlled_recovery_files_if_owned(const char* nonceHe
     CloseHandle(file);
     SecureZeroMemory(&authorization, sizeof(authorization));
     SecureZeroMemory(nonce, sizeof(nonce));
-    debug_log("controlled recovery helper: %s (authorizationDeleted=%d error=%lu)\n",
+    debug_log("controlled recovery helper: %s (authorizationDeleted=%d error=%lu snapshotCleanup=%d snapshotError=%lu)\n",
         owned ? "cleared its own continuation files"
               : "authorization belongs to another generation; continuation files left alone",
-        deleted ? 1 : 0, (unsigned long)error);
+        deleted ? 1 : 0, (unsigned long)error, (int)snapshotCleanup, (unsigned long)snapshotError);
 }
 
 // A validated controlled recovery that will not run must not leave its

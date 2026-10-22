@@ -11,9 +11,10 @@
 // lives here.  Ordinary service startup is always non-mutating: only a process
 // presenting the protected restart helper's nonce may re-apply a snapshot.
 #include "service_restart_snapshot_schema.h"
+#include "restart_snapshot_file_win32.h"
 
 #define SERVICE_CONTROLLED_RECOVERY_MAGIC   0x47434352u /* 'GCCR' */
-#define SERVICE_CONTROLLED_RECOVERY_VERSION 3u
+#define SERVICE_CONTROLLED_RECOVERY_VERSION 4u
 #define SERVICE_CONTROLLED_RECOVERY_MAX_AGE_MS 300000ULL
 #define SERVICE_CONTROLLED_RECOVERY_NONCE_BYTES 32u
 #define SERVICE_CONTROLLED_RECOVERY_NONCE_HEX_CHARS ((size_t)SERVICE_CONTROLLED_RECOVERY_NONCE_BYTES * 2ULL)
@@ -31,9 +32,7 @@ struct ServiceControlledRecoveryAuthorization {
     ULONGLONG previousProcessCreationTime100ns;
     ServiceBootIdentity bootIdentity;
     ULONGLONG createdUptimeMs;
-    ULONGLONG snapshotFingerprint;
-    ULONGLONG snapshotLastWriteTime100ns;
-    DWORD snapshotSize;
+    GcRestartSnapshotIdentity snapshot;
     DWORD reserved3;
     DWORD helperValidationMagic;
     DWORD helperProcessId;
@@ -136,50 +135,17 @@ static bool service_query_process_creation_time_100ns(HANDLE process, ULONGLONG*
     return true;
 }
 
-static bool service_fingerprint_restart_snapshot(ULONGLONG* fingerprintOut,
-    ULONGLONG* lastWriteTimeOut, DWORD* sizeOut) {
-    if (!fingerprintOut || !lastWriteTimeOut || !sizeOut) return false;
-    *fingerprintOut = 0;
-    *lastWriteTimeOut = 0;
-    *sizeOut = 0;
+static bool service_fingerprint_restart_snapshot(GcRestartSnapshotIdentity* out) {
+    if (!out) return false;
+    *out = {};
     char path[MAX_PATH] = {};
     if (!service_active_desired_persist_path(path, sizeof(path))) return false;
     HANDLE h = gc_CreateFileUtf8(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
-    LARGE_INTEGER size = {};
-    FILETIME lastWrite = {};
-    bool ok = GetFileSizeEx(h, &size) != FALSE && size.QuadPart > 0 &&
-        size.QuadPart <= 1024LL * 1024 &&
-        GetFileTime(h, nullptr, nullptr, &lastWrite) != FALSE;
-    ULONGLONG fingerprint = 1469598103934665603ULL; // FNV-1a 64
-    BYTE buffer[4096] = {};
-    ULONGLONG total = 0;
-    while (ok) {
-        DWORD read = 0;
-        if (!ReadFile(h, buffer, sizeof(buffer), &read, nullptr)) {
-            ok = false;
-            break;
-        }
-        if (read == 0) break;
-        total += read;
-        for (DWORD i = 0; i < read; ++i) {
-            fingerprint ^= buffer[i];
-            fingerprint *= 1099511628211ULL;
-        }
-    }
+    const bool ok = gc_restart_snapshot_fingerprint(h, out);
     CloseHandle(h);
-    ULARGE_INTEGER writeValue = {};
-    writeValue.LowPart = lastWrite.dwLowDateTime;
-    writeValue.HighPart = lastWrite.dwHighDateTime;
-    if (!ok || total != (ULONGLONG)size.QuadPart || total > MAXDWORD ||
-        fingerprint == 0 || writeValue.QuadPart == 0) {
-        return false;
-    }
-    *fingerprintOut = fingerprint;
-    *lastWriteTimeOut = writeValue.QuadPart;
-    *sizeOut = (DWORD)total;
-    return true;
+    return ok;
 }
 
 static bool service_create_controlled_recovery_authorization(const char* reason,
@@ -199,8 +165,7 @@ static bool service_create_controlled_recovery_authorization(const char* reason,
         !service_query_process_creation_time_100ns(GetCurrentProcess(),
             &authorization.previousProcessCreationTime100ns) ||
         !service_query_boot_identity(&authorization.bootIdentity) ||
-        !service_fingerprint_restart_snapshot(&authorization.snapshotFingerprint,
-            &authorization.snapshotLastWriteTime100ns, &authorization.snapshotSize) ||
+        !service_fingerprint_restart_snapshot(&authorization.snapshot) ||
         !service_format_controlled_recovery_nonce(authorization.nonce,
             nonceHexOut, nonceHexOutSize)) {
         SecureZeroMemory(&authorization, sizeof(authorization));
@@ -298,14 +263,11 @@ static bool service_read_controlled_recovery_authorization(const char* nonceHex,
             authorization.previousProcessId == expectedPreviousProcessId) &&
         (expectedPreviousCreationTime100ns == 0 ||
             authorization.previousProcessCreationTime100ns == expectedPreviousCreationTime100ns);
-    ULONGLONG snapshotFingerprint = 0, snapshotLastWrite = 0;
-    DWORD snapshotSize = 0;
-    bool snapshotOk = headerOk && authorization.snapshotFingerprint != 0 &&
-        authorization.snapshotLastWriteTime100ns != 0 && authorization.snapshotSize != 0 &&
-        service_fingerprint_restart_snapshot(&snapshotFingerprint, &snapshotLastWrite, &snapshotSize) &&
-        snapshotFingerprint == authorization.snapshotFingerprint &&
-        snapshotLastWrite == authorization.snapshotLastWriteTime100ns &&
-        snapshotSize == authorization.snapshotSize;
+    GcRestartSnapshotIdentity snapshot = {};
+    bool snapshotOk = headerOk && authorization.snapshot.fingerprint != 0 &&
+        authorization.snapshot.lastWriteTime100ns != 0 && authorization.snapshot.size != 0 &&
+        service_fingerprint_restart_snapshot(&snapshot) &&
+        gc_restart_snapshot_identity_equal(snapshot, authorization.snapshot);
     bool match = nonceOk && headerOk && fresh && identityOk && snapshotOk &&
         service_controlled_recovery_nonce_equal(suppliedNonce, authorization.nonce);
     SecureZeroMemory(suppliedNonce, sizeof(suppliedNonce));
