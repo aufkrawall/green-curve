@@ -5,6 +5,26 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: Driver-recovery flow under test
+
+- Follow-up to the coverage review below. The fresh process's arming,
+  queueing and single restore write moved from three shards into
+  `driver_recovery_flow.h` (an `Ops` object per side effect), bound by
+  `main_service_driver_recovery.cpp`. Behaviour is unchanged except the
+  outcome log now says `proof=commit-failed-lockout` when the proof commit
+  fails after a successful write (it latched before too, but the outcome line
+  still claimed `preserved-mature`/`restarted`).
+- `tests/driver_recovery_sequence_tests.cpp` (7210-7229) scripts the whole
+  recovery against a simulated service with the real reducer and policies.
+  A failed-write expectation first assumed result FAILED; the latch reduces
+  LOCKOUT before the finish, so the service records LOCKED_OUT (unchanged).
+  Seven deliberate flow breaks each fail a named code.
+- `_check_driver_recovery_wiring()` pins the shard side file by file; ten
+  deliberate breaks each fail a gate. Two existing gates moved with the code
+  (`log_gates.py`). The unused reducer event `DRIVER_PROOF_SIGNAL` is gone;
+  tests 429/594 now assert what the worker's re-attempt does.
+- Not covered: the runtime bindings are text-pinned, not executed.
+
 ## 2026-10-22: Live driver-update restore; driver and build versions in the log
 
 - Live test on x64 with a 0.30 dev build: the standard NVIDIA installer run

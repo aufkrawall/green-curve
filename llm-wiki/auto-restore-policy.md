@@ -7,7 +7,8 @@
 > a persisted per-boot crash-loop guard. The reset-to-stock rule below is
 > genuinely shared code.
 
-Last verified: 2026-10-22 (live: two NVIDIA installer runs with a mature proof
+Last verified: 2026-10-22 (driver-recovery flow extracted and sequence-tested,
+wiring gates mutation-checked); 2026-10-22 (live: two NVIDIA installer runs with a mature proof
 restored the profile through the VEH/controlled-restart path, see invariant 9);
 2026-10-22 (snapshot retirement identity, native file fixtures);
 2026-10-21 (invariant 9: a driver fault must not kill the
@@ -18,6 +19,7 @@ service; field crash root-caused, fix software-verified only); 2026-10-17
 `source/main_service_lifecycle_events.cpp`,
 `source/main_service_dxgi_readiness.cpp`,
 `source/main_service_lifecycle_apply.cpp`,
+`source/driver_recovery_flow.h`, `source/main_service_driver_recovery.cpp`,
 `source/main_service_logon_coordinator.cpp`,
 `source/main_service_apply_runtime.cpp`, `source/gpu_backend_apply.cpp`,
 `source/main_service_persist.cpp`, `source/main_service_recovery.cpp`,
@@ -204,12 +206,12 @@ and the user saw nothing: the GPU just ran at stock with automation off.
   the old 6752 leg asserting NONE -> TDR_SPAM is silent was the gap and is
   gone). Log line: `GUI: automatic restore lockout notice (previous= reason= tray=)`.
 - **A refused controlled recovery drops its provisional intent (2026-10-21).**
-  `service_arm_validated_controlled_recovery()` sets REAPPLYING before queuing;
-  when queuing failed under an EXISTING lockout it skipped the disable (which
-  is what clears that state), so the GUI could show "GPU reconnecting" until an
-  explicit Apply. `service_drop_provisional_recovery_intent()` now clears it
-  without touching the lockout. Gate in `tools/log_gates.py`; no runtime test
-  (the branch needs a live controlled restart).
+  Arming (`service_driver_recovery_arm()` in `driver_recovery_flow.h` since
+  2026-10-22) sets REAPPLYING before queuing; when queuing failed under an
+  EXISTING lockout it skipped the disable (which is what clears that state), so
+  the GUI could show "GPU reconnecting" until an explicit Apply.
+  `service_drop_provisional_recovery_intent()` now clears it without touching
+  the lockout. Gate in `tools/log_gates.py`; sequence test 7220.
 - Diagnostics: `automatic apply failure: recorded for the GUI trigger=...`
   (service), `GUI: automatic apply failure notice (previous=... trigger=... tray=...)` and
   `GUI: automatic apply failure tray notice shown` (GUI).
@@ -562,18 +564,27 @@ Failure to enumerate active WTS sessions is transient and fail-closed; the
 service does not substitute the active console session because that could bind
 an automatic write to the wrong authenticated login.
 
-Test coverage of the driver-update restore (assessed 2026-10-22): every step
-has pure-policy tests and some have native fixtures, but the regression harness
-does not compile the service shards, so the wiring between those policies is
-held only by source-text gates. Some gates scan a combined surface that also
-contains the callee's definition and so cannot see a dropped call (the gate for
-the worker's `service_lifecycle_attempt_driver_restore()` call scans
-`_lifecycle_surface`), and no gate covers the snapshot writes after a
-successful Apply. Nothing drives the
-chain as a sequence (fault -> exit plan -> validated startup -> handback ->
-readiness -> proof -> one write). The reducer's `DRIVER_PROOF_SIGNAL` event is
-tested but never posted by production code, which retries from the worker
-loop instead.
+Test coverage of the driver-update restore (2026-10-22). The regression
+harness compiles no service shard, so the fresh process's three driver-recovery
+steps -- arming before RUNNING, queueing behind the proof and spam gates, and
+the worker's single write -- were moved into `driver_recovery_flow.h`, which
+takes an `Ops` object for every side effect. The service binds it in
+`main_service_driver_recovery.cpp`; `tests/driver_recovery_sequence_tests.cpp`
+(7210-7229) drives the same code with a simulated service and the real
+reducer, proof waiver and arrival policy: old-process exit plan -> start gate
+-> fan-only handback -> arm -> own arrival is readiness -> attempts wait for
+the GPU -> exactly one write -> proof, snapshot and in-progress retired in that
+order, plus same-driver, spam, failed-write, stale-target, lost-proof,
+unvalidated, update-install and lost-intent variants. Seven deliberate breaks
+of the flow each fail a specific code. What stays in shards is pinned by
+`_check_driver_recovery_wiring()` in `tools/crash_artifacts.py`, single-file
+checks only (each op's runtime binding, the worker's restore call, the
+handback/arm order at startup, the arrival's in-progress read, VEH
+corroboration, the exit plan's snapshot probe, the snapshot after every
+successful Apply, logon and standby write); ten deliberate breaks each fail a
+gate. The reducer's unused `DRIVER_PROOF_SIGNAL` event was removed. Remaining
+gap: the shards' runtime bindings are text-pinned, not executed, so a binding
+that compiles but does the wrong thing is caught only by review or a live run.
 # Config-watch readiness invariant
 
 Logon profile materialization watches the parent directory so atomic config

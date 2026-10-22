@@ -1205,6 +1205,10 @@ Current source anchors:
   `source/main_service_lifecycle_apply.cpp`, and
   `source/main_service_logon_coordinator.cpp`: reducer bridge and sole automatic
   write boundary;
+- `source/driver_recovery_flow.h` (bound by
+  `source/main_service_driver_recovery.cpp`): arming, queueing and the single
+  driver-recovery write, sequence-tested in
+  `tests/driver_recovery_sequence_tests.cpp` (2026-10-22);
 - `source/main_service_persist.cpp`: protected intent/nonce/lockout state;
 - `source/gpu_backend_apply.cpp` and `source/main_service_apply_runtime.cpp`:
   proof-at-write boundary and active ownership updates.

@@ -305,7 +305,11 @@ version; 7189 the log spelling `32.0.15.8180 (581.80)`; see
 [gpu-backend](gpu-backend.md)), `tests/diagnostics_followup_tests.cpp` also
 holds 7200-7206 (the service's last-started-build record: strict parse,
 all-or-nothing format, first start / unchanged / changed / unreadable; see
-[installer](installer.md)); `service_install_tests.cpp` owns
+[installer](installer.md)), `tests/driver_recovery_sequence_tests.cpp`
+(7210-7229: a driver update scripted through `driver_recovery_flow.h` with a
+simulated service and the real reducer and recovery policies -- one write,
+ordering, every refusal with zero writes; mutation-checked; see
+[auto-restore-policy](auto-restore-policy.md)); `service_install_tests.cpp` owns
 assertions 5720-5786: SCM checkpoint-wait policy, the location content rule,
 the exact-DACL predicate, handle-bound hardening with propagation to existing
 files, the release-to-inherited contract, and the native location verdicts;
