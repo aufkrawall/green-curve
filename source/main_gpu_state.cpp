@@ -619,26 +619,18 @@ static bool refresh_service_snapshot_and_active_desired(char* err, size_t errSiz
     if (!service_client_get_ready_state_contracted(&stateResponse, "refresh snapshot and active intent", err, errSize)) {
         return false;
     }
-    apply_service_snapshot_to_app(&stateResponse.snapshot);
+    // The atomic envelope's desired payload is retained for profile comparisons
+    // (and synced with its identity) without projecting it over live snapshot
+    // lock detection here.
+    apply_service_snapshot_to_app(&stateResponse.snapshot,
+        stateResponse.state.activeDesiredValid, &stateResponse.desired);
     if ((stateResponse.state.validSections &
             SERVICE_STATE_SECTION_APPLIED_CONTROLS) != 0)
         apply_control_state_to_gui(&stateResponse.controlState);
-
-    if (stateResponse.state.activeDesiredValid) {
-        // Keep the accepted snapshot authoritative for the displayed lock. The
-        // atomic envelope's desired payload is retained for profile comparisons
-        // without projecting it over live snapshot lock detection here.
-        g_app.serviceActiveDesired = stateResponse.desired;
-        g_app.serviceActiveDesiredValid = true;
-        if (activeDesiredOut) *activeDesiredOut = stateResponse.desired;
-#ifndef GREEN_CURVE_SERVICE_BINARY
-        sync_applied_profile_from_service_metadata();
-#endif
-    } else {
-        g_app.serviceActiveDesiredValid = false;
-        memset(&g_app.serviceActiveDesired, 0, sizeof(g_app.serviceActiveDesired));
-        if (activeDesiredOut) *activeDesiredOut = {};
-    }
+    if (activeDesiredOut && stateResponse.state.activeDesiredValid)
+        *activeDesiredOut = stateResponse.desired;
+    else if (activeDesiredOut)
+        *activeDesiredOut = {};
 
     if (err && errSize > 0) err[0] = 0;
     return true;

@@ -676,6 +676,41 @@ def check_auto_profile_enable_is_a_transition(ctx, require_text, forbid_text):
                           "manual pin")
 
 
+def check_applied_profile_projection_order(ctx, require_text, forbid_text):
+    """One envelope's profile identity and active intent are projected together.
+
+    apply_service_snapshot_to_app() ends by syncing the applied-profile tick,
+    which judges the identity it just projected against the active intent.
+    Three callers projected that intent only AFTER it returned, so the sync
+    judged the new identity against the previous intent -- at every client
+    start "no intent" -- and wrote applied_slot=0, then 3 again when the caller
+    caught up: the tray read "Manual settings" for about a second and
+    config.ini was rewritten twice.  Each rule is a negative: the end state is
+    right either way.
+    """
+    sync_cpp = _p(ctx, "main_state_sync.cpp")
+    gui_state = _p(ctx, "gui_service_state.cpp")
+    gpu_state = _p(ctx, "main_gpu_state.cpp")
+    require_text(sync_cpp, "bool activeDesiredValid, const DesiredSettings* activeDesired) {",
+                 "the snapshot projection takes its envelope's active intent")
+    ctx.require_order_in_operation(
+        sync_cpp, "static void apply_service_snapshot_to_app(",
+        "g_app.serviceActiveDesiredValid = activeDesiredValid && activeDesired;",
+        "sync_applied_profile_from_service_metadata();",
+        "the intent is projected before the applied-profile sync judges it")
+    for path in (sync_cpp, gui_state):
+        require_text(path, "response->state.activeDesiredValid, &response->desired);",
+                     "envelope adoption hands the snapshot projection its own intent")
+        forbid_text(path, "g_app.serviceActiveDesiredValid = response->state.activeDesiredValid;",
+                    "no caller projects the intent after the identity was synced")
+        forbid_text(path, "g_app.serviceActiveDesired = response->desired;",
+                    "no caller projects the intent after the identity was synced")
+    require_text(gpu_state, "stateResponse.state.activeDesiredValid, &stateResponse.desired);",
+                 "the CLI snapshot refresh hands the projection its own intent")
+    forbid_text(gpu_state, "g_app.serviceActiveDesiredValid = true;",
+                "the CLI snapshot refresh does not project the intent afterwards")
+
+
 def check_applied_profile_indicator_is_drift_free(ctx, require_text, forbid_text):
     """The applied-profile tick is decided without live hardware readback.
 
@@ -1449,6 +1484,7 @@ def check_all(ctx, require_text, forbid_text):
     check_tray_active_profile(ctx, require_text, forbid_text)
     check_tray_menu_does_not_raise_the_main_window(ctx, require_text, forbid_text)
     check_applied_profile_indicator_is_drift_free(ctx, require_text, forbid_text)
+    check_applied_profile_projection_order(ctx, require_text, forbid_text)
     check_auto_profile_enable_is_a_transition(ctx, require_text, forbid_text)
     check_service_profile_identity_survives_a_delta_apply(
         ctx, require_text, forbid_text)

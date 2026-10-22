@@ -47,7 +47,7 @@ SOURCE_SIZE_RATCHET = {
     "main.cpp": 796,  # 801 before the wedge-watchdog heartbeats moved to service_gate_progress.h  # 800 before F-03-001 made the log tokenizers visible to every shard
     "main_service_persist.cpp": 908,
     "main_service_pipe.cpp": 796,  # 828 before the file-write commands moved out
-    "main_state_sync.cpp": 915,  # 890 before the VIDEO GUI adoption block
+    "main_state_sync.cpp": 919,  # 915 before the snapshot projection took its envelope's active intent  # 890 before the VIDEO GUI adoption block
      # 859 before truthful XBAR readback validity
         "ui_main_window.cpp": 1279,
     "service_protocol.h": 838,  # 818 before v22 video-clk carriage

@@ -507,7 +507,8 @@ static void gui_apply_ready_envelope(const ServiceResponse* response,
         gui_top_level_redraw_begin(&redrawTransaction, g_app.hMainWnd,
             reason);
     }
-    apply_service_snapshot_to_app(&response->snapshot);
+    apply_service_snapshot_to_app(&response->snapshot,
+        response->state.activeDesiredValid, &response->desired);
     g_app.serviceSnapshotAuthoritative = true;
     if (!suppressRedraw && g_guiForceFullRefresh) {
         // Snapshot adoption can discover an out-of-band Reset that requires a
@@ -518,17 +519,13 @@ static void gui_apply_ready_envelope(const ServiceResponse* response,
         gui_top_level_redraw_begin(&redrawTransaction, g_app.hMainWnd,
             reason);
     }
-    g_app.serviceActiveDesiredValid = response->state.activeDesiredValid;
     if (response->state.activeDesiredValid) {
-        g_app.serviceActiveDesired = response->desired;
         // A normal telemetry envelope updates live data and the model without
         // rewriting every edit HWND once per second.  Project active intent
         // only when it actually changed or this is a structural sync.
         if (activeDesiredChanged || kind != GUI_SERVICE_IO_TELEMETRY)
             apply_service_desired_to_gui(&response->desired);
     } else {
-        memset(&g_app.serviceActiveDesired, 0,
-            sizeof(g_app.serviceActiveDesired));
         applied_clear_curve_point_origins();
     }
     if ((response->state.validSections &

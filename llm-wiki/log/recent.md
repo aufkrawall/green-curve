@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: Applied-profile tick flickered at every client start
+
+- Symptom: the tray read "Manual settings" for about a second after the GUI
+  started, and the log showed `applied_slot 3 -> 0 reason=service published
+  no active intent` then `0 -> 3` at nearly every GUI/CLI start that day.
+  Reproduced on demand with `--export-active-settings`.
+- Cause: `apply_service_snapshot_to_app()` syncs the indicator as its last
+  step, but three callers stored the envelope's active intent only after it
+  returned, so the new identity was judged against the previous intent.
+- Fix (config-profiles.md, "Identity and intent come from one envelope"):
+  the projection takes the intent and stores it with the identity before the
+  sync. Source gate `check_applied_profile_projection_order`, verified failing
+  with one post-hoc assignment restored. `main_state_sync.cpp` ratchet 915 ->
+  919.
+
 ## 2026-10-22: Simulation teardown restores the seen version for real
 
 - Symptom: after the 2-hop release simulation, the real build warned on every

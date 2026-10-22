@@ -267,7 +267,7 @@ void set_forced_startup_user_sam(const WCHAR* samName);
 static bool hardware_initialize(char* detail, size_t detailSize);
 static void populate_service_snapshot(ServiceSnapshot* snapshot);
 static void populate_control_state(ControlState* state);
-static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot);
+static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot, bool activeDesiredValid, const DesiredSettings* activeDesired);
 static void apply_service_desired_to_gui(const DesiredSettings* desired);
 static void apply_control_state_to_gui(const ControlState* state);
 static void apply_ready_service_envelope_to_app(const ServiceResponse* response);

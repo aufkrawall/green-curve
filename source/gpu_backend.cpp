@@ -21,7 +21,9 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
             result, resultSize, &snapshot);
         if (snapshot.initialized || snapshot.loaded) {
             bool fanOnlyApply = desired_is_fan_only_apply_request(desired);
-            apply_service_snapshot_to_app(&snapshot);
+            // service_client_apply_desired() projected this response's intent.
+            apply_service_snapshot_to_app(&snapshot, g_app.serviceActiveDesiredValid,
+                &g_app.serviceActiveDesired);
             // Record the drift-free curve intent we just applied so the editor/graph,
             // fan-only detection, and saves use it instead of live boost/temperature
             // drift. Only a request that replaces curve intent may do that: a sparse

@@ -311,7 +311,8 @@ static void populate_control_state(ControlState* state) {
 
 #include "main_service_state_envelope.cpp"
 
-static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
+static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot,
+    bool activeDesiredValid, const DesiredSettings* activeDesired) {
     if (!snapshot) return;
     EnterCriticalSection(&g_appLock);
 #ifndef GREEN_CURVE_SERVICE_BINARY
@@ -320,6 +321,13 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     g_app.serviceSnapshotAuthoritative = true;
     g_app.serviceActiveProfileSource = (ServiceProfileSource)snapshot->activeProfileSource;
     g_app.serviceActiveProfileSlot = snapshot->activeProfileSlot;
+    // Identity and intent of ONE envelope, before the sync below judges them
+    // (applied_profile_indicator_policy.h, "Projection order").
+    g_app.serviceActiveDesiredValid = activeDesiredValid && activeDesired;
+    if (!g_app.serviceActiveDesiredValid)
+        memset(&g_app.serviceActiveDesired, 0, sizeof(g_app.serviceActiveDesired));
+    else if (activeDesired != &g_app.serviceActiveDesired)
+        g_app.serviceActiveDesired = *activeDesired;
     g_app.serviceLastLifecycleTrigger = (ServiceLifecycleTrigger)snapshot->lastLifecycleTrigger;
     g_app.serviceLastLifecycleResult = (ServiceLifecycleResult)snapshot->lastLifecycleResult;
     g_app.serviceAutoRestoreLockoutReason = (ServiceAutoRestoreLockoutReason)snapshot->autoRestoreLockoutReason;
@@ -870,16 +878,12 @@ static void apply_ready_service_envelope_to_app(
             (unsigned long long)response->state.gpuGeneration,
             (unsigned long long)response->state.topologySignature);
     }
-    apply_service_snapshot_to_app(&response->snapshot);
-    g_app.serviceActiveDesiredValid = response->state.activeDesiredValid;
-    if (response->state.activeDesiredValid) {
-        g_app.serviceActiveDesired = response->desired;
+    apply_service_snapshot_to_app(&response->snapshot,
+        response->state.activeDesiredValid, &response->desired);
+    if (response->state.activeDesiredValid)
         apply_service_desired_to_gui(&response->desired);
-    } else {
-        memset(&g_app.serviceActiveDesired, 0,
-            sizeof(g_app.serviceActiveDesired));
+    else
         applied_clear_curve_point_origins();
-    }
     if ((response->state.validSections &
             SERVICE_STATE_SECTION_APPLIED_CONTROLS) != 0)
         apply_control_state_to_gui(&response->controlState);

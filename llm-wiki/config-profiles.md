@@ -237,7 +237,38 @@ the feature.
 
 **Unverified:** the fix is reasoned from source plus the reporter's observation
 that only a re-Apply restored the tick; it has not been watched on a live
-Windows machine, and the new log line has never been read from a real run.
+Windows machine. (The verdict log line has since been read from real runs:
+it is what found the projection-order defect below.)
+
+### Identity and intent come from one envelope (2026-10-22)
+
+Source anchors: `apply_service_snapshot_to_app()` in `main_state_sync.cpp`
+and its callers `apply_ready_service_envelope_to_app()`,
+`refresh_service_snapshot_and_active_desired()` (`main_gpu_state.cpp`), the
+GUI adoption in `gui_service_state.cpp`, and the client apply in
+`gpu_backend.cpp`.
+
+Symptom: at every GUI or CLI start the log showed `applied_slot 3 -> 0
+reason=service published no active intent`, then `0 -> 3 reason=applied`
+40 ms to 1.5 s later. The tray read "Manual settings" in between, and
+`config.ini` was written twice; a process dying between the writes would have
+left `applied_slot=0`. Reproduced on demand with `greencurve.exe
+--export-active-settings <file>` against a service holding profile 3.
+
+Cause: `apply_service_snapshot_to_app()` projects the envelope's profile
+identity and ends by calling `sync_applied_profile_from_service_metadata()`,
+which judges that identity against `g_app.serviceActiveDesired(Valid)`. Three
+callers stored the same envelope's active intent only after it returned, so
+the sync judged the NEW identity against the PREVIOUS intent (none at
+startup; the old profile's intent after a switch, which reads as
+`PROFILE_EDITED`). The client apply/reset commands stored the intent first,
+which is why an Apply never flickered.
+
+Fix: the projection takes the intent as parameters and stores it under the
+same lock as the identity, before the sync; callers no longer assign it.
+`ui_gates.check_applied_profile_projection_order` pins the order and forbids
+the post-hoc assignments (verified failing with one put back). No executing
+test: the GUI projection is not linked into the regression harness.
 
 ### The service must not lose a slot identity to a delta Apply
 

@@ -3971,7 +3971,7 @@ def run_source_regression_checks():
     require_order_in_operation(gui_service_state_cpp,
                  "static void gui_apply_ready_envelope(",
                  "begin_programmatic_edit_update();",
-                 "apply_service_snapshot_to_app(&response->snapshot);",
+                 "apply_service_snapshot_to_app(&response->snapshot,",
                  "authoritative ready-state adoption suppresses synthetic edit notifications")
     require_order_in_operation(gui_service_state_cpp,
                  "static void gui_apply_ready_envelope(",

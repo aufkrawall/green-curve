@@ -34,6 +34,17 @@
 // for the editor and for anything on its way to the hardware; it is never right
 // for deciding whether a stored record and a stored intent describe the same
 // thing.  Both sides of that comparison are records, and records do not drift.
+//
+// Projection order.  The service's profile identity and its active intent
+// must come from the SAME envelope when the decision runs.
+// `apply_service_snapshot_to_app()` syncs the indicator as its last step, and
+// three callers used to project the envelope's intent only after it returned,
+// so the sync judged the new identity against the previous intent.  At every
+// client start that previous intent was "none": applied_slot went 3 -> 0 -> 3
+// within milliseconds, config.ini was written twice, and the tray read
+// "Manual settings" for about a second.  The projection now takes the intent
+// as a parameter and stores it, under the same lock as the identity, before
+// the sync (order gate in tools/ui_gates.py).
 
 #ifndef GREEN_CURVE_APPLIED_PROFILE_INDICATOR_POLICY_H
 #define GREEN_CURVE_APPLIED_PROFILE_INDICATOR_POLICY_H
