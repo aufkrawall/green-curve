@@ -26,6 +26,105 @@ def _p(ctx, name):
 # Source gates
 # ---------------------------------------------------------------------------
 
+def _check_driver_recovery_wiring(ctx, require_text, forbid_text, require_order):
+    """What feeds, binds and runs the driver-recovery flow.
+
+    The flow (driver_recovery_flow.h) is sequence-tested in
+    tests/driver_recovery_sequence_tests.cpp, but the harness compiles no
+    service shard, so the calls around it are pinned here. Every check scans a
+    single file: a combined surface that also holds the callee's definition
+    cannot see a dropped call.
+    """
+    ops_cpp = _p(ctx, "main_service_driver_recovery.cpp")
+    require_text(ops_cpp, "service_driver_recovery_arm(runtime, SERVICE_RESTART_LOOP_THRESHOLD);",
+                 "startup arms the validated recovery through the shared flow")
+    require_text(ops_cpp, "service_driver_restore_attempt(runtime, detail, sizeof(detail));",
+                 "the worker's restore runs the shared flow")
+    for name in ("main_service_lifecycle_apply.cpp", "main_service_lifecycle_events.cpp",
+                 "main_service_logon_coordinator.cpp", "main_service_controlled_restart.cpp",
+                 "main_service_driver_recovery.cpp"):
+        forbid_text(_p(ctx, name), "SERVICE_LIFECYCLE_EVENT_DRIVER_WRITE_STARTED",
+                    "only the shared flow authorizes the driver-recovery write")
+    # Each step binds the runtime call it stands for.
+    bindings = (
+        ("bool proof_allows(", "service_auto_restore_allowed_after_driver_event(&reason, &ageMs)"),
+        ("void disable_automatic_restore(", "service_disable_automatic_restore(reason, context);"),
+        ("unsigned recent_recoveries()", "service_count_recent_restarts()"),
+        ("void signal_worker()", "service_lifecycle_signal();"),
+        ("void publish_provisional_intent()", "g_serviceHasActiveDesired = true;"),
+        ("void publish_provisional_intent()", "InterlockedExchange(&g_serviceReapplyInProgress, 1);"),
+        ("bool update_install_takes_runtime()", "service_update_install_release_and_block()"),
+        ("bool gpu_ready(", "hardware_initialize(detail, detailSize)"),
+        ("bool gpu_ready(", "service_select_restart_reapply_gpu("),
+        ("void prepare_write()", "service_build_full_restore_request(&g_serviceActiveDesired, &desired);"),
+        ("void prepare_write()", "gpuEpoch = service_selected_gpu_capture_write_epoch();"),
+        ("bool capture_mature_proof(", "service_capture_mature_oc_apply_proof(&matureProof, &age)"),
+        ("bool write_target_current()", "service_selected_gpu_write_epoch_is_current(gpuEpoch)"),
+        ("bool apply_full_intent(", "service_apply_desired_settings(&desired, false,"),
+        ("bool commit_proof(", "service_restore_mature_oc_apply_proof(matureProof)"),
+        ("bool commit_proof(", "service_record_oc_apply_stamp()"),
+        ("void write_restart_snapshot()", "service_write_restart_reapply_snapshot();"),
+        ("void retire_controlled_recovery()", "InterlockedExchange(&g_serviceReapplyInProgress, 0);"),
+        ("void latch_write_failure(", "service_lifecycle_latch_write_failure(SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY,"),
+        ("ServiceLifecycleResult finish_write(", "service_lifecycle_set_result_locked("),
+    )
+    for anchor, needle in bindings:
+        ctx.require_text_in_operation(ops_cpp, anchor, needle,
+                                      f"driver-recovery step `{anchor}` binds `{needle}`")
+
+    # The old process: the VEH publishes its corroboration before the crash
+    # count the watchdog acts on; abandonment counts as corroborated only with
+    # both; the exit plan probes the snapshot a replay needs.
+    require_order(_p(ctx, "main_crash_artifacts.cpp"), "InterlockedExchange(&g_nvmlVhCrashed, 1);",
+                  "InterlockedIncrement(&g_nvmlCrashCount);",
+                  "a claimed driver fault is corroborated before it is counted")
+    identity_cpp = _p(ctx, "main_service_runtime_identity.cpp")
+    require_text(identity_cpp, "bool corroborated = InterlockedExchangeAdd(&g_nvmlVhCrashed, 0) != 0 &&",
+                 "mutex abandonment is corroborated by the VEH record")
+    require_order(identity_cpp, "InterlockedExchange(&g_serviceRuntimePoisonCorroborated, 1);",
+                  "service_emergency_restart_from_poisoned_runtime(",
+                  "the corroboration is published before the poisoned-runtime exit")
+    require_text(_p(ctx, "main_service_host.cpp"),
+                 "InterlockedExchangeAdd(&g_serviceRuntimePoisonCorroborated, 0) != 0",
+                 "the watchdog's poisoned exit carries the corroboration")
+    ctx.require_order_in_operation(_p(ctx, "main_service_recovery.cpp"),
+        "static ServicePoisonedRuntimeExit service_poisoned_runtime_plan_or_exit(",
+        "service_restart_snapshot_state();", "service_poisoned_runtime_exit_plan(",
+        "the exit plan is fed the on-disk snapshot state")
+
+    # Every successful write leaves what a later recovery replays.
+    require_order(_p(ctx, "main_service_pipe_switch.cpp"), "service_write_restart_reapply_snapshot();",
+                  "bool proofRecorded = service_record_oc_apply_stamp();",
+                  "a successful Apply writes the restart snapshot and starts a proof")
+    lifecycle_apply = _p(ctx, "main_service_lifecycle_apply.cpp")
+    for anchor in ("static void service_lifecycle_attempt_logon()",
+                   "static void service_lifecycle_attempt_standby_restore()"):
+        ctx.require_text_in_operation(lifecycle_apply, anchor, "service_write_restart_reapply_snapshot();",
+                                      f"{anchor} leaves a restart snapshot after its write")
+
+    # The fresh process: validation, then the handback scope it implies, then
+    # arming; the worker runs the restore on every wake after the handback;
+    # the device arrival reads the in-progress flag the arming published.
+    host_cpp = _p(ctx, "main_service_host.cpp")
+    require_order(host_cpp, "service_prepare_controlled_recovery_startup(argc, argv);",
+                  "service_ownership_handback_prepare_at_startup(",
+                  "the controlled-recovery validation precedes the handback decision")
+    require_order(host_cpp, "service_ownership_handback_prepare_at_startup(",
+                  "service_arm_validated_controlled_recovery();",
+                  "the handback decision precedes arming the recovery")
+    require_text(_p(ctx, "main_service_ownership_handback.cpp"),
+                 "ownership_handback_windows_start_scope(controlledRecoveryValidated)",
+                 "a validated recovery hands back the fan only")
+    coordinator_cpp = _p(ctx, "main_service_logon_coordinator.cpp")
+    require_order(coordinator_cpp, "service_lifecycle_attempt_ownership_handback();",
+                  "service_lifecycle_attempt_driver_restore();",
+                  "the lifecycle worker attempts the driver restore after the handback")
+    ctx.require_order_in_operation(coordinator_cpp, "if (inbox.selectedGpuArrivalPending)",
+        "InterlockedExchangeAdd(&g_serviceReapplyInProgress, 0) != 0;",
+        "service_selected_gpu_arrival_action(wasRemoved, hasIntent, recoveryPending);",
+        "a device arrival during a pending recovery write is read as readiness")
+
+
 def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
                                   require_text_count):
     """F-CRASH-1/2: where a Windows crash artifact goes, and which crashes make one.
@@ -171,6 +270,7 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
     require_text(_p(ctx, "main_service_recovery.cpp"),
                  "service_ordinary_start_yields_to_recovery_helper(",
                  "the yield follows the shared, tested policy")
+    _check_driver_recovery_wiring(ctx, require_text, forbid_text, require_order)
 
     # The user-facing crash-dump notice: scanned with the service's rights,
     # written under the user's token, and the dumps themselves never leave the
