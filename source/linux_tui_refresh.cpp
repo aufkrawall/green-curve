@@ -2,6 +2,46 @@
 // SPDX-License-Identifier: MIT
 // Included by linux_tui_actions.cpp; do not compile separately.
 
+// config.ini's GPU is resolved against the daemon's own adapter list the first
+// time one is available: at start, or on the reconnect after a start without
+// the daemon.  Only the live adapter it resolved to is ever sent; the stored
+// record is not, because the daemon would follow it to a GPU its location role
+// rules out (linux_configured_gpu_request_target).
+static void tui_adopt_configured_gpu(TuiState* state) {
+    LinuxConfiguredGpu* gpu = &state->configuredGpu;
+    if (gpu->status != LINUX_CONFIGURED_GPU_PENDING &&
+        gpu->status != LINUX_CONFIGURED_GPU_UNVALIDATED) return;
+    const LinuxConfiguredGpuStatus before = gpu->status;
+    linux_configured_gpu_resolve_against(state->configPath, gpu,
+        state->service.snapshot.adapters, state->service.snapshot.adapterCount);
+    if (gpu->status != LINUX_CONFIGURED_GPU_RESOLVED) {
+        if (gpu->status != before)
+            snprintf(state->status, sizeof(state->status),
+                "Writes blocked: %s; click the GPU name to select one, or save one with --gpu",
+                linux_configured_gpu_problem(gpu->status));
+        return;
+    }
+    if (state->targetGpu.valid &&
+        linux_gpu_identity_matches(&gpu->target, &state->targetGpu)) return;
+    if (state->service.state.activeDesiredValid) {
+        snprintf(state->status, sizeof(state->status),
+                 "Another GPU has active settings; Reset it before selecting the saved GPU");
+        return;
+    }
+    tui_refresh_service(state, false, &gpu->target);
+}
+
+bool tui_configured_gpu_allows_write(TuiState* state, const char* action) {
+    if (linux_configured_gpu_request_target(&state->configuredGpu, true,
+                                            nullptr)) return true;
+    snprintf(state->status, sizeof(state->status),
+             "%s blocked: %s; click the GPU name to select one first",
+             action, linux_configured_gpu_problem(state->configuredGpu.status));
+    linux_debug_logf("tui: %s blocked; config.ini GPU status=%s", action,
+                     linux_configured_gpu_status_name(state->configuredGpu.status));
+    return false;
+}
+
 bool tui_refresh_service(TuiState* state, bool userRequested,
                          const GpuAdapterInfo* requestedTarget) {
     if (!state) return false;
@@ -151,6 +191,7 @@ bool tui_refresh_service(TuiState* state, bool userRequested,
             (unsigned int)next.snapshot.autoApplyFailure.trigger, state->status);
     }
     state->nextTelemetryMs = tui_monotonic_ms() + 1000;
+    tui_adopt_configured_gpu(state);
     return true;
 }
 

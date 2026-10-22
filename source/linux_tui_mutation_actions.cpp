@@ -20,6 +20,7 @@ void apply_to_gpu(TuiState* state) {
                  "Apply blocked: daemon is offline");
         return;
     }
+    if (!tui_configured_gpu_allows_write(state, "Apply")) return;
     if (!state->draftAttached ||
         !linux_tui_draft_binding_matches(&state->draftBinding,
                                          &state->service,
@@ -91,6 +92,7 @@ void reset_gpu(TuiState* state) {
                  "Reset blocked: daemon is offline");
         return;
     }
+    if (!tui_configured_gpu_allows_write(state, "Reset")) return;
     if (state->service.state.gpuPhase != SERVICE_GPU_PHASE_READY) {
         snprintf(state->status, sizeof(state->status),
                  "Reset blocked: GPU is not in READY state (phase=%u)",
@@ -153,6 +155,8 @@ void apply_startup_policy_cycle(TuiState* state) {
     char result[512] = {};
     bool ok = false;
     if (next == SERVICE_STARTUP_POLICY_PROFILE) {
+        if (!tui_configured_gpu_allows_write(state, "Startup profile bind"))
+            return;
         if (!state->targetGpu.valid) {
             snprintf(state->status, sizeof(state->status),
                      "Select a GPU before binding a startup profile to it");

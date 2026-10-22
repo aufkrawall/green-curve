@@ -85,7 +85,7 @@ void on_stop_signal(int) {
 
 void initialize_state(TuiState* state, const char* configPath,
                       int initialSlot, DesiredSettings* initialDesired,
-                      const GpuAdapterInfo* initialTarget) {
+                      const LinuxConfiguredGpu* configured) {
     *state = TuiState{};
     if (configPath && configPath[0])
         snprintf(state->configPath, sizeof(state->configPath), "%s", configPath);
@@ -105,23 +105,18 @@ void initialize_state(TuiState* state, const char* configPath,
     initialize_desired_settings_defaults(&state->desired);
     normalize_desired_settings_for_ui(&state->desired);
     state->acceptedDesired = state->desired;
-    bool serviceLoaded = tui_refresh_service(state, false);
-    if (serviceLoaded && initialTarget && initialTarget->valid) {
-        bool sameTarget = state->targetGpu.valid &&
-            linux_gpu_identity_matches(initialTarget, &state->targetGpu);
-        if (!sameTarget && state->service.state.activeDesiredValid) {
-            snprintf(state->status, sizeof(state->status),
-                     "Another GPU has active settings; Reset it before selecting the saved GPU");
-        } else if (!sameTarget) {
-            serviceLoaded = tui_refresh_service(state, false, initialTarget);
-        }
-    }
+    // The first successful refresh resolves config.ini's GPU against the
+    // daemon's adapters and selects it; one without the daemon leaves that to
+    // the reconnect.  The stored record itself is never sent.
+    if (configured) state->configuredGpu = *configured;
+    tui_refresh_service(state, false);
+    // Selecting the saved GPU is a second request that can fail on its own.
+    bool serviceLoaded = state->serviceOnline;
     // One read-back at start, before any status line is composed: a boot-apply
     // snapshot that no longer matches its profile is a silent revert at the
     // next boot, so it has to be visible without the user doing anything.
     tui_refresh_startup_snapshot(state);
     if (!serviceLoaded) {
-        if (initialTarget) state->targetGpu = *initialTarget;
         if (initialDesired) {
             state->desired = *initialDesired;
             normalize_desired_settings_for_ui(&state->desired);
@@ -151,10 +146,10 @@ void initialize_state(TuiState* state, const char* configPath,
 
 int run_tui_child(const char* configPath, int initialSlot,
                   DesiredSettings* initialDesired,
-                  const GpuAdapterInfo* initialTarget) {
+                  const LinuxConfiguredGpu* configured) {
     TuiState state;
     initialize_state(&state, configPath, initialSlot,
-                     initialDesired, initialTarget);
+                     initialDesired, configured);
 
     struct sigaction resizeAction = {};
     resizeAction.sa_handler = on_sigwinch;
@@ -226,7 +221,7 @@ int run_tui_child(const char* configPath, int initialSlot,
 
 int linux_run_tui(const char* configPath, int initialSlot,
                   DesiredSettings* initialDesired,
-                  const GpuAdapterInfo* initialTarget) {
+                  const LinuxConfiguredGpu* configured) {
     if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
         fprintf(stderr, "Linux TUI requires an interactive terminal.\n");
         return 1;
@@ -249,7 +244,7 @@ int linux_run_tui(const char* configPath, int initialSlot,
         sigaction(SIGTERM, &defaultAction, nullptr);
         sigaction(SIGSEGV, &defaultAction, nullptr);
         int status = run_tui_child(configPath, initialSlot,
-                                   initialDesired, initialTarget);
+                                   initialDesired, configured);
         _exit(status);
     }
 

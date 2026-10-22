@@ -432,8 +432,15 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
                          "GPU selection state is invalid; refresh the daemon");
                 break;
             }
-            tui_refresh_service(state, true,
-                &state->service.snapshot.adapters[next]);
+            const GpuAdapterInfo chosen = state->service.snapshot.adapters[next];
+            if (tui_refresh_service(state, true, &chosen) &&
+                state->targetGpu.valid &&
+                linux_gpu_identity_matches(&chosen, &state->targetGpu)) {
+                // An explicit choice replaces config.ini's GPU for this
+                // session and lifts its write block; `--gpu` persists one.
+                state->configuredGpu.target = state->targetGpu;
+                state->configuredGpu.status = LINUX_CONFIGURED_GPU_EXPLICIT;
+            }
             break;
         }
         case ACTION_REFRESH:

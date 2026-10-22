@@ -64,6 +64,10 @@ struct TuiState {
     gc_u32 noticeObservedLockout;
     ProbeSummary probe;
     GpuAdapterInfo targetGpu;
+    // config.ini's GPU, resolved against the first adapter list the daemon
+    // answers with (tui_adopt_configured_gpu).  Until it resolves, or the
+    // user selects a GPU, Apply, Reset and a startup-profile bind are blocked.
+    LinuxConfiguredGpu configuredGpu;
     TuiEditState edit;
     TuiLayout layout;
     std::vector<std::string> renderedRows;
@@ -104,6 +108,9 @@ struct TuiInputEvent {
 unsigned long long tui_monotonic_ms();
 bool tui_refresh_service(TuiState* state, bool userRequested,
                          const GpuAdapterInfo* requestedTarget = nullptr);
+// False, with the reason on the status line, while config.ini's GPU has not
+// resolved and no GPU was selected in the TUI.
+bool tui_configured_gpu_allows_write(TuiState* state, const char* action);
 void tui_recompute_dirty(TuiState* state);
 // Read the daemon's boot-apply snapshot back and compare it with the profile
 // slot the policy names.  Cheap and explicit: one request, only at the points

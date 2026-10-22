@@ -1124,7 +1124,8 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
     moves the GPU's stored BDF.  Every stored target resolves through
     linux_resolve_stored_gpu_target(): the daemon before it compares a request
     with the active intent, backend init for its write decision, and the
-    client before it names config.ini's GPU in any request."""
+    client before it names config.ini's GPU in any request.  A selection that
+    does not resolve stops every client write instead of reaching the daemon."""
     snapshot_cpp = _p(ctx, "linux_daemon_snapshot_runtime.cpp")
     discovery_cpp = _p(ctx, "linux_backend_discovery.cpp")
     target_cpp = _p(ctx, "linux_gpu_target_config.cpp")
@@ -1140,15 +1141,41 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
                  "selection, which checks the model on a one-GPU system")
     forbid_text(discovery_cpp, "g->writeIdentityResolved = g->adapterCount == 1 ||",
                 "a lone adapter must not resolve writes for any stored target")
-    require_text(target_cpp, "linux_resolve_stored_gpu_target(target, role",
+    selection_h = _p(ctx, "linux_gpu_selection.h")
+    require_text(selection_h,
+                 "linux_resolve_stored_gpu_target(&gpu->target, gpu->role,",
                  "config.ini resolves with its recorded location role")
+    require_text(target_cpp, "linux_configured_gpu_resolve(gpu, adapters, count",
+                 "the client resolves config.ini through the tested pure rule")
     require_text(target_cpp, "geteuid() == 0",
                  "an unasked config.ini rewrite never runs as root")
-    for verb in ("linux_daemon_apply(clientTarget(),",
-                 "linux_daemon_reset(clientTarget(),",
-                 "linux_daemon_get_state(clientTarget(),"):
+    require_text(target_cpp,
+                 "if (linux_configured_gpu_request_target(gpu, true, target)) return true;",
+                 "a write stops when config.ini's GPU did not resolve")
+    # A failed resolution must stop the write: sending the stale record lets
+    # the daemon follow it (it resolves request targets without the role), and
+    # dropping the target lets an untargeted write reach a lone adapter.
+    forbid_text(main_cpp, "clientTarget()",
+                "no CLI request names config.ini's GPU without the write gate")
+    for verb in ("linux_daemon_apply(writeTarget,",
+                 "linux_daemon_reset(writeTarget,",
+                 "linux_daemon_resolve_write_target(bindTarget,",
+                 "linux_gpu_target_for_read(configPath, &gpuSelection)"):
         require_text(main_cpp, verb,
                      "every CLI request naming config.ini's GPU resolves it first")
+    tui_cpp = _p(ctx, "linux_tui.cpp")
+    refresh_cpp = _p(ctx, "linux_tui_refresh.cpp")
+    mutation_cpp = _p(ctx, "linux_tui_mutation_actions.cpp")
+    forbid_text(tui_cpp, "state->targetGpu = *initialTarget",
+                "the TUI never adopts the stored record as its target")
+    require_text(refresh_cpp, "tui_adopt_configured_gpu(state);",
+                 "the TUI resolves config.ini's GPU on each answered refresh "
+                 "until it resolves")
+    for action in ('tui_configured_gpu_allows_write(state, "Apply")',
+                   'tui_configured_gpu_allows_write(state, "Reset")',
+                   'tui_configured_gpu_allows_write(state, "Startup profile bind")'):
+        require_text(mutation_cpp, action,
+                     "TUI writes stop while config.ini's GPU is unresolved")
     require_text(startup_h, "re-bound from %04x:%02x:%02x.%u",
                  "a startup-profile record follows a renumbered GPU after it "
                  "booted on it")

@@ -133,22 +133,42 @@ bool load_linux_gpu_selection(const char* path, GpuAdapterInfo* target,
                               GpuLocationRole* roleOut = nullptr);
 bool save_linux_gpu_selection(const char* path, const GpuAdapterInfo* target,
                               GpuLocationRole role, char* err, size_t errSize);
-// linux_gpu_target_config.cpp: `--gpu` validation and persistence, and the
-// resolution of config.ini's selection against the daemon's live adapters
-// (rewrites a moved record; *target becomes the live adapter on success).
+// linux_gpu_target_config.cpp: `--gpu` validation and persistence, and
+// config.ini's selection (LinuxConfiguredGpu, linux_gpu_selection.h) for
+// client requests.  Resolution rewrites a moved or role-less record.
+struct LinuxConfiguredGpu;
 bool linux_gpu_target_select_exact(const char* configPath,
                                    GpuAdapterInfo* target,
                                    char* err, size_t errSize);
-void linux_gpu_target_resolve_configured(const char* configPath,
-                                         GpuAdapterInfo* target,
-                                         GpuLocationRole role);
+// `explicitTarget` (from --gpu) wins over the record in config.ini.
+void linux_configured_gpu_load(const char* configPath,
+                               const GpuAdapterInfo* explicitTarget,
+                               LinuxConfiguredGpu* gpu);
+// Resolves a pending or unvalidated selection against an adapter list the
+// caller already holds (the TUI's refreshed snapshot).
+void linux_configured_gpu_resolve_against(const char* configPath,
+                                          LinuxConfiguredGpu* gpu,
+                                          const GpuAdapterInfo* adapters,
+                                          unsigned int count);
+// The target a read names: the live adapter, or none (the daemon's current
+// GPU) when the selection did not resolve.
+const GpuAdapterInfo* linux_gpu_target_for_read(const char* configPath,
+                                                LinuxConfiguredGpu* gpu);
+// The target a write names; false, with the reason in `err`, when the
+// selection did not resolve and the write must not reach the daemon.
+bool linux_gpu_target_for_write(const char* configPath,
+                                LinuxConfiguredGpu* gpu,
+                                const GpuAdapterInfo** target,
+                                char* err, size_t errSize);
 bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, size_t errSize);
 bool write_linux_assets(const char* outputDir, const char* execPath, const char* configPath, char* err, size_t errSize);
 void print_desired_settings_text(FILE* out, int slot, const DesiredSettings* desired);
 void print_desired_settings_json(FILE* out, int slot, const DesiredSettings* desired);
 void print_linux_live_state_text(FILE* out, const ServiceResponse* response);
 void print_linux_live_state_json(FILE* out, const ServiceResponse* response);
+// `configured` is config.ini's selection as loaded; the TUI resolves it against
+// the first adapter list the daemon answers with.
 int linux_run_tui(const char* configPath, int initialSlot, DesiredSettings* initialDesired,
-                  const GpuAdapterInfo* initialTarget);
+                  const LinuxConfiguredGpu* configured);
 
 #endif
