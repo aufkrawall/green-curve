@@ -7,6 +7,7 @@
 #include "profile_persistence_policy.h"
 #include "linux_profile_curve_codec.h"
 #include "gpu_selection_policy.h"
+#include "linux_gpu_selection.h"
 
 #include <string>
 #include <vector>
@@ -752,21 +753,33 @@ void format_linux_gpu_bdf(const GpuAdapterInfo* target, char* text, size_t textS
              target->pciBus, target->pciDevice, target->pciFunction);
 }
 
-bool load_linux_gpu_selection(const char* path, GpuAdapterInfo* target) {
+bool load_linux_gpu_selection(const char* path, GpuAdapterInfo* target,
+                              GpuLocationRole* roleOut) {
+    if (roleOut) *roleOut = GPU_LOCATION_ROLE_UNRECORDED;
     if (!path || !target) return false;
     IniDocument doc;
     char err[128] = {};
     if (!load_ini_document(path, &doc, err, sizeof(err))) return false;
+    // An unknown role spelling is malformed, never a weaker or stronger rule:
+    // the whole selection is ignored, exactly like an unparsable BDF.
+    GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED;
+    std::string roleText = get_section_value(&doc, "gpu", "selected_pci_location_role");
+    if (!configured_gpu_location_role_parse(roleText.c_str(), &role)) {
+        linux_debug_logf("gpu selection: config.ini location role is malformed; "
+                         "selection ignored");
+        return false;
+    }
     std::string bdf = get_section_value(&doc, "gpu", "selected_bdf");
     if (!parse_linux_gpu_bdf(bdf.c_str(), target)) return false;
     target->pciInfoValid = get_section_int(&doc, "gpu", "pci_info_valid", 0) != 0;
     target->deviceId = (unsigned int)get_section_int(&doc, "gpu", "device_id", 0);
     target->subSystemId = (unsigned int)get_section_int(&doc, "gpu", "subsystem_id", 0);
+    if (roleOut) *roleOut = role;
     return true;
 }
 
 bool save_linux_gpu_selection(const char* path, const GpuAdapterInfo* target,
-                              char* err, size_t errSize) {
+                              GpuLocationRole role, char* err, size_t errSize) {
     if (!path || !target || !target->valid) {
         set_message(err, errSize, "valid GPU selection required");
         return false;
@@ -780,6 +793,11 @@ bool save_linux_gpu_selection(const char* path, const GpuAdapterInfo* target,
     set_section_int(&doc, "gpu", "pci_info_valid", target->pciInfoValid ? 1 : 0);
     set_section_int(&doc, "gpu", "device_id", (int)target->deviceId);
     set_section_int(&doc, "gpu", "subsystem_id", (int)target->subSystemId);
+    // Same key and spellings as the Windows [gpu] record; empty means the role
+    // was not recorded (no location to weigh, or a caller without adapters).
+    set_section_value(&doc, "gpu", "selected_pci_location_role",
+        role != GPU_LOCATION_ROLE_UNRECORDED && linux_gpu_bdf_valid(target)
+            ? configured_gpu_location_role_name(role) : "");
     return save_ini_document(path, doc, err, errSize);
 }
 

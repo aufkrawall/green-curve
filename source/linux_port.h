@@ -127,9 +127,21 @@ bool clear_profile_from_config_path(const char* path, int slot,
 int load_linux_debug_enabled(const char* configPath, int defaultValue);
 bool parse_linux_gpu_bdf(const char* text, GpuAdapterInfo* target);
 void format_linux_gpu_bdf(const GpuAdapterInfo* target, char* text, size_t textSize);
-bool load_linux_gpu_selection(const char* path, GpuAdapterInfo* target);
+// config.ini [gpu]: the selected adapter plus its location role (see
+// GpuLocationRole); an absent role loads as GPU_LOCATION_ROLE_UNRECORDED.
+bool load_linux_gpu_selection(const char* path, GpuAdapterInfo* target,
+                              GpuLocationRole* roleOut = nullptr);
 bool save_linux_gpu_selection(const char* path, const GpuAdapterInfo* target,
-                              char* err, size_t errSize);
+                              GpuLocationRole role, char* err, size_t errSize);
+// linux_gpu_target_config.cpp: `--gpu` validation and persistence, and the
+// resolution of config.ini's selection against the daemon's live adapters
+// (rewrites a moved record; *target becomes the live adapter on success).
+bool linux_gpu_target_select_exact(const char* configPath,
+                                   GpuAdapterInfo* target,
+                                   char* err, size_t errSize);
+void linux_gpu_target_resolve_configured(const char* configPath,
+                                         GpuAdapterInfo* target,
+                                         GpuLocationRole role);
 bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, size_t errSize);
 bool write_linux_assets(const char* outputDir, const char* execPath, const char* configPath, char* err, size_t errSize);
 void print_desired_settings_text(FILE* out, int slot, const DesiredSettings* desired);

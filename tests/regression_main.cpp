@@ -1003,6 +1003,9 @@ int run_peer_stall_tests();
 // Durable GPU selection across PCI bus renumbering
 // (tests/gpu_location_role_tests.cpp, 7300-7339).
 int run_gpu_location_role_tests(const char* scratchConfigPath);
+// The Linux stored-target rule for the same renumbering
+// (tests/linux_gpu_location_tests.cpp, 7340-7379).
+int run_linux_gpu_location_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -2622,6 +2625,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int locationFailure = run_gpu_location_role_tests(argv[1])) {
         fprintf(stderr, "regression assertion failed: code %d\n", locationFailure);
         return locationFailure;
+    }
+    if (int linuxLocationFailure = run_linux_gpu_location_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", linuxLocationFailure);
+        return linuxLocationFailure;
     }
 #if defined(_WIN32)
     // Win32 config storage: the named-mutex lock and the Unicode INI writer.
@@ -9780,15 +9787,19 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
         adapters[0] = requested;
         adapters[0].pciBus = 1;
         adapters[1] = requested;
-        if (linux_resolve_gpu_identity(&requested, adapters, 2) != 1) return 614;
+        // A required location is exact: the stored-target resolver with that
+        // role is the strict rule these assertions were written against
+        // (moves are covered by tests/linux_gpu_location_tests.cpp).
+        const GpuLocationRole exact = GPU_LOCATION_ROLE_REQUIRED;
+        if (linux_resolve_stored_gpu_target(&requested, exact, adapters, 2, nullptr) != 1) return 614;
         GpuAdapterInfo reordered[2] = { adapters[1], adapters[0] };
-        if (linux_resolve_gpu_identity(&requested, reordered, 2) != 0) return 615;
-        if (linux_resolve_gpu_identity(&requested, adapters, 1) != -1) return 616;
+        if (linux_resolve_stored_gpu_target(&requested, exact, reordered, 2, nullptr) != 0) return 615;
+        if (linux_resolve_stored_gpu_target(&requested, exact, adapters, 1, nullptr) != -1) return 616;
         GpuAdapterInfo duplicate[2] = { requested, requested };
-        if (linux_resolve_gpu_identity(&requested, duplicate, 2) != -2) return 617;
+        if (linux_resolve_stored_gpu_target(&requested, exact, duplicate, 2, nullptr) != -2) return 617;
         GpuAdapterInfo mismatch = requested;
         mismatch.deviceId = 0x999910deu;
-        if (linux_resolve_gpu_identity(&requested, &mismatch, 1) != -1) return 618;
+        if (linux_resolve_stored_gpu_target(&requested, exact, &mismatch, 1, nullptr) != -1) return 618;
         if (!linux_gpu_switch_preserves_active_intent(
                 false, nullptr, &requested)) return 904;
         if (!linux_gpu_switch_preserves_active_intent(

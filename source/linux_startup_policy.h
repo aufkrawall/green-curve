@@ -229,7 +229,41 @@ static void apply_startup_profile_policy() {
         dlog("daemon: startup profile %u did not commit -> %s\n",
              (unsigned int)g_startupPolicy.profileSlot,
              outcome.message[0] ? outcome.message : "unknown reason");
+        return;
     }
+    // The profile booted on its GPU after firmware renumbered the PCI buses
+    // (linux_resolve_stored_gpu_target followed the model). Re-bind the record
+    // to the live location, as the committed ACTIVE record already was, so it
+    // stays exact if an identical GPU is added later.
+    if (!linux_gpu_bdf_valid(&g_activeTarget) ||
+        linux_gpu_bdf_equal(&g_startupPolicy.targetGpu, &g_activeTarget) ||
+        !linux_gpu_model_matches(&g_startupPolicy.targetGpu, &g_activeTarget))
+        return;
+    LinuxDaemonStartupRecord rebound = {};
+    linux_daemon_startup_initialize(&rebound, g_startupPolicy.mode,
+        g_startupPolicy.profileSlot, g_startupPolicy.profileName,
+        &g_activeTarget, &g_startupPolicy.desired);
+    char storeErr[160] = {};
+    if (!linux_daemon_startup_valid(&rebound) ||
+        !linux_daemon_startup_store(GC_DAEMON_STARTUP_FILE, &rebound,
+                                    storeErr, sizeof(storeErr))) {
+        // Not fatal: the stale record keeps resolving under the same rule.
+        dlog("daemon startup policy: re-binding profile %u to %04x:%02x:%02x.%u "
+             "failed: %s\n", (unsigned int)g_startupPolicy.profileSlot,
+             g_activeTarget.pciDomain, g_activeTarget.pciBus,
+             g_activeTarget.pciDevice, g_activeTarget.pciFunction,
+             storeErr[0] ? storeErr : "record failed validation");
+        return;
+    }
+    dlog("daemon startup policy: profile %u re-bound from %04x:%02x:%02x.%u to "
+         "%04x:%02x:%02x.%u after a PCI renumbering\n",
+         (unsigned int)g_startupPolicy.profileSlot,
+         g_startupPolicy.targetGpu.pciDomain, g_startupPolicy.targetGpu.pciBus,
+         g_startupPolicy.targetGpu.pciDevice,
+         g_startupPolicy.targetGpu.pciFunction, g_activeTarget.pciDomain,
+         g_activeTarget.pciBus, g_activeTarget.pciDevice,
+         g_activeTarget.pciFunction);
+    g_startupPolicy = rebound;
 }
 
 // Read the committed policy once at daemon start.  A present-but-unreadable

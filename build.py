@@ -189,6 +189,9 @@ LINUX_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "linux_terminal_launch.cpp"),
     os.path.join(SOURCE_DIR, "linux_port.cpp"),
     os.path.join(SOURCE_DIR, "linux_port_profiles.cpp"),
+    # Client half of the persisted GPU selection: config.ini against the
+    # daemon's live adapters after a PCI bus renumbering.
+    os.path.join(SOURCE_DIR, "linux_gpu_target_config.cpp"),
     os.path.join(SOURCE_DIR, "linux_profile_output.cpp"),
     os.path.join(SOURCE_DIR, "linux_live_output.cpp"),
     # Client half of the boot-apply snapshot invariant, shared by the TUI and
@@ -1652,7 +1655,7 @@ def run_regression_tests(extra_flags=None):
             harness_path,
             *[os.path.join(SCRIPT_DIR, "tests", name) for name in ("clock_transition_tests.cpp",
               "service_install_tests.cpp", "apply_profile_followup_tests.cpp",
-              "apply_correction_tests.cpp", "fan_worker_lock_tests.cpp", "security_audit_tests.cpp", "installer_fuzz_harness_tests.cpp", "review_followup_tests.cpp", "wer_local_dumps_tests.cpp", "diagnostics_followup_tests.cpp", "gpu_family_wire_tests.cpp", "update_release_030_tests.cpp", "offset_intent_tests.cpp", "gui_auto_restore_notice_tests.cpp", "scalar_shift_retention_tests.cpp", "debug_log_identity_tests.cpp", "veh_driver_fault_tests.cpp", "crash_dump_notice_tests.cpp", "module_version_tests.cpp", "restart_snapshot_cleanup_tests.cpp", "driver_recovery_sequence_tests.cpp", "peer_stall_tests.cpp", "gpu_location_role_tests.cpp")],
+              "apply_correction_tests.cpp", "fan_worker_lock_tests.cpp", "security_audit_tests.cpp", "installer_fuzz_harness_tests.cpp", "review_followup_tests.cpp", "wer_local_dumps_tests.cpp", "diagnostics_followup_tests.cpp", "gpu_family_wire_tests.cpp", "update_release_030_tests.cpp", "offset_intent_tests.cpp", "gui_auto_restore_notice_tests.cpp", "scalar_shift_retention_tests.cpp", "debug_log_identity_tests.cpp", "veh_driver_fault_tests.cpp", "crash_dump_notice_tests.cpp", "module_version_tests.cpp", "restart_snapshot_cleanup_tests.cpp", "driver_recovery_sequence_tests.cpp", "peer_stall_tests.cpp", "gpu_location_role_tests.cpp", "linux_gpu_location_tests.cpp")],
             os.path.join(SOURCE_DIR, "fan_curve.cpp"),
             os.path.join(SOURCE_DIR, "config_text_utils.cpp"),
             os.path.join(SOURCE_DIR, "app_shared.cpp"),
@@ -3521,11 +3524,11 @@ def run_source_regression_checks():
                  "Linux fan worker verifies active intent ownership before hardware writes")
     require_text(linux_backend_cpp, "nvapiAssigned",
                  "Linux NvAPI handles map at most once to an NVML adapter")
-    require_text(linux_backend_cpp, "g->writeIdentityResolved = g->adapterCount == 1 ||",
-                 "Linux multi-GPU NVML writes require an exact selected identity")
+    require_text(linux_backend_cpp, "g->writeIdentityResolved = selection.writeResolved;",
+                 "Linux NVML writes need a resolved stored target; only an untargeted lone adapter is implicit")
     require_text(linux_backend_cpp, "g->gpuHandle = handles[g->nvapiIndex]",
                  "Linux VF capability requires a matched NvAPI handle")
-    require_text(linux_main_cpp, "Cannot validate GPU selection: exact BDF/PCI identity",
+    require_text(os.path.join(SOURCE_DIR, "linux_gpu_target_config.cpp"), "Cannot validate GPU selection: exact BDF/PCI identity",
                  "Linux CLI persists only a daemon-enriched stable GPU identity")
     require_text(linux_daemon_cpp, "startup reapply", "Linux daemon reapplies settings on (re)start")
     require_text(linux_daemon_transport_cpp, "wait_fd_ready", "Linux daemon socket reads/writes poll with a deadline")

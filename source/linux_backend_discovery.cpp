@@ -502,18 +502,32 @@ bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
         return false;
     }
 
-    int selectedIndex = -1;
-    if (target && target->valid)
-        selectedIndex = linux_resolve_gpu_identity(target, g->adapters,
-            g->adapterCount);
-    else if (g->adapterCount == 1)
-        selectedIndex = 0;
+    // The decision lives in linux_gpu_init_selection() (linux_gpu_selection.h).
+    const bool targeted = target && target->valid;
+    const LinuxGpuInitSelection selection =
+        linux_gpu_init_selection(target, g->adapters, g->adapterCount);
+    int selectedIndex = selection.index;
+    char selectionErr[192] = {};
+    if (targeted && (selection.index < 0 || selection.moved)) {
+        char detail[256] = {};
+        linux_format_stored_gpu_detail(target, GPU_LOCATION_ROLE_UNRECORDED,
+            g->adapters, g->adapterCount, detail, sizeof(detail));
+        lb_log("linux_backend: stored GPU target %s (%s)\n",
+               selection.index >= 0
+                   ? "followed its model to a new PCI location"
+                   : selection.index == -2 ? "is ambiguous" : "is not present",
+               detail);
+    }
     if (selectedIndex < 0) {
         if (selectedIndex == -2)
-            gc_strlcpy(err, errSize,
+            gc_strlcpy(selectionErr, sizeof(selectionErr),
                 "selected GPU PCI identity is ambiguous");
+        else if (targeted)
+            gc_strlcpy(selectionErr, sizeof(selectionErr),
+                "the stored GPU is not present (a different model, or moved "
+                "among several GPUs); select one by PCI BDF with --gpu");
         else if (g->adapterCount > 1)
-            gc_strlcpy(err, errSize,
+            gc_strlcpy(selectionErr, sizeof(selectionErr),
                 "multiple GPUs detected; select one by PCI BDF with --gpu");
         selectedIndex = 0; // telemetry-only until an exact request selects one
     }
@@ -522,9 +536,7 @@ bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
     g->nvmlIndex = g->selectedGpu.nvmlIndex;
     g->nvmlDevice = devices[g->nvmlIndex];
     g->nvmlReady = g->nvmlDevice != nullptr;
-    g->writeIdentityResolved = g->adapterCount == 1 ||
-        (target && target->valid &&
-         linux_gpu_identity_matches(target, &g->selectedGpu));
+    g->writeIdentityResolved = selection.writeResolved;
     gc_strlcpy(g->gpuName, sizeof(g->gpuName), g->selectedGpu.name);
     nvml_query_ranges(g);
     g->health.reason = SERVICE_GPU_HEALTH_ARCHITECTURE_UNAVAILABLE;
@@ -532,6 +544,9 @@ bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
         "NvAPI binding has not completed");
     linux_backend_bind_nvapi(g, false, err, errSize);
     linux_backend_refresh(g);
+    // The selection reason outranks a later binding detail: it is what a
+    // caller that needs a write target has to show.
+    if (selectionErr[0]) gc_strlcpy(err, errSize, selectionErr);
     return g->nvmlReady;
 }
 
@@ -542,8 +557,13 @@ bool linux_backend_select_target(LinuxGpuState* g,
         gc_strlcpy(err, errSize, "a stable GPU target is required");
         return false;
     }
-    if (linux_gpu_identity_matches(target, &g->selectedGpu) &&
-        g->writeIdentityResolved) return true;
+    // A stored target whose location moved still names the adapter already
+    // selected; re-initializing the backend for it on every request would
+    // only repeat the same resolution.
+    int current = linux_resolve_stored_gpu_target(target,
+        GPU_LOCATION_ROLE_UNRECORDED, g->adapters, g->adapterCount, nullptr);
+    if (g->writeIdentityResolved && current >= 0 &&
+        (unsigned int)current == g->selectedAdapterIndex) return true;
     LinuxGpuState replacement = {};
     if (!linux_backend_init(&replacement, target, err, errSize) ||
         !replacement.writeIdentityResolved) {

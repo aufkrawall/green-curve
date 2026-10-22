@@ -1119,6 +1119,41 @@ def check_mem_offset_migration(ctx, require_text, forbid_text, require_order):
                  "the stored-unit migration keeps its regression coverage")
 
 
+def check_gpu_location(ctx, require_text, forbid_text, require_order):
+    """A PCI bus renumbering (an on-board NIC disabled in the firmware setup)
+    moves the GPU's stored BDF.  Every stored target resolves through
+    linux_resolve_stored_gpu_target(): the daemon before it compares a request
+    with the active intent, backend init for its write decision, and the
+    client before it names config.ini's GPU in any request."""
+    snapshot_cpp = _p(ctx, "linux_daemon_snapshot_runtime.cpp")
+    discovery_cpp = _p(ctx, "linux_backend_discovery.cpp")
+    target_cpp = _p(ctx, "linux_gpu_target_config.cpp")
+    main_cpp = _p(ctx, "linux_main.cpp")
+    startup_h = _p(ctx, "linux_startup_policy.h")
+    require_order(snapshot_cpp,
+                  "int live = linux_resolve_stored_gpu_target(&req->targetGpu,",
+                  "g_hasActiveDesired, &g_activeTarget, &requested)",
+                  "a stale request target is resolved before the active-intent "
+                  "check, so the active GPU is not refused as another GPU")
+    require_text(discovery_cpp, "linux_gpu_init_selection(target, g->adapters",
+                 "backend init takes its write decision from the tested pure "
+                 "selection, which checks the model on a one-GPU system")
+    forbid_text(discovery_cpp, "g->writeIdentityResolved = g->adapterCount == 1 ||",
+                "a lone adapter must not resolve writes for any stored target")
+    require_text(target_cpp, "linux_resolve_stored_gpu_target(target, role",
+                 "config.ini resolves with its recorded location role")
+    require_text(target_cpp, "geteuid() == 0",
+                 "an unasked config.ini rewrite never runs as root")
+    for verb in ("linux_daemon_apply(clientTarget(),",
+                 "linux_daemon_reset(clientTarget(),",
+                 "linux_daemon_get_state(clientTarget(),"):
+        require_text(main_cpp, verb,
+                     "every CLI request naming config.ini's GPU resolves it first")
+    require_text(startup_h, "re-bound from %04x:%02x:%02x.%u",
+                 "a startup-profile record follows a renumbered GPU after it "
+                 "booted on it")
+
+
 def check_all(ctx, require_text, forbid_text, require_order):
     check_tui_layout(ctx, require_text, forbid_text, require_order)
     check_tui_graph_axes(ctx, require_text, forbid_text)
@@ -1135,3 +1170,4 @@ def check_all(ctx, require_text, forbid_text, require_order):
     check_mem_offset_migration(ctx, require_text, forbid_text, require_order)
     check_auto_restore(ctx, require_text, forbid_text, require_order)
     check_release_packaging(ctx, require_text, forbid_text)
+    check_gpu_location(ctx, require_text, forbid_text, require_order)

@@ -136,18 +136,157 @@ static inline int linux_next_gpu_selection_index(
     return normalized < 0 ? normalized + count : normalized;
 }
 
-// Returns the unique matching index, -1 for no match and -2 for ambiguity.
-static inline int linux_resolve_gpu_identity(const GpuAdapterInfo* requested,
-                                             const GpuAdapterInfo* adapters,
-                                             unsigned int count) {
-    if (!requested || !adapters) return -1;
-    int match = -1;
-    for (unsigned int i = 0; i < count; ++i) {
-        if (!linux_gpu_identity_matches(requested, &adapters[i])) continue;
-        if (match >= 0) return -2;
-        match = (int)i;
+// The model half of an identity: device and subsystem as NVML reports them
+// (either NvAPI word order tolerated). Revision and extended device are not
+// read on Linux, so they are compared only when both sides carry them.
+static inline bool linux_gpu_model_known(const GpuAdapterInfo* gpu) {
+    return gpu && gpu->valid && gpu->pciInfoValid && gpu->deviceId != 0;
+}
+
+static inline bool linux_gpu_model_matches(const GpuAdapterInfo* stored,
+                                           const GpuAdapterInfo* live) {
+    return linux_gpu_model_known(stored) && linux_gpu_model_known(live) &&
+        linux_gpu_device_id_matches(stored->deviceId, live->deviceId) &&
+        linux_gpu_subsystem_id_matches(stored->subSystemId,
+                                       live->subSystemId) &&
+        (!stored->pciRevisionId || !live->pciRevisionId ||
+         stored->pciRevisionId == live->pciRevisionId) &&
+        (!stored->extDeviceId || !live->extDeviceId ||
+         stored->extDeviceId == live->extDeviceId);
+}
+
+static inline bool linux_gpu_bdf_equal(const GpuAdapterInfo* left,
+                                       const GpuAdapterInfo* right) {
+    return linux_gpu_bdf_valid(left) && linux_gpu_bdf_valid(right) &&
+        left->pciDomain == right->pciDomain && left->pciBus == right->pciBus &&
+        left->pciDevice == right->pciDevice &&
+        left->pciFunction == right->pciFunction;
+}
+
+// Resolves a STORED target (config.ini, the daemon's committed or startup
+// record, a request built from either) against live enumeration. Firmware
+// assigns PCI bus numbers at boot, so a stored BDF goes stale when an upstream
+// device appears or disappears. The rule is the Windows one
+// (resolve_configured_gpu_selection): a known model must always match; one
+// adapter at the stored location wins; otherwise the model is followed to its
+// one live adapter when `role` allows it (configured_gpu_location_may_move).
+// A bare location without a model never moves. Returns the adapter index, -1
+// when nothing qualifies and -2 when the choice is ambiguous; *movedOut says
+// the stored location no longer holds the GPU.  Live-to-live comparisons keep
+// using linux_gpu_identity_matches().
+static inline int linux_resolve_stored_gpu_target(
+    const GpuAdapterInfo* stored, GpuLocationRole role,
+    const GpuAdapterInfo* adapters, unsigned int count, bool* movedOut) {
+    if (movedOut) *movedOut = false;
+    if (!stored || !stored->valid || !adapters) return -1;
+    const bool hasBdf = linux_gpu_bdf_valid(stored);
+    const bool hasModel = linux_gpu_model_known(stored);
+    if (!hasBdf && !hasModel) return -1;
+    unsigned int modelMatches = 0, locationMatches = 0;
+    int modelIndex = -1, locationIndex = -1;
+    for (unsigned int i = 0; i < count && i < MAX_GPU_ADAPTERS; ++i) {
+        const GpuAdapterInfo* live = &adapters[i];
+        if (!live->valid) continue;
+        if (hasModel && !linux_gpu_model_matches(stored, live)) continue;
+        if (hasModel) {
+            ++modelMatches;
+            modelIndex = (int)i;
+        }
+        if (hasBdf && linux_gpu_bdf_equal(stored, live)) {
+            ++locationMatches;
+            locationIndex = (int)i;
+        }
     }
-    return match;
+    if (locationMatches == 1) return locationIndex;
+    if (locationMatches > 1) return -2;
+    if (modelMatches == 0) return -1;
+    if (hasBdf && !configured_gpu_location_may_move(role, count)) return -1;
+    if (modelMatches > 1) return -2;
+    if (movedOut) *movedOut = hasBdf;
+    return modelIndex;
+}
+
+// What a backend init selects. Every target handed to init is a stored one
+// (the committed or startup record, or a request built from config.ini), and
+// a request cannot carry the location role, so a moved target follows its
+// model only while exactly one adapter is present (UNRECORDED); the client
+// resolves config.ini with its recorded role before it sends anything. An
+// untargeted init may write to a lone adapter; a targeted one only to the
+// adapter its target resolved to, so a swapped-in different model never
+// receives a stored intent. `index` is -1/-2 when nothing is selected for
+// writes (the caller still reads telemetry from adapter 0).
+struct LinuxGpuInitSelection {
+    int index;
+    bool writeResolved;
+    bool moved;
+};
+
+static inline LinuxGpuInitSelection linux_gpu_init_selection(
+    const GpuAdapterInfo* target, const GpuAdapterInfo* adapters,
+    unsigned int count) {
+    LinuxGpuInitSelection selection = {-1, false, false};
+    if (target && target->valid) {
+        selection.index = linux_resolve_stored_gpu_target(target,
+            GPU_LOCATION_ROLE_UNRECORDED, adapters, count, &selection.moved);
+        selection.writeResolved = selection.index >= 0;
+    } else if (count == 1) {
+        selection.index = 0;
+        selection.writeResolved = true;
+    }
+    return selection;
+}
+
+// The role a selection of the live adapter `target` records (the Linux twin
+// of configured_gpu_location_role_for_selection): advisory when no other
+// adapter shares its model, required when one does, unrecorded without a
+// location or a known model.
+static inline GpuLocationRole linux_gpu_location_role_for_selection(
+    const GpuAdapterInfo* target, const GpuAdapterInfo* adapters,
+    unsigned int count) {
+    if (!linux_gpu_bdf_valid(target) || !linux_gpu_model_known(target))
+        return GPU_LOCATION_ROLE_UNRECORDED;
+    unsigned int models = 0;
+    for (unsigned int i = 0; adapters && i < count && i < MAX_GPU_ADAPTERS; ++i)
+        if (linux_gpu_model_matches(target, &adapters[i])) ++models;
+    return models == 1 ? GPU_LOCATION_ROLE_ADVISORY : GPU_LOCATION_ROLE_REQUIRED;
+}
+
+// One bounded diagnostic line for a stored-target resolution: the stored
+// model, location and role, then the first four live adapters.
+static inline void linux_format_stored_gpu_detail(
+    const GpuAdapterInfo* stored, GpuLocationRole role,
+    const GpuAdapterInfo* adapters, unsigned int count,
+    char* out, size_t outSize) {
+    if (!out || outSize == 0) return;
+    out[0] = 0;
+    if (!stored) return;
+    char location[24] = "unknown";
+    if (linux_gpu_bdf_valid(stored))
+        snprintf(location, sizeof(location), "%04x:%02x:%02x.%u",
+                 stored->pciDomain, stored->pciBus, stored->pciDevice,
+                 stored->pciFunction);
+    int written = snprintf(out, outSize,
+        "stored=%08X/%08X@%s role=%s adapters=%u live=[",
+        linux_gpu_model_known(stored) ? stored->deviceId : 0u,
+        linux_gpu_model_known(stored) ? stored->subSystemId : 0u, location,
+        configured_gpu_location_role_name(role), count);
+    if (written < 0 || (size_t)written >= outSize) return;
+    size_t used = (size_t)written;
+    const unsigned int shown = count < 4u ? count : 4u;
+    for (unsigned int i = 0; adapters && i < shown; ++i) {
+        const GpuAdapterInfo* live = &adapters[i];
+        const char* kind = linux_gpu_model_matches(stored, live)
+            ? "model" : "other";
+        written = linux_gpu_bdf_valid(live)
+            ? snprintf(out + used, outSize - used, "%s%u:%s@%04x:%02x:%02x.%u",
+                i ? " " : "", i, kind, live->pciDomain, live->pciBus,
+                live->pciDevice, live->pciFunction)
+            : snprintf(out + used, outSize - used, "%s%u:%s@unknown",
+                i ? " " : "", i, kind);
+        if (written < 0 || (size_t)written >= outSize - used) return;
+        used += (size_t)written;
+    }
+    snprintf(out + used, outSize - used, "%s]", count > shown ? " ..." : "");
 }
 
 #endif

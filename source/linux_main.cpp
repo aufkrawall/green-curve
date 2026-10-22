@@ -468,16 +468,28 @@ static int linux_main_impl(int argc, char** argv) {
                      opts.resumeRestore ? 1 : 0);
 
     GpuAdapterInfo gpuTarget = {};
+    GpuLocationRole gpuTargetRole = GPU_LOCATION_ROLE_UNRECORDED;
     if (opts.hasGpuTarget) {
         gpuTarget = opts.gpuTarget;
     } else {
-        load_linux_gpu_selection(configPath, &gpuTarget);
+        load_linux_gpu_selection(configPath, &gpuTarget, &gpuTargetRole);
     }
+    // config.ini's selection is resolved against the daemon's live adapters
+    // right before the first request that names it (PCI buses can renumber).
+    bool gpuTargetResolved = opts.hasGpuTarget;
+    auto clientTarget = [&]() -> const GpuAdapterInfo* {
+        if (!gpuTargetResolved) {
+            gpuTargetResolved = true;
+            linux_gpu_target_resolve_configured(configPath, &gpuTarget,
+                                                gpuTargetRole);
+        }
+        return gpuTarget.valid ? &gpuTarget : nullptr;
+    };
 
     if (opts.dumpLive || opts.jsonLive) {
         ServiceResponse live = {};
         char liveErr[256] = {};
-        if (!linux_daemon_get_state(gpuTarget.valid ? &gpuTarget : nullptr,
+        if (!linux_daemon_get_state(clientTarget(),
                                     &live, liveErr, sizeof(liveErr))) {
             fprintf(stderr, "Cannot read live GPU state: %s\n",
                     liveErr[0] ? liveErr : "daemon request failed");
@@ -567,30 +579,10 @@ static int linux_main_impl(int argc, char** argv) {
     }
 
     if (opts.hasGpuTarget) {
-        ServiceSnapshot snapshot = {};
-        char selectionErr[256] = {};
-        if (!linux_daemon_snapshot(&snapshot, selectionErr, sizeof(selectionErr))) {
-            fprintf(stderr, "Cannot validate GPU selection: %s\n", selectionErr);
-            return 1;
-        }
-        int match = -1;
-        for (unsigned int i = 0; i < snapshot.adapterCount; ++i) {
-            const GpuAdapterInfo& adapter = snapshot.adapters[i];
-            if (!adapter.valid || adapter.pciDomain != gpuTarget.pciDomain ||
-                adapter.pciBus != gpuTarget.pciBus || adapter.pciDevice != gpuTarget.pciDevice ||
-                adapter.pciFunction != gpuTarget.pciFunction)
-                continue;
-            if (match >= 0) { match = -2; break; }
-            match = (int)i;
-        }
-        if (match < 0 || !snapshot.adapters[match].pciInfoValid) {
-            fprintf(stderr, "Cannot validate GPU selection: exact BDF/PCI identity is %s\n",
-                    match == -2 ? "ambiguous" : "not available");
-            return 1;
-        }
-        gpuTarget = snapshot.adapters[match];
-        if (!save_linux_gpu_selection(configPath, &gpuTarget, selectionErr, sizeof(selectionErr))) {
-            fprintf(stderr, "Cannot persist GPU selection: %s\n", selectionErr);
+        char selectionErr[320] = {};
+        if (!linux_gpu_target_select_exact(configPath, &gpuTarget, selectionErr,
+                                           sizeof(selectionErr))) {
+            fprintf(stderr, "%s\n", selectionErr);
             return 1;
         }
     }
@@ -720,7 +712,7 @@ static int linux_main_impl(int argc, char** argv) {
             GpuAdapterInfo startupTarget = {};
             char targetErr[256] = {};
             if (!linux_daemon_resolve_write_target(
-                    gpuTarget.valid ? &gpuTarget : nullptr, &startupTarget,
+                    clientTarget(), &startupTarget,
                     targetErr, sizeof(targetErr))) {
                 fprintf(stderr, "Cannot bind the startup policy to a GPU: %s\n",
                         targetErr[0] ? targetErr : "no exact GPU identity");
@@ -756,9 +748,9 @@ static int linux_main_impl(int argc, char** argv) {
         bool ok;
         if (opts.reset && !opts.hasProfileSlot) {
             // `--reset --apply-config` releases OC/UV to driver defaults.
-            ok = linux_daemon_reset(gpuTarget.valid ? &gpuTarget : nullptr, result, sizeof(result));
+            ok = linux_daemon_reset(clientTarget(), result, sizeof(result));
         } else {
-            ok = linux_daemon_apply(gpuTarget.valid ? &gpuTarget : nullptr,
+            ok = linux_daemon_apply(clientTarget(),
                                     &desired, true, result, sizeof(result));
         }
         printf("%s\n", result[0] ? result : (ok ? "Applied" : "Apply failed"));
@@ -787,7 +779,7 @@ static int linux_main_impl(int argc, char** argv) {
     // The TUI starts from the daemon's live state.  A selected profile is only
     // staged after the user explicitly activates Load inside the TUI.
     int tuiStatus = linux_run_tui(configPath, slot, nullptr,
-                                  gpuTarget.valid ? &gpuTarget : nullptr);
+                                  clientTarget());
     linux_debug_logf("tui: exited with status %d fromDesktop=%d",
                      tuiStatus, opts.fromDesktop ? 1 : 0);
     if (opts.fromDesktop && tuiStatus != 0) {

@@ -262,8 +262,29 @@ static bool select_request_gpu(const ServiceRequest* req, char* err, size_t errS
         gc_strlcpy(err, errSize, "multiple GPUs detected; select an exact PCI BDF with --gpu");
         return false;
     }
+    // A request built from a config.ini written before a PCI bus renumbering
+    // names the right GPU at its old location. Compare live adapters, not the
+    // stale location, or the active GPU looks like "another GPU" and the
+    // request is refused with advice to reset it.
+    GpuAdapterInfo requested = req->targetGpu;
+    bool moved = false;
+    int live = linux_resolve_stored_gpu_target(&req->targetGpu,
+        GPU_LOCATION_ROLE_UNRECORDED, g_gpu.adapters, g_gpu.adapterCount,
+        &moved);
+    if (live >= 0) {
+        requested = g_gpu.adapters[live];
+        if (moved) {
+            static unsigned long long movedRequests = 0;
+            if (++movedRequests == 1 || movedRequests % 100 == 0)
+                dlog("daemon state: request target moved to %04x:%02x:%02x.%u "
+                     "(count=%llu); the client's config names an old location\n",
+                     requested.pciDomain, requested.pciBus,
+                     requested.pciDevice, requested.pciFunction,
+                     movedRequests);
+        }
+    }
     if (!linux_gpu_switch_preserves_active_intent(
-            g_hasActiveDesired, &g_activeTarget, &req->targetGpu)) {
+            g_hasActiveDesired, &g_activeTarget, &requested)) {
         char activeBdf[32] = {}, requestedBdf[32] = {};
         gc_snprintf(activeBdf, sizeof(activeBdf), "%04x:%02x:%02x.%u",
             g_activeTarget.pciDomain, g_activeTarget.pciBus,
@@ -280,7 +301,7 @@ static bool select_request_gpu(const ServiceRequest* req, char* err, size_t errS
         return false;
     }
     GpuAdapterInfo previous = g_gpu.selectedGpu;
-    if (!linux_backend_select_target(&g_gpu, &req->targetGpu, err, errSize)) return false;
+    if (!linux_backend_select_target(&g_gpu, &requested, err, errSize)) return false;
     if (!linux_gpu_identity_matches(&previous, &g_gpu.selectedGpu)) {
         ++g_daemonGpuGeneration;
         dlog("daemon state: selected GPU changed; generation=%llu\n",
