@@ -275,7 +275,8 @@ static bool select_request_gpu(const ServiceRequest* req, char* err, size_t errS
         requested = g_gpu.adapters[live];
         if (moved) {
             static unsigned long long movedRequests = 0;
-            if (++movedRequests == 1 || movedRequests % 100 == 0)
+            ++movedRequests;
+            if (movedRequests == 1 || movedRequests % 100 == 0)
                 dlog("daemon state: request target moved to %04x:%02x:%02x.%u "
                      "(count=%llu); the client's config names an old location\n",
                      requested.pciDomain, requested.pciBus,
