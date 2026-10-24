@@ -109,10 +109,16 @@ FUZZ_LINUX_EXTRA_SOURCES = {
 LINUX_FIXTURES = (
     ("linux_transport_regression", "socket transport"),
     ("linux_crash_report_regression", "crash report"),
+    ("linux_gpu_selection_store_regression", "GPU selection store"),
 )
 LINUX_FIXTURE_EXTRA_SOURCES = {
     "linux_transport_regression": ("fan_curve.cpp", "config_text_utils.cpp"),
     "linux_crash_report_regression": (),
+    # The [gpu] record I/O, the INI reader/writer it uses, and the shared
+    # text/fan-curve helpers gpu_core.h's IPC validators reach.
+    "linux_gpu_selection_store_regression": (
+        "linux_gpu_target_config.cpp", "linux_port.cpp",
+        "config_text_utils.cpp", "fan_curve.cpp"),
 }
 
 # Translation units every Win32 fuzz target links.  Hoisted out of the command

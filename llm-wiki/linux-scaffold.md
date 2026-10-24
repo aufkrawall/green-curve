@@ -705,7 +705,11 @@ boot recovery rebind) keep the exact `linux_gpu_identity_matches()`.
   `configured_gpu_location_role_parse()`, as Windows). An unknown role
   spelling, an unparsable or all-zero BDF, a role without a BDF, or a
   config.ini that exists but cannot be read makes the record MALFORMED
-  (`linux_gpu_selection_record_parse()`, 2026-10-24), never "no record". The
+  (`linux_gpu_selection_record_parse()`, 2026-10-24), never "no record".
+  `save_linux_gpu_selection()` refuses to write into a config.ini it cannot
+  read (2026-10-24): it used to start from an empty document, so `--gpu` --
+  the MALFORMED remedy -- replaced every profile in an over-limit or
+  unreadable file. It now fails with "it was not overwritten". The
   client holds the selection as a
   `LinuxConfiguredGpu` (`linux_gpu_selection.h`: record, role, status).
   Before the first CLI request that names it (`linux_gpu_target_for_read()` /

@@ -1162,6 +1162,16 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
     # record writes untargeted, which reaches a lone remaining twin.
     require_text(target_cpp, "linux_gpu_selection_record_parse(",
                  "config.ini's [gpu] record is classified by the tested parser")
+    # An unreadable config.ini is MALFORMED and `--gpu` is its remedy, so the
+    # save must not start from an empty document and replace every profile.
+    forbid_text(target_cpp,
+                "if (!load_ini_document(path, &doc, loadErr, sizeof(loadErr))) doc.sections.clear();",
+                "saving the GPU selection never rewrites an unreadable config.ini")
+    require_text(target_cpp, "gpu selection: not saved; config.ini cannot be read",
+                 "saving the GPU selection refuses an unreadable config.ini")
+    require_text(os.path.join(ctx.SCRIPT_DIR, "tools", "security_gates.py"),
+                 '("linux_gpu_selection_store_regression", "GPU selection store")',
+                 "the native config.ini selection-store fixture runs on Linux hosts")
     require_text(target_cpp, "linux_configured_gpu_status_for_record(",
                  "a malformed config.ini GPU record starts MALFORMED and stops writes")
     require_text(target_cpp,

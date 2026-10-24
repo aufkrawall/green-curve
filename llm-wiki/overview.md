@@ -132,7 +132,7 @@ a warning or an error.
 | `source/linux_main.cpp`, `source/linux_cli_options.cpp`, `source/linux_live_output.cpp`, `source/intent_readback_status.h` | Linux `main()`/role dispatch, CLI parsing/help, complete live VF text/JSON output, and the pure configured-intent versus hardware-readback comparison shared with the TUI/tests |
 | `source/linux_port.cpp` | Linux path/config/INI utilities and lower-level config primitives |
 | `source/linux_port_profiles.cpp`, `source/linux_fan_curve_profile_save.h` | Linux profile load/save, fan-curve serialization, v23 zero-RPM gap migration, and Linux merge helpers |
-| `source/linux_gpu_target_config.cpp` | Linux config.ini `[gpu]` record read/write (absent vs malformed) and its client-side resolution against the daemon's adapters before any request names it |
+| `source/linux_gpu_target_config.cpp` | Linux config.ini `[gpu]` record read/write (absent vs malformed; an unreadable file is never rewritten) and its client-side resolution against the daemon's adapters before any request names it |
 | `source/linux_port_internal.h` | Linux-private INI/path/parser helper declarations shared by the split Linux source files |
 | `source/startup_snapshot_policy.h`, `source/linux_startup_sync.{h,cpp}` | Pure decisions plus the shared TUI/CLI implementation that keeps the daemon's boot-apply snapshot equal to the profile slot it names, and reports it when they diverge |
 | `source/linux_tui.cpp`, `source/linux_tui_render.cpp`, `source/linux_tui_actions.cpp`, `source/linux_tui_authority_runtime.cpp`, `source/linux_tui_refresh.cpp` | Raw ANSI terminal supervisor, diff renderer/input parser, responsive action/edit/profile controller, domain-aware draft authority, and health-driven refresh/rendering |

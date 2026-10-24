@@ -91,9 +91,21 @@ bool save_linux_gpu_selection(const char* path, const GpuAdapterInfo* target,
         set_message(err, errSize, "valid GPU selection required");
         return false;
     }
+    // A missing config.ini loads as an empty document.  One that exists but
+    // cannot be read (permissions, over the INI limits) is left alone: writing
+    // the selection into an empty document would replace every profile in it,
+    // and a malformed record's own remedy, `--gpu`, is exactly this call.
     IniDocument doc;
-    char loadErr[128] = {};
-    if (!load_ini_document(path, &doc, loadErr, sizeof(loadErr))) doc.sections.clear();
+    char loadErr[192] = {};
+    if (!load_ini_document(path, &doc, loadErr, sizeof(loadErr))) {
+        set_message(err, errSize, "config.ini cannot be read (%s); it was not "
+                    "overwritten -- fix or move it, then select the GPU again",
+                    loadErr[0] ? loadErr : "unknown error");
+        linux_debug_logf("gpu selection: not saved; config.ini cannot be read "
+                         "and is left unchanged (%s)",
+                         loadErr[0] ? loadErr : "unknown error");
+        return false;
+    }
     char bdf[32] = {};
     format_linux_gpu_bdf(target, bdf, sizeof(bdf));
     set_section_value(&doc, "gpu", "selected_bdf", bdf);

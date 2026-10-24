@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-24: Saving the Linux GPU selection never rewrites an unreadable config.ini
+
+- Review follow-up. `save_linux_gpu_selection()` started from an empty
+  document when config.ini could not be read, so the rewrite kept only
+  `[gpu]` and replaced every profile. Since the same day an unreadable
+  config.ini loads as a MALFORMED selection whose remedy is `--gpu`, i.e.
+  exactly that save. It now fails with "it was not overwritten".
+- The record I/O moved to `linux_gpu_target_config.cpp` first (separate
+  commit), which brought `linux_port_profiles.cpp` under 800 lines.
+- New native fixture `linux_gpu_selection_store_regression` (Linux hosts run
+  it, others cross-link it); run under WSL here, it passes, and the pre-fix
+  save fails its five unreadable-file assertions. Log line: `gpu selection:
+  not saved; config.ini cannot be read`.
+
 ## 2026-10-24: The Linux TUI hold is recoverable, and refusals are not retried per tick
 
 - Review follow-up to "The Linux TUI writes only to the selected GPU". A hold
