@@ -30,8 +30,13 @@ same command outside the sandbox (in Claude Code, the Bash tool's sandbox
 bypass, which goes through the permission prompt) and confirm `Regression
 tests passed`. Do not weaken the probe or treat exit 120 as success.
 
+Deliberate crashes: the crash-report fixture's child calls
+`prctl(PR_SET_DUMPABLE, 0)` before its real SIGSEGV. `RLIMIT_CORE=0` alone
+does not stop a piped `core_pattern`, so every run used to land in
+systemd-coredump and raise a desktop crash notification (gated).
+
 Last verified: 2026-10-24 (Arch, Claude Code sandbox: exit 120 with only the
-transport fixture blocked; unsandboxed: passed).
+transport fixture blocked; unsandboxed: passed; no new coredump entries).
 
 ## Windows agent sandbox execution
 

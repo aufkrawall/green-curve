@@ -465,6 +465,9 @@ def check_crash_report(ctx, require_text, forbid_text, require_order):
                  "the fixture asserts that a crash still produces its report")
     require_text(fixture_cpp, "an execve'd process leaves no report behind",
                  "the fixture covers the relaunch path that cleanup cannot reach")
+    require_text(fixture_cpp, "prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)",
+                 "the deliberate crash child stays out of systemd-coredump and "
+                 "desktop crash notifications")
     # Restricted runners: scratch files follow $TMPDIR, and a refused
     # socket(AF_UNIX) is reported as blocked, never as a pass.
     env_h = os.path.join(ctx.SCRIPT_DIR, "tests", "posix_test_environment.h")

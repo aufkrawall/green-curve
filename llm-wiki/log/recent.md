@@ -16,6 +16,9 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   120) after its socketpair cases; build.py keeps going and finishes with
   `Regression tests INCOMPLETE`, non-zero. The named-socket cases still need
   an unsandboxed run (testing.md, "Linux agent sandbox execution").
+- Every Linux test run raised a KDE crash notification: the crash-report
+  fixture's deliberate SIGSEGV reached systemd-coredump despite
+  `RLIMIT_CORE=0`. The child is now non-dumpable; no coredump entry since.
 
 ## 2026-10-24: Legacy Linux restore records widen as `unrecorded`, not `required`
 

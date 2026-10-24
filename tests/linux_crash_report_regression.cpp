@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -315,6 +316,12 @@ void test_real_crash_writes_report() {
         // directory would make the report count ambiguous.
         struct rlimit noCore = {0, 0};
         setrlimit(RLIMIT_CORE, &noCore);
+        // RLIMIT_CORE does not stop a piped core_pattern: the kernel still
+        // hands the crash to systemd-coredump, which records it and lets the
+        // desktop raise a crash notification on every test run. A process
+        // that is not dumpable never reaches the core-dump path at all; the
+        // signal, its delivery and the handler under test are unchanged.
+        if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0) _exit(5);
         // The handler's stderr copy is expected and verified by the file copy;
         // dumping /proc/self/maps into the test output would drown it.
         int devNull = open("/dev/null", O_WRONLY);
