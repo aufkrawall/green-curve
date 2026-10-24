@@ -1,5 +1,38 @@
 # Testing
 
+## Linux agent sandbox execution
+
+Source anchors: `tests/posix_test_environment.h`,
+`tests/linux_transport_regression.cpp`, `tools/security_gates.py`
+(`FIXTURE_EXIT_ENVIRONMENT_BLOCKED`, `finish_environment_blocked()`),
+`tools/linux_gates.py` (`check_crash_report`).
+
+A restricted Linux runner (an agent's bubblewrap/seccomp sandbox) typically
+mounts `/tmp` read-only, sets `$TMPDIR` to its writable temp area, blocks
+the network, and refuses `socket(AF_UNIX)` with EPERM while still allowing
+`socketpair()`. The suite handles each one:
+
+- Scratch files: the POSIX fixtures and the pure harness's CLI-log test create
+  them under `gc_test_temp_base()` (`$TMPDIR` when absolute, else `/tmp`);
+  socket directories fall back to `/tmp` if `$TMPDIR` would overflow
+  `sun_path`. A gate forbids `"/tmp/` literals in those test files.
+- Network: only needed the first time, to fetch the pinned toolchains; later
+  runs use the cached `llvm-mingw-linux/`, `zig/` and `seven-zip/` trees.
+- Unix sockets: the transport fixture runs its socketpair cases, skips only
+  the listener/accept/socket-permission cases, prints why, and exits 120.
+  The runner reports it `BLOCKED by the environment`, runs every other stage,
+  and ends with `Regression tests INCOMPLETE ...` and exit 120. That is never
+  a pass.
+
+So `python build.py --test` inside the sandbox proves everything except the
+named-socket cases. A commit gate still needs the full verdict: rerun the
+same command outside the sandbox (in Claude Code, the Bash tool's sandbox
+bypass, which goes through the permission prompt) and confirm `Regression
+tests passed`. Do not weaken the probe or treat exit 120 as success.
+
+Last verified: 2026-10-24 (Arch, Claude Code sandbox: exit 120 with only the
+transport fixture blocked; unsandboxed: passed).
+
 ## Windows agent sandbox execution
 
 Source anchors: `build.py` (`run_regression_tests()`),

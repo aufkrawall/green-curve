@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-24: The Linux regression suite runs in an agent sandbox
+
+- Inside the sandbox the suite failed at 6731 (a hard-coded `/tmp` path on a
+  read-only `/tmp`), then at the transport fixture (`socket(AF_UNIX)` refused
+  by seccomp). Fixture scratch paths now follow `$TMPDIR`
+  (`tests/posix_test_environment.h`); the transport fixture's daemon socket
+  path moved under it too, so parallel runs no longer share a fixed path.
+- The transport fixture reports a refused AF_UNIX socket as blocked (exit
+  120) after its socketpair cases; build.py keeps going and finishes with
+  `Regression tests INCOMPLETE`, non-zero. The named-socket cases still need
+  an unsandboxed run (testing.md, "Linux agent sandbox execution").
+
 ## 2026-10-24: Legacy Linux restore records widen as `unrecorded`, not `required`
 
 - Reported on Linux: the boot profile stopped applying after updating past

@@ -106,6 +106,24 @@ FUZZ_LINUX_EXTRA_SOURCES = {
 # hold up their end.  An empty tuple means "link nothing extra", so a fixture
 # that grows a dependency on a Win32 shard fails at link rather than being
 # papered over -- the same contract as FUZZ_LINUX_EXTRA_SOURCES.
+# Mirrors GC_TEST_EXIT_ENVIRONMENT_BLOCKED (tests/posix_test_environment.h):
+# a fixture whose environment refuses something it cannot run without, such as
+# a sandbox that forbids socket(AF_UNIX). Blocked is never a pass.
+FIXTURE_EXIT_ENVIRONMENT_BLOCKED = 120
+ENVIRONMENT_BLOCKED = []
+
+
+def finish_environment_blocked():
+    """Fail the run, after every other stage passed, if a fixture was blocked."""
+    if not ENVIRONMENT_BLOCKED:
+        return
+    print(f"Regression tests INCOMPLETE: {len(ENVIRONMENT_BLOCKED)} fixture(s) "
+          f"blocked by the environment ({', '.join(ENVIRONMENT_BLOCKED)}); every "
+          f"other stage passed. Re-run outside the restricted environment "
+          f"(llm-wiki/testing.md, \"Linux agent sandbox execution\").")
+    sys.exit(FIXTURE_EXIT_ENVIRONMENT_BLOCKED)
+
+
 LINUX_FIXTURES = (
     ("linux_transport_regression", "socket transport"),
     ("linux_crash_report_regression", "crash report"),
@@ -342,6 +360,14 @@ def run_linux_fixtures(ctx, tmp_dir, extra_flags, test_env):
             continue
         print(f"Running Linux {label} regression tests")
         result = subprocess.run([fixture_exe], cwd=ctx.SCRIPT_DIR, env=test_env)
+        if result.returncode == FIXTURE_EXIT_ENVIRONMENT_BLOCKED:
+            # The fixture explained the refusal on stderr. The remaining stages
+            # still run so one restricted run shows everything else, and
+            # finish_environment_blocked() fails the run at the end.
+            print(f"Linux {label} regression BLOCKED by the environment "
+                  f"(not a pass; see the reason above)")
+            ENVIRONMENT_BLOCKED.append(f"Linux {label}")
+            continue
         if result.returncode != 0:
             print(f"Linux {label} regression FAILED ({result.returncode})")
             sys.exit(result.returncode)

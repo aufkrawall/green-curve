@@ -465,6 +465,26 @@ def check_crash_report(ctx, require_text, forbid_text, require_order):
                  "the fixture asserts that a crash still produces its report")
     require_text(fixture_cpp, "an execve'd process leaves no report behind",
                  "the fixture covers the relaunch path that cleanup cannot reach")
+    # Restricted runners: scratch files follow $TMPDIR, and a refused
+    # socket(AF_UNIX) is reported as blocked, never as a pass.
+    env_h = os.path.join(ctx.SCRIPT_DIR, "tests", "posix_test_environment.h")
+    transport_cpp = os.path.join(ctx.SCRIPT_DIR, "tests", "linux_transport_regression.cpp")
+    require_text(env_h, "#define GC_TEST_EXIT_ENVIRONMENT_BLOCKED 120",
+                 "the blocked-fixture exit status is defined once for the fixtures")
+    require_text(os.path.join(ctx.SCRIPT_DIR, "tools", "security_gates.py"),
+                 "FIXTURE_EXIT_ENVIRONMENT_BLOCKED = 120",
+                 "the runner recognizes the fixtures' blocked exit status")
+    require_text(build_script, "security_gates.finish_environment_blocked()",
+                 "a blocked fixture fails the run after the other stages")
+    require_order(build_script, "security_gates.finish_environment_blocked()",
+                  'print("Regression tests passed")',
+                  "a run with a blocked fixture never prints the pass verdict")
+    require_text(transport_cpp, "gc_test_unix_sockets_refused(&socketErrno)",
+                 "the transport fixture reports a refused AF_UNIX socket as blocked")
+    for stem in ("linux_transport_regression", "linux_crash_report_regression",
+                 "linux_gpu_selection_store_regression", "diagnostics_followup_tests"):
+        forbid_text(os.path.join(ctx.SCRIPT_DIR, "tests", stem + ".cpp"), '"/tmp/',
+                    f"{stem}.cpp creates scratch files under the $TMPDIR-aware base")
     gates = os.path.join(ctx.SCRIPT_DIR, "tools", "security_gates.py")
     require_text(build_script, "security_gates.run_linux_fixtures(",
                  "build.py builds and runs the native Linux fixtures")

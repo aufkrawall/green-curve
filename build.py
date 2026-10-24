@@ -1715,6 +1715,7 @@ def run_regression_tests(extra_flags=None):
         # stdout. Only the real artifact can answer that.
         security_gates.run_cli_console_fixture(_gate_ctx())
         run_source_regression_checks()
+        security_gates.finish_environment_blocked()
         print("Regression tests passed")
     finally:
         cleanup_work_subdir(tmp)

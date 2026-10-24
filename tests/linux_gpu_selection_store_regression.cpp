@@ -15,6 +15,7 @@
 
 #include "linux_port.h"
 #include "linux_port_internal.h"
+#include "posix_test_environment.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -155,10 +156,7 @@ void test_unreadable_permissions_are_not_overwritten() {
 }
 
 bool make_root() {
-    const char* base = getenv("TMPDIR");
-    snprintf(g_root, sizeof(g_root), "%s/gc-gpu-selection-XXXXXX",
-             base && base[0] ? base : "/tmp");
-    return mkdtemp(g_root) != nullptr;
+    return gc_test_make_temp_dir(g_root, sizeof(g_root), "gc-gpu-selection", 0) != nullptr;
 }
 
 void remove_root() {

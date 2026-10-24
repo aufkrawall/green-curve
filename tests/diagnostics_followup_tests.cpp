@@ -19,6 +19,7 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#include "posix_test_environment.h"
 #endif
 
 #include <stddef.h>
@@ -224,7 +225,8 @@ bool temp_log_path(char* out, size_t outSize, const char* tag) {
     int n = snprintf(out, outSize, "%sgc_cli_log_%s_%lu.txt", dir, tag,
                      (unsigned long)GetCurrentProcessId());
 #else
-    int n = snprintf(out, outSize, "/tmp/gc_cli_log_%s_%ld.txt", tag, (long)getpid());
+    int n = snprintf(out, outSize, "%s/gc_cli_log_%s_%ld.txt", gc_test_temp_base(), tag,
+                     (long)getpid());
 #endif
     return n > 0 && (size_t)n < outSize;
 }

@@ -21,6 +21,7 @@
 #endif
 
 #include "platform.h"
+#include "posix_test_environment.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -65,8 +66,8 @@ char g_configPath[640] = {};
 // Every report this fixture writes goes under one private directory, so a
 // counting assertion can never be confused by an unrelated file.
 bool make_root() {
-    if (gc_snprintf(g_root, sizeof(g_root), "/tmp/greencurve-crash-report-regression-%ld",
-                    (long)getpid()) < 0) {
+    if (gc_snprintf(g_root, sizeof(g_root), "%s/greencurve-crash-report-regression-%ld",
+                    gc_test_temp_base(), (long)getpid()) < 0) {
         return false;
     }
     if (mkdir(g_root, 0700) != 0 && errno != EEXIST) return false;

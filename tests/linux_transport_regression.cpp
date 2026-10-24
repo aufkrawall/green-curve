@@ -24,13 +24,17 @@
 #include <time.h>
 #include <unistd.h>
 
-#define GC_DAEMON_SOCKET_PATH "/tmp/greencurve-transport-regression.sock"
+// The daemon's socket path, set by main() under the fixture's temp base so a
+// run needs no writable /tmp and never collides with a parallel run.
+static char g_transportSocketPath[sizeof(((struct sockaddr_un*)0)->sun_path)] = {};
+#define GC_DAEMON_SOCKET_PATH (g_transportSocketPath)
 // Mirrors linux_daemon.h; that header cannot be included here because this
 // fixture deliberately overrides GC_DAEMON_SOCKET_PATH above.  A source guard
 // in build.py keeps the two values in sync.
 #define GC_DAEMON_LISTEN_BACKLOG 8
 
 #include "linux_socket_path_permissions.h"
+#include "posix_test_environment.h"
 
 static void dlog(const char* format, ...) {
     (void)format;
@@ -59,8 +63,9 @@ static bool pair(int sockets[2]) {
 }
 
 static int socket_path_permission_regression() {
-    char directoryTemplate[] = "/tmp/greencurve-socket-path-XXXXXX";
-    char* directory = mkdtemp(directoryTemplate);
+    char directoryTemplate[sizeof(((struct sockaddr_un*)0)->sun_path)] = {};
+    char* directory = gc_test_make_temp_dir(directoryTemplate,
+        sizeof(directoryTemplate), "greencurve-socket-path", sizeof("/daemon.sock"));
     if (!directory) return 17;
 
     int result = 0;
@@ -133,6 +138,21 @@ static int socket_path_permission_regression() {
 }
 
 int main() {
+    char socketDirectory[sizeof(g_transportSocketPath)] = {};
+    if (!gc_test_make_temp_dir(socketDirectory, sizeof(socketDirectory),
+                               "greencurve-transport", sizeof("/daemon.sock")))
+        return 76;
+    snprintf(g_transportSocketPath, sizeof(g_transportSocketPath), "%s/daemon.sock",
+             socketDirectory);
+    // The listener, accept and socket-permission cases need a named socket.
+    // A runner that refuses socket(AF_UNIX) outright (a seccomp sandbox still
+    // allows socketpair) runs every other case and then reports itself
+    // blocked, instead of failing at an arbitrary step with an unexplained code.
+    int socketErrno = 0;
+    const bool namedSocketsRefused = gc_test_unix_sockets_refused(&socketErrno);
+    if (namedSocketsRefused)
+        fprintf(stderr, "linux transport fixture: socket(AF_UNIX) refused (errno=%d %s); "
+                "named-socket cases will not run\n", socketErrno, strerror(socketErrno));
     // A refused peer sends nothing. The production refusal path must still
     // answer immediately; no request read or timeout is needed to make progress.
     int refusedPair[2];
@@ -299,15 +319,16 @@ int main() {
             received.version != SERVICE_PROTOCOL_VERSION) return 16;
     }
 
-    {
+    if (!namedSocketsRefused) {
         // A real listener with a peer that connects and then sends nothing.
         // The old serve loop called blocking accept() and then read the
         // request inline, so this client held the daemon for the full I/O
         // deadline and a second client could not be served at all.  poll()
         // over the listener must still report the second pending connection
         // immediately, with no sleeps and no wall-clock assumptions.
-        char directoryTemplate[] = "/tmp/greencurve-accept-XXXXXX";
-        char* directory = mkdtemp(directoryTemplate);
+        char directoryTemplate[sizeof(((struct sockaddr_un*)0)->sun_path)] = {};
+        char* directory = gc_test_make_temp_dir(directoryTemplate,
+            sizeof(directoryTemplate), "greencurve-accept", sizeof("/accept.sock"));
         if (!directory) return 30;
         char socketPath[128] = {};
         snprintf(socketPath, sizeof(socketPath), "%s/accept.sock", directory);
@@ -427,7 +448,7 @@ int main() {
     // deadline covered.  If that regresses, the loop below never returns and
     // the fixture hangs instead of failing, which is the point: there is no
     // wall-clock assumption here, only the requirement that it return.
-    {
+    if (!namedSocketsRefused) {
         unlink(GC_DAEMON_SOCKET_PATH);
         int missingErrno = 0;
         if (client_connect(&missingErrno) >= 0) return 55;
@@ -490,5 +511,16 @@ int main() {
         if (!linux_daemon_connect_is_saturated(saturatedErrno)) return 64;
     }
 
-    return socket_path_permission_regression();
+    int result = 0;
+    if (namedSocketsRefused) {
+        fprintf(stderr, "linux transport fixture: BLOCKED: the socketpair cases passed; "
+                "the listener, accept and socket-permission cases need Unix-domain "
+                "sockets, which this environment forbids\n");
+        result = GC_TEST_EXIT_ENVIRONMENT_BLOCKED;
+    } else {
+        result = socket_path_permission_regression();
+    }
+    unlink(GC_DAEMON_SOCKET_PATH);
+    rmdir(socketDirectory);
+    return result;
 }
