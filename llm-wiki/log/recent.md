@@ -5,6 +5,16 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-24: Native Windows agent tests use approved execution
+
+- Added an always-on agent instruction pointing to testing.md's Windows
+  sandbox launch procedure. The full suite starts through the execution
+  tool's approval route, with process-local temporary files in the workspace,
+  so filesystem-security fixtures can exercise normal Windows permissions.
+- Verified the unchanged full suite passes through that route; the restricted
+  run failed at protected-directory assertion 6606. Assertions, fixture
+  coverage and global sandbox settings are unchanged.
+
 ## 2026-10-24: The VF grid no longer shifts between a cold and a warm read
 
 - Report: after opening the window from the tray, the lock checkbox and the

@@ -1,5 +1,50 @@
 # Testing
 
+## Windows agent sandbox execution
+
+Source anchors: `build.py` (`run_regression_tests()`),
+`tests/security_audit_tests.cpp` (`claim_protected_directory_tests()` and the
+shared-bank hardlink fixtures), `AGENTS.md` ("Build, diagnostics, and tests").
+
+The full native Windows suite needs a process token that can exercise the
+real filesystem-security contract. An agent sandbox can deny a rename or a
+protected-directory operation even inside a writable workspace. Redirecting
+temporary files alone does not remove those token restrictions. A failure
+such as 6221 or 6606 in that environment does not establish a product defect;
+inspect the fixture's diagnostic and rerun through the approved route.
+
+When running from Codex's restricted Windows sandbox, **start the full suite
+with `exec_command` using `sandbox_permissions="require_escalated"`**, with a
+justification that the native DACL/hardlink fixtures need normal Windows
+filesystem permissions. Keep the configured approval or Auto-review policy
+in charge of that request. The tool option requests execution outside the
+agent sandbox; it does not require changing global settings or starting an
+administrator shell. See the [official Windows sandbox documentation](https://learn.chatgpt.com/docs/windows/windows-sandbox).
+
+Use a workspace-local scratch directory for this one process and its children:
+
+```powershell
+$regressionTemp = Join-Path (Get-Location) 'build-tmp\agent-test-temp'
+New-Item -ItemType Directory -Force -Path $regressionTemp | Out-Null
+$env:TEMP = $regressionTemp
+$env:TMP = $regressionTemp
+python build.py --test
+```
+
+The shell invocation containing this snippet must use the approved route;
+running it in an ordinary sandboxed shell is insufficient. Keep large output
+in an ignored build log and inspect its final verdict. Confirm exit 0 and
+`Regression tests passed`, including the native Windows named-pipe fixture,
+Linux cross-link checks, and source/Python checks. If approval is denied or
+unavailable, report that the full run is blocked and retain the diagnostic.
+Do not skip fixtures, weaken assertions or permissions, substitute a Linux
+run for native coverage, or launch a nested shell to evade the sandbox.
+
+Last verified: 2026-10-24. The unchanged suite failed at protected-directory
+assertion 6606 under the restricted token and passed in full through approved
+execution with workspace-local temporary files. This is a launch prerequisite,
+not a promise that future test failures are environment failures.
+
 ## VF point visibility independent of temperature (2026-10-24)
 
 Source anchors: `tests/vf_point_visibility_tests.cpp`,

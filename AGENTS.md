@@ -93,6 +93,7 @@ Keep always-on rules here (commit gates, tool and platform precedence, stop cond
 
 ## Build, diagnostics, and tests
 
+- Before native Windows regression runs from a restricted agent sandbox, follow `llm-wiki/testing.md`, "Windows agent sandbox execution", so the real filesystem-security fixtures run through the approved execution route.
 - Fix pre-existing, as well as newly introduced LSP errors/warnings along they way!
 - We are paranoid about having sufficient regression tests, better too many than too few!
 - For every bug fix or behavioral correction, explicitly assess both regression coverage and diagnostics even when existing tests pass. Strongly prefer a focused automated regression test that fails before the fix and passes after it.
