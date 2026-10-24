@@ -1,5 +1,16 @@
 # Testing
 
+## Optional Linux GPU UUID selection
+
+Source anchors: `source/linux_gpu_uuid.h`, `tests/linux_gpu_uuid_tests.cpp`.
+Fixtures 7460-7472 cover normalized physical GPU UUIDs, same-card bus moves,
+identical-card replacement and location reuse, duplicate identities, optional
+query failures, retained identity, and the unchanged fallback without usable
+UUID evidence. The policy is host-neutral; the restore-role suite runs it.
+The backend and durable-record integration follow separately.
+
+Last verified: 2026-10-24.
+
 ## Linux agent sandbox execution
 
 Source anchors: `tests/posix_test_environment.h`,

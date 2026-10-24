@@ -6,6 +6,8 @@
 #include "linux_daemon_state.h"
 #include "linux_gpu_selection.h"
 
+int run_linux_gpu_uuid_tests();
+
 namespace {
 GpuAdapterInfo adapter(unsigned int bus) {
     GpuAdapterInfo gpu = {};
@@ -331,6 +333,7 @@ int first_generation_roles_reread() {
 } // namespace
 
 int run_linux_restore_role_tests() {
+    if (int result = run_linux_gpu_uuid_tests()) return result;
     if (int result = current_records()) return result;
     if (int result = legacy_records()) return result;
     if (int result = legacy_startup_on_moved_gpu()) return result;
