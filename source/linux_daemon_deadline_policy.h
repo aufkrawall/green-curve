@@ -300,14 +300,18 @@ static constexpr bool linux_daemon_connect_is_saturated(
         || connectErrorNumber == ETIMEDOUT;
 }
 
-// What one attempted exchange reported back, beyond success or failure.  Three
-// facts answer three different questions: whether a daemon exists
+// What one attempted exchange reported back, beyond success or failure.  Four
+// facts answer four different questions: whether a daemon exists
 // (presentation), whether the request was fully submitted (mutation outcome),
-// and whether the response ran out of time (recovery retry).
+// whether the response ran out of time (recovery retry), and whether the
+// daemon sent a complete, valid answer.  A failed exchange with `answered`
+// set is a REFUSAL (the daemon's reason is the error text), never a busy or
+// absent daemon: retrying it unchanged gets the same answer.
 struct LinuxDaemonSendOutcome {
     LinuxDaemonReachability reachability;
     bool deadlineExpired;
     bool requestSubmitted;
+    bool answered;
 };
 
 // Whether the operation-result query may be attempted again.

@@ -458,6 +458,7 @@ static bool linux_daemon_send_deadline(const ServiceRequest* request,
         outcome->reachability = LINUX_DAEMON_REACHABILITY_UNKNOWN;
         outcome->deadlineExpired = false;
         outcome->requestSubmitted = false;
+        outcome->answered = false;
     }
     if (!request || !response) {
         if (error) gc_strlcpy(error, errorSize, "invalid daemon request buffer");
@@ -600,6 +601,8 @@ static bool linux_daemon_send_deadline(const ServiceRequest* request,
         log_client_failure("response validation", error);
         return false;
     }
+    // A complete, valid response: whatever its status, the daemon answered.
+    if (outcome) outcome->answered = true;
     log_daemon_identity_transition(response);
     if (response->status == SERVICE_STATUS_VERSION_MISMATCH) {
         if (error) gc_snprintf(error, errorSize,

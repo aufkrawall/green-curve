@@ -5,6 +5,31 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-24: The Linux TUI hold is recoverable, and refusals are not retried per tick
+
+- Review follow-up to "The Linux TUI writes only to the selected GPU". A hold
+  (the daemon keeps GPU A for its active settings while B is selected) was a
+  dead end inside the TUI: Reset to A was blocked (A not selected), and the
+  selector stepped from the daemon's selection, so it could only offer B,
+  which the daemon refuses. The selector now steps from the selection; one
+  step selects A, Reset is allowed, the next step selects B.
+- A switch the daemon ANSWERED with a refusal for another reason was asked
+  again every second and reported as "Daemon is busy". The transport now
+  reports `answered`; refusals say so, and a refused switch waits for a
+  change in the daemon's instance, generation, topology, adapter count or
+  active settings, a new selection, or a user Refresh.
+- New adoption steps DEFERRED (a staged draft: the selector's own rule) and
+  BLOCKED (unresolved, including malformed: now announced after an offline
+  start and after every reconnect, replacing the start-only special case).
+- Fixtures 7409, 7430-7436; negative controls fail at 7431 (selector from the
+  daemon's selection) and 7432 (refusals not recorded). Log lines: `tui: GPU
+  selector step=`, `tui: switch to the selected GPU refused:`.
+- Checked and left as is: the review's "edits to sub-500 MHz points are
+  silently accepted". The batch writer accepts a pinned-zero readback there,
+  but the final apply verification judges an explicit (absolute) point by its
+  MHz and fails the apply; only offset-intent points accept a lower offset,
+  which is the global-offset contract.
+
 ## 2026-10-24: Profile editor projection shares the VF grid visibility rule
 
 - The profile loader filters saved points through the shared population and

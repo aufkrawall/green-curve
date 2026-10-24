@@ -1184,9 +1184,27 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
     mutation_cpp = _p(ctx, "linux_tui_mutation_actions.cpp")
     forbid_text(tui_cpp, "state->targetGpu = *initialTarget",
                 "the TUI never adopts the stored record as its target")
-    require_text(refresh_cpp, "if (!requestedTarget) tui_adopt_configured_gpu(state);",
+    require_text(refresh_cpp,
+                 "if (!requestedTarget) tui_adopt_configured_gpu(state, userRequested);",
                  "the TUI resolves and switches to its selected GPU after each "
                  "answered untargeted refresh, never inside its own switch")
+    # A hold must stay recoverable from the TUI: the selector steps from the
+    # selected GPU, so the GPU the daemon keeps for its active settings can be
+    # selected and Reset.  A switch the daemon answered with a refusal is not
+    # asked again every tick, and a refusal is never reported as "busy".
+    actions_cpp = _p(ctx, "linux_tui_actions.cpp")
+    transport_cpp = _p(ctx, "linux_daemon_transport.cpp")
+    require_text(refresh_cpp, "linux_tui_selector_origin(&state->configuredGpu,",
+                 "the TUI GPU selector steps from the selected GPU")
+    require_text(actions_cpp, "tui_select_gpu_step(state, action.value);",
+                 "the GPU-name click runs the tested selector")
+    require_text(refresh_cpp, "linux_tui_switch_refusal(&gpu->target, &state->service)",
+                 "an answered switch refusal is recorded with the state it was refused in")
+    require_text(refresh_cpp,
+                 "Daemon refused the request; showing the last state it published",
+                 "an answered refusal is not reported as a busy daemon")
+    require_text(transport_cpp, "if (outcome) outcome->answered = true;",
+                 "the transport reports a complete answer separately from success")
     # The TUI sends the GPU it shows.  A resolved or explicit selection that
     # is not shown yet (`--gpu`, a switch refused for active settings or
     # failed as busy) must not let a write reach the shown GPU.

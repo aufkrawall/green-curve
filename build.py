@@ -3516,7 +3516,7 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "linux_daemon_identity.cpp"),
                  "g_gpu.writeIdentityResolved",
                  "Linux daemon cannot publish a telemetry fallback as a selected multi-GPU write target")
-    require_text(linux_tui_actions_cpp,
+    require_text(os.path.join(SOURCE_DIR, "linux_tui_refresh.cpp"),
                  "linux_next_gpu_selection_index",
                  "Linux TUI requires an explicit first multi-GPU selection")
     require_text(linux_fan_runtime_h,

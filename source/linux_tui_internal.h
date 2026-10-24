@@ -68,10 +68,16 @@ struct TuiState {
     // answers with (tui_adopt_configured_gpu), or the one `--gpu` or the
     // selector chose.  Apply, Reset and a startup-profile bind are blocked
     // until it resolves AND is the GPU shown (linux_tui_shown_gpu_write).
+    // The selector steps from it (linux_tui_selector_origin).
     LinuxConfiguredGpu configuredGpu;
     // The last adoption step, so its log line and status line change only on
-    // a transition instead of once per telemetry tick.
+    // a transition instead of once per telemetry tick.  Reset when the daemon
+    // goes offline, so a reconnect says again why writes are blocked.
     LinuxTuiGpuAdoption gpuAdoption;
+    // The last switch to the selected GPU the daemon answered with a refusal,
+    // and its reason; not asked again until something it depends on changes.
+    LinuxTuiSwitchRefusal switchRefusal;
+    char switchRefusalReason[192];
     TuiEditState edit;
     TuiLayout layout;
     std::vector<std::string> renderedRows;
@@ -116,6 +122,9 @@ bool tui_refresh_service(TuiState* state, bool userRequested,
 // resolved and no GPU was selected in the TUI, or while the selected GPU is
 // not the one shown.
 bool tui_configured_gpu_allows_write(TuiState* state, const char* action);
+// The GPU selector: one step of `delta` adapters from the selected GPU, true
+// once the daemon shows the chosen GPU and it became the session's selection.
+bool tui_select_gpu_step(TuiState* state, int delta);
 void tui_recompute_dirty(TuiState* state);
 // Read the daemon's boot-apply snapshot back and compare it with the profile
 // slot the policy names.  Cheap and explicit: one request, only at the points

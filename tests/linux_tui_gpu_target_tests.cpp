@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
-// The Linux TUI's write target, assertion codes 7400-7409.  The TUI sends the
-// GPU it shows (TuiState::targetGpu), so a write is allowed only while the
-// selected GPU -- `--gpu`, config.ini's resolved record, the selector -- IS the
-// one shown.  7400-7402 drive the pure policy (linux_tui_authority.h); 7403-
-// 7408 drive the real tui_refresh_service() and tui_configured_gpu_allows_write()
+// The Linux TUI's write target, assertion codes 7400-7409 and 7430-7439.  The
+// TUI sends the GPU it shows (TuiState::targetGpu), so a write is allowed only
+// while the selected GPU -- `--gpu`, config.ini's resolved record, the
+// selector -- IS the one shown.  7400-7402, 7409 and 7430 drive the pure policy
+// (linux_tui_authority.h); 7403-7408 and 7431-7436 drive the real
+// tui_refresh_service() and tui_configured_gpu_allows_write()
 // (linux_tui_refresh.cpp) against a scripted daemon that keeps the rule the
 // real one enforces: while it holds active settings it refuses to select
 // another GPU (linux_gpu_switch_preserves_active_intent).
@@ -23,9 +24,12 @@ namespace {
 
 struct ScriptedDaemon {
     ServiceResponse published;
-    bool busyTargeted;  // a targeted read is accepted, then not answered
+    bool busyTargeted;    // a targeted read is accepted, then not answered
+    bool refuseTargeted;  // a targeted read to another GPU is answered "no"
+    bool offline;         // connect() fails
     int reads;
     int targetedReads;
+    int switchRequests;   // targeted reads naming a GPU it does not show
 };
 
 ScriptedDaemon g_daemon;
@@ -116,10 +120,17 @@ LinuxStartupSnapshotReport linux_startup_snapshot_report(
 }
 bool linux_daemon_get_state_ex(const GpuAdapterInfo* target,
                                ServiceResponse* response,
-                               LinuxDaemonReachability* reachability,
+                               LinuxDaemonSendOutcome* outcome,
                                char* error, size_t errorSize) {
     ++g_daemon.reads;
-    *reachability = LINUX_DAEMON_REACHABILITY_UNKNOWN;
+    *outcome = LinuxDaemonSendOutcome{};
+    if (g_daemon.offline) {
+        outcome->reachability = LINUX_DAEMON_REACHABILITY_UNREACHABLE;
+        snprintf(error, errorSize, "%s", "connect: no such file or directory");
+        return false;
+    }
+    outcome->reachability = LINUX_DAEMON_REACHABILITY_CONNECTED;
+    outcome->requestSubmitted = true;
     ServiceSnapshot& snapshot = g_daemon.published.snapshot;
     if (target) {
         ++g_daemon.targetedReads;
@@ -127,17 +138,26 @@ bool linux_daemon_get_state_ex(const GpuAdapterInfo* target,
         for (unsigned int i = 0; i < snapshot.adapterCount; ++i)
             if (linux_gpu_identity_matches(target, &snapshot.adapters[i]))
                 index = (int)i;
-        if (g_daemon.busyTargeted || index < 0 ||
-            ((unsigned int)index != snapshot.selectedAdapterIndex &&
-             g_daemon.published.state.activeDesiredValid)) {
-            *reachability = LINUX_DAEMON_REACHABILITY_CONNECTED;
-            snprintf(error, errorSize, "%s", g_daemon.busyTargeted
-                ? "request accepted but not answered in time"
+        const bool other = index < 0 ||
+            (unsigned int)index != snapshot.selectedAdapterIndex;
+        if (other) ++g_daemon.switchRequests;
+        if (g_daemon.busyTargeted) {
+            outcome->deadlineExpired = true;
+            snprintf(error, errorSize, "%s",
+                     "request accepted but not answered in time");
+            return false;
+        }
+        if (index < 0 || (other && (g_daemon.refuseTargeted ||
+                                    g_daemon.published.state.activeDesiredValid))) {
+            outcome->answered = true;
+            snprintf(error, errorSize, "%s", g_daemon.refuseTargeted
+                ? "cannot initialize the requested GPU"
                 : "GPU has active Green Curve settings; Reset it first");
             return false;
         }
         snapshot.selectedAdapterIndex = (unsigned int)index;
     }
+    outcome->answered = true;
     *response = g_daemon.published;
     return true;
 }
@@ -163,11 +183,11 @@ int policy_tests() {
                     LINUX_TUI_SHOWN_GPU_WRITE_NOT_SHOWN ||
                 linux_tui_shown_gpu_write(gpu, &b) !=
                     LINUX_TUI_SHOWN_GPU_WRITE_ALLOWED) return 7400;
-            if (linux_tui_gpu_adoption(gpu, &a, false) !=
+            if (linux_tui_gpu_adoption(gpu, &a, false, false, false) !=
                     LINUX_TUI_GPU_ADOPTION_SWITCH ||
-                linux_tui_gpu_adoption(gpu, &a, true) !=
+                linux_tui_gpu_adoption(gpu, &a, true, false, false) !=
                     LINUX_TUI_GPU_ADOPTION_HELD ||
-                linux_tui_gpu_adoption(gpu, &b, true) !=
+                linux_tui_gpu_adoption(gpu, &b, true, true, true) !=
                     LINUX_TUI_GPU_ADOPTION_NONE) return 7400;
         }
     }
@@ -181,11 +201,12 @@ int policy_tests() {
                 LINUX_TUI_SHOWN_GPU_WRITE_ALLOWED ||
             linux_tui_shown_gpu_write(nullptr, &a) !=
                 LINUX_TUI_SHOWN_GPU_WRITE_ALLOWED ||
-            linux_tui_gpu_adoption(&none, &a, false) !=
+            linux_tui_gpu_adoption(&none, &a, true, true, true) !=
                 LINUX_TUI_GPU_ADOPTION_NONE) return 7401;
     }
     // 7402: an unresolved selection stops a write whatever is shown and never
-    // switches; every verdict and step has a stable log name.
+    // switches; it is BLOCKED, so it says why once.  Every verdict and step
+    // has a stable log name.
     {
         const LinuxConfiguredGpuStatus unresolved[] = {
             LINUX_CONFIGURED_GPU_PENDING, LINUX_CONFIGURED_GPU_UNVALIDATED,
@@ -195,8 +216,8 @@ int policy_tests() {
             LinuxConfiguredGpu gpu = {b, GPU_LOCATION_ROLE_REQUIRED, status};
             if (linux_tui_shown_gpu_write(&gpu, &b) !=
                     LINUX_TUI_SHOWN_GPU_WRITE_UNRESOLVED ||
-                linux_tui_gpu_adoption(&gpu, &a, false) !=
-                    LINUX_TUI_GPU_ADOPTION_NONE) return 7402;
+                linux_tui_gpu_adoption(&gpu, &a, false, false, false) !=
+                    LINUX_TUI_GPU_ADOPTION_BLOCKED) return 7402;
         }
         const LinuxTuiShownGpuWrite verdicts[] = {
             LINUX_TUI_SHOWN_GPU_WRITE_ALLOWED,
@@ -206,10 +227,81 @@ int policy_tests() {
             if (strcmp(linux_tui_shown_gpu_write_name(verdict), "invalid") == 0)
                 return 7402;
         const LinuxTuiGpuAdoption steps[] = {LINUX_TUI_GPU_ADOPTION_NONE,
-            LINUX_TUI_GPU_ADOPTION_SWITCH, LINUX_TUI_GPU_ADOPTION_HELD};
+            LINUX_TUI_GPU_ADOPTION_SWITCH, LINUX_TUI_GPU_ADOPTION_HELD,
+            LINUX_TUI_GPU_ADOPTION_DEFERRED, LINUX_TUI_GPU_ADOPTION_REFUSED,
+            LINUX_TUI_GPU_ADOPTION_BLOCKED};
         for (LinuxTuiGpuAdoption step : steps)
             if (strcmp(linux_tui_gpu_adoption_name(step), "invalid") == 0)
                 return 7402;
+    }
+    // 7409: what keeps a selection that is not shown from being switched to,
+    // in order: the daemon's active settings (it would refuse), a staged
+    // draft (switching would detach it), an unchanged refusal (asking again
+    // gets the same answer).  A refusal holds only while the target and every
+    // daemon fact it was refused under stay the same.
+    {
+        LinuxConfiguredGpu chosen = {b, GPU_LOCATION_ROLE_REQUIRED,
+                                     LINUX_CONFIGURED_GPU_RESOLVED};
+        if (linux_tui_gpu_adoption(&chosen, &a, true, true, true) !=
+                LINUX_TUI_GPU_ADOPTION_HELD ||
+            linux_tui_gpu_adoption(&chosen, &a, false, true, true) !=
+                LINUX_TUI_GPU_ADOPTION_DEFERRED ||
+            linux_tui_gpu_adoption(&chosen, &a, false, false, true) !=
+                LINUX_TUI_GPU_ADOPTION_REFUSED ||
+            linux_tui_gpu_adoption(&chosen, nullptr, false, false, false) !=
+                LINUX_TUI_GPU_ADOPTION_SWITCH) return 7409;
+        ServiceResponse refusedIn = {};
+        refusedIn.state.serviceInstanceId = 1;
+        refusedIn.state.gpuGeneration = 2;
+        refusedIn.state.topologySignature = 3;
+        refusedIn.snapshot.adapterCount = 2;
+        const LinuxTuiSwitchRefusal refusal =
+            linux_tui_switch_refusal(&b, &refusedIn);
+        if (!refusal.valid ||
+            !linux_tui_switch_refusal_matches(&refusal, &b, &refusedIn) ||
+            linux_tui_switch_refusal_matches(&refusal, &a, &refusedIn) ||
+            linux_tui_switch_refusal_matches(nullptr, &b, &refusedIn) ||
+            linux_tui_switch_refusal(nullptr, &refusedIn).valid) return 7409;
+        for (int change = 0; change < 5; ++change) {
+            ServiceResponse later = refusedIn;
+            if (change == 0) later.state.serviceInstanceId = 9;
+            if (change == 1) later.state.gpuGeneration = 9;
+            if (change == 2) later.state.topologySignature = 9;
+            if (change == 3) later.snapshot.adapterCount = 3;
+            if (change == 4) later.state.activeDesiredValid = true;
+            if (linux_tui_switch_refusal_matches(&refusal, &b, &later))
+                return 7409;
+        }
+    }
+    // 7430: the selector steps from the selected GPU when it names a listed
+    // adapter.  With B selected and A shown, one step either way reaches A:
+    // stepping from the shown GPU never could, so a GPU the daemon kept for
+    // its active settings could be neither written nor selected.
+    {
+        const GpuAdapterInfo adapters[] = {a, b};
+        LinuxConfiguredGpu chosen = {b, GPU_LOCATION_ROLE_REQUIRED,
+                                     LINUX_CONFIGURED_GPU_RESOLVED};
+        unsigned int origin = 0;
+        if (!linux_tui_selector_origin(&chosen, adapters, 2, &origin) ||
+            origin != 1 ||
+            linux_next_gpu_selection_index(true, origin, 2, 1) != 0 ||
+            linux_next_gpu_selection_index(true, origin, 2, -1) != 0)
+            return 7430;
+        // No selection, an unresolved one, or one not listed: the daemon's
+        // own selection stays the origin.
+        LinuxConfiguredGpu none = {};
+        LinuxConfiguredGpu missing = chosen;
+        missing.status = LINUX_CONFIGURED_GPU_NOT_PRESENT;
+        LinuxConfiguredGpu unlisted = chosen;
+        unlisted.target = twin_at(9);
+        for (const LinuxConfiguredGpu* gpu : {&none, &missing, &unlisted}) {
+            origin = 5;
+            if (linux_tui_selector_origin(gpu, adapters, 2, &origin) ||
+                origin != 5) return 7430;
+        }
+        if (linux_tui_selector_origin(&chosen, nullptr, 2, &origin) ||
+            linux_tui_selector_origin(&chosen, adapters, 2, nullptr))
+            return 7430;
     }
     return 0;
 }
@@ -301,10 +393,141 @@ int refresh_tests() {
     return 0;
 }
 
+// The way out of a hold, and the steps that keep a switch from being asked
+// for once per telemetry tick.
+int recovery_tests() {
+    // 7431: config.ini names B; A holds active settings, so the daemon keeps
+    // A and refuses B.  The TUI used to block every write to A, Reset
+    // included, while its selector could only step to B: the hold the
+    // daemon says to Reset was unrecoverable from the TUI.  Now one selector
+    // step reaches A, Reset is allowed for it, and the next step reaches B.
+    {
+        daemon_reset(true);
+        TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_PENDING, 7);
+        if (!tui_refresh_service(state, false) ||
+            state->gpuAdoption != LINUX_TUI_GPU_ADOPTION_HELD ||
+            !strstr(state->status, "select bus6") ||
+            tui_configured_gpu_allows_write(state, "Reset")) return 7431;
+        if (!tui_select_gpu_step(state, 1) || shown_bus(state) != 6 ||
+            state->configuredGpu.status != LINUX_CONFIGURED_GPU_EXPLICIT ||
+            state->configuredGpu.target.pciBus != 6 ||
+            !tui_configured_gpu_allows_write(state, "Reset")) return 7431;
+        // The Reset the daemon asked for; the next answered refresh ends the
+        // hold and says that writes reach the shown GPU again.
+        g_daemon.published.state.activeDesiredValid = false;
+        if (!tui_refresh_service(state, false) ||
+            state->gpuAdoption != LINUX_TUI_GPU_ADOPTION_NONE ||
+            !strstr(state->status, "writes reach it again")) return 7431;
+        if (!tui_select_gpu_step(state, 1) || shown_bus(state) != 7 ||
+            state->configuredGpu.target.pciBus != 7 ||
+            !tui_configured_gpu_allows_write(state, "Apply")) return 7431;
+    }
+    // 7432: a switch the daemon ANSWERS with a refusal (not active settings:
+    // here it cannot initialize B) is not asked again on every tick.  It used
+    // to cost one more request per second, and its reason was replaced by
+    // "Daemon is busy".  It is asked again once the daemon's state changes,
+    // or when the user refreshes.
+    {
+        daemon_reset(false);
+        g_daemon.refuseTargeted = true;
+        TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_PENDING, 7);
+        if (!tui_refresh_service(state, false) || shown_bus(state) != 6 ||
+            g_daemon.switchRequests != 1 ||
+            state->gpuAdoption != LINUX_TUI_GPU_ADOPTION_REFUSED ||
+            !strstr(state->status, "refused") ||
+            !strstr(state->status, "cannot initialize") ||
+            strstr(state->status, "busy") ||
+            tui_configured_gpu_allows_write(state, "Apply")) return 7432;
+        state->status[0] = 0;
+        if (!tui_refresh_service(state, false) || g_daemon.switchRequests != 1 ||
+            state->status[0]) return 7432;
+        g_daemon.published.state.gpuGeneration = 5;
+        if (!tui_refresh_service(state, false) || g_daemon.switchRequests != 2 ||
+            state->gpuAdoption != LINUX_TUI_GPU_ADOPTION_REFUSED) return 7432;
+        if (!tui_refresh_service(state, true) || g_daemon.switchRequests != 3)
+            return 7432;
+        g_daemon.refuseTargeted = false;
+        if (!tui_refresh_service(state, true) || shown_bus(state) != 7 ||
+            g_daemon.switchRequests != 4 ||
+            !tui_configured_gpu_allows_write(state, "Apply")) return 7432;
+    }
+    // 7433: a refusal says it is one; only an unanswered read is "busy".
+    {
+        daemon_reset(true);
+        TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_NONE, 0);
+        state->configuredGpu.target = GpuAdapterInfo{};
+        if (!tui_refresh_service(state, false)) return 7433;
+        const GpuAdapterInfo other = g_daemon.published.snapshot.adapters[1];
+        if (tui_refresh_service(state, true, &other) ||
+            !strstr(state->status, "refused") ||
+            strstr(state->status, "busy") || !state->serviceOnline) return 7433;
+        g_daemon.busyTargeted = true;
+        if (tui_refresh_service(state, true, &other) ||
+            !strstr(state->status, "busy") || !state->serviceOnline)
+            return 7433;
+    }
+    // 7434: a staged draft defers the automatic switch the selector would
+    // refuse too; switching under it detached the draft without a word.
+    {
+        daemon_reset(false);
+        TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_PENDING, 7);
+        state->dirty = true;
+        if (!tui_refresh_service(state, false) || shown_bus(state) != 6 ||
+            g_daemon.switchRequests != 0 ||
+            state->gpuAdoption != LINUX_TUI_GPU_ADOPTION_DEFERRED ||
+            !strstr(state->status, "staged changes") ||
+            tui_configured_gpu_allows_write(state, "Apply") ||
+            tui_select_gpu_step(state, 1)) return 7434;
+        state->dirty = false;
+        if (!tui_refresh_service(state, false) || shown_bus(state) != 7 ||
+            !tui_configured_gpu_allows_write(state, "Apply")) return 7434;
+    }
+    // 7435: a malformed config.ini record says why writes are blocked when
+    // the daemon first answers -- also after a start without the daemon,
+    // which used to say only "Daemon reconnected" -- and again after every
+    // reconnect.
+    {
+        daemon_reset(false);
+        g_daemon.offline = true;
+        TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_MALFORMED, 7);
+        if (tui_refresh_service(state, false) || state->serviceOnline)
+            return 7435;
+        g_daemon.offline = false;
+        if (!tui_refresh_service(state, false) ||
+            state->gpuAdoption != LINUX_TUI_GPU_ADOPTION_BLOCKED ||
+            !strstr(state->status, "malformed") ||
+            g_daemon.switchRequests != 0) return 7435;
+        g_daemon.offline = true;
+        tui_refresh_service(state, false);
+        g_daemon.offline = false;
+        if (!tui_refresh_service(state, false) ||
+            !strstr(state->status, "malformed")) return 7435;
+        // Selecting a GPU lifts the block.
+        if (!tui_select_gpu_step(state, 1) ||
+            !tui_configured_gpu_allows_write(state, "Apply")) return 7435;
+    }
+    // 7436: a record that stops resolving differently (unchecked, then not
+    // present) says so again although the step stays BLOCKED.
+    {
+        daemon_reset(false);
+        g_daemon.published.snapshot.adapterCount = 0;
+        TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_PENDING, 9);
+        if (!tui_refresh_service(state, false) ||
+            state->configuredGpu.status != LINUX_CONFIGURED_GPU_UNVALIDATED ||
+            !strstr(state->status, "could not be checked")) return 7436;
+        g_daemon.published.snapshot.adapterCount = 2;
+        if (!tui_refresh_service(state, false) ||
+            state->configuredGpu.status != LINUX_CONFIGURED_GPU_NOT_PRESENT ||
+            !strstr(state->status, "not present")) return 7436;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int run_linux_tui_gpu_target_tests() {
     if (int r = policy_tests()) return r;
     if (int r = refresh_tests()) return r;
+    if (int r = recovery_tests()) return r;
     return 0;
 }

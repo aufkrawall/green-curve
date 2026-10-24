@@ -55,13 +55,14 @@ bool linux_daemon_send(const ServiceRequest* req, ServiceResponse* resp,
 bool linux_daemon_snapshot(ServiceSnapshot* snapshot, char* err, size_t errSize);
 bool linux_daemon_get_state(const GpuAdapterInfo* target, ServiceResponse* response,
                             char* err, size_t errSize);
-// Same read, but it also reports what a failure proves about the daemon's
-// existence.  A caller that tears down its live presentation on every failed
-// read needs this: a request the daemon ACCEPTED and did not answer in time is
-// evidence that it is busy, and none at all that it is gone.
+// Same read, but it also reports what a failure proves about the daemon.  A
+// caller that tears down its live presentation on every failed read needs
+// this: a request the daemon ACCEPTED and did not answer in time is evidence
+// that it is busy, none at all that it is gone, and an ANSWERED failure is a
+// refusal (a GPU switch it will not make) that repeating does not change.
 bool linux_daemon_get_state_ex(const GpuAdapterInfo* target,
                                ServiceResponse* response,
-                               LinuxDaemonReachability* reachability,
+                               LinuxDaemonSendOutcome* outcome,
                                char* err, size_t errSize);
 
 // Convenience client helpers used by the CLI/TUI.

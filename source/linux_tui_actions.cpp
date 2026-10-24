@@ -408,41 +408,9 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
                                            TUI_TAB_VF, TUI_TAB_ADVANCED);
             state->focusIndex = -1;
             break;
-        case ACTION_GPU_SELECT_DELTA: {
-            if (state->dirty) {
-                snprintf(state->status, sizeof(state->status),
-                         "Reset or save staged changes before switching GPUs");
-                break;
-            }
-            unsigned int count = state->service.snapshot.adapterCount;
-            if (!state->serviceOnline || count == 0) {
-                snprintf(state->status, sizeof(state->status),
-                         "No daemon GPU list is available");
-                break;
-            }
-            bool hasSelectedTarget =
-                (state->service.state.validSections &
-                    SERVICE_STATE_SECTION_ADAPTER_IDENTITY) != 0;
-            int next = linux_next_gpu_selection_index(
-                hasSelectedTarget,
-                state->service.snapshot.selectedAdapterIndex,
-                count, action.value);
-            if (next < 0) {
-                snprintf(state->status, sizeof(state->status),
-                         "GPU selection state is invalid; refresh the daemon");
-                break;
-            }
-            const GpuAdapterInfo chosen = state->service.snapshot.adapters[next];
-            if (tui_refresh_service(state, true, &chosen) &&
-                state->targetGpu.valid &&
-                linux_gpu_identity_matches(&chosen, &state->targetGpu)) {
-                // An explicit choice replaces config.ini's GPU for this
-                // session and lifts its write block; `--gpu` persists one.
-                state->configuredGpu.target = state->targetGpu;
-                state->configuredGpu.status = LINUX_CONFIGURED_GPU_EXPLICIT;
-            }
+        case ACTION_GPU_SELECT_DELTA:
+            tui_select_gpu_step(state, action.value);
             break;
-        }
         case ACTION_REFRESH:
             tui_refresh_service(state, true);
             break;

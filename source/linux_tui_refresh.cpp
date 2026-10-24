@@ -6,6 +6,24 @@ static const GpuAdapterInfo* tui_shown_gpu(const TuiState* state) {
     return state->targetGpu.valid ? &state->targetGpu : nullptr;
 }
 
+static bool tui_refresh_from_daemon(TuiState* state, bool userRequested,
+                                    const GpuAdapterInfo* requestedTarget,
+                                    LinuxDaemonSendOutcome* outcomeOut,
+                                    char* errorOut, size_t errorOutSize);
+
+static LinuxTuiGpuAdoption tui_gpu_adoption_step(const TuiState* state) {
+    const LinuxConfiguredGpu* gpu = &state->configuredGpu;
+    return linux_tui_gpu_adoption(gpu, tui_shown_gpu(state),
+        state->service.state.activeDesiredValid != 0, state->dirty,
+        linux_tui_switch_refusal_matches(&state->switchRefusal, &gpu->target,
+                                         &state->service));
+}
+
+static bool tui_gpu_adoption_blocks(LinuxTuiGpuAdoption step) {
+    return step != LINUX_TUI_GPU_ADOPTION_NONE &&
+           step != LINUX_TUI_GPU_ADOPTION_SWITCH;
+}
+
 // config.ini's GPU is resolved against the daemon's own adapter list the first
 // time one is available: at start, or on the reconnect after a start without
 // the daemon.  Only the live adapter it resolved to is ever sent; the stored
@@ -14,46 +32,96 @@ static const GpuAdapterInfo* tui_shown_gpu(const TuiState* state) {
 // chosen with `--gpu`, is then switched to with one targeted refresh after
 // every answered refresh until it is the GPU shown: the TUI writes to the GPU
 // it shows, so until then every write is blocked (linux_tui_shown_gpu_write).
+// linux_tui_gpu_adoption() says when not to switch (held, deferred, refused,
+// unresolved); each of those states says why once, on the transition.
 // Runs only at the end of an untargeted refresh, so the switch below does not
 // recurse and the selector's own choice is not undone within its refresh.
-static void tui_adopt_configured_gpu(TuiState* state) {
+static void tui_adopt_configured_gpu(TuiState* state, bool userRequested) {
     LinuxConfiguredGpu* gpu = &state->configuredGpu;
+    const LinuxConfiguredGpuStatus before = gpu->status;
     if (gpu->status == LINUX_CONFIGURED_GPU_PENDING ||
-        gpu->status == LINUX_CONFIGURED_GPU_UNVALIDATED) {
-        const LinuxConfiguredGpuStatus before = gpu->status;
+        gpu->status == LINUX_CONFIGURED_GPU_UNVALIDATED)
         linux_configured_gpu_resolve_against(state->configPath, gpu,
             state->service.snapshot.adapters,
             state->service.snapshot.adapterCount);
-        if (gpu->status != LINUX_CONFIGURED_GPU_RESOLVED) {
-            if (gpu->status != before)
-                snprintf(state->status, sizeof(state->status),
-                    "Writes blocked: %s; click the GPU name to select one, or save one with --gpu",
-                    linux_configured_gpu_problem(gpu->status));
-            return;
-        }
+    // An explicit Refresh asks a refused switch again.
+    if (userRequested && state->switchRefusal.valid) {
+        linux_debug_logf("tui: refresh asks the refused GPU switch again");
+        state->switchRefusal = LinuxTuiSwitchRefusal{};
     }
-    LinuxTuiGpuAdoption step = linux_tui_gpu_adoption(gpu, tui_shown_gpu(state),
-        state->service.state.activeDesiredValid);
+    LinuxTuiGpuAdoption step = tui_gpu_adoption_step(state);
     if (step == LINUX_TUI_GPU_ADOPTION_SWITCH) {
-        tui_refresh_service(state, false, &gpu->target);
-        step = linux_tui_gpu_adoption(gpu, tui_shown_gpu(state),
-                                      state->service.state.activeDesiredValid);
+        LinuxDaemonSendOutcome outcome = {};
+        char error[192] = {};
+        if (!tui_refresh_from_daemon(state, false, &gpu->target, &outcome,
+                                     error, sizeof(error)) &&
+            outcome.answered) {
+            // A failed refresh leaves state->service as it was: the state the
+            // switch was refused in.
+            state->switchRefusal =
+                linux_tui_switch_refusal(&gpu->target, &state->service);
+            snprintf(state->switchRefusalReason,
+                     sizeof(state->switchRefusalReason), "%s",
+                     error[0] ? error : "no reason given");
+            linux_debug_logf("tui: switch to the selected GPU refused: %s "
+                             "(instance=%llu generation=%llu activeSettings=%d); "
+                             "asked again when the daemon's state changes",
+                             state->switchRefusalReason,
+                             (unsigned long long)state->service.state.serviceInstanceId,
+                             (unsigned long long)state->service.state.gpuGeneration,
+                             state->service.state.activeDesiredValid ? 1 : 0);
+        }
+        step = tui_gpu_adoption_step(state);
     }
-    if (step == state->gpuAdoption) return;
+    // A blocked selection whose problem changed (unchecked -> not present)
+    // says so again even though the step stayed the same.
+    const bool problemChanged = step == LINUX_TUI_GPU_ADOPTION_BLOCKED &&
+                                gpu->status != before;
+    if (step == state->gpuAdoption && !problemChanged) return;
     char selected[32] = {}, shown[32] = {};
     format_linux_gpu_bdf(&gpu->target, selected, sizeof(selected));
     format_linux_gpu_bdf(&state->targetGpu, shown, sizeof(shown));
     linux_debug_logf("tui: selected GPU adoption %s -> %s (selected=%s "
-                     "status=%s shown=%s activeSettings=%d)",
+                     "status=%s shown=%s activeSettings=%d dirty=%d)",
                      linux_tui_gpu_adoption_name(state->gpuAdoption),
                      linux_tui_gpu_adoption_name(step), selected,
                      linux_configured_gpu_status_name(gpu->status), shown,
-                     state->service.state.activeDesiredValid ? 1 : 0);
-    if (step == LINUX_TUI_GPU_ADOPTION_HELD)
+                     state->service.state.activeDesiredValid ? 1 : 0,
+                     state->dirty ? 1 : 0);
+    switch (step) {
+    case LINUX_TUI_GPU_ADOPTION_BLOCKED:
+        snprintf(state->status, sizeof(state->status),
+                 "Writes blocked: %s; click the GPU name to select one, or "
+                 "save one with --gpu", linux_configured_gpu_problem(gpu->status));
+        break;
+    case LINUX_TUI_GPU_ADOPTION_HELD:
         snprintf(state->status, sizeof(state->status),
                  "Writes blocked: GPU %s has active settings, so the daemon "
-                 "keeps it instead of the selected GPU %s; click the GPU name "
-                 "to choose one", shown, selected);
+                 "keeps it instead of the selected GPU %s; select %s with the "
+                 "GPU name and Reset it to switch", shown, selected, shown);
+        break;
+    case LINUX_TUI_GPU_ADOPTION_DEFERRED:
+        snprintf(state->status, sizeof(state->status),
+                 "Writes blocked: this window shows GPU %s, not the selected "
+                 "GPU %s; reset or save staged changes to switch to it",
+                 shown, selected);
+        break;
+    case LINUX_TUI_GPU_ADOPTION_REFUSED:
+        snprintf(state->status, sizeof(state->status),
+                 "Writes blocked: the daemon refused to switch to the selected "
+                 "GPU %s (%s); click the GPU name to choose one, or Refresh to "
+                 "ask again", selected, state->switchRefusalReason);
+        break;
+    case LINUX_TUI_GPU_ADOPTION_NONE:
+        if (tui_gpu_adoption_blocks(state->gpuAdoption))
+            snprintf(state->status, sizeof(state->status),
+                     "GPU %s is shown; writes reach it again", shown);
+        break;
+    case LINUX_TUI_GPU_ADOPTION_SWITCH:
+        // Not answered (busy): the refresh's own status line says so, and the
+        // next answered refresh asks again.
+        break;
+    }
     state->gpuAdoption = step;
 }
 
@@ -83,8 +151,61 @@ bool tui_configured_gpu_allows_write(TuiState* state, const char* action) {
     return false;
 }
 
+// The GPU selector (a click on the GPU name).  It steps from the selected GPU,
+// not the shown one (linux_tui_selector_origin), so a GPU the daemon keeps for
+// its active settings can itself be selected -- and Reset -- while another one
+// is selected.  An explicit choice replaces config.ini's GPU for this session
+// and lifts its write block once the daemon shows it; `--gpu` persists one.
+bool tui_select_gpu_step(TuiState* state, int delta) {
+    if (!state) return false;
+    if (state->dirty) {
+        snprintf(state->status, sizeof(state->status),
+                 "Reset or save staged changes before switching GPUs");
+        return false;
+    }
+    const unsigned int count = state->service.snapshot.adapterCount;
+    if (!state->serviceOnline || count == 0) {
+        snprintf(state->status, sizeof(state->status),
+                 "No daemon GPU list is available");
+        return false;
+    }
+    bool hasSelectedTarget = (state->service.state.validSections &
+        SERVICE_STATE_SECTION_ADAPTER_IDENTITY) != 0;
+    unsigned int origin = state->service.snapshot.selectedAdapterIndex;
+    if (linux_tui_selector_origin(&state->configuredGpu,
+            state->service.snapshot.adapters, count, &origin))
+        hasSelectedTarget = true;
+    const int next = linux_next_gpu_selection_index(hasSelectedTarget, origin,
+                                                    count, delta);
+    linux_debug_logf("tui: GPU selector step=%d origin=%u daemonSelected=%u "
+                     "next=%d adapters=%u adoption=%s", delta, origin,
+                     state->service.snapshot.selectedAdapterIndex, next, count,
+                     linux_tui_gpu_adoption_name(state->gpuAdoption));
+    if (next < 0) {
+        snprintf(state->status, sizeof(state->status),
+                 "GPU selection state is invalid; refresh the daemon");
+        return false;
+    }
+    const GpuAdapterInfo chosen = state->service.snapshot.adapters[next];
+    if (!tui_refresh_service(state, true, &chosen) || !state->targetGpu.valid ||
+        !linux_gpu_identity_matches(&chosen, &state->targetGpu)) return false;
+    state->configuredGpu.target = state->targetGpu;
+    state->configuredGpu.status = LINUX_CONFIGURED_GPU_EXPLICIT;
+    return true;
+}
+
 bool tui_refresh_service(TuiState* state, bool userRequested,
                          const GpuAdapterInfo* requestedTarget) {
+    return tui_refresh_from_daemon(state, userRequested, requestedTarget,
+                                   nullptr, nullptr, 0);
+}
+
+static bool tui_refresh_from_daemon(TuiState* state, bool userRequested,
+                                    const GpuAdapterInfo* requestedTarget,
+                                    LinuxDaemonSendOutcome* outcomeOut,
+                                    char* errorOut, size_t errorOutSize) {
+    if (outcomeOut) *outcomeOut = LinuxDaemonSendOutcome{};
+    if (errorOut && errorOutSize) errorOut[0] = 0;
     if (!state) return false;
     ServiceResponse next = {};
     char error[256] = {};
@@ -92,9 +213,12 @@ bool tui_refresh_service(TuiState* state, bool userRequested,
     if (!target && state->targetGpu.valid) target = &state->targetGpu;
     bool wasOnline = state->serviceOnline;
     ServiceResponse previous = state->service;
-    LinuxDaemonReachability reachability = LINUX_DAEMON_REACHABILITY_UNKNOWN;
-    if (!linux_daemon_get_state_ex(target, &next, &reachability,
+    LinuxDaemonSendOutcome outcome = {};
+    if (!linux_daemon_get_state_ex(target, &next, &outcome,
                                    error, sizeof(error))) {
+        if (outcomeOut) *outcomeOut = outcome;
+        if (errorOut && errorOutSize)
+            snprintf(errorOut, errorOutSize, "%s", error);
         state->nextTelemetryMs = tui_monotonic_ms() + 1500;
         // A read the daemon ACCEPTED and then failed to answer in time proves
         // it is busy, not absent.  Dropping serviceOnline here is the Linux
@@ -103,14 +227,19 @@ bool tui_refresh_service(TuiState* state, bool userRequested,
         // Apply, then restore all of it one second later -- once per slow tick.
         // One stale frame with an honest status line is the correct
         // degradation; the daemon's own systemd watchdog resolves a genuinely
-        // wedged daemon, and connect() starts failing when it does.
-        if (wasOnline && !linux_daemon_failure_means_offline(reachability)) {
-            set_daemon_failure(state,
-                "Daemon is busy; showing the last state it published", error);
+        // wedged daemon, and connect() starts failing when it does.  An
+        // ANSWERED failure is a refusal (a GPU switch the daemon will not
+        // make), not a busy daemon, and says so.
+        if (wasOnline && !linux_daemon_failure_means_offline(outcome.reachability)) {
+            set_daemon_failure(state, outcome.answered
+                ? "Daemon refused the request; showing the last state it published"
+                : "Daemon is busy; showing the last state it published", error);
             return false;
         }
         state->serviceOnline = false;
         state->draftAttached = false;
+        // A reconnect says again why writes are blocked.
+        state->gpuAdoption = LINUX_TUI_GPU_ADOPTION_NONE;
         set_daemon_failure(state, "Daemon refresh failed", error);
         return false;
     }
@@ -232,7 +361,7 @@ bool tui_refresh_service(TuiState* state, bool userRequested,
             (unsigned int)next.snapshot.autoApplyFailure.trigger, state->status);
     }
     state->nextTelemetryMs = tui_monotonic_ms() + 1000;
-    if (!requestedTarget) tui_adopt_configured_gpu(state);
+    if (!requestedTarget) tui_adopt_configured_gpu(state, userRequested);
     return true;
 }
 

@@ -112,7 +112,7 @@ bool linux_daemon_snapshot(ServiceSnapshot* snapshot, char* err, size_t errSize)
 
 bool linux_daemon_get_state_ex(const GpuAdapterInfo* target,
                                ServiceResponse* response,
-                               LinuxDaemonReachability* reachability,
+                               LinuxDaemonSendOutcome* outcomeOut,
                                char* err, size_t errSize) {
     ServiceRequest req = {};
     ServiceResponse resp = {};
@@ -125,7 +125,7 @@ bool linux_daemon_get_state_ex(const GpuAdapterInfo* target,
     bool ok = linux_daemon_send_deadline(
         &req, &resp, linux_daemon_command_response_timeout_ms(req.command),
         &outcome, err, errSize);
-    if (reachability) *reachability = outcome.reachability;
+    if (outcomeOut) *outcomeOut = outcome;
     if (!ok) return false;
     if (response) *response = resp;
     return true;

@@ -81,8 +81,18 @@ A's active settings blocks Apply/Reset/bind and switches once they are gone
 (7404); a busy switch blocks writes and is retried (7405); a hold announces
 itself once (7406); the selector's targeted refresh is not undone (7407); an
 unresolved record never switches, and no record writes the daemon's GPU
-(7408). Not covered: the selector action itself (`linux_tui_actions.cpp`) and
-a real daemon.
+(7408). 7409 pins the order of what keeps a shown-elsewhere selection from
+switching (active settings, staged draft, unchanged refusal) and every daemon
+fact a recorded refusal depends on; 7430 the selector origin. 7431-7436 run
+the real refresh and `tui_select_gpu_step()`: a hold is left by selecting the
+held GPU, resetting it and selecting the wanted one (7431, fails when the
+selector steps from the daemon's selection); an answered refusal is not asked
+again until the daemon's state changes or the user refreshes (7432, fails when
+refusals are not recorded); a refusal is never reported as "busy" (7433); a
+staged draft defers the switch (7434); a malformed record says why after an
+offline start and after every reconnect (7435); a changed resolution problem
+is announced again (7436). Not covered: a real daemon, and the click-to-action
+mapping in `linux_tui_actions.cpp` (source-gated).
 
 ## VF point visibility independent of temperature (2026-10-24)
 

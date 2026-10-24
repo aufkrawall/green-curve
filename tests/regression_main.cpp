@@ -1010,8 +1010,9 @@ int run_linux_restore_role_tests();
 // Editor VF point visibility independent of temperature drift
 // (tests/vf_point_visibility_tests.cpp, 7380-7399).
 int run_vf_point_visibility_tests();
-// The Linux TUI writes only to the selected GPU once it is shown
-// (tests/linux_tui_gpu_target_tests.cpp, 7400-7409).
+// The Linux TUI writes only to the selected GPU once it is shown, and a hold
+// on another GPU stays recoverable from the TUI
+// (tests/linux_tui_gpu_target_tests.cpp, 7400-7409 and 7430-7439).
 int run_linux_tui_gpu_target_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's

@@ -739,11 +739,24 @@ boot recovery rebind) keep the exact `linux_gpu_identity_matches()`.
   a start without the daemon; the stored record is never adopted as
   `targetGpu`), then switches to the resolved or explicit (`--gpu`) GPU with
   one targeted refresh until that GPU is the one shown
-  (`linux_tui_gpu_adoption()`, `linux_tui_authority.h`). While the daemon holds
-  active settings it keeps the shown GPU and refuses a switch, so the TUI
-  holds (one status line, one log line per transition) and re-evaluates after
-  every answered refresh. It never runs inside a targeted refresh, so the
-  switch does not recurse and the selector's choice is not undone.
+  (`linux_tui_gpu_adoption()`, `linux_tui_authority.h`). It does not switch,
+  and says why once per transition (one status line, one log line), when the
+  daemon holds active settings and keeps the shown GPU (HELD), a staged draft
+  belongs to the shown GPU (DEFERRED, the selector's own rule), the daemon
+  answered the last switch with a refusal and nothing it reports has changed
+  (REFUSED), or the selection did not resolve (BLOCKED, including a malformed
+  record). Every step is re-evaluated after each answered refresh. A REFUSED
+  switch is asked again only when the daemon's instance, GPU generation,
+  topology, adapter count or active-settings flag changes, the selection
+  changes, or the user refreshes (`linux_tui_switch_refusal_matches()`); an
+  unanswered (busy) switch is asked again on the next tick. A disconnect
+  resets the step, so a reconnect repeats the reason. It never runs inside a
+  targeted refresh, so the switch does not recurse and the selector's choice
+  is not undone.
+- Busy versus refused: `LinuxDaemonSendOutcome::answered` is set once the
+  daemon's complete, valid response arrived, whatever its status. A failed
+  refresh with it set says "Daemon refused the request" with the daemon's
+  reason; only an unanswered one says "Daemon is busy".
 - **The TUI writes only to the selected GPU once it is shown** (2026-10-24).
   Invariant: the TUI sends the shown GPU (`TuiState::targetGpu`), so Apply,
   Reset and a startup-profile bind need the selection resolved AND equal to
@@ -754,17 +767,27 @@ boot recovery rebind) keep the exact `linux_gpu_identity_matches()`.
   (busy): the TUI showed and wrote the daemon's previous GPU. Clicking the GPU
   name selects one explicitly for the session and lifts the block; the TUI
   selection is not persisted (`--gpu` is).
+- **A hold stays recoverable from the TUI** (2026-10-24). The selector
+  (`tui_select_gpu_step()`) steps from the SELECTED GPU when it names a listed
+  adapter (`linux_tui_selector_origin()`), otherwise from the daemon's
+  selection. Stepping from the daemon's selection made a HELD state a dead
+  end: the daemon refuses every GPU but the one with active settings, that GPU
+  was not selected (so Reset was blocked), and one step from it is always
+  another GPU. Now one step reaches the held GPU, its Reset is allowed, and
+  the next step reaches the wanted one.
 - Diagnostics: `linux_format_stored_gpu_detail()` (stored model@BDF, role,
   first four live adapters) in the backend's "stored GPU target ..." line, the
   client's "gpu selection:" lines and the persist line; the daemon logs a moved
   request target on the first occurrence and every 100th after.
 - Tests: `tests/linux_gpu_location_tests.cpp` (7340-7379, pure; run natively
   and in the Linux cross-link) and `tests/linux_tui_gpu_target_tests.cpp`
-  (7400-7409: the real `tui_refresh_service()` against a scripted daemon).
-  Guards: `check_gpu_location()` in `tools/linux_gates.py` (no
-  `clientTarget()`, every CLI verb through the write gate, TUI writes gated on
-  the shown GPU, adoption only after untargeted refreshes, the TUI never
-  adopts the stored record).
+  (7400-7409 and 7430-7439: the real `tui_refresh_service()` and
+  `tui_select_gpu_step()` against a scripted daemon). Guards:
+  `check_gpu_location()` in `tools/linux_gates.py` (no `clientTarget()`, every
+  CLI verb through the write gate, TUI writes gated on the shown GPU, adoption
+  only after untargeted refreshes, the TUI never adopts the stored record, the
+  selector steps from the selection, refusals are recorded and not reported as
+  busy).
 
 ## Automatic restore: crash-loop guard, resume, and reset-before-apply
 
