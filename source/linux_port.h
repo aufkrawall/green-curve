@@ -28,6 +28,8 @@
 // pure, header-only, and covered by the regression harness.
 #include "desired_settings_ui_policy.h"
 #include "linux_cli_fan_override_policy.h"
+// LinuxGpuSelectionRecord and LinuxConfiguredGpu: config.ini's GPU selection.
+#include "linux_gpu_selection.h"
 
 // What `--startup-profile` / `--show-startup` asked the client to do with the
 // daemon's boot-apply policy.  The policy modes themselves are the shared
@@ -128,15 +130,17 @@ int load_linux_debug_enabled(const char* configPath, int defaultValue);
 bool parse_linux_gpu_bdf(const char* text, GpuAdapterInfo* target);
 void format_linux_gpu_bdf(const GpuAdapterInfo* target, char* text, size_t textSize);
 // config.ini [gpu]: the selected adapter plus its location role (see
-// GpuLocationRole); an absent role loads as GPU_LOCATION_ROLE_UNRECORDED.
-bool load_linux_gpu_selection(const char* path, GpuAdapterInfo* target,
-                              GpuLocationRole* roleOut = nullptr);
+// GpuLocationRole); an absent role loads as GPU_LOCATION_ROLE_UNRECORDED.  A
+// damaged or unreadable record is MALFORMED, not absent
+// (linux_gpu_selection_record_parse).
+LinuxGpuSelectionRecord load_linux_gpu_selection(const char* path,
+                                                 GpuAdapterInfo* target,
+                                                 GpuLocationRole* roleOut = nullptr);
 bool save_linux_gpu_selection(const char* path, const GpuAdapterInfo* target,
                               GpuLocationRole role, char* err, size_t errSize);
 // linux_gpu_target_config.cpp: `--gpu` validation and persistence, and
 // config.ini's selection (LinuxConfiguredGpu, linux_gpu_selection.h) for
 // client requests.  Resolution rewrites a moved or role-less record.
-struct LinuxConfiguredGpu;
 bool linux_gpu_target_select_exact(const char* configPath,
                                    GpuAdapterInfo* target,
                                    char* err, size_t errSize);

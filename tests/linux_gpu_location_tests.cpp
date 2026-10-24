@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Linux GPU selection across PCI bus renumbering (linux_gpu_selection.h),
-// assertion codes 7340-7379.  Stored targets (config.ini, the daemon's
+// assertion codes 7340-7379 and 7410-7419 (config.ini's [gpu] record).  Stored targets (config.ini, the daemon's
 // committed and startup records, requests built from them) carry a PCI
 // location that firmware may renumber at boot.  A known model must always
 // match; the location only picks between adapters that share it, and a moved
@@ -346,7 +346,7 @@ int configured_gpu_tests() {
             LINUX_CONFIGURED_GPU_NONE, LINUX_CONFIGURED_GPU_EXPLICIT,
             LINUX_CONFIGURED_GPU_PENDING, LINUX_CONFIGURED_GPU_RESOLVED,
             LINUX_CONFIGURED_GPU_UNVALIDATED, LINUX_CONFIGURED_GPU_NOT_PRESENT,
-            LINUX_CONFIGURED_GPU_AMBIGUOUS};
+            LINUX_CONFIGURED_GPU_AMBIGUOUS, LINUX_CONFIGURED_GPU_MALFORMED};
         for (LinuxConfiguredGpuStatus status : all) {
             const char* name = linux_configured_gpu_status_name(status);
             if (!name[0] || strcmp(name, "invalid") == 0 ||
@@ -362,6 +362,97 @@ int configured_gpu_tests() {
     return 0;
 }
 
+int selection_record_tests() {
+    GpuAdapterInfo target = {};
+    GpuLocationRole role = GPU_LOCATION_ROLE_ADVISORY;
+
+    // 7410: no `selected_bdf` and no role is no record.
+    if (linux_gpu_selection_record_parse("", "", &target, &role) !=
+            LINUX_GPU_SELECTION_RECORD_ABSENT ||
+        linux_gpu_selection_record_parse(nullptr, nullptr, &target, &role) !=
+            LINUX_GPU_SELECTION_RECORD_ABSENT ||
+        target.valid || role != GPU_LOCATION_ROLE_ADVISORY) return 7410;
+
+    // 7411: a complete record parses; a missing role predates the role.
+    if (linux_gpu_selection_record_parse("0000:07:00.0", "required", &target,
+                                         &role) !=
+            LINUX_GPU_SELECTION_RECORD_PRESENT ||
+        !target.valid || target.pciBus != 7 ||
+        role != GPU_LOCATION_ROLE_REQUIRED) return 7411;
+    if (linux_gpu_selection_record_parse("0000:06:00.0", "", &target, &role) !=
+            LINUX_GPU_SELECTION_RECORD_PRESENT ||
+        target.pciBus != 6 || role != GPU_LOCATION_ROLE_UNRECORDED)
+        return 7411;
+
+    // 7412: a damaged location or role is MALFORMED, never "no record":
+    // before 2026-10-24 each of these loaded as no selection, which writes
+    // untargeted and reaches a lone remaining twin.
+    {
+        const char* cases[][2] = {
+            {"0000:07:00", "required"},   // truncated location
+            {"0000:07:00.0", "requird"},  // misspelled role
+            {"0000:00:00.0", ""},         // all-zero is not a location
+            {"", "required"},             // role without a location
+            {"0000:07:20.0", "advisory"}, // device out of range
+        };
+        for (const auto& c : cases) {
+            GpuAdapterInfo untouched = gpu_at(kModel, 9);
+            GpuLocationRole kept = GPU_LOCATION_ROLE_ADVISORY;
+            if (linux_gpu_selection_record_parse(c[0], c[1], &untouched,
+                                                 &kept) !=
+                    LINUX_GPU_SELECTION_RECORD_MALFORMED ||
+                untouched.pciBus != 9 || kept != GPU_LOCATION_ROLE_ADVISORY)
+                return 7412;
+        }
+    }
+
+    // 7413: a malformed record starts MALFORMED, stops a write, sends no
+    // target on a read, is final for the resolver, and `--gpu` replaces it.
+    {
+        if (linux_configured_gpu_status_for_record(
+                LINUX_GPU_SELECTION_RECORD_MALFORMED, false) !=
+                LINUX_CONFIGURED_GPU_MALFORMED ||
+            linux_configured_gpu_status_for_record(
+                LINUX_GPU_SELECTION_RECORD_PRESENT, false) !=
+                LINUX_CONFIGURED_GPU_PENDING ||
+            linux_configured_gpu_status_for_record(
+                LINUX_GPU_SELECTION_RECORD_ABSENT, false) !=
+                LINUX_CONFIGURED_GPU_NONE) return 7413;
+        const LinuxGpuSelectionRecord records[] = {
+            LINUX_GPU_SELECTION_RECORD_ABSENT,
+            LINUX_GPU_SELECTION_RECORD_PRESENT,
+            LINUX_GPU_SELECTION_RECORD_MALFORMED};
+        for (LinuxGpuSelectionRecord record : records)
+            if (linux_configured_gpu_status_for_record(record, true) !=
+                    LINUX_CONFIGURED_GPU_EXPLICIT ||
+                strcmp(linux_gpu_selection_record_name(record), "invalid") == 0)
+                return 7413;
+        GpuAdapterInfo remaining[] = {gpu_at(kModel, 6)};
+        LinuxConfiguredGpu gpu = {};
+        gpu.status = LINUX_CONFIGURED_GPU_MALFORMED;
+        const GpuAdapterInfo* sent = &remaining[0];
+        if (linux_configured_gpu_request_target(&gpu, true, &sent) ||
+            sent != nullptr) return 7413;
+        sent = &remaining[0];
+        if (!linux_configured_gpu_request_target(&gpu, false, &sent) ||
+            sent != nullptr) return 7413;
+        bool moved = false;
+        if (linux_configured_gpu_resolve(&gpu, remaining, 1, &moved) != -1 ||
+            gpu.status != LINUX_CONFIGURED_GPU_MALFORMED) return 7413;
+        if (!strstr(linux_configured_gpu_problem(gpu.status), "malformed"))
+            return 7413;
+    }
+
+    // 7414: the shared BDF parser keeps the `--gpu` spelling and bounds.
+    if (!linux_gpu_parse_bdf(" 0001:0a:1f.7 ", &target) ||
+        target.pciDomain != 1 || target.pciBus != 0x0a ||
+        target.pciDevice != 0x1f || target.pciFunction != 7 ||
+        linux_gpu_parse_bdf("0000:100:00.0", &target) ||
+        linux_gpu_parse_bdf("0000:07:00.8", &target) ||
+        linux_gpu_parse_bdf(nullptr, &target)) return 7414;
+    return 0;
+}
+
 }  // namespace
 
 int run_linux_gpu_location_tests() {
@@ -371,5 +462,6 @@ int run_linux_gpu_location_tests() {
     if (int r = role_tests()) return r;
     if (int r = detail_tests()) return r;
     if (int r = configured_gpu_tests()) return r;
+    if (int r = selection_record_tests()) return r;
     return 0;
 }

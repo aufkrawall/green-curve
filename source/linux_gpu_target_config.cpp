@@ -77,11 +77,17 @@ void linux_configured_gpu_load(const char* configPath,
     if (!gpu) return;
     *gpu = LinuxConfiguredGpu{};
     gpu->role = GPU_LOCATION_ROLE_UNRECORDED;
+    LinuxGpuSelectionRecord record = LINUX_GPU_SELECTION_RECORD_ABSENT;
     if (explicitTarget) gpu->target = *explicitTarget;
-    else load_linux_gpu_selection(configPath, &gpu->target, &gpu->role);
-    gpu->status = !gpu->target.valid ? LINUX_CONFIGURED_GPU_NONE
-        : explicitTarget ? LINUX_CONFIGURED_GPU_EXPLICIT
-                         : LINUX_CONFIGURED_GPU_PENDING;
+    else record = load_linux_gpu_selection(configPath, &gpu->target, &gpu->role);
+    gpu->status = linux_configured_gpu_status_for_record(
+        record, explicitTarget && explicitTarget->valid);
+    if (gpu->status != LINUX_CONFIGURED_GPU_NONE)
+        linux_debug_logf("gpu selection: loaded record=%s status=%s role=%s",
+                         explicitTarget ? "explicit"
+                                        : linux_gpu_selection_record_name(record),
+                         linux_configured_gpu_status_name(gpu->status),
+                         configured_gpu_location_role_name(gpu->role));
 }
 
 void linux_configured_gpu_resolve_against(const char* configPath,
@@ -154,7 +160,8 @@ static void resolve_configured_from_daemon(const char* configPath,
 
 static bool configured_gpu_needs_reselection(const LinuxConfiguredGpu* gpu) {
     return gpu && (gpu->status == LINUX_CONFIGURED_GPU_NOT_PRESENT ||
-                   gpu->status == LINUX_CONFIGURED_GPU_AMBIGUOUS);
+                   gpu->status == LINUX_CONFIGURED_GPU_AMBIGUOUS ||
+                   gpu->status == LINUX_CONFIGURED_GPU_MALFORMED);
 }
 
 const GpuAdapterInfo* linux_gpu_target_for_read(const char* configPath,

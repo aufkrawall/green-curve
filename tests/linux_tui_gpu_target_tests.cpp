@@ -189,7 +189,8 @@ int policy_tests() {
     {
         const LinuxConfiguredGpuStatus unresolved[] = {
             LINUX_CONFIGURED_GPU_PENDING, LINUX_CONFIGURED_GPU_UNVALIDATED,
-            LINUX_CONFIGURED_GPU_NOT_PRESENT, LINUX_CONFIGURED_GPU_AMBIGUOUS};
+            LINUX_CONFIGURED_GPU_NOT_PRESENT, LINUX_CONFIGURED_GPU_AMBIGUOUS,
+            LINUX_CONFIGURED_GPU_MALFORMED};
         for (LinuxConfiguredGpuStatus status : unresolved) {
             LinuxConfiguredGpu gpu = {b, GPU_LOCATION_ROLE_REQUIRED, status};
             if (linux_tui_shown_gpu_write(&gpu, &b) !=

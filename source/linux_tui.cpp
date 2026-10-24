@@ -130,6 +130,12 @@ void initialize_state(TuiState* state, const char* configPath,
                     SERVICE_STATE_SECTION_ADAPTER_IDENTITY) == 0) {
         snprintf(state->status, sizeof(state->status),
                  "Select a GPU before editing or applying settings");
+    } else if (state->configuredGpu.status == LINUX_CONFIGURED_GPU_MALFORMED) {
+        // Never resolved, so the adoption has no transition to report; say
+        // why writes are blocked before the first Apply runs into it.
+        snprintf(state->status, sizeof(state->status),
+            "Writes blocked: %s; click the GPU name to select one, or save one with --gpu",
+            linux_configured_gpu_problem(state->configuredGpu.status));
     } else if (!state->status[0]) {
         snprintf(state->status, sizeof(state->status),
                  "Live GPU state loaded • click a field or use Tab/Enter");

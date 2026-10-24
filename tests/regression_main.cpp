@@ -1004,7 +1004,7 @@ int run_peer_stall_tests();
 // (tests/gpu_location_role_tests.cpp, 7300-7339).
 int run_gpu_location_role_tests(const char* scratchConfigPath);
 // The Linux stored-target rule for the same renumbering
-// (tests/linux_gpu_location_tests.cpp, 7340-7379).
+// (tests/linux_gpu_location_tests.cpp, 7340-7379 and 7410-7419).
 int run_linux_gpu_location_tests();
 // Editor VF point visibility independent of temperature drift
 // (tests/vf_point_visibility_tests.cpp, 7380-7399).

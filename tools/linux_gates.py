@@ -1149,6 +1149,13 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
                  "the client resolves config.ini through the tested pure rule")
     require_text(target_cpp, "geteuid() == 0",
                  "an unasked config.ini rewrite never runs as root")
+    # A damaged or unreadable [gpu] record must not load as "no record": no
+    # record writes untargeted, which reaches a lone remaining twin.
+    profiles_cpp = _p(ctx, "linux_port_profiles.cpp")
+    require_text(profiles_cpp, "linux_gpu_selection_record_parse(",
+                 "config.ini's [gpu] record is classified by the tested parser")
+    require_text(target_cpp, "linux_configured_gpu_status_for_record(",
+                 "a malformed config.ini GPU record starts MALFORMED and stops writes")
     require_text(target_cpp,
                  "if (linux_configured_gpu_request_target(gpu, true, target)) return true;",
                  "a write stops when config.ini's GPU did not resolve")

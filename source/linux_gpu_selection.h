@@ -251,9 +251,67 @@ static inline GpuLocationRole linux_gpu_location_role_for_selection(
     return models == 1 ? GPU_LOCATION_ROLE_ADVISORY : GPU_LOCATION_ROLE_REQUIRED;
 }
 
+// A PCI location as `--gpu` and config.ini spell it (domain:bus:device.function,
+// hex).  All-zero is not a GPU location.
+static inline bool linux_gpu_parse_bdf(const char* text, GpuAdapterInfo* target) {
+    if (!text || !target) return false;
+    unsigned int domain = 0, bus = 0, device = 0, function = 0;
+    if (!parse_pci_bdf_string(text, &domain, &bus, &device, &function) ||
+        (domain == 0 && bus == 0 && device == 0 && function == 0))
+        return false;
+    *target = GpuAdapterInfo{};
+    target->valid = true;
+    target->pciDomain = domain;
+    target->pciBus = bus;
+    target->pciDevice = device;
+    target->pciFunction = function;
+    return true;
+}
+
+// What config.ini's [gpu] record holds.  A record whose location or role does
+// not parse is MALFORMED, never "no record": no record writes untargeted (the
+// daemon's lone-adapter rule), so reading a damaged `required` record as
+// absent would let a write reach the identical GPU it exists to rule out.
+// Windows blocks a malformed selection the same way.
+enum LinuxGpuSelectionRecord {
+    LINUX_GPU_SELECTION_RECORD_ABSENT = 0,
+    LINUX_GPU_SELECTION_RECORD_PRESENT,
+    LINUX_GPU_SELECTION_RECORD_MALFORMED,
+};
+
+// Classifies the raw `selected_bdf` and `selected_pci_location_role` texts.
+// Neither key set is no record; either set makes it a record, which must then
+// parse completely.  `target` and `roleOut` are written only for PRESENT.
+static inline LinuxGpuSelectionRecord linux_gpu_selection_record_parse(
+    const char* bdfText, const char* roleText, GpuAdapterInfo* target,
+    GpuLocationRole* roleOut) {
+    const bool hasBdf = bdfText && bdfText[0];
+    const bool hasRole = roleText && roleText[0];
+    if (!hasBdf && !hasRole) return LINUX_GPU_SELECTION_RECORD_ABSENT;
+    GpuAdapterInfo parsed = {};
+    GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED;
+    if (!hasBdf || !linux_gpu_parse_bdf(bdfText, &parsed) ||
+        !configured_gpu_location_role_parse(hasRole ? roleText : "", &role))
+        return LINUX_GPU_SELECTION_RECORD_MALFORMED;
+    if (target) *target = parsed;
+    if (roleOut) *roleOut = role;
+    return LINUX_GPU_SELECTION_RECORD_PRESENT;
+}
+
+static inline const char* linux_gpu_selection_record_name(
+    LinuxGpuSelectionRecord record) {
+    switch (record) {
+    case LINUX_GPU_SELECTION_RECORD_ABSENT: return "absent";
+    case LINUX_GPU_SELECTION_RECORD_PRESENT: return "present";
+    case LINUX_GPU_SELECTION_RECORD_MALFORMED: return "malformed";
+    }
+    return "invalid";
+}
+
 // config.ini's GPU in the client, from loading the record to the requests that
-// name it.  NOT_PRESENT and AMBIGUOUS are final for the process: only an
-// explicit selection (`--gpu`, the TUI selector) replaces them, as on Windows.
+// name it.  NOT_PRESENT, AMBIGUOUS and MALFORMED are final for the process:
+// only an explicit selection (`--gpu`, the TUI selector) replaces them, as on
+// Windows.
 enum LinuxConfiguredGpuStatus {
     LINUX_CONFIGURED_GPU_NONE = 0,     // no record: requests go untargeted
     LINUX_CONFIGURED_GPU_EXPLICIT,     // `--gpu` or a TUI selection
@@ -262,7 +320,21 @@ enum LinuxConfiguredGpuStatus {
     LINUX_CONFIGURED_GPU_UNVALIDATED,  // no live adapter list to resolve against
     LINUX_CONFIGURED_GPU_NOT_PRESENT,
     LINUX_CONFIGURED_GPU_AMBIGUOUS,
+    LINUX_CONFIGURED_GPU_MALFORMED,    // the record is damaged or unreadable
 };
+
+// The status a freshly loaded selection starts in; an explicit `--gpu`
+// replaces whatever config.ini holds.
+static inline LinuxConfiguredGpuStatus linux_configured_gpu_status_for_record(
+    LinuxGpuSelectionRecord record, bool explicitTarget) {
+    if (explicitTarget) return LINUX_CONFIGURED_GPU_EXPLICIT;
+    switch (record) {
+    case LINUX_GPU_SELECTION_RECORD_PRESENT: return LINUX_CONFIGURED_GPU_PENDING;
+    case LINUX_GPU_SELECTION_RECORD_ABSENT: return LINUX_CONFIGURED_GPU_NONE;
+    case LINUX_GPU_SELECTION_RECORD_MALFORMED: break;
+    }
+    return LINUX_CONFIGURED_GPU_MALFORMED;
+}
 
 struct LinuxConfiguredGpu {
     GpuAdapterInfo target;  // the record until it resolves, then the live adapter
@@ -280,6 +352,7 @@ static inline const char* linux_configured_gpu_status_name(
     case LINUX_CONFIGURED_GPU_UNVALIDATED: return "unvalidated";
     case LINUX_CONFIGURED_GPU_NOT_PRESENT: return "not-present";
     case LINUX_CONFIGURED_GPU_AMBIGUOUS: return "ambiguous";
+    case LINUX_CONFIGURED_GPU_MALFORMED: return "malformed";
     }
     return "invalid";
 }
@@ -314,8 +387,9 @@ static inline int linux_configured_gpu_resolve(LinuxConfiguredGpu* gpu,
 // one adapter left), and a request without a target reaches a lone adapter,
 // so a stale record sent as it is, or dropped, can land on the identical GPU
 // that a `required` role exists to tell apart.  A write therefore stops on
-// every outcome but NONE, EXPLICIT and RESOLVED; a read goes untargeted and
-// shows the daemon's current GPU without selecting another.
+// every outcome but NONE, EXPLICIT and RESOLVED (MALFORMED included: a damaged
+// record is not "no record"); a read goes untargeted and shows the daemon's
+// current GPU without selecting another.
 static inline bool linux_configured_gpu_request_target(
     const LinuxConfiguredGpu* gpu, bool write,
     const GpuAdapterInfo** targetOut) {
@@ -337,6 +411,8 @@ static inline const char* linux_configured_gpu_problem(
         return "the GPU saved in config.ini is not present";
     case LINUX_CONFIGURED_GPU_AMBIGUOUS:
         return "the GPU saved in config.ini is ambiguous";
+    case LINUX_CONFIGURED_GPU_MALFORMED:
+        return "the GPU saved in config.ini is malformed or unreadable";
     case LINUX_CONFIGURED_GPU_UNVALIDATED:
         return "the GPU saved in config.ini could not be checked against the "
                "daemon's GPUs";

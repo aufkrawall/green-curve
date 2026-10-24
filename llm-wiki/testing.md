@@ -105,8 +105,13 @@ unresolved status stops a write while a read goes untargeted (7373); resolved
 and explicit selections send the live adapter (7374-7375), an unvalidated
 record resolves once adapters arrive (7376), not present is final (7377),
 twins without the stored location are ambiguous (7378), and every status has
-a log name and reason (7379). The old 614-618 assertions now run against the
-new resolver with the `required` role. Not covered automatically: config.ini
+a log name and reason (7379). 7410-7414 (2026-10-24) classify config.ini's
+`[gpu]` record: no keys is no record (7410), a complete record parses (7411),
+a truncated or zero location, a misspelled role or a role without a location
+is MALFORMED and leaves the outputs alone (7412; each loaded as no record
+before), MALFORMED stops writes, is final and `--gpu` replaces it (7413), and
+the shared BDF parser keeps the `--gpu` bounds (7414). The old 614-618
+assertions now run against the new resolver with the `required` role. Not covered automatically: config.ini
 persistence of the role (no harness links `linux_port_profiles.cpp`;
 source-guarded), the snapshot-fetching client wrapper
 (`linux_gpu_target_config.cpp`; source-guarded, checked once with a mocked

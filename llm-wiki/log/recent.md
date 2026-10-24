@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-24: A malformed Linux config.ini GPU record stops client writes
+
+- Closes the 2026-10-23 "left as is": an unparsable BDF or role spelling in
+  `[gpu]` loaded as no record, so CLI and TUI writes went untargeted and
+  reached a lone remaining twin. Now MALFORMED (also a config.ini that exists
+  but cannot be read): writes stop, reads go untargeted with a warning,
+  `--gpu` replaces it; the TUI says so at start. Same as Windows.
+- Checked first: every writer since v0.19 stores a live adapter's non-zero
+  BDF, so no legitimate record is location-less.
+- Fixtures 7410-7414; `gpu selection: loaded record=` and malformed-record
+  log lines (key lengths only).
+
 ## 2026-10-24: The Linux TUI writes only to the selected GPU once it is shown
 
 - Review follow-up. `--gpu B --tui` showed and wrote the daemon's current GPU
