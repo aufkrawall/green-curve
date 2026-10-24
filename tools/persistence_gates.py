@@ -62,9 +62,9 @@ def check_all(ctx, require_text, forbid_text):
 
     # Every record that embeds DesiredSettings pins its own size, so a change to
     # DesiredSettings *or* GpuAdapterInfo breaks the build at the record.
-    require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecord) == 1184",
+    require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecord) == 1280",
                  "the live daemon state record pins its on-disk size")
-    require_text(daemon_state_h, "sizeof(LinuxDaemonStartupRecord) == 1240",
+    require_text(daemon_state_h, "sizeof(LinuxDaemonStartupRecord) == 1336",
                  "the live startup-policy record pins its on-disk size")
     require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecordSchema1) == 1048",
                  "the frozen schema-1 state record stays 1048 bytes")
@@ -85,6 +85,16 @@ def check_all(ctx, require_text, forbid_text):
                  "frozen records embed the frozen DesiredSettings layout")
 
     location_h = _p(ctx, "linux_daemon_location_schema.h")
+    uuid_schema_h = _p(ctx, "linux_daemon_uuid_schema.h")
+    for kind, size in (("State", 1184), ("Startup", 1240)):
+        require_text(uuid_schema_h, f"sizeof(LinuxDaemon{kind}RecordSchema3) == {size}",
+                     "the location-role layout remains frozen before UUID support")
+        require_text(daemon_state_cpp, f"sizeof(LinuxDaemon{kind}RecordSchema3)",
+                     "the loader still admits the pre-UUID record by its actual size")
+    require_text(daemon_state_h, "LINUX_DAEMON_RECORD_PRE_UUID_VERSION = 6",
+                 "the last trusted pre-UUID state generation remains readable")
+    require_text(daemon_state_h, "LINUX_DAEMON_STARTUP_PRE_UUID_VERSION = 5",
+                 "the last trusted pre-UUID startup generation remains readable")
     for kind, size in (("State", 1176), ("Startup", 1236)):
         require_text(location_h, f"sizeof(LinuxDaemon{kind}RecordSchema2) == {size}",
                      "pre-location-role records keep their exact size")
@@ -118,9 +128,9 @@ def check_all(ctx, require_text, forbid_text):
                  "the state generation whose required role is re-read stays named")
     require_text(daemon_state_h, "LINUX_DAEMON_STARTUP_PRE_TRUSTED_ROLE_VERSION = 4",
                  "the startup generation whose required role is re-read stays named")
-    require_text(daemon_state_cpp, "linux_daemon_state_record_reread_pre_trusted_role(&record)",
+    require_text(daemon_state_cpp, "linux_daemon_state_record_widen_schema3(&record, &legacy)",
                  "the state loader re-reads a first-generation role")
-    require_text(daemon_state_cpp, "linux_daemon_startup_reread_pre_trusted_role(&loaded)",
+    require_text(daemon_state_cpp, "linux_daemon_startup_widen_schema3(&loaded, &legacy)",
                  "the startup loader re-reads a first-generation role")
 
     # The loaders dispatch on size and migrate by version.

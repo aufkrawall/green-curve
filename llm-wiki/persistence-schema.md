@@ -8,8 +8,8 @@ changed underneath them**:
 
 | File | Record | Current version | Frozen predecessor |
 |------|--------|-----------------|--------------------|
-| Linux `active.bin` | `LinuxDaemonStateRecord` (1184 B) | `LINUX_DAEMON_RECORD_VERSION = 5` | `LinuxDaemonStateRecordSchema2` (1176 B, version 4), `LinuxDaemonStateRecordSchema1` (1048 B, versions 2-3), `LinuxDaemonStateRecordSchema1V1` (1036 B, version 1) |
-| Linux `startup.bin` | `LinuxDaemonStartupRecord` (1240 B) | `LINUX_DAEMON_STARTUP_VERSION = 4` | `LinuxDaemonStartupRecordSchema2` (1236 B, version 3), `LinuxDaemonStartupRecordSchema1` (1108 B, versions 1-2) |
+| Linux `active.bin` | `LinuxDaemonStateRecord` (1280 B) | `LINUX_DAEMON_RECORD_VERSION = 7` | `LinuxDaemonStateRecordSchema3` (1184 B, versions 5-6), `LinuxDaemonStateRecordSchema2` (1176 B, version 4), `LinuxDaemonStateRecordSchema1` (1048 B, versions 2-3), `LinuxDaemonStateRecordSchema1V1` (1036 B, version 1) |
+| Linux `startup.bin` | `LinuxDaemonStartupRecord` (1336 B) | `LINUX_DAEMON_STARTUP_VERSION = 6` | `LinuxDaemonStartupRecordSchema3` (1240 B, versions 4-5), `LinuxDaemonStartupRecordSchema2` (1236 B, version 3), `LinuxDaemonStartupRecordSchema1` (1108 B, versions 1-2) |
 | Windows restart snapshot | `ServiceRestartReapplySnapshot` (1160 B) | `SERVICE_ACTIVE_DESIRED_VERSION = 6u` | `ServiceRestartReapplySnapshotSchema1` (1032 B, version 5) |
 
 Every loader admitted a file only when its byte size equalled the **current**
@@ -71,18 +71,18 @@ exists for. Source gates in `tools/persistence_gates.py` forbid `REQUIRED` in
 the frozen-layout header and pin every widening call to the legacy role.
 
 The first role generation (state v5, startup v4, written only by unreleased
-builds) is re-read on load (`linux_daemon_*_reread_pre_trusted_role()`): its
+builds) is re-read on load (`linux_daemon_*_widen_schema3()`): its
 `required` may have been invented by that widening and cannot be told apart
 from a twin selection, so only `advisory` survives and everything else becomes
-the legacy role; the record is re-stamped as the current version after its own
+the legacy role; the record widens with an absent UUID after its own
 checksum validates. Users therefore need no manual re-bind after updating. Cost:
 a twin binding made by those builds follows the remaining twin if the other is
 removed (the released builds' rule) until a restore re-records `required`; with
 both twins present the exact location still wins. The loaders' wiring is
-source-gated only, because they admit root-owned files alone.
+source-gated; a native Linux probe also exercises their protected-file path.
 
 Automatic restore, resume, startup content refresh and backend replacement keep
-the role; a required role never weakens merely because a twin disappeared.
+the role; without UUID evidence a required role never weakens merely because a twin disappeared.
 Migration diagnostics name the old size/version and the role the record widened
 with; automatic restore logs its resolved role and live location, and an
 aborted one logs the stored location, role and remedy. Fixtures 7420-7429 and
@@ -95,6 +95,42 @@ refused, disabled policy). A negative control dropping the backend role fails
 at 7421; widening as `required` again fails at 7423; keeping a re-read
 `required` fails at 7451. Real Linux hardware upgrade and
 resume remain unverified.
+
+## Optional physical GPU UUID (2026-10-24)
+
+Source anchors: `source/linux_gpu_uuid.h`, `source/linux_daemon_uuid_schema.h`,
+`source/linux_backend_discovery.cpp`, `source/linux_auto_restore_runtime.h`,
+`source/linux_startup_policy.h`, `tests/linux_gpu_uuid_tests.cpp`.
+State v7 and startup v6 append an optional physical-device UUID inside their
+checksummed atomic records. The preceding role layouts are frozen as schema 3;
+state v5/startup v4 keep the compatibility role re-read, state v6/startup v5
+preserve their trusted role, and every earlier generation retains its existing
+migration. All predecessors start without a UUID. DesiredSettings, the client
+wire and GpuAdapterInfo are unchanged.
+
+The daemon optionally queries NVML's physical GPU UUID. A unique matching UUID
+and nonconflicting known model metadata resolve the same physical card across a PCI bus move, even
+with identical cards or a required location. A positive UUID mismatch on the
+candidate refuses the restore before any write. Duplicate UUID matches refuse
+as ambiguous. Missing functions, failed queries and unrecognized UUID formats
+fall back to the previous model/location resolver; they never become a new
+hardware-support prerequisite. A selection fast path queries its existing
+handle and preserves that fast path on an unavailable UUID query.
+
+Explicit Apply/startup binding capture the observed UUID. Automatic restore,
+resume and startup content refresh retain a learned UUID through optional-query
+failure. A successful legacy boot profile also stores its newly learned UUID
+when its location and role did not change. Diagnostics report only verdicts and
+presence flags, never the physical identifier.
+
+Design limit: a legacy record cannot identify a removed physical card before
+its first successful UUID capture. This change preserves that first restore's
+compatibility behavior. UUID-unavailable hardware also retains its old ambiguity.
+Downgrading to an older binary cannot read the new larger records; existing
+forward upgrades remain supported by the frozen-layout loaders.
+
+Last verified: 2026-10-24 (host-neutral UUID and frozen-record regression tests,
+plus native Linux actual-loader and atomic-record probes; live physical GPU replacement and Linux resume remain hardware-unverified).
 
 ## Adding a field to DesiredSettings
 

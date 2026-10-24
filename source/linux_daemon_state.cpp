@@ -164,11 +164,18 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
         count = gc_read_record(::read, fd, &record, sizeof(record));
         storedVersion = record.version;
         storedRole = record.targetLocationRole;
-        // Same layout, older meaning: an invalid copy is left as read so the
-        // rejection below reports its real version.
-        if (count == (ssize_t)sizeof(record) &&
-            linux_daemon_state_record_reread_pre_trusted_role(&record)) {
-            generation = LINUX_DAEMON_RECORD_GENERATION_PRE_TRUSTED_ROLE;
+    } else if (protectedRegular &&
+               st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema3)) {
+        LinuxDaemonStateRecordSchema3 legacy = {};
+        count = gc_read_record(::read, fd, &legacy, sizeof(legacy));
+        if (count == (ssize_t)sizeof(legacy) &&
+            linux_daemon_state_record_widen_schema3(&record, &legacy)) {
+            count = (ssize_t)sizeof(record);
+            storedVersion = legacy.version;
+            storedRole = legacy.targetLocationRole;
+            generation = storedVersion == LINUX_DAEMON_RECORD_PRE_TRUSTED_ROLE_VERSION
+                ? LINUX_DAEMON_RECORD_GENERATION_PRE_TRUSTED_ROLE
+                : LINUX_DAEMON_RECORD_GENERATION_SCHEMA3;
             migratedFromLegacy = true;
         }
     } else if (protectedRegular &&
@@ -213,6 +220,7 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
     close(fd);
     if (protectedRegular && count < 0 &&
         (st.st_size == (off_t)sizeof(LinuxDaemonStateRecord) ||
+         st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema3) ||
          st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema2) ||
          st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema1) ||
          st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema1V1))) {
@@ -239,8 +247,9 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
         } else if (count != (ssize_t)sizeof(record)) {
             gc_snprintf(err, errSize,
                 "daemon state rejected: %lld bytes matches no known record "
-                "layout (current=%zu schema2=%zu schema1=%zu schema1v1=%zu)",
+                "layout (current=%zu schema3=%zu schema2=%zu schema1=%zu schema1v1=%zu)",
                 (long long)st.st_size, sizeof(LinuxDaemonStateRecord),
+                sizeof(LinuxDaemonStateRecordSchema3),
                 sizeof(LinuxDaemonStateRecordSchema2),
                 sizeof(LinuxDaemonStateRecordSchema1),
                 sizeof(LinuxDaemonStateRecordSchema1V1));
@@ -283,7 +292,9 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
                     : generation == LINUX_DAEMON_RECORD_GENERATION_SCHEMA2
                         ? "schema-2"
                         : generation == LINUX_DAEMON_RECORD_GENERATION_PRE_TRUSTED_ROLE
-                            ? "first location-role" : "schema-1",
+                            ? "first location-role"
+                            : generation == LINUX_DAEMON_RECORD_GENERATION_SCHEMA3
+                                ? "pre-UUID" : "schema-1",
                 (unsigned int)storedVersion,
                 (unsigned int)LINUX_DAEMON_RECORD_VERSION, roleDetail,
                 memDetail[0] ? memDetail : "no stored memory offset to convert");
@@ -411,9 +422,17 @@ bool linux_daemon_startup_load(const char* path,
         if (parsed) {
             storedVersion = loaded.version;
             storedRole = loaded.targetLocationRole;
-            // Same layout, older meaning (linux_daemon_location_schema.h).
-            rereadRole = linux_daemon_startup_reread_pre_trusted_role(&loaded);
-            migrated = rereadRole;
+        }
+    } else if (protectedRegular &&
+               status.st_size == (off_t)sizeof(LinuxDaemonStartupRecordSchema3)) {
+        LinuxDaemonStartupRecordSchema3 legacy = {};
+        if (gc_read_record(::read, fd, &legacy, sizeof(legacy)) == (ssize_t)sizeof(legacy) &&
+            linux_daemon_startup_widen_schema3(&loaded, &legacy)) {
+            storedVersion = legacy.version;
+            storedRole = legacy.targetLocationRole;
+            rereadRole = storedVersion == LINUX_DAEMON_STARTUP_PRE_TRUSTED_ROLE_VERSION;
+            parsed = true;
+            migrated = true;
         }
     } else if (protectedRegular &&
                status.st_size == (off_t)sizeof(LinuxDaemonStartupRecordSchema2)) {
@@ -448,8 +467,9 @@ bool linux_daemon_startup_load(const char* path,
         } else if (!parsed) {
             gc_snprintf(err, errSize,
                 "daemon startup policy rejected: %lld bytes matches no known "
-                "record layout (current=%zu schema2=%zu schema1=%zu)",
+                "record layout (current=%zu schema3=%zu schema2=%zu schema1=%zu)",
                 (long long)status.st_size, sizeof(LinuxDaemonStartupRecord),
+                sizeof(LinuxDaemonStartupRecordSchema3),
                 sizeof(LinuxDaemonStartupRecordSchema2),
                 sizeof(LinuxDaemonStartupRecordSchema1));
         } else {

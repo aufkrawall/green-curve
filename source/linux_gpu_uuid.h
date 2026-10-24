@@ -32,6 +32,25 @@ static inline LinuxGpuUuid linux_gpu_uuid_parse(const char* text) {
 }
 
 using LinuxGetGpuUuid = nvmlReturn_t (*)(nvmlDevice_t, char*, unsigned int);
+static inline bool linux_gpu_uuid_compatible(const LinuxGpuUuid* stored,
+                                              const LinuxGpuUuid* observed) {
+    return !linux_gpu_uuid_valid(stored) || !linux_gpu_uuid_valid(observed) ||
+        strcmp(stored->text, observed->text) == 0;
+}
+
+// Startup policy binding may name an adapter other than the telemetry GPU.
+// Never attach the selected adapter's UUID to a different requested target.
+static inline const LinuxGpuUuid* linux_gpu_uuid_for_target(
+    const GpuAdapterInfo* target, const GpuAdapterInfo* adapters,
+    unsigned int count, const LinuxGpuUuid* uuids) {
+    const LinuxGpuUuid* found = nullptr;
+    for (unsigned int i = 0; adapters && uuids && i < count && i < MAX_GPU_ADAPTERS; ++i) {
+        if (!linux_gpu_identity_matches(target, &adapters[i])) continue;
+        if (found) return nullptr;
+        found = &uuids[i];
+    }
+    return found;
+}
 static inline LinuxGpuUuid linux_gpu_read_uuid(LinuxGetGpuUuid query,
                                                nvmlDevice_t device) {
     char text[sizeof(LinuxGpuUuid::text)] = {};
@@ -76,7 +95,8 @@ static inline LinuxGpuInitSelection linux_gpu_restore_selection(
         }
         match = (int)i;
     }
-    if (match >= 0 && linux_gpu_model_matches(target, &adapters[match])) {
+    if (match >= 0 && (!linux_gpu_model_known(target) ||
+        linux_gpu_model_matches(target, &adapters[match]))) {
         if (verdict) *verdict = LINUX_GPU_UUID_MATCHED;
         return {match, true, !linux_gpu_bdf_equal(target, &adapters[match])};
     }
@@ -91,7 +111,8 @@ static inline LinuxGpuInitSelection linux_gpu_restore_selection(
 // A transient query failure must not erase a previously learned binding.
 static inline LinuxGpuUuid linux_gpu_uuid_retain(const LinuxGpuUuid* observed,
                                                  const LinuxGpuUuid* previous) {
-    if (linux_gpu_uuid_valid(observed)) return *observed;
-    return linux_gpu_uuid_valid(previous) ? *previous : LinuxGpuUuid{};
+    if (observed && linux_gpu_uuid_valid(observed)) return *observed;
+    if (previous && linux_gpu_uuid_valid(previous)) return *previous;
+    return {};
 }
 #endif

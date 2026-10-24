@@ -5,6 +5,22 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-24: Optional physical GPU identity for Linux restore
+
+- State v7/startup v6 store an optional physical UUID. Frozen schema-3 loaders
+  preserve every preceding role migration, including the first-generation
+  compatibility re-read; old records need no manual rebind on upgrade.
+- UUID evidence follows the same card across bus moves and distinguishes an
+  identical replacement. Missing API support or failed optional reads retain
+  the old resolver and do not disable unsupported GPU support. An unavailable
+  query preserves the backend fast path and any stored UUID.
+- Apply, startup bind, automatic restore, resume and startup content refresh
+  carry the binding. A legacy boot profile captures it after success even
+  without a bus move. Diagnostics expose verdicts/presence only.
+- Fixtures 7460-7481 cover policy, query failures and record binding; 7450-7459
+  use the actual frozen predecessor sizes and checksums. First-restore legacy
+  ambiguity remains an explicit compatibility limit.
+
 ## 2026-10-24: The Linux regression suite runs in an agent sandbox
 
 - Inside the sandbox the suite failed at 6731 (a hard-coded `/tmp` path on a

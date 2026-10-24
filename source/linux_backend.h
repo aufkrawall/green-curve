@@ -22,6 +22,7 @@
 #include "gpu_capability_policy.h"
 #include "linux_architecture_policy.h"
 #include "linux_gpu_binding_policy.h"
+#include "linux_gpu_uuid.h"
 #include "linux_transaction.h"
 #include "fan_fixed_maintenance_policy.h"
 #include "platform.h"
@@ -50,6 +51,8 @@ struct LinuxGpuState {
     unsigned int selectedAdapterIndex;
     GpuAdapterInfo adapters[MAX_GPU_ADAPTERS];
     GpuAdapterInfo selectedGpu;
+    LinuxGpuUuid adapterUuids[MAX_GPU_ADAPTERS];
+    LinuxGpuUuidVerdict uuidVerdict;
     bool writeIdentityResolved;
     LinuxGpuMatchMethod nvapiMatchMethod;
     unsigned int architectureSource;
@@ -134,6 +137,11 @@ struct LinuxGpuState {
     bool fanWriteLogged;
 };
 
+static inline const LinuxGpuUuid* linux_backend_selected_uuid(const LinuxGpuState* g) {
+    return g && g->selectedAdapterIndex < g->adapterCount
+        ? &g->adapterUuids[g->selectedAdapterIndex] : nullptr;
+}
+
 struct LinuxHardwareSnapshot {
     bool valid;
     gc_u32 availableMutationDomains;
@@ -175,12 +183,15 @@ struct LinuxBackendRefreshResult {
 // failure (no driver, no GPU, etc.).
 bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
                         char* err, size_t errSize,
-                        GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED);
+                        GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED,
+                        const LinuxGpuUuid* uuid = nullptr);
 void linux_backend_shutdown(LinuxGpuState* g);
 
 bool linux_backend_select_target(LinuxGpuState* g, const GpuAdapterInfo* target,
                                  char* err, size_t errSize,
-                                 GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED);
+                                 GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED,
+                                 const LinuxGpuUuid* uuid = nullptr,
+                                 LinuxGpuUuidVerdict* uuidVerdict = nullptr);
 bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* snapshot,
                                     char* err, size_t errSize);
 bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapshot* snapshot,

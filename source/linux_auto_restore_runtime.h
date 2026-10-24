@@ -259,6 +259,8 @@ static void auto_restore_note_automatic_failure(LinuxAutoRestoreTrigger trigger,
 // there, this fails and the caller refuses to write rather than guessing.
 static bool auto_restore_prepare_backend(const GpuAdapterInfo* target,
                                          GpuLocationRole role,
+                                         const LinuxGpuUuid* uuid,
+                                         LinuxGpuUuidVerdict* uuidVerdict,
                                          char* err, size_t errSize) {
     if (!g_gpuReady) {
         // One re-init attempt: across a suspend the NVIDIA character devices
@@ -283,7 +285,7 @@ static bool auto_restore_prepare_backend(const GpuAdapterInfo* target,
              g_gpu.gpuName,
              service_gpu_health_reason_name(g_gpu.health.reason));
     }
-    if (!linux_backend_select_target(&g_gpu, target, err, errSize, role)) return false;
+    if (!linux_backend_select_target(&g_gpu, target, err, errSize, role, uuid, uuidVerdict)) return false;
     // Same-PCI rebind plus a fresh VF snapshot; linux_backend_refresh() already
     // performs exactly one read-only re-enumeration when a refresh fails.
     linux_backend_refresh(&g_gpu);
@@ -295,7 +297,7 @@ static bool auto_restore_prepare_backend(const GpuAdapterInfo* target,
 // becomes, and what the failure means.
 static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     LinuxAutoRestoreTrigger trigger, const GpuAdapterInfo* target,
-    const DesiredSettings* intent, GpuLocationRole role) {
+    const DesiredSettings* intent, GpuLocationRole role, const LinuxGpuUuid* uuid) {
     LinuxAutoRestoreOutcome outcome = {};
     if (!target || !intent) {
         gc_strlcpy(outcome.message, sizeof(outcome.message),
@@ -312,7 +314,8 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     outcome.authorized = true;
 
     char err[256] = {};
-    if (!auto_restore_prepare_backend(target, role, err, sizeof(err))) {
+    LinuxGpuUuidVerdict uuidVerdict = LINUX_GPU_UUID_FALLBACK;
+    if (!auto_restore_prepare_backend(target, role, uuid, &uuidVerdict, err, sizeof(err))) {
         // Nothing was written, so this is a missing prerequisite rather than a
         // failed write: it does not latch the lockout.  The attempt it consumed
         // is still spent, which is deliberate -- a daemon that cannot reach its
@@ -327,9 +330,10 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
                     "GPU not available for automatic restore: %s", err);
         // Judged against the adapters the backend enumerated; a failed
         // re-selection leaves g_gpu untouched.
-        const bool targetUnresolved = g_gpuReady &&
+        const bool targetUnresolved = uuidVerdict == LINUX_GPU_UUID_MISMATCH ||
+            uuidVerdict == LINUX_GPU_UUID_AMBIGUOUS || (g_gpuReady &&
             linux_resolve_stored_gpu_target(target, role, g_gpu.adapters,
-                                            g_gpu.adapterCount, nullptr) < 0;
+                                            g_gpu.adapterCount, nullptr) < 0);
         dlog("daemon auto-restore: %s aborted before any write: %s "
              "[stored=%04x:%02x:%02x.%u role=%s remedy=%s]\n",
              linux_auto_restore_trigger_name(trigger), err, target->pciDomain,
@@ -342,6 +346,10 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     if (role != GPU_LOCATION_ROLE_REQUIRED)
         role = linux_gpu_location_role_for_selection(&g_gpu.selectedGpu,
             g_gpu.adapters, g_gpu.adapterCount);
+    const LinuxGpuUuid binding = linux_gpu_uuid_retain(linux_backend_selected_uuid(&g_gpu), uuid);
+    dlog("daemon auto-restore: UUID binding readable=%d retained=%d\n",
+        linux_gpu_uuid_valid(linux_backend_selected_uuid(&g_gpu)) ? 1 : 0,
+        linux_gpu_uuid_valid(&binding) ? 1 : 0);
     dlog("daemon auto-restore: target role=%s location=%04x:%02x:%02x.%u\n",
         configured_gpu_location_role_name(role), g_gpu.selectedGpu.pciDomain,
         g_gpu.selectedGpu.pciBus, g_gpu.selectedGpu.pciDevice,
@@ -410,7 +418,7 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
         g_stateUncertain = true;
         char stateErr[256] = {};
         store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, target, &committed,
-                            stateErr, sizeof(stateErr), 0, SERVICE_OPERATION_NONE, role);
+                            stateErr, sizeof(stateErr), 0, SERVICE_OPERATION_NONE, role, &binding);
         auto_restore_note_automatic_failure(trigger, outcome.message,
                                             mutation.rollbackSucceeded);
         dlog("daemon auto-restore: %s failed -> %s (rollback=%d anyWrite=%d)\n",
@@ -425,7 +433,7 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     char stateErr[256] = {};
     GpuAdapterInfo committedTarget = g_gpu.selectedGpu;
     if (!store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE, &committedTarget,
-                             &committed, stateErr, sizeof(stateErr), 0, SERVICE_OPERATION_NONE, role)) {
+                             &committed, stateErr, sizeof(stateErr), 0, SERVICE_OPERATION_NONE, role, &binding)) {
         char commitErr[256] = {};
         gc_strlcpy(commitErr, sizeof(commitErr),
                    stateErr[0] ? stateErr : "unknown error");
@@ -437,7 +445,7 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
         char uncertainErr[256] = {};
         bool uncertaintyRecorded = store_daemon_record(
             LINUX_DAEMON_RECORD_UNCERTAIN, &committedTarget, &committed,
-            uncertainErr, sizeof(uncertainErr), 0, SERVICE_OPERATION_NONE, role);
+            uncertainErr, sizeof(uncertainErr), 0, SERVICE_OPERATION_NONE, role, &binding);
         gc_snprintf(outcome.message, sizeof(outcome.message),
                     "automatic restore persistence failed after hardware "
                     "write; hardware rollback %s: %s",
@@ -461,6 +469,7 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     g_activeDesired = committed;
     g_activeTarget = committedTarget;
     g_activeTargetRole = role;
+    g_activeTargetUuid = binding;
     g_hasActiveDesired = true;
     g_stateUncertain = false;
     g_fanFailureCount = 0;
@@ -489,7 +498,7 @@ static void daemon_handle_resume_restore(ServiceResponse* resp) {
     dlog("daemon resume: restoring the complete active intent after suspend\n");
     LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(
         LINUX_AUTO_RESTORE_TRIGGER_RESUME, &g_activeTarget, &g_activeDesired,
-        g_activeTargetRole);
+        g_activeTargetRole, &g_activeTargetUuid);
     resp->status = outcome.success ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
     gc_strlcpy(resp->message, sizeof(resp->message),
                outcome.message[0] ? outcome.message : "resume restore failed");

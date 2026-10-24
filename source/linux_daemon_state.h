@@ -8,6 +8,7 @@
 #include <string.h>
 #include "gpu_core.h"
 #include "gpu_selection_policy.h"
+#include "linux_gpu_uuid.h"
 #include "linux_auto_restore_policy.h"
 #include "ownership_handback_policy.h"
 
@@ -19,13 +20,15 @@ enum LinuxDaemonRecordState : gc_u32 {
 
 enum {
     LINUX_DAEMON_RECORD_MAGIC = 0x4752434Cu, // "LCRG"
+    // v7 adds the optional physical GPU UUID.
     // v6 keeps the v5 layout and changes only what a stored `required` role
     // means (see linux_daemon_location_schema.h). v5 adds the persisted GPU
     // location role. v4 embeds schema-2 DesiredSettings (per-point curve
     // provenance, 0.26.0).  The layout GREW, which is why the version had to
     // move: see desired_settings_schema.h for why size, not version, now
     // selects the layout a loader decodes with.
-    LINUX_DAEMON_RECORD_VERSION = 6,
+    LINUX_DAEMON_RECORD_VERSION = 7,
+    LINUX_DAEMON_RECORD_PRE_UUID_VERSION = 6,
     LINUX_DAEMON_RECORD_PRE_TRUSTED_ROLE_VERSION = 5,
     LINUX_DAEMON_RECORD_PRE_LOCATION_ROLE_VERSION = 4,
     // Semantics markers WITHIN the frozen schema-1 layout.  v3 reinterprets
@@ -49,13 +52,14 @@ struct LinuxDaemonStateRecord {
     gc_u64 operationId;
     gc_u32 operationState;
     gc_u32 targetLocationRole; // GpuLocationRole, part of write authority
+    LinuxGpuUuid targetUuid; // optional physical-device identity
     gc_u32 checksum;
 };
 
 // The live record's size is part of the upgrade contract, because the loader
 // admits a file by comparing st_size against it.  GpuAdapterInfo is embedded
 // here too, so this assert covers a change to either struct.
-static_assert(sizeof(LinuxDaemonStateRecord) == 1184,
+static_assert(sizeof(LinuxDaemonStateRecord) == 1280,
               "LinuxDaemonStateRecord changed size: freeze the outgoing layout "
               "as LinuxDaemonStateRecordSchema<N>, teach the loader its size, "
               "and bump LINUX_DAEMON_RECORD_VERSION "
@@ -164,7 +168,8 @@ static inline void linux_daemon_record_initialize(LinuxDaemonStateRecord* record
                                                   const DesiredSettings* desired,
                                                   gc_u64 operationId = 0,
                                                   gc_u32 operationState = SERVICE_OPERATION_NONE,
-                                                  GpuLocationRole role = GPU_LOCATION_ROLE_REQUIRED) {
+                                                  GpuLocationRole role = GPU_LOCATION_ROLE_REQUIRED,
+                                                  const LinuxGpuUuid* uuid = nullptr) {
     if (!record) return;
     memset(record, 0, sizeof(*record));
     record->magic = LINUX_DAEMON_RECORD_MAGIC;
@@ -176,6 +181,7 @@ static inline void linux_daemon_record_initialize(LinuxDaemonStateRecord* record
     record->operationId = operationId;
     record->operationState = operationState;
     record->targetLocationRole = (gc_u32)role;
+    record->targetUuid = linux_gpu_uuid_retain(uuid, nullptr);
     record->checksum = linux_daemon_record_checksum(record);
 }
 
@@ -220,6 +226,7 @@ enum LinuxDaemonRecordGeneration : gc_u32 {
     LINUX_DAEMON_RECORD_GENERATION_SCHEMA1 = 1,    // versions 2 and 3
     LINUX_DAEMON_RECORD_GENERATION_SCHEMA2 = 3,
     LINUX_DAEMON_RECORD_GENERATION_SCHEMA1_V1 = 2, // version 1, no operation id
+    LINUX_DAEMON_RECORD_GENERATION_SCHEMA3 = 5, // location-role layout, version 6
     LINUX_DAEMON_RECORD_GENERATION_PRE_TRUSTED_ROLE = 4, // current layout, version 5
 };
 
@@ -342,6 +349,7 @@ static inline bool linux_daemon_operation_valid(
 // forgeable by an unprivileged user or survive as a half-written record.
 enum {
     LINUX_DAEMON_STARTUP_MAGIC = 0x50555347u, // "GSUP"
+    // v6 adds the optional physical GPU UUID.
     // v5 keeps the v4 layout and changes only what a stored `required` role
     // means (see linux_daemon_location_schema.h).
     // v4 adds the persisted GPU location role. v3 embeds schema-2
@@ -351,7 +359,8 @@ enum {
     // like the state record's v2->v3 bump, so a v1 record is halved once on
     // read.  Size selects the layout, version the meaning; see
     // desired_settings_schema.h.
-    LINUX_DAEMON_STARTUP_VERSION = 5,
+    LINUX_DAEMON_STARTUP_VERSION = 6,
+    LINUX_DAEMON_STARTUP_PRE_UUID_VERSION = 5,
     LINUX_DAEMON_STARTUP_PRE_TRUSTED_ROLE_VERSION = 4,
     LINUX_DAEMON_STARTUP_PRE_LOCATION_ROLE_VERSION = 3,
     LINUX_DAEMON_STARTUP_PRE_PROVENANCE_VERSION = 2,
@@ -370,10 +379,11 @@ struct LinuxDaemonStartupRecord {
     GpuAdapterInfo targetGpu;
     DesiredSettings desired;
     gc_u32 targetLocationRole; // GpuLocationRole, preserved by content refresh
+    LinuxGpuUuid targetUuid; // also preserved by content refresh
     gc_u32 checksum;
 };
 
-static_assert(sizeof(LinuxDaemonStartupRecord) == 1240,
+static_assert(sizeof(LinuxDaemonStartupRecord) == 1336,
               "LinuxDaemonStartupRecord changed size: freeze the outgoing "
               "layout as LinuxDaemonStartupRecordSchema<N>, teach the loader "
               "its size, and bump LINUX_DAEMON_STARTUP_VERSION "
@@ -414,7 +424,8 @@ static inline void linux_daemon_startup_initialize(
     LinuxDaemonStartupRecord* record, gc_u32 mode, gc_u32 profileSlot,
     const char* profileName, const GpuAdapterInfo* target,
     const DesiredSettings* desired,
-    GpuLocationRole role = GPU_LOCATION_ROLE_REQUIRED) {
+    GpuLocationRole role = GPU_LOCATION_ROLE_REQUIRED,
+    const LinuxGpuUuid* uuid = nullptr) {
     if (!record) return;
     memset(record, 0, sizeof(*record));
     record->magic = LINUX_DAEMON_STARTUP_MAGIC;
@@ -434,6 +445,7 @@ static inline void linux_daemon_startup_initialize(
             record->profileName[length] = 0;
         }
         record->targetLocationRole = (gc_u32)role;
+        record->targetUuid = linux_gpu_uuid_retain(uuid, nullptr);
         if (target) record->targetGpu = *target;
         if (desired) record->desired = *desired;
     }
@@ -515,6 +527,7 @@ static inline bool linux_daemon_startup_widen_schema1(
 }
 
 #include "linux_daemon_location_schema.h"
+#include "linux_daemon_uuid_schema.h"
 
 // Automatic-restore guard.  Stored beside active.bin with the same root-owned
 // checksummed atomic write, for the same reason: it decides whether an

@@ -231,103 +231,98 @@ int rebind_hint() {
                 "none", 4) != 0) return 7447;
     return 0;
 }
-// The first role generation (state v5, startup v4) as an unreleased build
-// left it on disk after widening a pre-role record as `required`: the same
-// layout, re-stamped with the old version and its checksum.
-LinuxDaemonStateRecord first_generation_state(GpuLocationRole role) {
-    const GpuAdapterInfo selected = adapter(7);
-    const DesiredSettings desired = intent();
-    LinuxDaemonStateRecord record = {};
-    linux_daemon_record_initialize(&record, LINUX_DAEMON_RECORD_ACTIVE,
-        &selected, &desired, 77, SERVICE_OPERATION_SUCCEEDED, role);
+// Byte-exact outgoing records, including their original sizes and checksums.
+LinuxDaemonStateRecordSchema3 first_generation_state(GpuLocationRole role) {
+    LinuxDaemonStateRecordSchema3 record = {};
+    record.magic = LINUX_DAEMON_RECORD_MAGIC;
     record.version = LINUX_DAEMON_RECORD_PRE_TRUSTED_ROLE_VERSION;
-    record.checksum = linux_daemon_record_checksum(&record);
-    return record;
-}
-LinuxDaemonStartupRecord first_generation_startup(GpuLocationRole role) {
-    const GpuAdapterInfo selected = adapter(7);
+    record.size = sizeof(record);
+    record.state = LINUX_DAEMON_RECORD_ACTIVE;
+    record.targetGpu = adapter(7);
     const DesiredSettings desired = intent();
-    LinuxDaemonStartupRecord record = {};
-    linux_daemon_startup_initialize(&record, SERVICE_STARTUP_POLICY_PROFILE,
-        1, "profile 1", &selected, &desired, role);
-    record.version = LINUX_DAEMON_STARTUP_PRE_TRUSTED_ROLE_VERSION;
-    record.checksum = linux_daemon_startup_checksum(&record);
+    desired_settings_narrow_schema2(&record.desired, &desired);
+    record.operationId = 77; record.operationState = SERVICE_OPERATION_SUCCEEDED;
+    record.targetLocationRole = role;
+    record.checksum = linux_daemon_record_hash_bytes(&record,
+        offsetof(LinuxDaemonStateRecordSchema3, checksum));
     return record;
 }
-
-// Records already rewritten by that build must boot on the moved GPU after
-// the update, without the user binding anything again.
+LinuxDaemonStartupRecordSchema3 first_generation_startup(GpuLocationRole role) {
+    LinuxDaemonStartupRecordSchema3 record = {};
+    record.magic = LINUX_DAEMON_STARTUP_MAGIC;
+    record.version = LINUX_DAEMON_STARTUP_PRE_TRUSTED_ROLE_VERSION;
+    record.size = sizeof(record);
+    record.mode = SERVICE_STARTUP_POLICY_PROFILE;
+    record.profileSlot = 1;
+    memcpy(record.profileName, "profile 1", 10);
+    record.targetGpu = adapter(7);
+    const DesiredSettings desired = intent();
+    desired_settings_narrow_schema2(&record.desired, &desired);
+    record.targetLocationRole = role;
+    record.checksum = linux_daemon_record_hash_bytes(&record,
+        offsetof(LinuxDaemonStartupRecordSchema3, checksum));
+    return record;
+}
 int first_generation_roles_reread() {
     const DesiredSettings desired = intent();
     const GpuAdapterInfo moved[] = {adapter(6)};
     const GpuAdapterInfo twinsExact[] = {adapter(6), adapter(7)};
-
-    LinuxDaemonStartupRecord boot = first_generation_startup(GPU_LOCATION_ROLE_REQUIRED);
-    if (linux_daemon_startup_valid(&boot)) return 7450; // not current as stored
-    if (!linux_daemon_startup_reread_pre_trusted_role(&boot) ||
+    auto storedBoot = first_generation_startup(GPU_LOCATION_ROLE_REQUIRED);
+    LinuxDaemonStartupRecord boot = {};
+    if (sizeof(storedBoot) != 1240 || sizeof(boot) == sizeof(storedBoot)) return 7450;
+    if (!linux_daemon_startup_widen_schema3(&boot, &storedBoot) ||
         !linux_daemon_startup_valid(&boot) ||
-        boot.version != LINUX_DAEMON_STARTUP_VERSION ||
         boot.targetLocationRole != GPU_LOCATION_ROLE_UNRECORDED ||
         boot.profileSlot != 1 || strcmp(boot.profileName, "profile 1") != 0 ||
-        boot.targetGpu.pciBus != 7 ||
-        memcmp(&boot.desired, &desired, sizeof(desired)) != 0) return 7451;
-    const LinuxGpuInitSelection bootSelection = linux_gpu_init_selection(&boot.targetGpu,
-        moved, 1, (GpuLocationRole)boot.targetLocationRole);
-    if (!bootSelection.writeResolved || !bootSelection.moved) return 7452;
-    // Twins still present keep the exact location under the re-read role.
-    const LinuxGpuInitSelection twinPick = linux_gpu_init_selection(&boot.targetGpu,
-        twinsExact, 2, (GpuLocationRole)boot.targetLocationRole);
+        memcmp(&boot.desired, &desired, sizeof(desired)) ||
+        linux_gpu_uuid_valid(&boot.targetUuid)) return 7451;
+    if (!linux_gpu_init_selection(&boot.targetGpu, moved, 1,
+            (GpuLocationRole)boot.targetLocationRole).writeResolved) return 7452;
+    const auto twinPick = linux_gpu_init_selection(&boot.targetGpu, twinsExact, 2,
+        (GpuLocationRole)boot.targetLocationRole);
     if (!twinPick.writeResolved || twinPick.index != 1) return 7453;
-
-    LinuxDaemonStateRecord active = first_generation_state(GPU_LOCATION_ROLE_REQUIRED);
-    if (linux_daemon_record_valid(&active)) return 7454;
-    if (!linux_daemon_state_record_reread_pre_trusted_role(&active) ||
+    auto storedActive = first_generation_state(GPU_LOCATION_ROLE_REQUIRED);
+    LinuxDaemonStateRecord active = {};
+    if (sizeof(storedActive) != 1184 || sizeof(active) == sizeof(storedActive)) return 7454;
+    if (!linux_daemon_state_record_widen_schema3(&active, &storedActive) ||
         !linux_daemon_record_valid(&active) ||
-        active.version != LINUX_DAEMON_RECORD_VERSION ||
         active.targetLocationRole != GPU_LOCATION_ROLE_UNRECORDED ||
-        active.state != LINUX_DAEMON_RECORD_ACTIVE || active.operationId != 77 ||
-        active.operationState != SERVICE_OPERATION_SUCCEEDED ||
-        memcmp(&active.desired, &desired, sizeof(desired)) != 0 ||
+        active.operationId != 77 || active.operationState != SERVICE_OPERATION_SUCCEEDED ||
+        memcmp(&active.desired, &desired, sizeof(desired)) ||
+        linux_gpu_uuid_valid(&active.targetUuid) ||
         !linux_gpu_init_selection(&active.targetGpu, moved, 1,
             (GpuLocationRole)active.targetLocationRole).writeResolved) return 7455;
-
-    // An advisory role was recorded from enumeration, never invented.
-    LinuxDaemonStartupRecord advisory = first_generation_startup(GPU_LOCATION_ROLE_ADVISORY);
-    LinuxDaemonStateRecord advisoryState = first_generation_state(GPU_LOCATION_ROLE_ADVISORY);
-    if (!linux_daemon_startup_reread_pre_trusted_role(&advisory) ||
-        advisory.targetLocationRole != GPU_LOCATION_ROLE_ADVISORY ||
-        !linux_daemon_state_record_reread_pre_trusted_role(&advisoryState) ||
-        advisoryState.targetLocationRole != GPU_LOCATION_ROLE_ADVISORY) return 7456;
-
-    // A current-version `required` is a real twin selection: never re-read.
-    LinuxDaemonStartupRecord current = {};
-    linux_daemon_startup_initialize(&current, SERVICE_STARTUP_POLICY_PROFILE, 1,
-        "profile 1", &boot.targetGpu, &desired, GPU_LOCATION_ROLE_REQUIRED);
-    LinuxDaemonStateRecord currentState = {};
-    linux_daemon_record_initialize(&currentState, LINUX_DAEMON_RECORD_ACTIVE,
-        &boot.targetGpu, &desired, 1, SERVICE_OPERATION_SUCCEEDED, GPU_LOCATION_ROLE_REQUIRED);
-    if (linux_daemon_startup_reread_pre_trusted_role(&current) ||
-        current.targetLocationRole != GPU_LOCATION_ROLE_REQUIRED ||
-        linux_daemon_state_record_reread_pre_trusted_role(&currentState) ||
-        currentState.targetLocationRole != GPU_LOCATION_ROLE_REQUIRED ||
-        linux_gpu_init_selection(&current.targetGpu, moved, 1,
-            GPU_LOCATION_ROLE_REQUIRED).writeResolved) return 7457;
-
-    // Damaged first-generation bytes are refused, not re-stamped as current.
-    LinuxDaemonStartupRecord tampered = first_generation_startup(GPU_LOCATION_ROLE_REQUIRED);
-    tampered.desired.gpuOffsetMHz++;
-    LinuxDaemonStateRecord tamperedState = first_generation_state(GPU_LOCATION_ROLE_REQUIRED);
-    tamperedState.operationId++;
-    if (linux_daemon_startup_reread_pre_trusted_role(&tampered) ||
-        linux_daemon_state_record_reread_pre_trusted_role(&tamperedState)) return 7458;
-    // A disabled policy of that generation still loads, and stays disabled.
-    LinuxDaemonStartupRecord none = {};
-    linux_daemon_startup_initialize(&none, SERVICE_STARTUP_POLICY_NONE, 0, "",
-        nullptr, nullptr, GPU_LOCATION_ROLE_UNRECORDED);
-    none.version = LINUX_DAEMON_STARTUP_PRE_TRUSTED_ROLE_VERSION;
-    none.checksum = linux_daemon_startup_checksum(&none);
-    if (!linux_daemon_startup_reread_pre_trusted_role(&none) ||
-        none.mode != SERVICE_STARTUP_POLICY_NONE || none.targetGpu.valid) return 7459;
+    auto advisory = first_generation_startup(GPU_LOCATION_ROLE_ADVISORY);
+    auto advisoryState = first_generation_state(GPU_LOCATION_ROLE_ADVISORY);
+    if (!linux_daemon_startup_widen_schema3(&boot, &advisory) ||
+        boot.targetLocationRole != GPU_LOCATION_ROLE_ADVISORY ||
+        !linux_daemon_state_record_widen_schema3(&active, &advisoryState) ||
+        active.targetLocationRole != GPU_LOCATION_ROLE_ADVISORY) return 7456;
+    // The last pre-UUID generation retains its trusted required selection.
+    storedBoot.version = LINUX_DAEMON_STARTUP_PRE_UUID_VERSION;
+    storedBoot.checksum = linux_daemon_record_hash_bytes(&storedBoot,
+        offsetof(LinuxDaemonStartupRecordSchema3, checksum));
+    storedActive.version = LINUX_DAEMON_RECORD_PRE_UUID_VERSION;
+    storedActive.checksum = linux_daemon_record_hash_bytes(&storedActive,
+        offsetof(LinuxDaemonStateRecordSchema3, checksum));
+    if (!linux_daemon_startup_widen_schema3(&boot, &storedBoot) ||
+        !linux_daemon_state_record_widen_schema3(&active, &storedActive) ||
+        boot.targetLocationRole != GPU_LOCATION_ROLE_REQUIRED ||
+        active.targetLocationRole != GPU_LOCATION_ROLE_REQUIRED ||
+        linux_gpu_init_selection(&boot.targetGpu, moved, 1,
+            (GpuLocationRole)boot.targetLocationRole).writeResolved) return 7457;
+    storedBoot.desired.gpuOffsetMHz++;
+    storedActive.operationId++;
+    if (linux_daemon_startup_widen_schema3(&boot, &storedBoot) ||
+        linux_daemon_state_record_widen_schema3(&active, &storedActive)) return 7458;
+    auto none = first_generation_startup(GPU_LOCATION_ROLE_UNRECORDED);
+    none.mode = SERVICE_STARTUP_POLICY_NONE;
+    none.profileSlot = 0; none.targetGpu = {};
+    none.checksum = linux_daemon_record_hash_bytes(&none,
+        offsetof(LinuxDaemonStartupRecordSchema3, checksum));
+    if (!linux_daemon_startup_widen_schema3(&boot, &none) ||
+        boot.mode != SERVICE_STARTUP_POLICY_NONE || boot.targetGpu.valid ||
+        boot.desired.hasCurvePoint[74] || linux_gpu_uuid_valid(&boot.targetUuid)) return 7459;
     return 0;
 }
 } // namespace

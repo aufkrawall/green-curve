@@ -1125,9 +1125,9 @@ def check_mem_offset_migration(ctx, require_text, forbid_text, require_order):
                  "the committed restore-last record converts pre-parity mem units")
     require_text(state_h, "linux_daemon_migrate_desired_mem_units_to_display(&widened",
                  "the widening path is where the halving happens, once")
-    require_text(state_h, "LINUX_DAEMON_STARTUP_VERSION = 5",
+    require_text(state_h, "LINUX_DAEMON_STARTUP_VERSION = 6",
                  "the startup record generation moved with the layout change")
-    require_text(state_h, "LINUX_DAEMON_RECORD_VERSION = 6",
+    require_text(state_h, "LINUX_DAEMON_RECORD_VERSION = 7",
                  "the committed record generation moved with the layout change")
     require_text(state_h, "LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION = 1",
                  "the pre-parity startup generation is still recognized")
@@ -1159,18 +1159,31 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
                   "g_hasActiveDesired, &g_activeTarget, &requested)",
                   "a stale request target is resolved before the active-intent "
                   "check, so the active GPU is not refused as another GPU")
-    require_text(discovery_cpp, "linux_gpu_init_selection(target, g->adapters",
+    require_text(discovery_cpp, "linux_gpu_restore_selection(target, role, g->adapters",
                  "backend init takes its write decision from the tested pure "
                  "selection, which checks the model on a one-GPU system")
     forbid_text(discovery_cpp, "g->writeIdentityResolved = g->adapterCount == 1 ||",
                 "a lone adapter must not resolve writes for any stored target")
     restore_h = _p(ctx, "linux_auto_restore_runtime.h")
-    require_text(restore_h, "linux_backend_select_target(&g_gpu, target, err, errSize, role)",
+    require_text(restore_h, "linux_backend_select_target(&g_gpu, target, err, errSize, role, uuid, uuidVerdict)",
                  "automatic restore passes its persisted location role to selection")
     require_text(restore_h, "linux_auto_restore_rebind_hint(trigger, targetUnresolved)",
                  "an aborted automatic restore logs its stored role and remedy")
-    require_text(discovery_cpp, "linux_backend_init(&replacement, target, err, errSize, role)",
+    require_text(discovery_cpp, "linux_backend_init(&replacement, target, err, errSize, role, uuid)",
                  "backend replacement retains the restore location role")
+    require_text(discovery_cpp, "linux_gpu_uuid_compatible(uuid, &observed)",
+                 "the selection fast path checks fresh optional physical identity evidence")
+    require_text(discovery_cpp, "linux_gpu_read_uuid(getUuid, devices[i])",
+                 "enumerated adapters acquire optional UUIDs without a new prerequisite")
+    require_text(restore_h, "g_activeTargetRole, &g_activeTargetUuid)",
+                 "resume forwards the committed physical identity")
+    require_text(restore_h, "linux_gpu_uuid_retain(linux_backend_selected_uuid(&g_gpu), uuid)",
+                 "an unavailable optional query does not erase a learned identity")
+    require_text(startup_h,
+                 "(GpuLocationRole)g_startupPolicy.targetLocationRole, &g_startupPolicy.targetUuid)",
+                 "startup restore and content refresh retain the optional identity")
+    require_text(startup_h, "linux_gpu_uuid_for_target(&req->targetGpu, g_gpu.adapters",
+                 "startup binding captures the requested adapter rather than the telemetry adapter")
     require_text(startup_h, "(GpuLocationRole)g_startupPolicy.targetLocationRole",
                  "startup restore and content refresh retain the stored role")
     require_text(_p(ctx, "linux_daemon.cpp"), "(GpuLocationRole)saved.targetLocationRole",

@@ -693,8 +693,14 @@ boot recovery rebind) keep the exact `linux_gpu_identity_matches()`.
   on every request.
 - Records (2026-10-24): state v5 and startup v4 persist `targetLocationRole`
   (state v6 / startup v5: same layout, first-generation `required` re-read).
+  State v7 / startup v6 add optional physical GPU UUIDs; the outgoing role
+  layouts are frozen as schema 3. UUID-matched restores can follow the same
+  card across a bus move among identical GPUs; a positively different UUID
+  refuses the write. Absent or unreadable UUIDs retain the previous resolver.
+  UUIDs stay out of the client wire and diagnostics. See persistence-schema.md,
+  "Optional physical GPU UUID", for capture, retention and legacy limits.
   Apply and startup binding capture the role from the daemon's adapter list;
-  automatic restore and resume retain a required role even with one twin
+  automatic restore and resume retain a required role (used without UUID evidence) even with one twin
   remaining. Content-only startup refresh preserves it. Successful restore
   re-commits the live BDF and role; startup rebinding also persists a role
   strengthened by newly present twins. Legacy records migrate as

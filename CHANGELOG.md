@@ -31,6 +31,10 @@
 
 Hardware changes elsewhere in the PC no longer cost Green Curve its selected GPU.
 
+### Improved
+
+- **Linux GPU identity:** saved settings can recognize the same physical GPU after PCI bus changes, including among identical cards, when the driver provides its identity. Existing settings and GPUs without this information keep their previous restore behavior.
+
 ### Fixed
 
 - **Selected GPU after hardware changes:** disabling or adding a device such as an on-board network adapter no longer makes Green Curve report the GPU as missing and stop applying your profile, on Windows and Linux.
@@ -38,7 +42,7 @@ Hardware changes elsewhere in the PC no longer cost Green Curve its selected GPU
 
 ### Compatibility notes
 
-Existing configuration and profiles remain compatible; with identical GPUs installed, a moved card still has to be selected again.
+Existing configuration and profiles remain compatible. Identical GPUs without a recorded physical identity may still need selection after a bus move.
 
 ### Downloads and verification
 

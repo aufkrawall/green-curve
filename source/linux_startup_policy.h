@@ -65,7 +65,9 @@ static void daemon_handle_set_startup_policy(const ServiceRequest* req,
     linux_daemon_startup_initialize(&record, req->startupMode,
         req->profileSlot, req->source, &req->targetGpu, &requested,
         linux_gpu_location_role_for_selection(&req->targetGpu,
-            g_gpu.adapters, g_gpu.adapterCount));
+            g_gpu.adapters, g_gpu.adapterCount),
+        linux_gpu_uuid_for_target(&req->targetGpu, g_gpu.adapters, g_gpu.adapterCount,
+            g_gpu.adapterUuids));
     char storeErr[256] = {};
     if (!linux_daemon_startup_valid(&record)) {
         resp->status = SERVICE_STATUS_ERROR;
@@ -142,7 +144,7 @@ static void daemon_handle_refresh_startup_profile(const ServiceRequest* req,
         linux_daemon_startup_initialize(&record, g_startupPolicy.mode,
             g_startupPolicy.profileSlot, g_startupPolicy.profileName,
             &g_startupPolicy.targetGpu, &requested,
-            (GpuLocationRole)g_startupPolicy.targetLocationRole);
+            (GpuLocationRole)g_startupPolicy.targetLocationRole, &g_startupPolicy.targetUuid);
         char storeErr[256] = {};
         if (!linux_daemon_startup_valid(&record)) {
             resp->status = SERVICE_STATUS_ERROR;
@@ -225,7 +227,7 @@ static void apply_startup_profile_policy() {
     LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(
         LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE,
         &g_startupPolicy.targetGpu, &g_startupPolicy.desired,
-        (GpuLocationRole)g_startupPolicy.targetLocationRole);
+        (GpuLocationRole)g_startupPolicy.targetLocationRole, &g_startupPolicy.targetUuid);
     if (!outcome.success) {
         // Only a failure that reached a hardware write leaves the daemon
         // uncertain.  A GPU that was not ready before any write disturbed no
@@ -243,13 +245,14 @@ static void apply_startup_profile_policy() {
     // stays exact if an identical GPU is added later.
     if (!linux_gpu_bdf_valid(&g_activeTarget) ||
         (linux_gpu_bdf_equal(&g_startupPolicy.targetGpu, &g_activeTarget) &&
-         g_startupPolicy.targetLocationRole == (gc_u32)g_activeTargetRole) ||
+         g_startupPolicy.targetLocationRole == (gc_u32)g_activeTargetRole &&
+         memcmp(&g_startupPolicy.targetUuid, &g_activeTargetUuid, sizeof(g_activeTargetUuid)) == 0) ||
         !linux_gpu_model_matches(&g_startupPolicy.targetGpu, &g_activeTarget))
         return;
     LinuxDaemonStartupRecord rebound = {};
     linux_daemon_startup_initialize(&rebound, g_startupPolicy.mode,
         g_startupPolicy.profileSlot, g_startupPolicy.profileName,
-        &g_activeTarget, &g_startupPolicy.desired, g_activeTargetRole);
+        &g_activeTarget, &g_startupPolicy.desired, g_activeTargetRole, &g_activeTargetUuid);
     char storeErr[160] = {};
     if (!linux_daemon_startup_valid(&rebound) ||
         !linux_daemon_startup_store(GC_DAEMON_STARTUP_FILE, &rebound,

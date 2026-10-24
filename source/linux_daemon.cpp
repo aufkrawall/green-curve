@@ -100,6 +100,7 @@ static pl_mutex g_lock;
 static DesiredSettings g_activeDesired;
 static bool g_hasActiveDesired = false;
 static GpuAdapterInfo g_activeTarget;
+static LinuxGpuUuid g_activeTargetUuid;
 static GpuLocationRole g_activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
 static bool g_stateUncertain = false;
 static ServiceOperationTracker g_operationTracker = {};
@@ -143,12 +144,16 @@ static bool store_daemon_record(LinuxDaemonRecordState state,
                                 char* err, size_t errSize,
                                 gc_u64 operationId = 0,
                                 gc_u32 operationState = SERVICE_OPERATION_NONE,
-                                GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED) {
+                                GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED,
+                                const LinuxGpuUuid* uuid = nullptr) {
     if (role == GPU_LOCATION_ROLE_UNRECORDED)
         role = daemon_target_location_role(target);
     LinuxDaemonStateRecord record = {};
+    const LinuxGpuUuid* observed = linux_gpu_identity_matches(target, &g_gpu.selectedGpu)
+        ? linux_backend_selected_uuid(&g_gpu) : nullptr;
+    const LinuxGpuUuid binding = linux_gpu_uuid_retain(observed, uuid);
     linux_daemon_record_initialize(&record, state, target, desired,
-        operationId, operationState, role);
+        operationId, operationState, role, &binding);
     return linux_daemon_state_store(GC_DAEMON_STATE_FILE, &record, err, errSize);
 }
 
@@ -157,7 +162,8 @@ static bool restore_committed_record(bool hadPrevious, const GpuAdapterInfo* pre
     char err[256] = {};
     if (!hadPrevious) return linux_daemon_state_remove(GC_DAEMON_STATE_FILE, err, sizeof(err));
     return store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE, previousTarget,
-                               previousDesired, err, sizeof(err));
+                               previousDesired, err, sizeof(err), 0, SERVICE_OPERATION_NONE,
+                               g_activeTargetRole, &g_activeTargetUuid);
 }
 
 // The fan ownership marker and once-per-crash startup handback.  Before the
@@ -380,6 +386,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 g_activeDesired = committedDesired;
                 g_activeTargetRole = committedRole;
                 g_activeTarget = g_gpu.selectedGpu;
+                g_activeTargetUuid = linux_gpu_uuid_retain(linux_backend_selected_uuid(&g_gpu), nullptr);
                 g_hasActiveDesired = true;
                 g_stateUncertain = false;
                 g_fanFailureCount = 0;
@@ -467,6 +474,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 // The role belongs to the cleared target: back to the
                 // fail-closed default, like a daemon that never had one.
                 g_activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
+                g_activeTargetUuid = {};
                 g_stateUncertain = false;
                 g_fanFailureCount = 0;
                 // Reset returned the fan to the driver: nothing to hand back.
@@ -655,7 +663,7 @@ int linux_daemon_run(const char* configPath) {
             LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(
                 LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST,
                 &saved.targetGpu, &saved.desired,
-                (GpuLocationRole)saved.targetLocationRole);
+                (GpuLocationRole)saved.targetLocationRole, &saved.targetUuid);
             if (!outcome.success)
                 dlog("daemon: startup reapply did not commit -> %s\n",
                      outcome.message[0] ? outcome.message : "unknown reason");

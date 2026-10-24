@@ -93,28 +93,4 @@ static inline GpuLocationRole linux_daemon_pre_trusted_role_reread(gc_u32 stored
         ? GPU_LOCATION_ROLE_ADVISORY : LINUX_DAEMON_LEGACY_LOCATION_ROLE;
 }
 
-// The stored checksum covers the old version bytes, so it is validated before
-// the copy is re-initialized as the current version.
-static inline bool linux_daemon_state_record_reread_pre_trusted_role(
-    LinuxDaemonStateRecord* record) {
-    if (!record || record->version != LINUX_DAEMON_RECORD_PRE_TRUSTED_ROLE_VERSION ||
-        !linux_daemon_record_valid_except_version(record)) return false;
-    const LinuxDaemonStateRecord stored = *record;
-    linux_daemon_record_initialize(record, (LinuxDaemonRecordState)stored.state,
-        &stored.targetGpu, &stored.desired, stored.operationId, stored.operationState,
-        linux_daemon_pre_trusted_role_reread(stored.targetLocationRole));
-    return linux_daemon_record_valid(record);
-}
-
-static inline bool linux_daemon_startup_reread_pre_trusted_role(
-    LinuxDaemonStartupRecord* record) {
-    if (!record || record->version != LINUX_DAEMON_STARTUP_PRE_TRUSTED_ROLE_VERSION ||
-        !linux_daemon_startup_valid_except_version(record)) return false;
-    const LinuxDaemonStartupRecord stored = *record;
-    linux_daemon_startup_initialize(record, stored.mode, stored.profileSlot,
-        stored.profileName, &stored.targetGpu, &stored.desired,
-        linux_daemon_pre_trusted_role_reread(stored.targetLocationRole));
-    return linux_daemon_startup_valid(record);
-}
-
 #endif

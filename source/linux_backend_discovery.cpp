@@ -380,6 +380,13 @@ static bool linux_backend_reenumerate_same_nvml_gpu(
         }
         if (!linux_gpu_same_pci_nonconflicting(&g->selectedGpu, &candidate))
             continue;
+        auto query = sym<LinuxGetGpuUuid>(g->nvmlLib, "nvmlDeviceGetUUID");
+        const auto observed = linux_gpu_read_uuid(query, device);
+        if (!linux_gpu_uuid_compatible(linux_backend_selected_uuid(g), &observed)) {
+            gc_strlcpy(err, errSize,
+                "different physical GPU at the selected PCI location during recovery");
+            return false;
+        }
         if (match >= 0) {
             gc_strlcpy(err, errSize,
                 "selected PCI GPU became ambiguous during recovery");
@@ -414,7 +421,8 @@ static bool linux_backend_reenumerate_same_nvml_gpu(
 }
 
 bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
-                        char* err, size_t errSize, GpuLocationRole role) {
+                        char* err, size_t errSize, GpuLocationRole role,
+                        const LinuxGpuUuid* uuid) {
     if (!g) {
         gc_strlcpy(err, errSize, "Linux GPU state is missing");
         return false;
@@ -461,12 +469,14 @@ bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
     }
     nvmlDeviceGetName_t getName = sym<nvmlDeviceGetName_t>(g->nvmlLib,
         "nvmlDeviceGetName");
+    LinuxGetGpuUuid getUuid = sym<LinuxGetGpuUuid>(g->nvmlLib, "nvmlDeviceGetUUID");
     nvmlDevice_t devices[MAX_GPU_ADAPTERS] = {};
     unsigned int enumerate = count > MAX_GPU_ADAPTERS
         ? MAX_GPU_ADAPTERS : count;
     for (unsigned int i = 0; i < enumerate; ++i) {
         if (g->nvml.getHandleByIndex(i, &devices[i]) != NVML_SUCCESS)
             continue;
+        g->adapterUuids[g->adapterCount] = linux_gpu_read_uuid(getUuid, devices[i]);
         GpuAdapterInfo* adapter = &g->adapters[g->adapterCount++];
         adapter->valid = true;
         adapter->nvmlIndex = i;
@@ -502,10 +512,14 @@ bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
         return false;
     }
 
-    // The decision lives in linux_gpu_init_selection() (linux_gpu_selection.h).
+    // UUID evidence is optional; its fallback is the existing location resolver.
     const bool targeted = target && target->valid;
     const LinuxGpuInitSelection selection =
-        linux_gpu_init_selection(target, g->adapters, g->adapterCount, role);
+        linux_gpu_restore_selection(target, role, g->adapters, g->adapterCount,
+            uuid, g->adapterUuids, &g->uuidVerdict);
+    if (targeted)
+        lb_log("linux_backend: restore identity uuid=%s stored=%d\n",
+            linux_gpu_uuid_verdict_name(g->uuidVerdict), linux_gpu_uuid_valid(uuid) ? 1 : 0);
     int selectedIndex = selection.index;
     char selectionErr[192] = {};
     if (targeted && (selection.index < 0 || selection.moved)) {
@@ -519,7 +533,10 @@ bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
                detail);
     }
     if (selectedIndex < 0) {
-        if (selectedIndex == -2)
+        if (g->uuidVerdict == LINUX_GPU_UUID_MISMATCH)
+            gc_strlcpy(selectionErr, sizeof(selectionErr),
+                "the available GPU has a different physical identity; select the intended GPU explicitly");
+        else if (selectedIndex == -2)
             gc_strlcpy(selectionErr, sizeof(selectionErr),
                 "selected GPU PCI identity is ambiguous");
         else if (targeted)
@@ -552,7 +569,9 @@ bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
 
 bool linux_backend_select_target(LinuxGpuState* g,
                                  const GpuAdapterInfo* target,
-                                 char* err, size_t errSize, GpuLocationRole role) {
+                                 char* err, size_t errSize, GpuLocationRole role,
+                                 const LinuxGpuUuid* uuid, LinuxGpuUuidVerdict* uuidVerdict) {
+    if (uuidVerdict) *uuidVerdict = LINUX_GPU_UUID_FALLBACK;
     if (!g || !target || !target->valid) {
         gc_strlcpy(err, errSize, "a stable GPU target is required");
         return false;
@@ -563,10 +582,25 @@ bool linux_backend_select_target(LinuxGpuState* g,
     int current = linux_resolve_stored_gpu_target(target,
         role, g->adapters, g->adapterCount, nullptr);
     if (g->writeIdentityResolved && current >= 0 &&
-        (unsigned int)current == g->selectedAdapterIndex) return true;
+        (unsigned int)current == g->selectedAdapterIndex) {
+        auto query = sym<LinuxGetGpuUuid>(g->nvmlLib, "nvmlDeviceGetUUID");
+        const LinuxGpuUuid observed = linux_gpu_read_uuid(query, g->nvmlDevice);
+        if (linux_gpu_uuid_compatible(uuid, &observed)) {
+            // A fresh query proves a match. If the optional query fails, keep
+            // the old fast path rather than requiring a new NVML init to work.
+            g->adapterUuids[current] = observed;
+            if (uuidVerdict && linux_gpu_uuid_valid(uuid) && linux_gpu_uuid_valid(&observed))
+                *uuidVerdict = LINUX_GPU_UUID_MATCHED;
+            lb_log("linux_backend: restore identity uuid=%s\n",
+                linux_gpu_uuid_valid(uuid) && linux_gpu_uuid_valid(&observed)
+                    ? "matched" : "fallback");
+            return true;
+        }
+    }
     LinuxGpuState replacement = {};
-    if (!linux_backend_init(&replacement, target, err, errSize, role) ||
+    if (!linux_backend_init(&replacement, target, err, errSize, role, uuid) ||
         !replacement.writeIdentityResolved) {
+        if (uuidVerdict) *uuidVerdict = replacement.uuidVerdict;
         linux_backend_shutdown(&replacement);
         if (err && !err[0])
             gc_strlcpy(err, errSize,
@@ -574,6 +608,7 @@ bool linux_backend_select_target(LinuxGpuState* g,
         return false;
     }
     linux_backend_shutdown(g);
+    if (uuidVerdict) *uuidVerdict = replacement.uuidVerdict;
     *g = replacement;
     return true;
 }

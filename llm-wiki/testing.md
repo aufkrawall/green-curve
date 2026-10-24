@@ -3,11 +3,23 @@
 ## Optional Linux GPU UUID selection
 
 Source anchors: `source/linux_gpu_uuid.h`, `tests/linux_gpu_uuid_tests.cpp`.
-Fixtures 7460-7472 cover normalized physical GPU UUIDs, same-card bus moves,
+Fixtures 7460-7481 cover normalized physical GPU UUIDs, same-card bus moves,
 identical-card replacement and location reuse, duplicate identities, optional
 query failures, retained identity, and the unchanged fallback without usable
 UUID evidence. The policy is host-neutral; the restore-role suite runs it.
-The backend and durable-record integration follow separately.
+The backend forwards the optional binding on boot and resume; source gates pin
+that forwarding, the query fallback and content-refresh preservation. Record
+checks cover UUID checksum protection, disabled policies and absent bindings.
+The 7450-7459 cases now build byte-exact frozen schema-3 predecessors, retaining
+the first-generation compatibility re-read and the next generation's trusted
+required role. Live physical GPU replacement remains hardware-unverified.
+
+Actual legacy loaders and atomic UUID record round-trips also pass in a bounded
+native Linux probe, including both outgoing role generations. Startup binding
+captures the requested adapter even when telemetry shows a different adapter.
+A negative control that discards UUID selection fails assertion 7462; the real
+policy passes. Full regression tests, static analysis with no new findings,
+and the plain deliverable build pass. No live GPU mutation is used by these checks.
 
 Last verified: 2026-10-24.
 
