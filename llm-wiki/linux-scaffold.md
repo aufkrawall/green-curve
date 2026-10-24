@@ -691,7 +691,8 @@ boot recovery rebind) keep the exact `linux_gpu_identity_matches()`.
   Y" for the very GPU that is active. `linux_backend_select_target()` keeps the
   selected backend when the target resolves to it instead of re-initializing
   on every request.
-- Records (2026-10-24): state v5 and startup v4 persist `targetLocationRole`.
+- Records (2026-10-24): state v5 and startup v4 persist `targetLocationRole`
+  (state v6 / startup v5: same layout, first-generation `required` re-read).
   Apply and startup binding capture the role from the daemon's adapter list;
   automatic restore and resume retain a required role even with one twin
   remaining. Content-only startup refresh preserves it. Successful restore
@@ -701,7 +702,9 @@ boot recovery rebind) keep the exact `linux_gpu_identity_matches()`.
   followed only while it is the one adapter present), the same reading
   Windows gives a role-less `[gpu]` record; the first successful restore then
   records the real role. Migrating them as `required` (briefly, 2026-10-24)
-  stopped the boot profile of a single GPU whose bus had moved. An aborted
+  stopped the boot profile of a single GPU whose bus had moved; records that
+  build wrote are re-read on load, so the update heals them unattended. An
+  aborted
   automatic restore logs `[stored=<bdf> role=<role> remedy=<...>]`
   (`linux_auto_restore_rebind_hint()`: a boot profile needs a startup re-bind,
   restore-last/resume an Apply, a backend that was not ready nothing). See

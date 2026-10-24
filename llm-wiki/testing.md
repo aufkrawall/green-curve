@@ -53,7 +53,10 @@ Source anchors: `tests/linux_restore_role_tests.cpp`,
 7440-7447 (added when the legacy role became `unrecorded`): a legacy boot
 profile on a single GPU moved from bus 7 to bus 6 resolves for writes and
 re-binds as advisory, all three schema-1 widening paths keep `unrecorded`, and
-the aborted-restore remedy text per trigger. 7424 now also checks that a legacy
+the aborted-restore remedy text per trigger. 7450-7459: the first role
+generation's `required` is re-read as `unrecorded` and boots on the moved GPU,
+advisory survives, a current-version `required` and tampered bytes are not
+re-read, and a disabled policy of that generation still loads. 7424 now also checks that a legacy
 target among two same-model adapters off its bus stays unresolved and that the
 exact location still picks among twins.
 7420-7422 cover current state/startup role persistence, the backend init

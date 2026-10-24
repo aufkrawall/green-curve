@@ -3,7 +3,8 @@
 #ifndef GREEN_CURVE_LINUX_DAEMON_LOCATION_SCHEMA_H
 #define GREEN_CURVE_LINUX_DAEMON_LOCATION_SCHEMA_H
 
-// FROZEN pre-location-role records. They widen with
+// FROZEN pre-location-role records, plus the re-read of the first role
+// generation (state v5, startup v4). They widen with
 // LINUX_DAEMON_LEGACY_LOCATION_ROLE (UNRECORDED): an exact location still
 // wins, and a moved model is followed only while it is the one adapter
 // present. A successful restore or an explicit Apply/startup binding then
@@ -77,6 +78,43 @@ static inline bool linux_daemon_startup_widen_schema2(
     linux_daemon_startup_initialize(out, in->mode, in->profileSlot,
         in->profileName, &in->targetGpu, &desired, LINUX_DAEMON_LEGACY_LOCATION_ROLE);
     return linux_daemon_startup_valid(out);
+}
+
+// Same layout, older meaning. State v5 and startup v4 were written only by
+// unreleased builds whose pre-role migration stored `required` for records
+// that never said so. That cannot be told apart from a selection among twins,
+// so a `required` role from that generation is read as the legacy role (what
+// every released build applies anyway); a twin pair still present keeps its
+// exact location under it, and the next successful restore records the real
+// role. Only `advisory` was always recorded from enumeration, so only it
+// survives; `unrecorded` already is the legacy role.
+static inline GpuLocationRole linux_daemon_pre_trusted_role_reread(gc_u32 stored) {
+    return stored == (gc_u32)GPU_LOCATION_ROLE_ADVISORY
+        ? GPU_LOCATION_ROLE_ADVISORY : LINUX_DAEMON_LEGACY_LOCATION_ROLE;
+}
+
+// The stored checksum covers the old version bytes, so it is validated before
+// the copy is re-initialized as the current version.
+static inline bool linux_daemon_state_record_reread_pre_trusted_role(
+    LinuxDaemonStateRecord* record) {
+    if (!record || record->version != LINUX_DAEMON_RECORD_PRE_TRUSTED_ROLE_VERSION ||
+        !linux_daemon_record_valid_except_version(record)) return false;
+    const LinuxDaemonStateRecord stored = *record;
+    linux_daemon_record_initialize(record, (LinuxDaemonRecordState)stored.state,
+        &stored.targetGpu, &stored.desired, stored.operationId, stored.operationState,
+        linux_daemon_pre_trusted_role_reread(stored.targetLocationRole));
+    return linux_daemon_record_valid(record);
+}
+
+static inline bool linux_daemon_startup_reread_pre_trusted_role(
+    LinuxDaemonStartupRecord* record) {
+    if (!record || record->version != LINUX_DAEMON_STARTUP_PRE_TRUSTED_ROLE_VERSION ||
+        !linux_daemon_startup_valid_except_version(record)) return false;
+    const LinuxDaemonStartupRecord stored = *record;
+    linux_daemon_startup_initialize(record, stored.mode, stored.profileSlot,
+        stored.profileName, &stored.targetGpu, &stored.desired,
+        linux_daemon_pre_trusted_role_reread(stored.targetLocationRole));
+    return linux_daemon_startup_valid(record);
 }
 
 #endif

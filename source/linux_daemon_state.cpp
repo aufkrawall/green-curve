@@ -13,6 +13,21 @@
 #include <sys/random.h>
 #include <unistd.h>
 
+// The role a migrated record now carries, and the stored one when the
+// first-generation re-read changed it, so a support log shows why a boot
+// apply that used to refuse a moved GPU now follows it.
+static void linux_daemon_format_role_migration(bool reread, gc_u32 stored,
+                                               gc_u32 loaded, char* out,
+                                               size_t outSize) {
+    const char* loadedName = configured_gpu_location_role_name((GpuLocationRole)loaded);
+    if (reread && stored != loaded)
+        gc_snprintf(out, outSize, "%s re-read as %s",
+                    configured_gpu_location_role_name((GpuLocationRole)stored),
+                    loadedName);
+    else
+        gc_snprintf(out, outSize, "%s", loadedName);
+}
+
 static bool write_all(int fd, const void* data, size_t size) {
     const unsigned char* bytes = (const unsigned char*)data;
     size_t written = 0;
@@ -143,10 +158,19 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
     int migratedOldMemMHz = 0;
     bool migratedMemConverted = false;
     bool migratedFromLegacy = false;
+    gc_u32 storedRole = 0;
     if (protectedRegular &&
         st.st_size == (off_t)sizeof(LinuxDaemonStateRecord)) {
         count = gc_read_record(::read, fd, &record, sizeof(record));
         storedVersion = record.version;
+        storedRole = record.targetLocationRole;
+        // Same layout, older meaning: an invalid copy is left as read so the
+        // rejection below reports its real version.
+        if (count == (ssize_t)sizeof(record) &&
+            linux_daemon_state_record_reread_pre_trusted_role(&record)) {
+            generation = LINUX_DAEMON_RECORD_GENERATION_PRE_TRUSTED_ROLE;
+            migratedFromLegacy = true;
+        }
     } else if (protectedRegular &&
                st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema2)) {
         LinuxDaemonStateRecordSchema2 legacy = {};
@@ -247,17 +271,21 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
                 gc_snprintf(memDetail, sizeof(memDetail),
                             "mem offset %d -> %d display MHz",
                             migratedOldMemMHz, record.desired.memOffsetMHz);
+            char roleDetail[64] = {};
+            linux_daemon_format_role_migration(
+                generation == LINUX_DAEMON_RECORD_GENERATION_PRE_TRUSTED_ROLE,
+                storedRole, record.targetLocationRole, roleDetail, sizeof(roleDetail));
             gc_snprintf(err, errSize,
                 "loaded %lld-byte %s daemon state v%u -> v%u; location role=%s; %s",
                 (long long)st.st_size,
                 generation == LINUX_DAEMON_RECORD_GENERATION_SCHEMA1_V1
                     ? "pre-operation-id schema-1"
                     : generation == LINUX_DAEMON_RECORD_GENERATION_SCHEMA2
-                        ? "schema-2" : "schema-1",
+                        ? "schema-2"
+                        : generation == LINUX_DAEMON_RECORD_GENERATION_PRE_TRUSTED_ROLE
+                            ? "first location-role" : "schema-1",
                 (unsigned int)storedVersion,
-                (unsigned int)LINUX_DAEMON_RECORD_VERSION,
-                configured_gpu_location_role_name(
-                    (GpuLocationRole)record.targetLocationRole),
+                (unsigned int)LINUX_DAEMON_RECORD_VERSION, roleDetail,
                 memDetail[0] ? memDetail : "no stored memory offset to convert");
         }
         if (outMigratedFromLegacy) *outMigratedFromLegacy = migratedFromLegacy;
@@ -376,9 +404,17 @@ bool linux_daemon_startup_load(const char* path,
     bool migrated = false;
     int migratedOldMemMHz = 0;
     gc_u32 storedVersion = 0;
+    gc_u32 storedRole = 0;
+    bool rereadRole = false;
     if (protectedRegular && status.st_size == (off_t)sizeof(loaded)) {
         parsed = gc_read_record(::read, fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded);
-        if (parsed) storedVersion = loaded.version;
+        if (parsed) {
+            storedVersion = loaded.version;
+            storedRole = loaded.targetLocationRole;
+            // Same layout, older meaning (linux_daemon_location_schema.h).
+            rereadRole = linux_daemon_startup_reread_pre_trusted_role(&loaded);
+            migrated = rereadRole;
+        }
     } else if (protectedRegular &&
                status.st_size == (off_t)sizeof(LinuxDaemonStartupRecordSchema2)) {
         LinuxDaemonStartupRecordSchema2 legacy = {};
@@ -433,11 +469,13 @@ bool linux_daemon_startup_load(const char* path,
             gc_snprintf(memDetail, sizeof(memDetail),
                         "mem offset %d -> %d display MHz",
                         migratedOldMemMHz, loaded.desired.memOffsetMHz);
+        char roleDetail[64] = {};
+        linux_daemon_format_role_migration(rereadRole, storedRole,
+            loaded.targetLocationRole, roleDetail, sizeof(roleDetail));
         gc_snprintf(err, errSize,
             "startup policy record migrated from %lld-byte v%u to v%u; location role=%s; %s",
             (long long)status.st_size, (unsigned int)storedVersion,
-            (unsigned int)LINUX_DAEMON_STARTUP_VERSION,
-            configured_gpu_location_role_name((GpuLocationRole)loaded.targetLocationRole),
+            (unsigned int)LINUX_DAEMON_STARTUP_VERSION, roleDetail,
             memDetail[0] ? memDetail : "no stored memory offset to convert");
         if (outMigratedFromLegacy) *outMigratedFromLegacy = true;
     }

@@ -46,7 +46,9 @@ select one; only the size can.
 Source anchors: `source/linux_daemon_state.h`,
 `source/linux_daemon_location_schema.h`, `source/desired_settings_schema.h`,
 `source/linux_daemon_state.cpp`, `tests/linux_restore_role_tests.cpp`.
-State v5 and startup v4 append the GPU location role under their checksums.
+State v5 and startup v4 append the GPU location role under their checksums;
+state v6 and startup v5 keep that layout and change only what a stored
+`required` means (below).
 The outgoing layouts use frozen `DesiredSettingsSchema2` (964 bytes), with
 field-by-field widening that preserves per-point provenance and display MHz.
 Both loaders dispatch the old sizes and validate their original checksum
@@ -65,10 +67,19 @@ boot profile re-binds startup.bin to the live location with it.
 Rejected (2026-10-24): widening as `required`. It was stricter than any build
 had read the record, so an upgrade silently stopped the boot apply of a lone
 GPU whose PCI bus firmware had renumbered -- the very case the location role
-exists for. A record that build already rewrote as v4/v5 `required` keeps that
-role (nothing marks it as migrated); one explicit startup bind or Apply records
-the real one. Source gates in `tools/persistence_gates.py` forbid `REQUIRED` in
+exists for. Source gates in `tools/persistence_gates.py` forbid `REQUIRED` in
 the frozen-layout header and pin every widening call to the legacy role.
+
+The first role generation (state v5, startup v4, written only by unreleased
+builds) is re-read on load (`linux_daemon_*_reread_pre_trusted_role()`): its
+`required` may have been invented by that widening and cannot be told apart
+from a twin selection, so only `advisory` survives and everything else becomes
+the legacy role; the record is re-stamped as the current version after its own
+checksum validates. Users therefore need no manual re-bind after updating. Cost:
+a twin binding made by those builds follows the remaining twin if the other is
+removed (the released builds' rule) until a restore re-records `required`; with
+both twins present the exact location still wins. The loaders' wiring is
+source-gated only, because they admit root-owned files alone.
 
 Automatic restore, resume, startup content refresh and backend replacement keep
 the role; a required role never weakens merely because a twin disappeared.
@@ -78,8 +89,11 @@ aborted one logs the stored location, role and remedy. Fixtures 7420-7429 and
 7440-7447 check both record types and all five widening paths, preservation of
 curve/lock/provenance/memory settings, checksum coverage, invalid roles, exact
 versus moved versus ambiguous restore, the moved single-GPU boot profile and the
-remedy text. A negative control dropping the backend role fails at 7421;
-widening as `required` again fails at 7423. Real Linux hardware upgrade and
+remedy text; 7450-7459 cover the first-generation re-read (required to
+unrecorded, advisory kept, current-version required untouched, tampered bytes
+refused, disabled policy). A negative control dropping the backend role fails
+at 7421; widening as `required` again fails at 7423; keeping a re-read
+`required` fails at 7451. Real Linux hardware upgrade and
 resume remain unverified.
 
 ## Adding a field to DesiredSettings
@@ -171,7 +185,8 @@ Windows: `restart reapply load: header mismatch magic=… ver=… size=… (expe
   unaffected; it still discards a v1 file, which is its existing documented
   "no valid persisted result" path.
 
-Last verified for GPU role: 2026-10-24 (legacy role corrected to `unrecorded`:
+Last verified for GPU role: 2026-10-24 (first-generation re-read: `--test`,
+negative control at 7451; legacy role corrected to `unrecorded`:
 `python build.py --test`, negative control at 7423, the failing boot apply
 read from the daemon journal of a real single-GPU upgrade).
 Prior payload-schema verification: 2026-09-17, with `build.py --test`,

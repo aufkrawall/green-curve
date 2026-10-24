@@ -1007,7 +1007,7 @@ int run_gpu_location_role_tests(const char* scratchConfigPath);
 // (tests/linux_gpu_location_tests.cpp, 7340-7379 and 7410-7419).
 int run_linux_gpu_location_tests();
 // Linux durable restore keeps the GPU location role
-// (tests/linux_restore_role_tests.cpp, 7420-7429 and 7440-7449).
+// (tests/linux_restore_role_tests.cpp, 7420-7429 and 7440-7459).
 int run_linux_restore_role_tests();
 // Editor VF point visibility independent of temperature drift
 // (tests/vf_point_visibility_tests.cpp, 7380-7399).

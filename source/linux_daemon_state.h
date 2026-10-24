@@ -19,12 +19,14 @@ enum LinuxDaemonRecordState : gc_u32 {
 
 enum {
     LINUX_DAEMON_RECORD_MAGIC = 0x4752434Cu, // "LCRG"
-    // v5 adds the persisted GPU location role. v4 embeds schema-2
-    // DesiredSettings (per-point curve provenance,
-    // 0.26.0).  The layout GREW, which is why the version had to move: see
-    // desired_settings_schema.h for why size, not version, now selects the
-    // layout a loader decodes with.
-    LINUX_DAEMON_RECORD_VERSION = 5,
+    // v6 keeps the v5 layout and changes only what a stored `required` role
+    // means (see linux_daemon_location_schema.h). v5 adds the persisted GPU
+    // location role. v4 embeds schema-2 DesiredSettings (per-point curve
+    // provenance, 0.26.0).  The layout GREW, which is why the version had to
+    // move: see desired_settings_schema.h for why size, not version, now
+    // selects the layout a loader decodes with.
+    LINUX_DAEMON_RECORD_VERSION = 6,
+    LINUX_DAEMON_RECORD_PRE_TRUSTED_ROLE_VERSION = 5,
     LINUX_DAEMON_RECORD_PRE_LOCATION_ROLE_VERSION = 4,
     // Semantics markers WITHIN the frozen schema-1 layout.  v3 reinterprets
     // the embedded memOffsetMHz as display MHz (effective/display parity);
@@ -218,6 +220,7 @@ enum LinuxDaemonRecordGeneration : gc_u32 {
     LINUX_DAEMON_RECORD_GENERATION_SCHEMA1 = 1,    // versions 2 and 3
     LINUX_DAEMON_RECORD_GENERATION_SCHEMA2 = 3,
     LINUX_DAEMON_RECORD_GENERATION_SCHEMA1_V1 = 2, // version 1, no operation id
+    LINUX_DAEMON_RECORD_GENERATION_PRE_TRUSTED_ROLE = 4, // current layout, version 5
 };
 
 // Validate a stored schema-1 state record against its OWN checksum, over its
@@ -339,6 +342,8 @@ static inline bool linux_daemon_operation_valid(
 // forgeable by an unprivileged user or survive as a half-written record.
 enum {
     LINUX_DAEMON_STARTUP_MAGIC = 0x50555347u, // "GSUP"
+    // v5 keeps the v4 layout and changes only what a stored `required` role
+    // means (see linux_daemon_location_schema.h).
     // v4 adds the persisted GPU location role. v3 embeds schema-2
     // DesiredSettings (per-point curve provenance,
     // 0.26.0) and is a LARGER record than v1/v2.  Within the frozen schema-1
@@ -346,7 +351,8 @@ enum {
     // like the state record's v2->v3 bump, so a v1 record is halved once on
     // read.  Size selects the layout, version the meaning; see
     // desired_settings_schema.h.
-    LINUX_DAEMON_STARTUP_VERSION = 4,
+    LINUX_DAEMON_STARTUP_VERSION = 5,
+    LINUX_DAEMON_STARTUP_PRE_TRUSTED_ROLE_VERSION = 4,
     LINUX_DAEMON_STARTUP_PRE_LOCATION_ROLE_VERSION = 3,
     LINUX_DAEMON_STARTUP_PRE_PROVENANCE_VERSION = 2,
     LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION = 1,

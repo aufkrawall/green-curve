@@ -20,10 +20,14 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   `LINUX_DAEMON_LEGACY_LOCATION_ROLE` (`unrecorded`). The two schema-1 state
   paths and the schema-1 startup path had reached `required` silently through
   the initializers' default argument.
-- Not healed: a record already rewritten as v4/v5 `required` by the briefly
-  affected unreleased builds cannot be told apart from a genuine twin
-  binding. One `--startup-profile N` (or the TUI Startup apply control)
-  re-binds it. This supersedes the "Considered and kept" note below.
+- Follow-up the same day: records those unreleased builds had already
+  rewritten as state v5 / startup v4 `required` kept failing after the
+  update (journal: same refusal on the fixed build). State v6 / startup v5
+  now re-read that generation's `required` as `unrecorded` on load, so no
+  user has to re-bind anything. Fixtures 7450-7459; keeping the stored role
+  fails 7451. This supersedes the "Considered and kept" note below.
+- Open gap: the TUI showed `PROFILE 1` while the boot apply had been refused.
+  A pre-write failure sets no lockout (by design) and reaches no client.
 - New diagnostic: an aborted automatic restore logs
   `[stored=<bdf> role=<role> remedy=<...>]`; migration lines log the real
   role. Fixtures 7423/7424/7426 changed, 7440-7447 added; the pre-fix

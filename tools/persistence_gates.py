@@ -111,6 +111,17 @@ def check_all(ctx, require_text, forbid_text):
                  "the schema-1 startup record widens with the legacy role")
     forbid_text(daemon_state_cpp, "location role=required",
                 "migration diagnostics log the role the record really widened with")
+    # The first role generation (state v5, startup v4) shares the current
+    # layout; its `required` may have been invented by the widening above, so
+    # both loaders re-read it before the record is validated as current.
+    require_text(daemon_state_h, "LINUX_DAEMON_RECORD_PRE_TRUSTED_ROLE_VERSION = 5",
+                 "the state generation whose required role is re-read stays named")
+    require_text(daemon_state_h, "LINUX_DAEMON_STARTUP_PRE_TRUSTED_ROLE_VERSION = 4",
+                 "the startup generation whose required role is re-read stays named")
+    require_text(daemon_state_cpp, "linux_daemon_state_record_reread_pre_trusted_role(&record)",
+                 "the state loader re-reads a first-generation role")
+    require_text(daemon_state_cpp, "linux_daemon_startup_reread_pre_trusted_role(&loaded)",
+                 "the startup loader re-reads a first-generation role")
 
     # The loaders dispatch on size and migrate by version.
     require_text(daemon_state_cpp, "sizeof(LinuxDaemonStateRecordSchema1)",

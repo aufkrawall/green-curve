@@ -1102,9 +1102,9 @@ def check_mem_offset_migration(ctx, require_text, forbid_text, require_order):
                  "the committed restore-last record converts pre-parity mem units")
     require_text(state_h, "linux_daemon_migrate_desired_mem_units_to_display(&widened",
                  "the widening path is where the halving happens, once")
-    require_text(state_h, "LINUX_DAEMON_STARTUP_VERSION = 4",
+    require_text(state_h, "LINUX_DAEMON_STARTUP_VERSION = 5",
                  "the startup record generation moved with the layout change")
-    require_text(state_h, "LINUX_DAEMON_RECORD_VERSION = 5",
+    require_text(state_h, "LINUX_DAEMON_RECORD_VERSION = 6",
                  "the committed record generation moved with the layout change")
     require_text(state_h, "LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION = 1",
                  "the pre-parity startup generation is still recognized")
