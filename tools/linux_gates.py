@@ -1150,6 +1150,12 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
                  "startup restore and content refresh retain the stored role")
     require_text(_p(ctx, "linux_daemon.cpp"), "(GpuLocationRole)saved.targetLocationRole",
                  "restore-last passes the committed location role")
+    require_text(_p(ctx, "linux_daemon.cpp"),
+                 "memset(&g_activeTarget, 0, sizeof(g_activeTarget));\n"
+                 "                // The role belongs to the cleared target: back to the\n"
+                 "                // fail-closed default, like a daemon that never had one.\n"
+                 "                g_activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;",
+                 "a committed Reset clears the active target's role with it")
     selection_h = _p(ctx, "linux_gpu_selection.h")
     require_text(selection_h,
                  "linux_resolve_stored_gpu_target(&gpu->target, gpu->role,",

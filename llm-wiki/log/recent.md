@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-24: Restore-role review follow-ups
+
+- A committed Reset now clears `g_activeTargetRole` together with the active
+  target (back to the fail-closed REQUIRED default); every reader already
+  checked `g_hasActiveDesired` first, so this is state hygiene, source-gated.
+- The restore-role suite's failure now prints the harness's
+  `regression assertion failed: code` line like every other suite, and its
+  7420-7429 range is listed in `tests/regression_main.cpp`.
+- Considered and kept: a migrated record stays REQUIRED across automatic
+  restores. Promoting it after an exact-location restore would need a marker
+  for "migrated, ambiguity unknown" versus "a twin existed at selection";
+  one explicit Apply or startup bind records the real role.
+
 ## 2026-10-24: Saving the Linux GPU selection never rewrites an unreadable config.ini
 
 - Review follow-up. `save_linux_gpu_selection()` started from an empty

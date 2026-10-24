@@ -464,6 +464,9 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 g_hasActiveDesired = false;
                 memset(&g_activeDesired, 0, sizeof(g_activeDesired));
                 memset(&g_activeTarget, 0, sizeof(g_activeTarget));
+                // The role belongs to the cleared target: back to the
+                // fail-closed default, like a daemon that never had one.
+                g_activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
                 g_stateUncertain = false;
                 g_fanFailureCount = 0;
                 // Reset returned the fan to the driver: nothing to hand back.

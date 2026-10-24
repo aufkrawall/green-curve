@@ -1006,6 +1006,8 @@ int run_gpu_location_role_tests(const char* scratchConfigPath);
 // The Linux stored-target rule for the same renumbering
 // (tests/linux_gpu_location_tests.cpp, 7340-7379 and 7410-7419).
 int run_linux_gpu_location_tests();
+// Linux durable restore keeps the GPU location role
+// (tests/linux_restore_role_tests.cpp, 7420-7429).
 int run_linux_restore_role_tests();
 // Editor VF point visibility independent of temperature drift
 // (tests/vf_point_visibility_tests.cpp, 7380-7399).
@@ -2634,7 +2636,10 @@ static int run_all_tests(int argc, char** argv) {
         fprintf(stderr, "regression assertion failed: code %d\n", locationFailure);
         return locationFailure;
     }
-    if (int restoreRoleFailure = run_linux_restore_role_tests()) return restoreRoleFailure;
+    if (int restoreRoleFailure = run_linux_restore_role_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", restoreRoleFailure);
+        return restoreRoleFailure;
+    }
     if (int linuxLocationFailure = run_linux_gpu_location_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", linuxLocationFailure);
         return linuxLocationFailure;
