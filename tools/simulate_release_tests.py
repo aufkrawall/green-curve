@@ -5,6 +5,7 @@
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
@@ -305,6 +306,16 @@ class HighestSeenRestoreTests(unittest.TestCase):
         guards.set_highest_seen(self.ini, "9.9.9")
         self.assertTrue(guards.set_highest_seen(self.ini, recorded["highest_seen_version"]))
         self.assertIn(b"highest_seen_version=0.28.\xe91\r\n", self.ini.read_bytes())
+
+    def test_log_escapes_undecodable_value_on_strict_stdout(self):
+        # Host-independent: the round trip above passes wherever stdout
+        # happens to use surrogateescape, so pin the strict-stream case here.
+        raw = io.BytesIO()
+        strict = io.TextIOWrapper(raw, encoding="utf-8", errors="strict")
+        with patch.object(sys, "stdout", strict):
+            guards.log("seen=0.28.\udce91")
+        strict.flush()
+        self.assertIn(b"seen=0.28.\\udce91", raw.getvalue())
 
     def test_record_is_never_overwritten(self):
         guards.record_pre_simulation_state(self.state, self.ini)

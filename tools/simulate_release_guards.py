@@ -47,7 +47,12 @@ _VALUE_CODEC = ("utf-8", "surrogateescape")
 
 
 def log(msg, prefix="[simulate-release]"):
-    print(f"{prefix} {msg}", flush=True)
+    # A value carried as surrogate escapes (see _VALUE_CODEC) holds lone
+    # surrogates; a strict stdout (UTF-8 redirected to a file) would raise
+    # instead of logging it, aborting the init or teardown being logged.
+    line = f"{prefix} {msg}"
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(line.encode(encoding, "backslashreplace").decode(encoding), flush=True)
 
 
 def get_default_key_path():
