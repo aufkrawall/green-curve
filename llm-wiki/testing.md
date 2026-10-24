@@ -143,10 +143,11 @@ is MALFORMED and leaves the outputs alone (7412; each loaded as no record
 before), MALFORMED stops writes, is final and `--gpu` replaces it (7413), and
 the shared BDF parser keeps the `--gpu` bounds (7414). The old 614-618
 assertions now run against the new resolver with the `required` role. Not covered automatically: config.ini
-persistence of the role (no harness links `linux_port_profiles.cpp`;
-source-guarded), the snapshot-fetching client wrapper
-(`linux_gpu_target_config.cpp`; source-guarded, checked once with a mocked
-daemon on 2026-10-23), and any run on real renumbered hardware. The TUI
+persistence of the role (`load_linux_gpu_selection()` /
+`save_linux_gpu_selection()`, which moved from `linux_port_profiles.cpp` to
+`linux_gpu_target_config.cpp` on 2026-10-24; no harness links either file;
+source-guarded), the snapshot-fetching client wrapper (same file;
+source-guarded, checked once with a mocked daemon on 2026-10-23), and any run on real renumbered hardware. The TUI
 adoption is executed since 2026-10-24 (7400-7409, "Linux TUI write target").
 
 ## GPU selection across PCI bus renumbering (2026-10-22)

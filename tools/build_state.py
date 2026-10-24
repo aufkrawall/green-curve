@@ -33,7 +33,6 @@ BUILD_SCRIPT_SIZE_RATCHET = 5316
 
 SOURCE_SIZE_RATCHET = {
     "config_profiles.cpp": 903,  # 889 before the VIDEO profile save key  # 883 before the SYS profile save key
-    "linux_port_profiles.cpp": 860,  # 788 before the one-time mem stored-unit migration hooks
     "entry.cpp": 885,  # 865 before F-01-001 gave the GUI-subsystem CLI a console sink (the sink itself lives in cli_console.cpp)  # 863 before the GUI started/stopped the debug log writer thread
     "gpu_backend.cpp": 891,  # 884 before the F-APPLY-CEILING clock-witness poll in the settle loop  # 972 before the power read/write pair moved to gpu_backend_power.cpp
     "gpu_backend_apply.cpp": 1486,  # 1470 before the apply-clock witness sample points  # 1424 before F-APPLY-CEILING wired the transition clock clamp (the guard itself lives in gpu_backend_apply_ceiling.h)  # 1414 before power writes name a missing control surface instead of failing anonymously  # 1407 before the core/advanced rollback boundary was made explicit
