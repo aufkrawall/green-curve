@@ -100,6 +100,7 @@ static pl_mutex g_lock;
 static DesiredSettings g_activeDesired;
 static bool g_hasActiveDesired = false;
 static GpuAdapterInfo g_activeTarget;
+static GpuLocationRole g_activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
 static bool g_stateUncertain = false;
 static ServiceOperationTracker g_operationTracker = {};
 // The committed startup-apply policy.  Zero-initialized means RESTORE_LAST,
@@ -129,15 +130,25 @@ static bool persist_daemon_operation(gc_u64 operationId, gc_u32 state,
 #include "linux_operation_runtime.h"
 #include "linux_daemon_lifecycle.h"
 
+static GpuLocationRole daemon_target_location_role(const GpuAdapterInfo* target) {
+    if (g_hasActiveDesired && linux_gpu_identity_matches(target, &g_activeTarget) &&
+        g_activeTargetRole == GPU_LOCATION_ROLE_REQUIRED)
+        return GPU_LOCATION_ROLE_REQUIRED;
+    return linux_gpu_location_role_for_selection(target, g_gpu.adapters, g_gpu.adapterCount);
+}
+
 static bool store_daemon_record(LinuxDaemonRecordState state,
                                 const GpuAdapterInfo* target,
                                 const DesiredSettings* desired,
                                 char* err, size_t errSize,
                                 gc_u64 operationId = 0,
-                                gc_u32 operationState = SERVICE_OPERATION_NONE) {
+                                gc_u32 operationState = SERVICE_OPERATION_NONE,
+                                GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED) {
+    if (role == GPU_LOCATION_ROLE_UNRECORDED)
+        role = daemon_target_location_role(target);
     LinuxDaemonStateRecord record = {};
     linux_daemon_record_initialize(&record, state, target, desired,
-        operationId, operationState);
+        operationId, operationState, role);
     return linux_daemon_state_store(GC_DAEMON_STATE_FILE, &record, err, errSize);
 }
 
@@ -304,6 +315,8 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             bool hadPrevious = g_hasActiveDesired;
             DesiredSettings previousDesired = g_activeDesired;
             GpuAdapterInfo previousTarget = g_activeTarget;
+            const GpuLocationRole committedRole = linux_gpu_location_role_for_selection(
+                &g_gpu.selectedGpu, g_gpu.adapters, g_gpu.adapterCount);
             DesiredSettings committedDesired = service_merge_desired_after_mutation(
                 hadPrevious ? &previousDesired : nullptr, &d);
             if (d.resetOcBeforeApply)
@@ -322,7 +335,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                                                           stateErr, sizeof(stateErr)) ||
                 !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu,
                                      &committedDesired, stateErr, sizeof(stateErr),
-                                     req->operationId, SERVICE_OPERATION_IN_PROGRESS)) {
+                                     req->operationId, SERVICE_OPERATION_IN_PROGRESS, committedRole)) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_snprintf(resp->message, sizeof(resp->message),
                             "Apply aborted before hardware write: %s", stateErr);
@@ -336,7 +349,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 committed = store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE,
                     &g_gpu.selectedGpu, &committedDesired,
                     stateErr, sizeof(stateErr),
-                    req->operationId, SERVICE_OPERATION_SUCCEEDED);
+                    req->operationId, SERVICE_OPERATION_SUCCEEDED, committedRole);
                 if (!committed) {
                     char rollbackErr[256] = {};
                     bool rollbackOk = linux_backend_restore_snapshot(&g_gpu, &before,
@@ -365,6 +378,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             }
             if (committed) {
                 g_activeDesired = committedDesired;
+                g_activeTargetRole = committedRole;
                 g_activeTarget = g_gpu.selectedGpu;
                 g_hasActiveDesired = true;
                 g_stateUncertain = false;
@@ -637,7 +651,8 @@ int linux_daemon_run(const char* configPath) {
             // stacking it on whatever the driver currently holds.
             LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(
                 LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST,
-                &saved.targetGpu, &saved.desired);
+                &saved.targetGpu, &saved.desired,
+                (GpuLocationRole)saved.targetLocationRole);
             if (!outcome.success)
                 dlog("daemon: startup reapply did not commit -> %s\n",
                      outcome.message[0] ? outcome.message : "unknown reason");

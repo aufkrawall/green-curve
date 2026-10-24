@@ -18,6 +18,7 @@
 #define GREEN_CURVE_LINUX_BACKEND_H
 
 #include "gpu_core.h"
+#include "gpu_selection_policy.h"
 #include "gpu_capability_policy.h"
 #include "linux_architecture_policy.h"
 #include "linux_gpu_binding_policy.h"
@@ -173,11 +174,13 @@ struct LinuxBackendRefreshResult {
 // On success the curve, masks and ranges are read.  Returns false + message on
 // failure (no driver, no GPU, etc.).
 bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
-                        char* err, size_t errSize);
+                        char* err, size_t errSize,
+                        GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED);
 void linux_backend_shutdown(LinuxGpuState* g);
 
 bool linux_backend_select_target(LinuxGpuState* g, const GpuAdapterInfo* target,
-                                 char* err, size_t errSize);
+                                 char* err, size_t errSize,
+                                 GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED);
 bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* snapshot,
                                     char* err, size_t errSize);
 bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapshot* snapshot,

@@ -355,7 +355,7 @@ def run_linux_fixtures(ctx, tmp_dir, extra_flags, test_env):
                 "apply_profile_followup_tests.cpp", "apply_correction_tests.cpp",
                 "fan_worker_lock_tests.cpp", "security_audit_tests.cpp",
                 "installer_fuzz_harness_tests.cpp", "review_followup_tests.cpp", "wer_local_dumps_tests.cpp",
-                "diagnostics_followup_tests.cpp", "gpu_family_wire_tests.cpp", "update_release_030_tests.cpp", "offset_intent_tests.cpp", "gui_auto_restore_notice_tests.cpp", "scalar_shift_retention_tests.cpp", "debug_log_identity_tests.cpp", "veh_driver_fault_tests.cpp", "crash_dump_notice_tests.cpp", "module_version_tests.cpp", "restart_snapshot_cleanup_tests.cpp", "driver_recovery_sequence_tests.cpp", "peer_stall_tests.cpp", "gpu_location_role_tests.cpp", "linux_gpu_location_tests.cpp", "vf_point_visibility_tests.cpp", "linux_tui_gpu_target_tests.cpp")],
+                "diagnostics_followup_tests.cpp", "gpu_family_wire_tests.cpp", "update_release_030_tests.cpp", "offset_intent_tests.cpp", "gui_auto_restore_notice_tests.cpp", "scalar_shift_retention_tests.cpp", "debug_log_identity_tests.cpp", "veh_driver_fault_tests.cpp", "crash_dump_notice_tests.cpp", "module_version_tests.cpp", "restart_snapshot_cleanup_tests.cpp", "driver_recovery_sequence_tests.cpp", "peer_stall_tests.cpp", "gpu_location_role_tests.cpp", "linux_gpu_location_tests.cpp", "linux_restore_role_tests.cpp", "vf_point_visibility_tests.cpp", "linux_tui_gpu_target_tests.cpp")],
             os.path.join(ctx.SOURCE_DIR, "fan_curve.cpp"),
             os.path.join(ctx.SOURCE_DIR, "config_text_utils.cpp"),
             os.path.join(ctx.SOURCE_DIR, "app_shared.cpp"),

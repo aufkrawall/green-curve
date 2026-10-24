@@ -414,7 +414,7 @@ static bool linux_backend_reenumerate_same_nvml_gpu(
 }
 
 bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
-                        char* err, size_t errSize) {
+                        char* err, size_t errSize, GpuLocationRole role) {
     if (!g) {
         gc_strlcpy(err, errSize, "Linux GPU state is missing");
         return false;
@@ -505,12 +505,12 @@ bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
     // The decision lives in linux_gpu_init_selection() (linux_gpu_selection.h).
     const bool targeted = target && target->valid;
     const LinuxGpuInitSelection selection =
-        linux_gpu_init_selection(target, g->adapters, g->adapterCount);
+        linux_gpu_init_selection(target, g->adapters, g->adapterCount, role);
     int selectedIndex = selection.index;
     char selectionErr[192] = {};
     if (targeted && (selection.index < 0 || selection.moved)) {
         char detail[256] = {};
-        linux_format_stored_gpu_detail(target, GPU_LOCATION_ROLE_UNRECORDED,
+        linux_format_stored_gpu_detail(target, role,
             g->adapters, g->adapterCount, detail, sizeof(detail));
         lb_log("linux_backend: stored GPU target %s (%s)\n",
                selection.index >= 0
@@ -552,7 +552,7 @@ bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
 
 bool linux_backend_select_target(LinuxGpuState* g,
                                  const GpuAdapterInfo* target,
-                                 char* err, size_t errSize) {
+                                 char* err, size_t errSize, GpuLocationRole role) {
     if (!g || !target || !target->valid) {
         gc_strlcpy(err, errSize, "a stable GPU target is required");
         return false;
@@ -561,11 +561,11 @@ bool linux_backend_select_target(LinuxGpuState* g,
     // selected; re-initializing the backend for it on every request would
     // only repeat the same resolution.
     int current = linux_resolve_stored_gpu_target(target,
-        GPU_LOCATION_ROLE_UNRECORDED, g->adapters, g->adapterCount, nullptr);
+        role, g->adapters, g->adapterCount, nullptr);
     if (g->writeIdentityResolved && current >= 0 &&
         (unsigned int)current == g->selectedAdapterIndex) return true;
     LinuxGpuState replacement = {};
-    if (!linux_backend_init(&replacement, target, err, errSize) ||
+    if (!linux_backend_init(&replacement, target, err, errSize, role) ||
         !replacement.writeIdentityResolved) {
         linux_backend_shutdown(&replacement);
         if (err && !err[0])

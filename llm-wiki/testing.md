@@ -45,6 +45,23 @@ assertion 6606 under the restricted token and passed in full through approved
 execution with workspace-local temporary files. This is a launch prerequisite,
 not a promise that future test failures are environment failures.
 
+## Linux durable restore target role (2026-10-24)
+
+Source anchors: `tests/linux_restore_role_tests.cpp`,
+`source/linux_daemon_location_schema.h`, `source/linux_gpu_selection.h`,
+`tools/persistence_gates.py`, `tools/linux_gates.py`.
+7420-7422 cover current state/startup role persistence, the backend init
+write decision after a twin disappears, role checksum protection and invalid
+role rejection. 7423-7425 migrate the frozen 1176-byte state record without
+changing its settings or operation identity, require exact location and reject
+a checksum mismatch. 7426-7429 migrate the 1236-byte startup record, preserve
+its settings/name/slot, reject a future version or incoherent disabled record,
+and clear payload for a valid disabled policy. Existing schema-1 fixtures
+continue to cover older memory-unit conversions. A focused negative control
+that replaces the backend role with UNRECORDED fails at 7421. Source gates
+cover runtime forwarding and content refresh. The full Linux daemon and a
+hardware upgrade/resume are not executed by these host-neutral units.
+
 ## Linux TUI write target (2026-10-24)
 
 Source anchors: `tests/linux_tui_gpu_target_tests.cpp`,

@@ -62,9 +62,9 @@ def check_all(ctx, require_text, forbid_text):
 
     # Every record that embeds DesiredSettings pins its own size, so a change to
     # DesiredSettings *or* GpuAdapterInfo breaks the build at the record.
-    require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecord) == 1176",
+    require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecord) == 1184",
                  "the live daemon state record pins its on-disk size")
-    require_text(daemon_state_h, "sizeof(LinuxDaemonStartupRecord) == 1236",
+    require_text(daemon_state_h, "sizeof(LinuxDaemonStartupRecord) == 1240",
                  "the live startup-policy record pins its on-disk size")
     require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecordSchema1) == 1048",
                  "the frozen schema-1 state record stays 1048 bytes")
@@ -83,6 +83,15 @@ def check_all(ctx, require_text, forbid_text):
                 "the dead v1 record declared over the live struct is gone")
     require_text(daemon_state_h, "DesiredSettingsSchema1 desired;",
                  "frozen records embed the frozen DesiredSettings layout")
+
+    location_h = _p(ctx, "linux_daemon_location_schema.h")
+    for kind, size in (("State", 1176), ("Startup", 1236)):
+        require_text(location_h, f"sizeof(LinuxDaemon{kind}RecordSchema2) == {size}",
+                     "pre-location-role records keep their exact size")
+        require_text(daemon_state_cpp, f"sizeof(LinuxDaemon{kind}RecordSchema2)",
+                     "the loader dispatches the pre-location-role layout")
+    require_text(location_h, "GPU_LOCATION_ROLE_REQUIRED",
+                 "legacy records migrate with an exact-location requirement")
 
     # The loaders dispatch on size and migrate by version.
     require_text(daemon_state_cpp, "sizeof(LinuxDaemonStateRecordSchema1)",

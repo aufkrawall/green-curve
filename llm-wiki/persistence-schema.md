@@ -8,8 +8,8 @@ changed underneath them**:
 
 | File | Record | Current version | Frozen predecessor |
 |------|--------|-----------------|--------------------|
-| Linux `active.bin` | `LinuxDaemonStateRecord` (1176 B) | `LINUX_DAEMON_RECORD_VERSION = 4` | `LinuxDaemonStateRecordSchema1` (1048 B, versions 2-3), `LinuxDaemonStateRecordSchema1V1` (1036 B, version 1) |
-| Linux `startup.bin` | `LinuxDaemonStartupRecord` (1236 B) | `LINUX_DAEMON_STARTUP_VERSION = 3` | `LinuxDaemonStartupRecordSchema1` (1108 B, versions 1-2) |
+| Linux `active.bin` | `LinuxDaemonStateRecord` (1184 B) | `LINUX_DAEMON_RECORD_VERSION = 5` | `LinuxDaemonStateRecordSchema2` (1176 B, version 4), `LinuxDaemonStateRecordSchema1` (1048 B, versions 2-3), `LinuxDaemonStateRecordSchema1V1` (1036 B, version 1) |
+| Linux `startup.bin` | `LinuxDaemonStartupRecord` (1240 B) | `LINUX_DAEMON_STARTUP_VERSION = 4` | `LinuxDaemonStartupRecordSchema2` (1236 B, version 3), `LinuxDaemonStartupRecordSchema1` (1108 B, versions 1-2) |
 | Windows restart snapshot | `ServiceRestartReapplySnapshot` (1160 B) | `SERVICE_ACTIVE_DESIRED_VERSION = 6u` | `ServiceRestartReapplySnapshotSchema1` (1032 B, version 5) |
 
 Every loader admitted a file only when its byte size equalled the **current**
@@ -40,6 +40,30 @@ This is not a style preference. `SERVICE_ACTIVE_DESIRED_VERSION` sat at 5 from
 sat at 1 across at least three (the XBAR, SYS-clock and video-clock fields all
 landed inside that window). A version number that spans multiple layouts cannot
 select one; only the size can.
+
+## Durable GPU location role (2026-10-24)
+
+Source anchors: `source/linux_daemon_state.h`,
+`source/linux_daemon_location_schema.h`, `source/desired_settings_schema.h`,
+`source/linux_daemon_state.cpp`, `tests/linux_restore_role_tests.cpp`.
+State v5 and startup v4 append the GPU location role under their checksums.
+The outgoing layouts use frozen `DesiredSettingsSchema2` (964 bytes), with
+field-by-field widening that preserves per-point provenance and display MHz.
+Both loaders dispatch the old sizes and validate their original checksum
+before widening. Schema-1 memory conversion remains unchanged.
+
+Every older record widens with `required`: it cannot prove whether the saved
+location distinguished identical cards. This preserves exact-location restore
+without permitting an automatic move to the remaining twin. An explicit Apply
+or startup binding establishes a role from current enumeration. Automatic
+restore, resume, startup content refresh and backend replacement keep the role;
+a required role never weakens merely because a twin disappeared.
+Migration diagnostics name the old size/version and the required location role;
+automatic restore logs its resolved role and live location. Fixtures 7420-7429
+check both record types, preservation of curve/lock/provenance/memory settings,
+checksum coverage, invalid roles, exact versus moved restore and frozen-layout
+migration. A negative control dropping the backend role fails at 7421.
+Real Linux hardware upgrade and resume remain unverified.
 
 ## Adding a field to DesiredSettings
 
@@ -130,5 +154,7 @@ Windows: `restart reapply load: header mismatch magic=… ver=… size=… (expe
   unaffected; it still discards a v1 file, which is its existing documented
   "no valid persisted result" path.
 
-Last verified: 2026-09-17 against the source, with `build.py --test`,
+Last verified for GPU role: 2026-10-24 (`python build.py --test`, both Linux
+architectures with `--check --target linux`, focused negative control).
+Prior payload-schema verification: 2026-09-17, with `build.py --test`,
 `--test --asan`, `--tidy` and a full `build.py` green.

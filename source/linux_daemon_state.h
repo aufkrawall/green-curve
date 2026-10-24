@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "gpu_core.h"
+#include "gpu_selection_policy.h"
 #include "linux_auto_restore_policy.h"
 #include "ownership_handback_policy.h"
 
@@ -18,11 +19,13 @@ enum LinuxDaemonRecordState : gc_u32 {
 
 enum {
     LINUX_DAEMON_RECORD_MAGIC = 0x4752434Cu, // "LCRG"
-    // v4 embeds the schema-2 DesiredSettings (per-point curve provenance,
+    // v5 adds the persisted GPU location role. v4 embeds schema-2
+    // DesiredSettings (per-point curve provenance,
     // 0.26.0).  The layout GREW, which is why the version had to move: see
     // desired_settings_schema.h for why size, not version, now selects the
     // layout a loader decodes with.
-    LINUX_DAEMON_RECORD_VERSION = 4,
+    LINUX_DAEMON_RECORD_VERSION = 5,
+    LINUX_DAEMON_RECORD_PRE_LOCATION_ROLE_VERSION = 4,
     // Semantics markers WITHIN the frozen schema-1 layout.  v3 reinterprets
     // the embedded memOffsetMHz as display MHz (effective/display parity);
     // v1 and v2 stored effective MHz and must be halved exactly once before a
@@ -43,13 +46,14 @@ struct LinuxDaemonStateRecord {
     DesiredSettings desired;
     gc_u64 operationId;
     gc_u32 operationState;
+    gc_u32 targetLocationRole; // GpuLocationRole, part of write authority
     gc_u32 checksum;
 };
 
 // The live record's size is part of the upgrade contract, because the loader
 // admits a file by comparing st_size against it.  GpuAdapterInfo is embedded
 // here too, so this assert covers a change to either struct.
-static_assert(sizeof(LinuxDaemonStateRecord) == 1176,
+static_assert(sizeof(LinuxDaemonStateRecord) == 1184,
               "LinuxDaemonStateRecord changed size: freeze the outgoing layout "
               "as LinuxDaemonStateRecordSchema<N>, teach the loader its size, "
               "and bump LINUX_DAEMON_RECORD_VERSION "
@@ -149,7 +153,8 @@ static inline void linux_daemon_record_initialize(LinuxDaemonStateRecord* record
                                                   const GpuAdapterInfo* target,
                                                   const DesiredSettings* desired,
                                                   gc_u64 operationId = 0,
-                                                  gc_u32 operationState = SERVICE_OPERATION_NONE) {
+                                                  gc_u32 operationState = SERVICE_OPERATION_NONE,
+                                                  GpuLocationRole role = GPU_LOCATION_ROLE_REQUIRED) {
     if (!record) return;
     memset(record, 0, sizeof(*record));
     record->magic = LINUX_DAEMON_RECORD_MAGIC;
@@ -160,6 +165,7 @@ static inline void linux_daemon_record_initialize(LinuxDaemonStateRecord* record
     if (desired) record->desired = *desired;
     record->operationId = operationId;
     record->operationState = operationState;
+    record->targetLocationRole = (gc_u32)role;
     record->checksum = linux_daemon_record_checksum(record);
 }
 
@@ -174,6 +180,7 @@ static inline bool linux_daemon_record_valid_except_version(
            record->state >= LINUX_DAEMON_RECORD_PREPARED &&
            record->state <= LINUX_DAEMON_RECORD_UNCERTAIN &&
            record->operationState <= SERVICE_OPERATION_OUTCOME_UNKNOWN &&
+           record->targetLocationRole <= GPU_LOCATION_ROLE_REQUIRED &&
            record->checksum == linux_daemon_record_checksum(record);
 }
 
@@ -201,6 +208,7 @@ static inline bool linux_daemon_migrate_desired_mem_units_to_display(
 enum LinuxDaemonRecordGeneration : gc_u32 {
     LINUX_DAEMON_RECORD_GENERATION_CURRENT = 0,
     LINUX_DAEMON_RECORD_GENERATION_SCHEMA1 = 1,    // versions 2 and 3
+    LINUX_DAEMON_RECORD_GENERATION_SCHEMA2 = 3,
     LINUX_DAEMON_RECORD_GENERATION_SCHEMA1_V1 = 2, // version 1, no operation id
 };
 
@@ -322,13 +330,15 @@ static inline bool linux_daemon_operation_valid(
 // forgeable by an unprivileged user or survive as a half-written record.
 enum {
     LINUX_DAEMON_STARTUP_MAGIC = 0x50555347u, // "GSUP"
-    // v3 embeds the schema-2 DesiredSettings (per-point curve provenance,
+    // v4 adds the persisted GPU location role. v3 embeds schema-2
+    // DesiredSettings (per-point curve provenance,
     // 0.26.0) and is a LARGER record than v1/v2.  Within the frozen schema-1
     // layout, v2 reinterprets the embedded memOffsetMHz as display MHz exactly
     // like the state record's v2->v3 bump, so a v1 record is halved once on
     // read.  Size selects the layout, version the meaning; see
     // desired_settings_schema.h.
-    LINUX_DAEMON_STARTUP_VERSION = 3,
+    LINUX_DAEMON_STARTUP_VERSION = 4,
+    LINUX_DAEMON_STARTUP_PRE_LOCATION_ROLE_VERSION = 3,
     LINUX_DAEMON_STARTUP_PRE_PROVENANCE_VERSION = 2,
     LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION = 1,
     LINUX_DAEMON_STARTUP_NAME_MAX = 64,
@@ -344,10 +354,11 @@ struct LinuxDaemonStartupRecord {
     char profileName[LINUX_DAEMON_STARTUP_NAME_MAX];
     GpuAdapterInfo targetGpu;
     DesiredSettings desired;
+    gc_u32 targetLocationRole; // GpuLocationRole, preserved by content refresh
     gc_u32 checksum;
 };
 
-static_assert(sizeof(LinuxDaemonStartupRecord) == 1236,
+static_assert(sizeof(LinuxDaemonStartupRecord) == 1240,
               "LinuxDaemonStartupRecord changed size: freeze the outgoing "
               "layout as LinuxDaemonStartupRecordSchema<N>, teach the loader "
               "its size, and bump LINUX_DAEMON_STARTUP_VERSION "
@@ -387,7 +398,8 @@ static inline gc_u32 linux_daemon_startup_checksum(
 static inline void linux_daemon_startup_initialize(
     LinuxDaemonStartupRecord* record, gc_u32 mode, gc_u32 profileSlot,
     const char* profileName, const GpuAdapterInfo* target,
-    const DesiredSettings* desired) {
+    const DesiredSettings* desired,
+    GpuLocationRole role = GPU_LOCATION_ROLE_REQUIRED) {
     if (!record) return;
     memset(record, 0, sizeof(*record));
     record->magic = LINUX_DAEMON_STARTUP_MAGIC;
@@ -406,6 +418,7 @@ static inline void linux_daemon_startup_initialize(
             memcpy(record->profileName, profileName, length);
             record->profileName[length] = 0;
         }
+        record->targetLocationRole = (gc_u32)role;
         if (target) record->targetGpu = *target;
         if (desired) record->desired = *desired;
     }
@@ -419,6 +432,7 @@ static inline bool linux_daemon_startup_valid_except_version(
     if (!record || record->magic != LINUX_DAEMON_STARTUP_MAGIC ||
         record->size != sizeof(*record) ||
         record->mode >= SERVICE_STARTUP_POLICY_MODE_COUNT ||
+        record->targetLocationRole > GPU_LOCATION_ROLE_REQUIRED ||
         record->checksum != linux_daemon_startup_checksum(record)) return false;
     if (!service_wire_string_is_terminated(
             record->profileName, (unsigned int)sizeof(record->profileName)))
@@ -430,7 +444,8 @@ static inline bool linux_daemon_startup_valid_except_version(
                record->profileSlot <= (gc_u32)CONFIG_NUM_SLOTS &&
                record->targetGpu.valid && record->targetGpu.pciInfoValid;
     }
-    return record->profileSlot == 0 && !record->targetGpu.valid;
+    return record->profileSlot == 0 && !record->targetGpu.valid &&
+           record->targetLocationRole == GPU_LOCATION_ROLE_UNRECORDED;
 }
 
 static inline bool linux_daemon_startup_valid(
@@ -483,6 +498,8 @@ static inline bool linux_daemon_startup_widen_schema1(
                                     in->profileName, &in->targetGpu, &widened);
     return true;
 }
+
+#include "linux_daemon_location_schema.h"
 
 // Automatic-restore guard.  Stored beside active.bin with the same root-owned
 // checksummed atomic write, for the same reason: it decides whether an

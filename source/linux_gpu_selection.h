@@ -207,9 +207,9 @@ static inline int linux_resolve_stored_gpu_target(
 }
 
 // What a backend init selects. Every target handed to init is a stored one
-// (the committed or startup record, or a request built from config.ini), and
-// a request cannot carry the location role, so a moved target follows its
-// model only while exactly one adapter is present (UNRECORDED); the client
+// (the committed or startup record, or a request built from config.ini).
+// Durable restores pass their role; requests use UNRECORDED because the wire
+// carries no role. A role-less request may move only with one adapter; the client
 // resolves config.ini with its recorded role before it sends anything. An
 // untargeted init may write to a lone adapter; a targeted one only to the
 // adapter its target resolved to, so a swapped-in different model never
@@ -223,11 +223,12 @@ struct LinuxGpuInitSelection {
 
 static inline LinuxGpuInitSelection linux_gpu_init_selection(
     const GpuAdapterInfo* target, const GpuAdapterInfo* adapters,
-    unsigned int count) {
+    unsigned int count,
+    GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED) {
     LinuxGpuInitSelection selection = {-1, false, false};
     if (target && target->valid) {
         selection.index = linux_resolve_stored_gpu_target(target,
-            GPU_LOCATION_ROLE_UNRECORDED, adapters, count, &selection.moved);
+            role, adapters, count, &selection.moved);
         selection.writeResolved = selection.index >= 0;
     } else if (count == 1) {
         selection.index = 0;

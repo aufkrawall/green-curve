@@ -63,7 +63,9 @@ static void daemon_handle_set_startup_policy(const ServiceRequest* req,
     DesiredSettings requested = req->desired;
     validate_desired_settings_for_ipc(&requested);
     linux_daemon_startup_initialize(&record, req->startupMode,
-        req->profileSlot, req->source, &req->targetGpu, &requested);
+        req->profileSlot, req->source, &req->targetGpu, &requested,
+        linux_gpu_location_role_for_selection(&req->targetGpu,
+            g_gpu.adapters, g_gpu.adapterCount));
     char storeErr[256] = {};
     if (!linux_daemon_startup_valid(&record)) {
         resp->status = SERVICE_STATUS_ERROR;
@@ -90,11 +92,13 @@ static void daemon_handle_set_startup_policy(const ServiceRequest* req,
             "startup policy set to %s%s",
             service_startup_policy_mode_name(record.mode),
             record.mode == SERVICE_STARTUP_POLICY_PROFILE ? " snapshot" : "");
-        dlog("daemon startup policy: committed mode=%s slot=%u name=%s "
+        dlog("daemon startup policy: committed mode=%s slot=%u role=%s name=%s "
              "[fanMode=%d fanPct=%d pollMs=%d hysteresisC=%d gpuOffset=%d "
              "memOffset=%d powerPct=%d]\n",
              service_startup_policy_mode_name(record.mode),
-             (unsigned int)record.profileSlot, record.profileName,
+             (unsigned int)record.profileSlot,
+             configured_gpu_location_role_name((GpuLocationRole)record.targetLocationRole),
+             record.profileName,
              record.desired.fanMode, record.desired.fanPercent,
              record.desired.fanCurve.pollIntervalMs,
              record.desired.fanCurve.hysteresisC,
@@ -137,7 +141,8 @@ static void daemon_handle_refresh_startup_profile(const ServiceRequest* req,
         LinuxDaemonStartupRecord record = {};
         linux_daemon_startup_initialize(&record, g_startupPolicy.mode,
             g_startupPolicy.profileSlot, g_startupPolicy.profileName,
-            &g_startupPolicy.targetGpu, &requested);
+            &g_startupPolicy.targetGpu, &requested,
+            (GpuLocationRole)g_startupPolicy.targetLocationRole);
         char storeErr[256] = {};
         if (!linux_daemon_startup_valid(&record)) {
             resp->status = SERVICE_STATUS_ERROR;
@@ -219,7 +224,8 @@ static void apply_startup_profile_policy() {
     // driver already holds, and the committed record on success.
     LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(
         LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE,
-        &g_startupPolicy.targetGpu, &g_startupPolicy.desired);
+        &g_startupPolicy.targetGpu, &g_startupPolicy.desired,
+        (GpuLocationRole)g_startupPolicy.targetLocationRole);
     if (!outcome.success) {
         // Only a failure that reached a hardware write leaves the daemon
         // uncertain.  A GPU that was not ready before any write disturbed no
@@ -236,13 +242,14 @@ static void apply_startup_profile_policy() {
     // to the live location, as the committed ACTIVE record already was, so it
     // stays exact if an identical GPU is added later.
     if (!linux_gpu_bdf_valid(&g_activeTarget) ||
-        linux_gpu_bdf_equal(&g_startupPolicy.targetGpu, &g_activeTarget) ||
+        (linux_gpu_bdf_equal(&g_startupPolicy.targetGpu, &g_activeTarget) &&
+         g_startupPolicy.targetLocationRole == (gc_u32)g_activeTargetRole) ||
         !linux_gpu_model_matches(&g_startupPolicy.targetGpu, &g_activeTarget))
         return;
     LinuxDaemonStartupRecord rebound = {};
     linux_daemon_startup_initialize(&rebound, g_startupPolicy.mode,
         g_startupPolicy.profileSlot, g_startupPolicy.profileName,
-        &g_activeTarget, &g_startupPolicy.desired);
+        &g_activeTarget, &g_startupPolicy.desired, g_activeTargetRole);
     char storeErr[160] = {};
     if (!linux_daemon_startup_valid(&rebound) ||
         !linux_daemon_startup_store(GC_DAEMON_STARTUP_FILE, &rebound,
@@ -256,13 +263,13 @@ static void apply_startup_profile_policy() {
         return;
     }
     dlog("daemon startup policy: profile %u re-bound from %04x:%02x:%02x.%u to "
-         "%04x:%02x:%02x.%u after a PCI renumbering\n",
+         "%04x:%02x:%02x.%u (role=%s)\n",
          (unsigned int)g_startupPolicy.profileSlot,
          g_startupPolicy.targetGpu.pciDomain, g_startupPolicy.targetGpu.pciBus,
          g_startupPolicy.targetGpu.pciDevice,
          g_startupPolicy.targetGpu.pciFunction, g_activeTarget.pciDomain,
          g_activeTarget.pciBus, g_activeTarget.pciDevice,
-         g_activeTarget.pciFunction);
+         g_activeTarget.pciFunction, configured_gpu_location_role_name(g_activeTargetRole));
     g_startupPolicy = rebound;
 }
 

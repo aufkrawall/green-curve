@@ -580,7 +580,7 @@ def check_startup_policy(ctx, require_text, forbid_text):
                  "the daemon-side refresh guard is a pure, testable decision")
     require_text(policy_h, "startup_snapshot_refresh_allowed(g_startupPolicy.mode,",
                  "a refresh only ever updates a policy that already names the slot")
-    require_text(policy_h, "&g_startupPolicy.targetGpu, &requested);",
+    require_text(policy_h, "&g_startupPolicy.targetGpu, &requested,",
                  "a refresh reuses the stored GPU binding instead of trusting the caller")
     require_text(sync_cpp, "linux_daemon_refresh_startup_profile(",
                  "the shared client path pushes the reloaded profile to the daemon")
@@ -1102,9 +1102,9 @@ def check_mem_offset_migration(ctx, require_text, forbid_text, require_order):
                  "the committed restore-last record converts pre-parity mem units")
     require_text(state_h, "linux_daemon_migrate_desired_mem_units_to_display(&widened",
                  "the widening path is where the halving happens, once")
-    require_text(state_h, "LINUX_DAEMON_STARTUP_VERSION = 3",
+    require_text(state_h, "LINUX_DAEMON_STARTUP_VERSION = 4",
                  "the startup record generation moved with the layout change")
-    require_text(state_h, "LINUX_DAEMON_RECORD_VERSION = 4",
+    require_text(state_h, "LINUX_DAEMON_RECORD_VERSION = 5",
                  "the committed record generation moved with the layout change")
     require_text(state_h, "LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION = 1",
                  "the pre-parity startup generation is still recognized")
@@ -1141,6 +1141,15 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
                  "selection, which checks the model on a one-GPU system")
     forbid_text(discovery_cpp, "g->writeIdentityResolved = g->adapterCount == 1 ||",
                 "a lone adapter must not resolve writes for any stored target")
+    restore_h = _p(ctx, "linux_auto_restore_runtime.h")
+    require_text(restore_h, "linux_backend_select_target(&g_gpu, target, err, errSize, role)",
+                 "automatic restore passes its persisted location role to selection")
+    require_text(discovery_cpp, "linux_backend_init(&replacement, target, err, errSize, role)",
+                 "backend replacement retains the restore location role")
+    require_text(startup_h, "(GpuLocationRole)g_startupPolicy.targetLocationRole",
+                 "startup restore and content refresh retain the stored role")
+    require_text(_p(ctx, "linux_daemon.cpp"), "(GpuLocationRole)saved.targetLocationRole",
+                 "restore-last passes the committed location role")
     selection_h = _p(ctx, "linux_gpu_selection.h")
     require_text(selection_h,
                  "linux_resolve_stored_gpu_target(&gpu->target, gpu->role,",

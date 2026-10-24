@@ -148,6 +148,17 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
         count = gc_read_record(::read, fd, &record, sizeof(record));
         storedVersion = record.version;
     } else if (protectedRegular &&
+               st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema2)) {
+        LinuxDaemonStateRecordSchema2 legacy = {};
+        count = gc_read_record(::read, fd, &legacy, sizeof(legacy));
+        if (count == (ssize_t)sizeof(legacy) &&
+            linux_daemon_state_record_widen_schema2(&record, &legacy)) {
+            count = (ssize_t)sizeof(record);
+            generation = LINUX_DAEMON_RECORD_GENERATION_SCHEMA2;
+            storedVersion = legacy.version;
+            migratedFromLegacy = true;
+        }
+    } else if (protectedRegular &&
                st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema1)) {
         LinuxDaemonStateRecordSchema1 legacy = {};
         count = gc_read_record(::read, fd, &legacy, sizeof(legacy));
@@ -178,6 +189,7 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
     close(fd);
     if (protectedRegular && count < 0 &&
         (st.st_size == (off_t)sizeof(LinuxDaemonStateRecord) ||
+         st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema2) ||
          st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema1) ||
          st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema1V1))) {
         gc_snprintf(err, errSize, "cannot read daemon state: %s", strerror(readError));
@@ -203,8 +215,9 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
         } else if (count != (ssize_t)sizeof(record)) {
             gc_snprintf(err, errSize,
                 "daemon state rejected: %lld bytes matches no known record "
-                "layout (current=%zu schema1=%zu schema1v1=%zu)",
+                "layout (current=%zu schema2=%zu schema1=%zu schema1v1=%zu)",
                 (long long)st.st_size, sizeof(LinuxDaemonStateRecord),
+                sizeof(LinuxDaemonStateRecordSchema2),
                 sizeof(LinuxDaemonStateRecordSchema1),
                 sizeof(LinuxDaemonStateRecordSchema1V1));
         } else {
@@ -235,10 +248,12 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
                             "mem offset %d -> %d display MHz",
                             migratedOldMemMHz, record.desired.memOffsetMHz);
             gc_snprintf(err, errSize,
-                "loaded %lld-byte %s daemon state v%u -> v%u; %s",
+                "loaded %lld-byte %s daemon state v%u -> v%u; location role=required; %s",
                 (long long)st.st_size,
                 generation == LINUX_DAEMON_RECORD_GENERATION_SCHEMA1_V1
-                    ? "pre-operation-id schema-1" : "schema-1",
+                    ? "pre-operation-id schema-1"
+                    : generation == LINUX_DAEMON_RECORD_GENERATION_SCHEMA2
+                        ? "schema-2" : "schema-1",
                 (unsigned int)storedVersion,
                 (unsigned int)LINUX_DAEMON_RECORD_VERSION,
                 memDetail[0] ? memDetail : "no stored memory offset to convert");
@@ -363,6 +378,15 @@ bool linux_daemon_startup_load(const char* path,
         parsed = gc_read_record(::read, fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded);
         if (parsed) storedVersion = loaded.version;
     } else if (protectedRegular &&
+               status.st_size == (off_t)sizeof(LinuxDaemonStartupRecordSchema2)) {
+        LinuxDaemonStartupRecordSchema2 legacy = {};
+        if (gc_read_record(::read, fd, &legacy, sizeof(legacy)) == (ssize_t)sizeof(legacy) &&
+            linux_daemon_startup_widen_schema2(&loaded, &legacy)) {
+            storedVersion = legacy.version;
+            parsed = true;
+            migrated = true;
+        }
+    } else if (protectedRegular &&
                status.st_size == (off_t)sizeof(LinuxDaemonStartupRecordSchema1)) {
         LinuxDaemonStartupRecordSchema1 legacy = {};
         if (gc_read_record(::read, fd, &legacy, sizeof(legacy)) == (ssize_t)sizeof(legacy) &&
@@ -386,8 +410,9 @@ bool linux_daemon_startup_load(const char* path,
         } else if (!parsed) {
             gc_snprintf(err, errSize,
                 "daemon startup policy rejected: %lld bytes matches no known "
-                "record layout (current=%zu schema1=%zu)",
+                "record layout (current=%zu schema2=%zu schema1=%zu)",
                 (long long)status.st_size, sizeof(LinuxDaemonStartupRecord),
+                sizeof(LinuxDaemonStartupRecordSchema2),
                 sizeof(LinuxDaemonStartupRecordSchema1));
         } else {
             gc_snprintf(err, errSize,
@@ -407,8 +432,8 @@ bool linux_daemon_startup_load(const char* path,
                         "mem offset %d -> %d display MHz",
                         migratedOldMemMHz, loaded.desired.memOffsetMHz);
         gc_snprintf(err, errSize,
-            "startup policy record migrated from %zu-byte schema-1 v%u to v%u; %s",
-            sizeof(LinuxDaemonStartupRecordSchema1), (unsigned int)storedVersion,
+            "startup policy record migrated from %lld-byte v%u to v%u; location role=required; %s",
+            (long long)status.st_size, (unsigned int)storedVersion,
             (unsigned int)LINUX_DAEMON_STARTUP_VERSION,
             memDetail[0] ? memDetail : "no stored memory offset to convert");
         if (outMigratedFromLegacy) *outMigratedFromLegacy = true;

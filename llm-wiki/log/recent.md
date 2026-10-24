@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-24: Linux automatic restore retains GPU location authority
+
+- State v5 and startup v4 carry the selected location role under their
+  checksum. Restore-last, profile boot apply, resume, backend replacement
+  and startup content refresh retain it; a required selection stays exact
+  when only the other identical card remains.
+- Freeze state v4/startup v3 and DesiredSettings schema 2. Older records
+  widen as required without changing settings or operation identity. They
+  still restore at the exact location; moving needs explicit selection.
+- Fixtures 7420-7429 and runtime forwarding guards; dropping the backend
+  role is detected by 7421. Migration and restore logs include the role.
+  See persistence-schema.md and linux-scaffold.md for upgrade behavior.
+
 ## 2026-10-24: A malformed Linux config.ini GPU record stops client writes
 
 - Closes the 2026-10-23 "left as is": an unparsable BDF or role spelling in

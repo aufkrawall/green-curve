@@ -676,9 +676,11 @@ boot recovery rebind) keep the exact `linux_gpu_identity_matches()`.
   bare BDF without a model never moves. `linux_resolve_gpu_identity()` is gone;
   the old assertions 614-618 run against the new resolver with the `required`
   role, which is the old exact rule.
-- Backend init (`linux_gpu_init_selection()`): requests carry no role, so a
-  targeted init uses `UNRECORDED` (follow a move only with one adapter present)
-  and resolves writes only for the adapter its target resolved to. The old
+- Backend init (`linux_gpu_init_selection()`): automatic restores pass the
+  durable location role through `linux_backend_select_target()` and any
+  replacement init. Requests carry no role and default to `UNRECORDED`
+  (follow a move only with one adapter present). A targeted init resolves
+  writes only for the adapter its target and role resolve to. The old
   `writeIdentityResolved = adapterCount == 1 || ...` shortcut resolved writes
   for ANY target on a one-GPU system, so a swapped-in different model would
   have received the committed or startup intent at boot; it now gets nothing.
@@ -689,10 +691,15 @@ boot recovery rebind) keep the exact `linux_gpu_identity_matches()`.
   Y" for the very GPU that is active. `linux_backend_select_target()` keeps the
   selected backend when the target resolves to it instead of re-initializing
   on every request.
-- Records: auto-restore already re-commits the ACTIVE record with the live
-  adapter. `apply_startup_profile_policy()` now re-binds the startup-profile
-  record to the live BDF after it booted on a moved GPU (logged "re-bound from
-  ... to ..."; a failed store is logged and harmless).
+- Records (2026-10-24): state v5 and startup v4 persist `targetLocationRole`.
+  Apply and startup binding capture the role from the daemon's adapter list;
+  automatic restore and resume retain a required role even with one twin
+  remaining. Content-only startup refresh preserves it. Successful restore
+  re-commits the live BDF and role; startup rebinding also persists a role
+  strengthened by newly present twins. Legacy records migrate as `required`,
+  because their selection-time ambiguity is unknown: exact-location restore
+  still works, but a moved legacy target needs explicit Apply/startup binding.
+  See persistence-schema.md for frozen layouts and migration diagnostics.
 - Client (`linux_gpu_target_config.cpp`): config.ini `[gpu]` gains
   `selected_pci_location_role` (same spellings and parser,
   `configured_gpu_location_role_parse()`, as Windows). An unknown role
