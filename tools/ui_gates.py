@@ -1428,6 +1428,12 @@ def check_vf_point_visibility_is_drift_free(ctx, require_text, forbid_text):
                  "the VF grid map uses the shared voltage-only rule")
     require_text(_p(ctx, "main_gpu_state.cpp"), "return vf_point_visible_in_editor(",
                  "is_curve_point_visible_in_gui uses the shared voltage-only rule")
+    require_text(_p(ctx, "config_profiles.cpp"),
+                 "vf_filter_hidden_editor_curve_points(",
+                 "profile editor projection uses the same rule as the grid")
+    require_text(_p(ctx, "config_profiles.cpp"),
+                 "bool haveLiveCurveVisibility = projectOntoLiveCurve &&",
+                 "ownership reads bypass live visibility projection")
     require_text(_p(ctx, "gpu_backend.cpp"), "vf visibility: visible=",
                  "VF grid topology changes are logged")
     forbid_text(_p(ctx, "gpu_core.h"), "MIN_VISIBLE_FREQ_MHz",

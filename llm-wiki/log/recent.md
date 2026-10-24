@@ -5,6 +5,16 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-24: Profile editor projection shares the VF grid visibility rule
+
+- The profile loader filters saved points through the shared population and
+  voltage predicate. Zero-frequency live entries are removed even above the
+  voltage threshold; visible floor points and ownership-read intent remain.
+- Fixtures 7390-7392 cover mask/MHz/provenance clearing and retained points;
+  a source guard keeps the loader on that helper behind its editor gate.
+  Diagnostics report a bounded dropped-point count. The lock-tail comment
+  now describes current visibility instead of the former frequency rule.
+
 ## 2026-10-24: Linux automatic restore retains GPU location authority
 
 - State v5 and startup v4 carry the selected location role under their

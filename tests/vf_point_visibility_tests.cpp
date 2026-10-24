@@ -108,5 +108,26 @@ int run_vf_point_visibility_tests() {
     for (unsigned int f : freqs) {
         if (!vf_point_visible_in_editor(f, 760000u)) return 7389;
     }
+    // 7390-7392: profile projection uses the grid rule, clears all of a
+    // hidden point's saved intent, and preserves even the low-frequency floor.
+    VFCurvePoint live[VF_NUM_POINTS] = {};
+    DesiredSettings saved = {};
+    for (int i = 0; i < 4; ++i) {
+        saved.hasCurvePoint[i] = true;
+        saved.curvePointMHz[i] = 2000;
+        saved.curvePointFromGpuOffset[i] = true;
+    }
+    live[0].freq_kHz = 0;       live[0].volt_uV = 900000; // unpopulated
+    live[1].freq_kHz = 2000000; live[1].volt_uV = 699999; // below threshold
+    live[2].freq_kHz = 180000;  live[2].volt_uV = 700000; // visible floor
+    live[3].freq_kHz = 2500000; live[3].volt_uV = 1000000;
+    if (vf_filter_hidden_editor_curve_points(&saved, live) != 2) return 7390;
+    for (int i = 0; i < 2; ++i)
+        if (saved.hasCurvePoint[i] || saved.curvePointMHz[i] ||
+            saved.curvePointFromGpuOffset[i]) return 7391;
+    for (int i = 2; i < 4; ++i)
+        if (!saved.hasCurvePoint[i] || saved.curvePointMHz[i] != 2000 ||
+            !saved.curvePointFromGpuOffset[i]) return 7392;
+    if (vf_filter_hidden_editor_curve_points(&saved, live) != 0) return 7392;
     return 0;
 }

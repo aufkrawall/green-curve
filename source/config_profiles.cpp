@@ -357,12 +357,9 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         desired->lockMHz = 0;
     } else if (projectOntoLiveCurve && desired->hasLock &&
                desired->lockCi >= 0 && desired->lockMHz > 0) {
-        // is_curve_point_visible_in_gui() reads curve_base_khz_for_point(),
-        // which is live readback minus the live offsets, so whether the tail
-        // "looks flat" here changes with boost/temperature.  lockTracksAnchor
-        // is compared field-for-field by
-        // desired_settings_match_active_service_intent(), so an ownership read
-        // must keep the value the file stored instead of re-deriving one.
+        // The editor derives the tail from the current visible point set.
+        // An ownership read keeps the stored lockTracksAnchor value: missing
+        // live entries or a reconnect must not change a profile's saved claim.
         bool sawVisibleTailPoint = false;
         bool tailMatchesLock = true;
         for (int ci = desired->lockCi; ci < VF_NUM_POINTS; ci++) {
@@ -388,14 +385,10 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
     bool haveLiveCurveVisibility = projectOntoLiveCurve &&
         g_app.loaded && g_app.numPopulated > 0;
     if (haveLiveCurveVisibility) {
-        for (int i = 0; i < VF_NUM_POINTS; i++) {
-            if (!desired->hasCurvePoint[i]) continue;
-            unsigned int volt_mv = g_app.curve[i].volt_uV / 1000;
-            if (volt_mv < (unsigned)MIN_VISIBLE_VOLT_mV) {
-                desired->hasCurvePoint[i] = false;
-                desired->curvePointMHz[i] = 0; desired->curvePointFromGpuOffset[i] = 0;
-            }
-        }
+        const unsigned int dropped = vf_filter_hidden_editor_curve_points(
+            desired, g_app.curve);
+        if (dropped)
+            debug_log("profile load: editor projection dropped %u hidden VF points\n", dropped);
     }
 
     if (!desired->hasFan) {

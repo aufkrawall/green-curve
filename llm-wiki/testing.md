@@ -97,7 +97,11 @@ checked by compiling the file against it); 7383-7384 every point from 700 mV
 up is visible, floor included; 7385 the 540 mV table-end placeholder stays
 hidden; 7386 unpopulated entries never show; 7387-7388 the inclusive 700 mV
 edge; 7389 frequency never changes the answer. Not covered automatically: the
-GUI rebuild itself (the grid layout on a real window).
+GUI rebuild itself (the grid layout on a real window). 7390-7392 exercise
+profile editor projection: hidden/unpopulated points lose mask, MHz and
+provenance together, while a populated 180 MHz floor remains visible. The
+source gate requires the real loader to use this helper behind the existing
+editor-only/live-curve guard; ownership reads keep their saved intent.
 
 ## Linux GPU selection across PCI bus renumbering (2026-10-22)
 

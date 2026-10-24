@@ -27,4 +27,22 @@ static inline bool vf_point_visible_in_editor(unsigned int freq_kHz,
     return volt_uV / 1000u >= (unsigned int)MIN_VISIBLE_VOLT_mV;
 }
 
+// Editor projection only: discard saved points the live grid cannot show.
+// Ownership reads bypass this projection and keep the saved claim intact.
+static inline unsigned int vf_filter_hidden_editor_curve_points(
+    DesiredSettings* desired, const VFCurvePoint* curve) {
+    if (!desired || !curve) return 0;
+    unsigned int dropped = 0;
+    for (int i = 0; i < VF_NUM_POINTS; ++i) {
+        if (!desired->hasCurvePoint[i] ||
+            vf_point_visible_in_editor(curve[i].freq_kHz, curve[i].volt_uV))
+            continue;
+        desired->hasCurvePoint[i] = false;
+        desired->curvePointMHz[i] = 0;
+        desired->curvePointFromGpuOffset[i] = false;
+        ++dropped;
+    }
+    return dropped;
+}
+
 #endif

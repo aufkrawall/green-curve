@@ -859,3 +859,17 @@ same card was the only one present. Adding or removing any upstream device
 - 2026-06-14: Added machine-wide default logon profile and machine-wide profile bank (Build 284). Verified `python build.py --test`/`--asan`/`--target linux --check`.
 - 2026-06-07: Verified lock-state unit merging and the pin-on-save fix against `source/config_profiles_ui.cpp` (`merge_desired_settings`), `source/main_runtime_gpu.cpp` (`capture_gui_config_settings`), `source/config_profiles.cpp`, and `source/linux_port_profiles.cpp`. `python build.py --test`/`--asan`/`--target linux --check` pass (Build 269).
 - 2026-05-18: Cross-checked sparse VF profile saving, fan-only apply intent preservation, missing-curve-point load behavior, and locked-curve readback artifact repair against `source/config_profiles.cpp`, `source/config_profile_repair.cpp`, `source/main_runtime_gpu.cpp`, `source/main_service_runtime.cpp`, and `source/ui_main_window.cpp`.
+
+## Editor profile visibility (2026-10-24)
+
+Source anchors: `source/config_profiles.cpp`,
+`source/vf_point_visibility_policy.h`, `tests/vf_point_visibility_tests.cpp`.
+Profile editor projection calls `vf_filter_hidden_editor_curve_points()`:
+it uses the grid's shared voltage/population rule, removes hidden points'
+mask, MHz and provenance together, and keeps populated floor points from
+700 mV upward. A zero-frequency entry is unpopulated even if its voltage is
+above the threshold. The projection runs only for an editor read with a
+loaded live curve; ownership reads retain the saved claim. `profile load:
+editor projection dropped` reports the count only when something was removed.
+Fixtures 7390-7392 verify the projection; existing 7380-7389 cover the point
+predicate. Real-window profile loading is not part of these pure units.
