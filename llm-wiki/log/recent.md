@@ -5,6 +5,25 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-24: The Linux TUI writes only to the selected GPU once it is shown
+
+- Review follow-up. `--gpu B --tui` showed and wrote the daemon's current GPU
+  A (an EXPLICIT selection was never switched to), and a config.ini record
+  marked RESOLVED stayed so when its switch was refused for A's active
+  settings or failed as busy, so Apply/Reset/bind reached A.
+- The TUI now switches to the selected GPU after every answered untargeted
+  refresh until it is shown, and writes need the selection to BE the shown
+  GPU (`linux_tui_shown_gpu_write()`). See linux-scaffold.md, "GPU selection
+  across PCI bus renumbering".
+- Fixtures 7400-7409 (testing.md, "Linux TUI write target"); 7403 fails on
+  the previous code. `tui: selected GPU adoption` log line per transition;
+  blocked writes log the verdict with both locations.
+- Kept: the daemon's exact mutation-identity check. A review suggested
+  normalizing a stale request target there, but the daemon checks mutation
+  preconditions before selecting the request GPU, and the CLI and TUI attach
+  the live identity from their state read, so no client path sends a stale
+  target to a mutation.
+
 ## 2026-10-24: Native Windows agent tests use approved execution
 
 - Added an always-on agent instruction pointing to testing.md's Windows

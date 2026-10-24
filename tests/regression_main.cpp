@@ -1009,6 +1009,9 @@ int run_linux_gpu_location_tests();
 // Editor VF point visibility independent of temperature drift
 // (tests/vf_point_visibility_tests.cpp, 7380-7399).
 int run_vf_point_visibility_tests();
+// The Linux TUI writes only to the selected GPU once it is shown
+// (tests/linux_tui_gpu_target_tests.cpp, 7400-7409).
+int run_linux_tui_gpu_target_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -2636,6 +2639,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int visibilityFailure = run_vf_point_visibility_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", visibilityFailure);
         return visibilityFailure;
+    }
+    if (int tuiTargetFailure = run_linux_tui_gpu_target_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", tuiTargetFailure);
+        return tuiTargetFailure;
     }
 #if defined(_WIN32)
     // Win32 config storage: the named-mutex lock and the Unicode INI writer.

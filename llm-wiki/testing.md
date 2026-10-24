@@ -45,6 +45,28 @@ assertion 6606 under the restricted token and passed in full through approved
 execution with workspace-local temporary files. This is a launch prerequisite,
 not a promise that future test failures are environment failures.
 
+## Linux TUI write target (2026-10-24)
+
+Source anchors: `tests/linux_tui_gpu_target_tests.cpp`,
+`source/linux_tui_authority.h` (`linux_tui_shown_gpu_write()`,
+`linux_tui_gpu_adoption()`), `source/linux_tui_refresh.cpp`,
+`tools/linux_gates.py` (`check_gpu_location`).
+7400-7402 drive the pure policy: a selection that names a GPU writes only
+while exactly that GPU is shown, otherwise the TUI switches or holds for
+active settings (7400); no selection defers to the daemon (7401); an
+unresolved one never switches and stops writes (7402). 7403-7408 run the real
+`tui_refresh_service()` and `tui_configured_gpu_allows_write()` (the TU
+`#include`s `linux_tui_refresh.cpp`, with its client collaborators mocked)
+against a scripted daemon that refuses to select another GPU while it holds
+active settings: `--gpu B` switches before the first frame (7403, failed
+before the fix: the TUI showed and wrote A); a record whose switch is held by
+A's active settings blocks Apply/Reset/bind and switches once they are gone
+(7404); a busy switch blocks writes and is retried (7405); a hold announces
+itself once (7406); the selector's targeted refresh is not undone (7407); an
+unresolved record never switches, and no record writes the daemon's GPU
+(7408). Not covered: the selector action itself (`linux_tui_actions.cpp`) and
+a real daemon.
+
 ## VF point visibility independent of temperature (2026-10-24)
 
 Source anchors: `tests/vf_point_visibility_tests.cpp`,
@@ -86,10 +108,10 @@ twins without the stored location are ambiguous (7378), and every status has
 a log name and reason (7379). The old 614-618 assertions now run against the
 new resolver with the `required` role. Not covered automatically: config.ini
 persistence of the role (no harness links `linux_port_profiles.cpp`;
-source-guarded), the snapshot-fetching client wrapper and the TUI adoption
-(`linux_gpu_target_config.cpp`, `linux_tui_refresh.cpp`; source-guarded, the
-wrapper checked once with a mocked daemon on 2026-10-23), and any run on real
-renumbered hardware.
+source-guarded), the snapshot-fetching client wrapper
+(`linux_gpu_target_config.cpp`; source-guarded, checked once with a mocked
+daemon on 2026-10-23), and any run on real renumbered hardware. The TUI
+adoption is executed since 2026-10-24 (7400-7409, "Linux TUI write target").
 
 ## GPU selection across PCI bus renumbering (2026-10-22)
 
@@ -481,7 +503,10 @@ timeout, a request completing just inside its deadline, and that request
 followed by a write timeout, each ~100% (or ~49%) of the loop without the
 both-phase hold versus at most a third with it, and a prompt client with a
 long handler never refused; mutation-checked; see
-[linux-scaffold](linux-scaffold.md));
+[linux-scaffold](linux-scaffold.md)), `tests/linux_tui_gpu_target_tests.cpp`
+(7400-7409: `#include`s `linux_tui_refresh.cpp` with its client collaborators
+mocked, so the TUI's refresh and write gate execute against a scripted
+daemon);
 `service_install_tests.cpp` owns
 assertions 5720-5786: SCM checkpoint-wait policy, the location content rule,
 the exact-DACL predicate, handle-bound hardening with propagation to existing

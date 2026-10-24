@@ -720,21 +720,37 @@ boot recovery rebind) keep the exact `linux_gpu_identity_matches()`.
   ambiguous are final for the process; only an explicit selection replaces
   them.
 - TUI: `linux_run_tui()` takes the loaded `LinuxConfiguredGpu`, and
-  `tui_adopt_configured_gpu()` resolves it at the end of every answered
-  refresh until it resolves (at start, or on the reconnect after a start
-  without the daemon; the stored record is no longer adopted as `targetGpu`).
-  While unresolved, Apply, Reset and a startup-profile bind are blocked
-  (`tui_configured_gpu_allows_write()`); clicking the GPU name selects one
-  explicitly for the session and lifts the block. The TUI selection is not
-  persisted (`--gpu` is).
+  `tui_adopt_configured_gpu()` runs at the end of every answered UNTARGETED
+  refresh. It resolves a pending record (at start, or on the reconnect after
+  a start without the daemon; the stored record is never adopted as
+  `targetGpu`), then switches to the resolved or explicit (`--gpu`) GPU with
+  one targeted refresh until that GPU is the one shown
+  (`linux_tui_gpu_adoption()`, `linux_tui_authority.h`). While the daemon holds
+  active settings it keeps the shown GPU and refuses a switch, so the TUI
+  holds (one status line, one log line per transition) and re-evaluates after
+  every answered refresh. It never runs inside a targeted refresh, so the
+  switch does not recurse and the selector's choice is not undone.
+- **The TUI writes only to the selected GPU once it is shown** (2026-10-24).
+  Invariant: the TUI sends the shown GPU (`TuiState::targetGpu`), so Apply,
+  Reset and a startup-profile bind need the selection resolved AND equal to
+  the shown GPU (`tui_configured_gpu_allows_write()` ->
+  `linux_tui_shown_gpu_write()`). Before, `--gpu` was marked EXPLICIT but never
+  switched to, and a record marked RESOLVED before its switch was answered
+  stayed RESOLVED when the switch was refused (active settings) or failed
+  (busy): the TUI showed and wrote the daemon's previous GPU. Clicking the GPU
+  name selects one explicitly for the session and lifts the block; the TUI
+  selection is not persisted (`--gpu` is).
 - Diagnostics: `linux_format_stored_gpu_detail()` (stored model@BDF, role,
   first four live adapters) in the backend's "stored GPU target ..." line, the
   client's "gpu selection:" lines and the persist line; the daemon logs a moved
   request target on the first occurrence and every 100th after.
 - Tests: `tests/linux_gpu_location_tests.cpp` (7340-7379, pure; run natively
-  and in the Linux cross-link). Guards: `check_gpu_location()` in
-  `tools/linux_gates.py` (no `clientTarget()`, every CLI verb through the
-  write gate, TUI writes gated, the TUI never adopts the stored record).
+  and in the Linux cross-link) and `tests/linux_tui_gpu_target_tests.cpp`
+  (7400-7409: the real `tui_refresh_service()` against a scripted daemon).
+  Guards: `check_gpu_location()` in `tools/linux_gates.py` (no
+  `clientTarget()`, every CLI verb through the write gate, TUI writes gated on
+  the shown GPU, adoption only after untargeted refreshes, the TUI never
+  adopts the stored record).
 
 ## Automatic restore: crash-loop guard, resume, and reset-before-apply
 

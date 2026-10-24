@@ -106,8 +106,9 @@ void initialize_state(TuiState* state, const char* configPath,
     normalize_desired_settings_for_ui(&state->desired);
     state->acceptedDesired = state->desired;
     // The first successful refresh resolves config.ini's GPU against the
-    // daemon's adapters and selects it; one without the daemon leaves that to
-    // the reconnect.  The stored record itself is never sent.
+    // daemon's adapters and switches to it, or to the GPU `--gpu` chose; one
+    // without the daemon leaves that to the reconnect.  The stored record
+    // itself is never sent, and writes wait until the selected GPU is shown.
     if (configured) state->configuredGpu = *configured;
     tui_refresh_service(state, false);
     // Selecting the saved GPU is a second request that can fail on its own.

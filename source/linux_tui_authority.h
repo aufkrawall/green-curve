@@ -31,6 +31,71 @@ static inline const GpuAdapterInfo* linux_tui_authoritative_gpu(
         (linux_gpu_bdf_valid(gpu) || gpu->pciInfoValid) ? gpu : nullptr;
 }
 
+// Whether the TUI may write while it shows `shown` (the GPU its live state,
+// draft and mutation authority belong to, and the target every write sends).
+// A selection that names a GPU (`--gpu`, a resolved config.ini record, the
+// selector) allows a write only while exactly that GPU is shown.  Until the
+// switch to it has been answered -- an explicit `--gpu` at start, a switch the
+// daemon refuses because the shown GPU holds active settings, or one that
+// failed as busy -- the shown GPU is another one, and a write would reach it.
+enum LinuxTuiShownGpuWrite {
+    LINUX_TUI_SHOWN_GPU_WRITE_ALLOWED = 0,
+    LINUX_TUI_SHOWN_GPU_WRITE_UNRESOLVED,  // config.ini's GPU did not resolve
+    LINUX_TUI_SHOWN_GPU_WRITE_NOT_SHOWN,   // the selected GPU is not shown
+};
+
+static inline LinuxTuiShownGpuWrite linux_tui_shown_gpu_write(
+    const LinuxConfiguredGpu* gpu, const GpuAdapterInfo* shown) {
+    const GpuAdapterInfo* selected = nullptr;
+    if (!linux_configured_gpu_request_target(gpu, true, &selected))
+        return LINUX_TUI_SHOWN_GPU_WRITE_UNRESOLVED;
+    if (!selected) return LINUX_TUI_SHOWN_GPU_WRITE_ALLOWED;
+    return shown && linux_gpu_identity_matches(selected, shown)
+        ? LINUX_TUI_SHOWN_GPU_WRITE_ALLOWED
+        : LINUX_TUI_SHOWN_GPU_WRITE_NOT_SHOWN;
+}
+
+// What the TUI does about its selection after an answered refresh: nothing
+// (no selection, unresolved, or already shown), switch to it with one
+// targeted refresh, or hold, because the daemon keeps the shown GPU while it
+// holds active settings and refuses to select another
+// (linux_gpu_switch_preserves_active_intent).  A hold is re-evaluated after
+// every answered refresh, so a Reset elsewhere lets the switch go ahead.
+enum LinuxTuiGpuAdoption {
+    LINUX_TUI_GPU_ADOPTION_NONE = 0,
+    LINUX_TUI_GPU_ADOPTION_SWITCH,
+    LINUX_TUI_GPU_ADOPTION_HELD,
+};
+
+static inline LinuxTuiGpuAdoption linux_tui_gpu_adoption(
+    const LinuxConfiguredGpu* gpu, const GpuAdapterInfo* shown,
+    bool daemonHoldsActiveSettings) {
+    if (linux_tui_shown_gpu_write(gpu, shown) !=
+        LINUX_TUI_SHOWN_GPU_WRITE_NOT_SHOWN) return LINUX_TUI_GPU_ADOPTION_NONE;
+    return daemonHoldsActiveSettings ? LINUX_TUI_GPU_ADOPTION_HELD
+                                     : LINUX_TUI_GPU_ADOPTION_SWITCH;
+}
+
+static inline const char* linux_tui_gpu_adoption_name(
+    LinuxTuiGpuAdoption adoption) {
+    switch (adoption) {
+    case LINUX_TUI_GPU_ADOPTION_NONE: return "none";
+    case LINUX_TUI_GPU_ADOPTION_SWITCH: return "switch";
+    case LINUX_TUI_GPU_ADOPTION_HELD: return "held";
+    }
+    return "invalid";
+}
+
+static inline const char* linux_tui_shown_gpu_write_name(
+    LinuxTuiShownGpuWrite verdict) {
+    switch (verdict) {
+    case LINUX_TUI_SHOWN_GPU_WRITE_ALLOWED: return "allowed";
+    case LINUX_TUI_SHOWN_GPU_WRITE_UNRESOLVED: return "unresolved";
+    case LINUX_TUI_SHOWN_GPU_WRITE_NOT_SHOWN: return "not-shown";
+    }
+    return "invalid";
+}
+
 static inline bool linux_tui_domains_available(
     const ServiceResponse* response, gc_u32 requestedDomains) {
     return response &&

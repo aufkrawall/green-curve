@@ -2,43 +2,84 @@
 // SPDX-License-Identifier: MIT
 // Included by linux_tui_actions.cpp; do not compile separately.
 
+static const GpuAdapterInfo* tui_shown_gpu(const TuiState* state) {
+    return state->targetGpu.valid ? &state->targetGpu : nullptr;
+}
+
 // config.ini's GPU is resolved against the daemon's own adapter list the first
 // time one is available: at start, or on the reconnect after a start without
 // the daemon.  Only the live adapter it resolved to is ever sent; the stored
 // record is not, because the daemon would follow it to a GPU its location role
-// rules out (linux_configured_gpu_request_target).
+// rules out (linux_configured_gpu_request_target).  The resolved GPU, or one
+// chosen with `--gpu`, is then switched to with one targeted refresh after
+// every answered refresh until it is the GPU shown: the TUI writes to the GPU
+// it shows, so until then every write is blocked (linux_tui_shown_gpu_write).
+// Runs only at the end of an untargeted refresh, so the switch below does not
+// recurse and the selector's own choice is not undone within its refresh.
 static void tui_adopt_configured_gpu(TuiState* state) {
     LinuxConfiguredGpu* gpu = &state->configuredGpu;
-    if (gpu->status != LINUX_CONFIGURED_GPU_PENDING &&
-        gpu->status != LINUX_CONFIGURED_GPU_UNVALIDATED) return;
-    const LinuxConfiguredGpuStatus before = gpu->status;
-    linux_configured_gpu_resolve_against(state->configPath, gpu,
-        state->service.snapshot.adapters, state->service.snapshot.adapterCount);
-    if (gpu->status != LINUX_CONFIGURED_GPU_RESOLVED) {
-        if (gpu->status != before)
-            snprintf(state->status, sizeof(state->status),
-                "Writes blocked: %s; click the GPU name to select one, or save one with --gpu",
-                linux_configured_gpu_problem(gpu->status));
-        return;
+    if (gpu->status == LINUX_CONFIGURED_GPU_PENDING ||
+        gpu->status == LINUX_CONFIGURED_GPU_UNVALIDATED) {
+        const LinuxConfiguredGpuStatus before = gpu->status;
+        linux_configured_gpu_resolve_against(state->configPath, gpu,
+            state->service.snapshot.adapters,
+            state->service.snapshot.adapterCount);
+        if (gpu->status != LINUX_CONFIGURED_GPU_RESOLVED) {
+            if (gpu->status != before)
+                snprintf(state->status, sizeof(state->status),
+                    "Writes blocked: %s; click the GPU name to select one, or save one with --gpu",
+                    linux_configured_gpu_problem(gpu->status));
+            return;
+        }
     }
-    if (state->targetGpu.valid &&
-        linux_gpu_identity_matches(&gpu->target, &state->targetGpu)) return;
-    if (state->service.state.activeDesiredValid) {
+    LinuxTuiGpuAdoption step = linux_tui_gpu_adoption(gpu, tui_shown_gpu(state),
+        state->service.state.activeDesiredValid);
+    if (step == LINUX_TUI_GPU_ADOPTION_SWITCH) {
+        tui_refresh_service(state, false, &gpu->target);
+        step = linux_tui_gpu_adoption(gpu, tui_shown_gpu(state),
+                                      state->service.state.activeDesiredValid);
+    }
+    if (step == state->gpuAdoption) return;
+    char selected[32] = {}, shown[32] = {};
+    format_linux_gpu_bdf(&gpu->target, selected, sizeof(selected));
+    format_linux_gpu_bdf(&state->targetGpu, shown, sizeof(shown));
+    linux_debug_logf("tui: selected GPU adoption %s -> %s (selected=%s "
+                     "status=%s shown=%s activeSettings=%d)",
+                     linux_tui_gpu_adoption_name(state->gpuAdoption),
+                     linux_tui_gpu_adoption_name(step), selected,
+                     linux_configured_gpu_status_name(gpu->status), shown,
+                     state->service.state.activeDesiredValid ? 1 : 0);
+    if (step == LINUX_TUI_GPU_ADOPTION_HELD)
         snprintf(state->status, sizeof(state->status),
-                 "Another GPU has active settings; Reset it before selecting the saved GPU");
-        return;
-    }
-    tui_refresh_service(state, false, &gpu->target);
+                 "Writes blocked: GPU %s has active settings, so the daemon "
+                 "keeps it instead of the selected GPU %s; click the GPU name "
+                 "to choose one", shown, selected);
+    state->gpuAdoption = step;
 }
 
 bool tui_configured_gpu_allows_write(TuiState* state, const char* action) {
-    if (linux_configured_gpu_request_target(&state->configuredGpu, true,
-                                            nullptr)) return true;
-    snprintf(state->status, sizeof(state->status),
-             "%s blocked: %s; click the GPU name to select one first",
-             action, linux_configured_gpu_problem(state->configuredGpu.status));
-    linux_debug_logf("tui: %s blocked; config.ini GPU status=%s", action,
-                     linux_configured_gpu_status_name(state->configuredGpu.status));
+    const LinuxTuiShownGpuWrite verdict = linux_tui_shown_gpu_write(
+        &state->configuredGpu, tui_shown_gpu(state));
+    if (verdict == LINUX_TUI_SHOWN_GPU_WRITE_ALLOWED) return true;
+    char selected[32] = {}, shown[32] = {};
+    format_linux_gpu_bdf(&state->configuredGpu.target, selected,
+                         sizeof(selected));
+    format_linux_gpu_bdf(&state->targetGpu, shown, sizeof(shown));
+    if (verdict == LINUX_TUI_SHOWN_GPU_WRITE_NOT_SHOWN)
+        snprintf(state->status, sizeof(state->status),
+                 "%s blocked: this window shows GPU %s, not the selected GPU "
+                 "%s; click the GPU name to choose one", action, shown,
+                 selected);
+    else
+        snprintf(state->status, sizeof(state->status),
+                 "%s blocked: %s; click the GPU name to select one first",
+                 action,
+                 linux_configured_gpu_problem(state->configuredGpu.status));
+    linux_debug_logf("tui: %s blocked; verdict=%s config.ini GPU status=%s "
+                     "selected=%s shown=%s", action,
+                     linux_tui_shown_gpu_write_name(verdict),
+                     linux_configured_gpu_status_name(state->configuredGpu.status),
+                     selected, shown);
     return false;
 }
 
@@ -191,7 +232,7 @@ bool tui_refresh_service(TuiState* state, bool userRequested,
             (unsigned int)next.snapshot.autoApplyFailure.trigger, state->status);
     }
     state->nextTelemetryMs = tui_monotonic_ms() + 1000;
-    tui_adopt_configured_gpu(state);
+    if (!requestedTarget) tui_adopt_configured_gpu(state);
     return true;
 }
 

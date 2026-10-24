@@ -1168,9 +1168,17 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
     mutation_cpp = _p(ctx, "linux_tui_mutation_actions.cpp")
     forbid_text(tui_cpp, "state->targetGpu = *initialTarget",
                 "the TUI never adopts the stored record as its target")
-    require_text(refresh_cpp, "tui_adopt_configured_gpu(state);",
-                 "the TUI resolves config.ini's GPU on each answered refresh "
-                 "until it resolves")
+    require_text(refresh_cpp, "if (!requestedTarget) tui_adopt_configured_gpu(state);",
+                 "the TUI resolves and switches to its selected GPU after each "
+                 "answered untargeted refresh, never inside its own switch")
+    # The TUI sends the GPU it shows.  A resolved or explicit selection that
+    # is not shown yet (`--gpu`, a switch refused for active settings or
+    # failed as busy) must not let a write reach the shown GPU.
+    require_text(refresh_cpp, "linux_tui_shown_gpu_write(",
+                 "TUI writes require the selected GPU to be the one shown")
+    forbid_text(refresh_cpp,
+                "if (linux_configured_gpu_request_target(&state->configuredGpu, true,",
+                "the TUI write gate must not accept a selection that is not shown")
     for action in ('tui_configured_gpu_allows_write(state, "Apply")',
                    'tui_configured_gpu_allows_write(state, "Reset")',
                    'tui_configured_gpu_allows_write(state, "Startup profile bind")'):
