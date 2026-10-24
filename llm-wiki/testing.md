@@ -50,11 +50,17 @@ not a promise that future test failures are environment failures.
 Source anchors: `tests/linux_restore_role_tests.cpp`,
 `source/linux_daemon_location_schema.h`, `source/linux_gpu_selection.h`,
 `tools/persistence_gates.py`, `tools/linux_gates.py`.
+7440-7447 (added when the legacy role became `unrecorded`): a legacy boot
+profile on a single GPU moved from bus 7 to bus 6 resolves for writes and
+re-binds as advisory, all three schema-1 widening paths keep `unrecorded`, and
+the aborted-restore remedy text per trigger. 7424 now also checks that a legacy
+target among two same-model adapters off its bus stays unresolved and that the
+exact location still picks among twins.
 7420-7422 cover current state/startup role persistence, the backend init
 write decision after a twin disappears, role checksum protection and invalid
 role rejection. 7423-7425 migrate the frozen 1176-byte state record without
-changing its settings or operation identity, require exact location and reject
-a checksum mismatch. 7426-7429 migrate the 1236-byte startup record, preserve
+changing its settings or operation identity, apply the role-less location
+rule and reject a checksum mismatch. 7426-7429 migrate the 1236-byte startup record, preserve
 its settings/name/slot, reject a future version or incoherent disabled record,
 and clear payload for a valid disabled policy. Existing schema-1 fixtures
 continue to cover older memory-unit conversions. A focused negative control

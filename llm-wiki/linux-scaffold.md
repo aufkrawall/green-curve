@@ -696,10 +696,16 @@ boot recovery rebind) keep the exact `linux_gpu_identity_matches()`.
   automatic restore and resume retain a required role even with one twin
   remaining. Content-only startup refresh preserves it. Successful restore
   re-commits the live BDF and role; startup rebinding also persists a role
-  strengthened by newly present twins. Legacy records migrate as `required`,
-  because their selection-time ambiguity is unknown: exact-location restore
-  still works, but a moved legacy target needs explicit Apply/startup binding.
-  See persistence-schema.md for frozen layouts and migration diagnostics.
+  strengthened by newly present twins. Legacy records migrate as
+  `unrecorded` (the role-less rule: exact location wins, a moved model is
+  followed only while it is the one adapter present), the same reading
+  Windows gives a role-less `[gpu]` record; the first successful restore then
+  records the real role. Migrating them as `required` (briefly, 2026-10-24)
+  stopped the boot profile of a single GPU whose bus had moved. An aborted
+  automatic restore logs `[stored=<bdf> role=<role> remedy=<...>]`
+  (`linux_auto_restore_rebind_hint()`: a boot profile needs a startup re-bind,
+  restore-last/resume an Apply, a backend that was not ready nothing). See
+  persistence-schema.md for frozen layouts and migration diagnostics.
 - Client (`linux_gpu_target_config.cpp`): config.ini `[gpu]` gains
   `selected_pci_location_role` (same spellings and parser,
   `configured_gpu_location_role_parse()`, as Windows). An unknown role

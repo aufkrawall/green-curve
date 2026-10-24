@@ -90,8 +90,27 @@ def check_all(ctx, require_text, forbid_text):
                      "pre-location-role records keep their exact size")
         require_text(daemon_state_cpp, f"sizeof(LinuxDaemon{kind}RecordSchema2)",
                      "the loader dispatches the pre-location-role layout")
-    require_text(location_h, "GPU_LOCATION_ROLE_REQUIRED",
-                 "legacy records migrate with an exact-location requirement")
+    # A pre-role record never said whether its location told identical cards
+    # apart. Widening it as REQUIRED made an upgrade stricter than the record
+    # was ever read, and a lone GPU whose PCI bus moved stopped booting its
+    # profile. Every widening path names the one legacy role.
+    require_text(daemon_state_h,
+                 "LINUX_DAEMON_LEGACY_LOCATION_ROLE = GPU_LOCATION_ROLE_UNRECORDED",
+                 "pre-role records widen with the role-less (unrecorded) rule")
+    forbid_text(location_h, "GPU_LOCATION_ROLE_REQUIRED",
+                "pre-role records must not widen with an exact-location requirement")
+    require_text(location_h, "in->operationState, LINUX_DAEMON_LEGACY_LOCATION_ROLE);",
+                 "the schema-2 state record widens with the legacy role")
+    require_text(location_h, "&in->targetGpu, &desired, LINUX_DAEMON_LEGACY_LOCATION_ROLE);",
+                 "the schema-2 startup record widens with the legacy role")
+    require_text(daemon_state_h, "in->operationState, LINUX_DAEMON_LEGACY_LOCATION_ROLE);",
+                 "the schema-1 state record widens with the legacy role")
+    require_text(daemon_state_h, "SERVICE_OPERATION_NONE, LINUX_DAEMON_LEGACY_LOCATION_ROLE);",
+                 "the pre-operation-id state record widens with the legacy role")
+    require_text(daemon_state_h, "&in->targetGpu, &widened, LINUX_DAEMON_LEGACY_LOCATION_ROLE);",
+                 "the schema-1 startup record widens with the legacy role")
+    forbid_text(daemon_state_cpp, "location role=required",
+                "migration diagnostics log the role the record really widened with")
 
     # The loaders dispatch on size and migrate by version.
     require_text(daemon_state_cpp, "sizeof(LinuxDaemonStateRecordSchema1)",

@@ -170,6 +170,25 @@ static inline const char* linux_auto_restore_trigger_name(
     }
 }
 
+// What makes an automatic restore that wrote nothing write again. A backend
+// that was not ready needs nothing; a stored GPU that is not present or is
+// ambiguous needs a new binding. The boot profile owns its binding in
+// startup.bin, which no Apply rewrites; the other two replay the committed
+// record an Apply replaces.
+static inline const char* linux_auto_restore_rebind_hint(
+    LinuxAutoRestoreTrigger trigger, bool targetUnresolved) {
+    if (!targetUnresolved) return "none (the GPU backend was not ready)";
+    switch (trigger) {
+        case LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE:
+            return "re-bind the startup profile (--startup-profile N or the "
+                   "TUI Startup apply control)";
+        case LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST:
+        case LINUX_AUTO_RESTORE_TRIGGER_RESUME:
+            return "apply the settings again on the GPU";
+        default: return "none";
+    }
+}
+
 static inline const char* linux_auto_restore_verdict_name(
     LinuxAutoRestoreVerdict verdict) {
     switch (verdict) {

@@ -52,18 +52,35 @@ field-by-field widening that preserves per-point provenance and display MHz.
 Both loaders dispatch the old sizes and validate their original checksum
 before widening. Schema-1 memory conversion remains unchanged.
 
-Every older record widens with `required`: it cannot prove whether the saved
-location distinguished identical cards. This preserves exact-location restore
-without permitting an automatic move to the remaining twin. An explicit Apply
-or startup binding establishes a role from current enumeration. Automatic
-restore, resume, startup content refresh and backend replacement keep the role;
-a required role never weakens merely because a twin disappeared.
-Migration diagnostics name the old size/version and the required location role;
-automatic restore logs its resolved role and live location. Fixtures 7420-7429
-check both record types, preservation of curve/lock/provenance/memory settings,
-checksum coverage, invalid roles, exact versus moved restore and frozen-layout
-migration. A negative control dropping the backend role fails at 7421.
-Real Linux hardware upgrade and resume remain unverified.
+Every older record (schema 1 and schema 2, state and startup) widens with
+`LINUX_DAEMON_LEGACY_LOCATION_ROLE`, which is `unrecorded`: the record never
+said whether its location distinguished identical cards, and `unrecorded` is
+exactly that rule -- the exact location wins, and a moved model is followed
+only while it is the one adapter present. It is the rule Windows applies to a
+role-less `[gpu]` record and the rule every earlier Linux build applied to
+these targets. The first successful automatic restore (or an explicit
+Apply/startup binding) records the real role from current enumeration, and a
+boot profile re-binds startup.bin to the live location with it.
+
+Rejected (2026-10-24): widening as `required`. It was stricter than any build
+had read the record, so an upgrade silently stopped the boot apply of a lone
+GPU whose PCI bus firmware had renumbered -- the very case the location role
+exists for. A record that build already rewrote as v4/v5 `required` keeps that
+role (nothing marks it as migrated); one explicit startup bind or Apply records
+the real one. Source gates in `tools/persistence_gates.py` forbid `REQUIRED` in
+the frozen-layout header and pin every widening call to the legacy role.
+
+Automatic restore, resume, startup content refresh and backend replacement keep
+the role; a required role never weakens merely because a twin disappeared.
+Migration diagnostics name the old size/version and the role the record widened
+with; automatic restore logs its resolved role and live location, and an
+aborted one logs the stored location, role and remedy. Fixtures 7420-7429 and
+7440-7447 check both record types and all five widening paths, preservation of
+curve/lock/provenance/memory settings, checksum coverage, invalid roles, exact
+versus moved versus ambiguous restore, the moved single-GPU boot profile and the
+remedy text. A negative control dropping the backend role fails at 7421;
+widening as `required` again fails at 7423. Real Linux hardware upgrade and
+resume remain unverified.
 
 ## Adding a field to DesiredSettings
 
@@ -154,7 +171,8 @@ Windows: `restart reapply load: header mismatch magic=… ver=… size=… (expe
   unaffected; it still discards a v1 file, which is its existing documented
   "no valid persisted result" path.
 
-Last verified for GPU role: 2026-10-24 (`python build.py --test`, both Linux
-architectures with `--check --target linux`, focused negative control).
+Last verified for GPU role: 2026-10-24 (legacy role corrected to `unrecorded`:
+`python build.py --test`, negative control at 7423, the failing boot apply
+read from the daemon journal of a real single-GPU upgrade).
 Prior payload-schema verification: 2026-09-17, with `build.py --test`,
 `--test --asan`, `--tidy` and a full `build.py` green.

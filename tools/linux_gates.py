@@ -1144,6 +1144,8 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
     restore_h = _p(ctx, "linux_auto_restore_runtime.h")
     require_text(restore_h, "linux_backend_select_target(&g_gpu, target, err, errSize, role)",
                  "automatic restore passes its persisted location role to selection")
+    require_text(restore_h, "linux_auto_restore_rebind_hint(trigger, targetUnresolved)",
+                 "an aborted automatic restore logs its stored role and remedy")
     require_text(discovery_cpp, "linux_backend_init(&replacement, target, err, errSize, role)",
                  "backend replacement retains the restore location role")
     require_text(startup_h, "(GpuLocationRole)g_startupPolicy.targetLocationRole",

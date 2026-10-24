@@ -148,6 +148,14 @@ static inline gc_u32 linux_daemon_record_checksum(const LinuxDaemonStateRecord* 
     return hash;
 }
 
+// The role every record written before the role was persisted widens with.
+// Such a record never said whether its location told identical cards apart,
+// which is what UNRECORDED means: the location binds unless exactly one
+// adapter is present. Windows reads a role-less [gpu] record the same way, and
+// every earlier Linux build resolved these targets so; widening them as
+// REQUIRED silently stopped the boot apply of a lone GPU whose PCI bus moved.
+static const GpuLocationRole LINUX_DAEMON_LEGACY_LOCATION_ROLE = GPU_LOCATION_ROLE_UNRECORDED;
+
 static inline void linux_daemon_record_initialize(LinuxDaemonStateRecord* record,
                                                   LinuxDaemonRecordState state,
                                                   const GpuAdapterInfo* target,
@@ -259,7 +267,7 @@ static inline bool linux_daemon_state_record_widen_schema1(
     }
     linux_daemon_record_initialize(out, (LinuxDaemonRecordState)in->state,
                                    &in->targetGpu, &widened, in->operationId,
-                                   in->operationState);
+                                   in->operationState, LINUX_DAEMON_LEGACY_LOCATION_ROLE);
     return true;
 }
 
@@ -276,7 +284,8 @@ static inline bool linux_daemon_state_record_widen_schema1_v1(
     // v1 carried no operation identity; a widened record starts with none,
     // which is the same "no operation in flight" state a fresh record has.
     linux_daemon_record_initialize(out, (LinuxDaemonRecordState)in->state,
-                                   &in->targetGpu, &widened);
+                                   &in->targetGpu, &widened, 0,
+                                   SERVICE_OPERATION_NONE, LINUX_DAEMON_LEGACY_LOCATION_ROLE);
     return true;
 }
 
@@ -494,8 +503,8 @@ static inline bool linux_daemon_startup_widen_schema1(
         if (linux_daemon_migrate_desired_mem_units_to_display(&widened, &migratedOld) &&
             oldMemOut) *oldMemOut = migratedOld;
     }
-    linux_daemon_startup_initialize(out, in->mode, in->profileSlot,
-                                    in->profileName, &in->targetGpu, &widened);
+    linux_daemon_startup_initialize(out, in->mode, in->profileSlot, in->profileName,
+                                    &in->targetGpu, &widened, LINUX_DAEMON_LEGACY_LOCATION_ROLE);
     return true;
 }
 

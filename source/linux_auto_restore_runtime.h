@@ -325,8 +325,17 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
         // allowed to try again.
         gc_snprintf(outcome.message, sizeof(outcome.message),
                     "GPU not available for automatic restore: %s", err);
-        dlog("daemon auto-restore: %s aborted before any write: %s\n",
-             linux_auto_restore_trigger_name(trigger), err);
+        // Judged against the adapters the backend enumerated; a failed
+        // re-selection leaves g_gpu untouched.
+        const bool targetUnresolved = g_gpuReady &&
+            linux_resolve_stored_gpu_target(target, role, g_gpu.adapters,
+                                            g_gpu.adapterCount, nullptr) < 0;
+        dlog("daemon auto-restore: %s aborted before any write: %s "
+             "[stored=%04x:%02x:%02x.%u role=%s remedy=%s]\n",
+             linux_auto_restore_trigger_name(trigger), err, target->pciDomain,
+             target->pciBus, target->pciDevice, target->pciFunction,
+             configured_gpu_location_role_name(role),
+             linux_auto_restore_rebind_hint(trigger, targetUnresolved));
         return outcome;
     }
 

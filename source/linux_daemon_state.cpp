@@ -248,7 +248,7 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
                             "mem offset %d -> %d display MHz",
                             migratedOldMemMHz, record.desired.memOffsetMHz);
             gc_snprintf(err, errSize,
-                "loaded %lld-byte %s daemon state v%u -> v%u; location role=required; %s",
+                "loaded %lld-byte %s daemon state v%u -> v%u; location role=%s; %s",
                 (long long)st.st_size,
                 generation == LINUX_DAEMON_RECORD_GENERATION_SCHEMA1_V1
                     ? "pre-operation-id schema-1"
@@ -256,6 +256,8 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
                         ? "schema-2" : "schema-1",
                 (unsigned int)storedVersion,
                 (unsigned int)LINUX_DAEMON_RECORD_VERSION,
+                configured_gpu_location_role_name(
+                    (GpuLocationRole)record.targetLocationRole),
                 memDetail[0] ? memDetail : "no stored memory offset to convert");
         }
         if (outMigratedFromLegacy) *outMigratedFromLegacy = migratedFromLegacy;
@@ -432,9 +434,10 @@ bool linux_daemon_startup_load(const char* path,
                         "mem offset %d -> %d display MHz",
                         migratedOldMemMHz, loaded.desired.memOffsetMHz);
         gc_snprintf(err, errSize,
-            "startup policy record migrated from %lld-byte v%u to v%u; location role=required; %s",
+            "startup policy record migrated from %lld-byte v%u to v%u; location role=%s; %s",
             (long long)status.st_size, (unsigned int)storedVersion,
             (unsigned int)LINUX_DAEMON_STARTUP_VERSION,
+            configured_gpu_location_role_name((GpuLocationRole)loaded.targetLocationRole),
             memDetail[0] ? memDetail : "no stored memory offset to convert");
         if (outMigratedFromLegacy) *outMigratedFromLegacy = true;
     }

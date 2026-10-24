@@ -3,9 +3,11 @@
 #ifndef GREEN_CURVE_LINUX_DAEMON_LOCATION_SCHEMA_H
 #define GREEN_CURVE_LINUX_DAEMON_LOCATION_SCHEMA_H
 
-// FROZEN pre-location-role records. Old records cannot prove that a lone
-// matching GPU was selected without a twin, so migration requires its exact
-// location. Explicit Apply/startup binding can establish an advisory role.
+// FROZEN pre-location-role records. They widen with
+// LINUX_DAEMON_LEGACY_LOCATION_ROLE (UNRECORDED): an exact location still
+// wins, and a moved model is followed only while it is the one adapter
+// present. A successful restore or an explicit Apply/startup binding then
+// records the real role from current enumeration.
 
 struct LinuxDaemonStateRecordSchema2 {
     gc_u32 magic;
@@ -35,8 +37,8 @@ static inline bool linux_daemon_state_record_widen_schema2(
         in->state > LINUX_DAEMON_RECORD_UNCERTAIN ||
         in->operationState > SERVICE_OPERATION_OUTCOME_UNKNOWN) return false;
     linux_daemon_record_initialize(out, (LinuxDaemonRecordState)in->state,
-        &in->targetGpu, &desired, in->operationId, in->operationState,
-        GPU_LOCATION_ROLE_REQUIRED);
+        &in->targetGpu, &desired, in->operationId,
+        in->operationState, LINUX_DAEMON_LEGACY_LOCATION_ROLE);
     return linux_daemon_record_valid(out);
 }
 
@@ -73,7 +75,7 @@ static inline bool linux_daemon_startup_widen_schema2(
     if (!service_wire_string_is_terminated(in->profileName,
             (unsigned int)sizeof(in->profileName))) return false;
     linux_daemon_startup_initialize(out, in->mode, in->profileSlot,
-        in->profileName, &in->targetGpu, &desired, GPU_LOCATION_ROLE_REQUIRED);
+        in->profileName, &in->targetGpu, &desired, LINUX_DAEMON_LEGACY_LOCATION_ROLE);
     return linux_daemon_startup_valid(out);
 }
 

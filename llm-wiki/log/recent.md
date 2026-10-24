@@ -5,6 +5,30 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-24: Legacy Linux restore records widen as `unrecorded`, not `required`
+
+- Reported on Linux: the boot profile stopped applying after updating past
+  "Linux automatic restore retains GPU location authority". The daemon
+  journal showed the cause: the v3 startup record migrated as
+  `role=required` at bus 07, the only GPU now sat at bus 06, and the boot
+  apply refused before any write ("the stored GPU is not present"). The
+  previous build had applied the same record on the same boot.
+- `required` was stricter than any build had read these records; Windows
+  reads a role-less `[gpu]` record as `unrecorded`, and so did every earlier
+  Linux restore. All five widening paths (schema-1 state v2/v3, schema-1
+  state v1, schema-1 startup, schema-2 state and startup) now use
+  `LINUX_DAEMON_LEGACY_LOCATION_ROLE` (`unrecorded`). The two schema-1 state
+  paths and the schema-1 startup path had reached `required` silently through
+  the initializers' default argument.
+- Not healed: a record already rewritten as v4/v5 `required` by the briefly
+  affected unreleased builds cannot be told apart from a genuine twin
+  binding. One `--startup-profile N` (or the TUI Startup apply control)
+  re-binds it. This supersedes the "Considered and kept" note below.
+- New diagnostic: an aborted automatic restore logs
+  `[stored=<bdf> role=<role> remedy=<...>]`; migration lines log the real
+  role. Fixtures 7423/7424/7426 changed, 7440-7447 added; the pre-fix
+  widening fails 7423.
+
 ## 2026-10-24: Restore-role review follow-ups
 
 - A committed Reset now clears `g_activeTargetRole` together with the active

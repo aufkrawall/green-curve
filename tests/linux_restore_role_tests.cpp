@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
-// Durable restore authority and pre-role layout migration (7420-7429).
+// Durable restore authority and pre-role layout migration (7420-7429,
+// 7440-7449).
 #include <initializer_list>
 #include "linux_daemon_state.h"
 #include "linux_gpu_selection.h"
@@ -83,15 +84,26 @@ int legacy_records() {
     LinuxDaemonStateRecord widened = {};
     if (!linux_daemon_state_record_widen_schema2(&widened, &old) ||
         !linux_daemon_record_valid(&widened) ||
-        widened.targetLocationRole != GPU_LOCATION_ROLE_REQUIRED ||
+        widened.targetLocationRole != GPU_LOCATION_ROLE_UNRECORDED ||
         widened.operationId != 42 || widened.operationState != SERVICE_OPERATION_SUCCEEDED ||
         memcmp(&widened.desired, &desired, sizeof(desired)) != 0) return 7423;
-    const GpuAdapterInfo remaining[] = {adapter(6)};
+    // A legacy record never said whether its location told twins apart, so
+    // it keeps the role-less rule: the exact location wins, a lone adapter is
+    // followed to its new bus, and a move among several stays unresolved.
+    const GpuAdapterInfo moved[] = {adapter(6)};
     const GpuAdapterInfo exact[] = {adapter(7)};
-    if (linux_gpu_init_selection(&widened.targetGpu, remaining, 1,
-            (GpuLocationRole)widened.targetLocationRole).writeResolved ||
-        !linux_gpu_init_selection(&widened.targetGpu, exact, 1,
-            (GpuLocationRole)widened.targetLocationRole).writeResolved) return 7424;
+    const GpuAdapterInfo twinsElsewhere[] = {adapter(6), adapter(8)};
+    const GpuAdapterInfo twinsExact[] = {adapter(6), adapter(7)};
+    const GpuLocationRole widenedRole = (GpuLocationRole)widened.targetLocationRole;
+    const LinuxGpuInitSelection followed =
+        linux_gpu_init_selection(&widened.targetGpu, moved, 1, widenedRole);
+    const LinuxGpuInitSelection exactPick =
+        linux_gpu_init_selection(&widened.targetGpu, twinsExact, 2, widenedRole);
+    if (!followed.writeResolved || !followed.moved || followed.index != 0 ||
+        !linux_gpu_init_selection(&widened.targetGpu, exact, 1, widenedRole).writeResolved ||
+        linux_gpu_init_selection(&widened.targetGpu, twinsElsewhere, 2,
+            widenedRole).writeResolved ||
+        !exactPick.writeResolved || exactPick.index != 1) return 7424;
     old.desired.memOffsetMHz++;
     if (linux_daemon_state_record_widen_schema2(&widened, &old)) return 7425;
 
@@ -109,7 +121,7 @@ int legacy_records() {
     if (!linux_daemon_startup_widen_schema2(&migrated, &boot) ||
         !linux_daemon_startup_valid(&migrated) || migrated.profileSlot != 2 ||
         strcmp(migrated.profileName, "profile") != 0 ||
-        migrated.targetLocationRole != GPU_LOCATION_ROLE_REQUIRED ||
+        migrated.targetLocationRole != GPU_LOCATION_ROLE_UNRECORDED ||
         memcmp(&migrated.desired, &desired, sizeof(desired)) != 0) return 7426;
     boot.version++;
     boot.checksum = linux_daemon_record_hash_bytes(&boot, offsetof(LinuxDaemonStartupRecordSchema2, checksum));
@@ -127,9 +139,102 @@ int legacy_records() {
         migrated.desired.hasCurvePoint[74]) return 7429;
     return 0;
 }
+// The reported upgrade regression: a boot profile bound before the role was
+// persisted, on a single GPU that firmware has since moved from bus 7 to bus
+// 6. It must boot on the moved card and re-bind with the role a selection on
+// the live adapter list records.
+int legacy_startup_on_moved_gpu() {
+    const DesiredSettings desired = intent();
+    LinuxDaemonStartupRecordSchema2 boot = {};
+    boot.magic = LINUX_DAEMON_STARTUP_MAGIC;
+    boot.version = LINUX_DAEMON_STARTUP_PRE_LOCATION_ROLE_VERSION;
+    boot.size = sizeof(boot);
+    boot.mode = SERVICE_STARTUP_POLICY_PROFILE;
+    boot.profileSlot = 1;
+    boot.targetGpu = adapter(7);
+    memcpy(boot.profileName, "profile 1", 10);
+    desired_settings_narrow_schema2(&boot.desired, &desired);
+    boot.checksum = linux_daemon_record_hash_bytes(&boot, offsetof(LinuxDaemonStartupRecordSchema2, checksum));
+    LinuxDaemonStartupRecord migrated = {};
+    if (!linux_daemon_startup_widen_schema2(&migrated, &boot)) return 7440;
+    const GpuAdapterInfo live[] = {adapter(6)};
+    const LinuxGpuInitSelection selection = linux_gpu_init_selection(&migrated.targetGpu,
+        live, 1, (GpuLocationRole)migrated.targetLocationRole);
+    if (!selection.writeResolved || selection.index != 0 || !selection.moved) return 7441;
+    if (linux_gpu_location_role_for_selection(&live[0], live, 1) != GPU_LOCATION_ROLE_ADVISORY)
+        return 7442;
+    return 0;
+}
+
+// The 0.25.x schema-1 layouts reach the current record through their own
+// widening paths; none of them may pick up a stricter role than the record had.
+int schema1_records_stay_unrecorded() {
+    const DesiredSettings desired = intent();
+    LinuxDaemonStateRecordSchema1 state = {};
+    state.magic = LINUX_DAEMON_RECORD_MAGIC;
+    state.version = LINUX_DAEMON_RECORD_PRE_PROVENANCE_VERSION;
+    state.size = sizeof(state);
+    state.state = LINUX_DAEMON_RECORD_ACTIVE;
+    state.targetGpu = adapter(7);
+    state.operationId = 9;
+    state.operationState = SERVICE_OPERATION_SUCCEEDED;
+    desired_settings_narrow_to_schema1(&state.desired, &desired);
+    state.checksum = linux_daemon_record_hash_bytes(&state, offsetof(LinuxDaemonStateRecordSchema1, checksum));
+    LinuxDaemonStateRecord wide = {};
+    if (!linux_daemon_state_record_widen_schema1(&wide, &state, nullptr, nullptr) ||
+        !linux_daemon_record_valid(&wide) ||
+        wide.targetLocationRole != GPU_LOCATION_ROLE_UNRECORDED || wide.operationId != 9)
+        return 7443;
+
+    LinuxDaemonStateRecordSchema1V1 first = {};
+    first.magic = LINUX_DAEMON_RECORD_MAGIC;
+    first.version = LINUX_DAEMON_RECORD_PRE_OPERATION_ID_VERSION;
+    first.size = sizeof(first);
+    first.state = LINUX_DAEMON_RECORD_ACTIVE;
+    first.targetGpu = adapter(7);
+    desired_settings_narrow_to_schema1(&first.desired, &desired);
+    first.checksum = linux_daemon_record_hash_bytes(&first, offsetof(LinuxDaemonStateRecordSchema1V1, checksum));
+    if (!linux_daemon_state_record_widen_schema1_v1(&wide, &first, nullptr) ||
+        !linux_daemon_record_valid(&wide) ||
+        wide.targetLocationRole != GPU_LOCATION_ROLE_UNRECORDED ||
+        wide.operationId != 0 || wide.operationState != SERVICE_OPERATION_NONE) return 7444;
+
+    LinuxDaemonStartupRecordSchema1 boot = {};
+    boot.magic = LINUX_DAEMON_STARTUP_MAGIC;
+    boot.version = LINUX_DAEMON_STARTUP_PRE_PROVENANCE_VERSION;
+    boot.size = sizeof(boot);
+    boot.mode = SERVICE_STARTUP_POLICY_PROFILE;
+    boot.profileSlot = 3;
+    boot.targetGpu = adapter(7);
+    memcpy(boot.profileName, "profile 3", 10);
+    desired_settings_narrow_to_schema1(&boot.desired, &desired);
+    boot.checksum = linux_daemon_record_hash_bytes(&boot, offsetof(LinuxDaemonStartupRecordSchema1, checksum));
+    LinuxDaemonStartupRecord startup = {};
+    if (!linux_daemon_startup_widen_schema1(&startup, &boot, nullptr, nullptr) ||
+        !linux_daemon_startup_valid(&startup) ||
+        startup.targetLocationRole != GPU_LOCATION_ROLE_UNRECORDED) return 7445;
+    return 0;
+}
+
+// The aborted-restore log names what makes the next automatic write succeed.
+int rebind_hint() {
+    if (!strstr(linux_auto_restore_rebind_hint(LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE, true),
+                "--startup-profile") ||
+        !strstr(linux_auto_restore_rebind_hint(LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST, true),
+                "apply") ||
+        !strstr(linux_auto_restore_rebind_hint(LINUX_AUTO_RESTORE_TRIGGER_RESUME, true), "apply"))
+        return 7446;
+    // A backend that was not ready is not a binding problem.
+    if (strncmp(linux_auto_restore_rebind_hint(LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE, false),
+                "none", 4) != 0) return 7447;
+    return 0;
+}
 } // namespace
 
 int run_linux_restore_role_tests() {
     if (int result = current_records()) return result;
-    return legacy_records();
+    if (int result = legacy_records()) return result;
+    if (int result = legacy_startup_on_moved_gpu()) return result;
+    if (int result = schema1_records_stay_unrecorded()) return result;
+    return rebind_hint();
 }
