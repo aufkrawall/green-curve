@@ -5,6 +5,23 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-24: The VF grid no longer shifts between a cold and a warm read
+
+- Report: after opening the window from the tray, the lock checkbox and the
+  points around it sat one column too far left until Refresh. The log showed
+  76 visible points from the logon reads (GPU at 22 C) and 78 after Refresh
+  (30 C); a CLI `--dump` confirmed a flat 180 MHz floor and a steep low ramp
+  whose position moves with temperature, so the `>= 500 MHz` visibility term
+  cut through the drifting ramp.
+- Visibility is now voltage only (`vf_point_visibility_policy.h`), shared by
+  the grid map and `is_curve_point_visible_in_gui()`. Visible change: the
+  floor points at or above 700 mV (ci 40-48 on an RTX 5070) are in the grid
+  and the graph, whose frequency axis may now start at 0. The tray-reopened
+  window still shows the snapshot from its last full read until Refresh; only
+  the layout no longer depends on that read's temperature.
+- Fixtures 7380-7389 (testing.md); `check_vf_point_visibility_is_drift_free()`
+  in `tools/ui_gates.py`; `vf visibility:` change log line.
+
 ## 2026-10-23: An unresolved Linux config.ini GPU stops client writes
 
 - Review of the post-0.30.0 commits found that a config.ini selection that

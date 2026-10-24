@@ -195,7 +195,7 @@ Both sides are supposed to be records. But `load_profile_from_config()`
 
 | Projection | Live input |
 |---|---|
-| lock-anchor re-derivation (`lockTracksAnchor`) | `is_curve_point_visible_in_gui()` -> `curve_base_khz_for_point()` = `g_app.curve[i].freq_kHz - g_app.freqOffsets[i]` |
+| lock-anchor re-derivation (`lockTracksAnchor`) | `is_curve_point_visible_in_gui()`; until 2026-10-24 it read `curve_base_khz_for_point()` = `g_app.curve[i].freq_kHz - g_app.freqOffsets[i]`, now voltage only (`vf_point_visibility_policy.h`) |
 | curve-ownership visibility strip | `g_app.curve[i].volt_uV`, gated on `g_app.loaded` |
 | `profile_point_saved_visible()` fallback | same, for profiles predating `pointN_visible` |
 

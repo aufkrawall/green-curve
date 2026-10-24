@@ -85,7 +85,7 @@ static void apply_log_post_apply_curve_diagnostics(
                         // two builds in the first place.
                         const bool refusedPlaceholder = vf_offset_zero_readback_is_benign(
                             targetOffsets[ci], g_app.freqOffsets[ci],
-                            g_app.curve[ci].freq_kHz, MIN_VISIBLE_FREQ_MHz * 1000u);
+                            g_app.curve[ci].freq_kHz, VF_PLACEHOLDER_MAX_FREQ_MHz * 1000u);
                         // The verification predicate: an offset-intent point is
                         // short when its OFFSET is, never because a cold or
                         // loaded base moved its MHz off the projected preview.

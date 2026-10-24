@@ -117,6 +117,9 @@
 // apply's out-of-range refusal and the low-level write clamp, which used to
 // carry three different and mutually contradictory fallbacks.
 #include "vf_offset_range_policy.h"
+// Which VF points the editor shows: by voltage only, never by a frequency the
+// driver moves with temperature.
+#include "vf_point_visibility_policy.h"
 // OS-abstraction shim (dynamic loading, sleep, atomics, threads, bounded
 // strings, subprocess capture) used by the shared backend.
 #include "platform.h"
@@ -319,7 +322,7 @@ void init_dpi();
 #define LEGACY_MACHINE_CONFIG_FILE_NAME "machine.ini"
 #define STARTUP_TASK_PREFIX "Green Curve Startup - "
 // CONFIG_NUM_SLOTS, CONFIG_DEFAULT_SLOT, NVML_PERF_STR_LEN,
-// MIN_VISIBLE_VOLT_mV, MIN_VISIBLE_FREQ_MHz moved to gpu_core.h
+// MIN_VISIBLE_VOLT_mV, VF_PLACEHOLDER_MAX_FREQ_MHz moved to gpu_core.h
 
 // The window palette is shared verbatim with the standalone installer, which
 // cannot include this header, so it lives in its own dependency-free file.

@@ -482,7 +482,21 @@ checks, and full build 433; RTX 5080 hardware acceptance remains pending.
 
 - `VF_NUM_POINTS` = 128 points
 - Each point: `VFCurvePoint { freq_kHz, volt_uV }`
-- Visible points filtered by `MIN_VISIBLE_VOLT_mV` (700) and `MIN_VISIBLE_FREQ_MHz` (500)
+- Visible points: populated and at least `MIN_VISIBLE_VOLT_mV` (700), by
+  voltage ONLY (`vf_point_visible_in_editor()` in
+  `source/vf_point_visibility_policy.h`, used by `rebuild_visible_map()` and
+  `is_curve_point_visible_in_gui()`). Invariant: no frequency term. A point's
+  voltage is fixed by the VF table, but the stock low ramp moves with
+  temperature: on an RTX 5070 the 22 C logon read put points 49-50 about
+  200 MHz lower than a 30 C read, so the former `>= 500 MHz` term showed 76
+  points at logon and 78 later, and the grid's columns shifted on Refresh
+  (fixed 2026-10-24). The stock clock floor (~180 MHz, ci 40-44 on that card)
+  is therefore visible and the graph's frequency axis floor follows the data
+  down to 0. The out-of-order idle placeholder at the table end (ci=127,
+  ~405 MHz at 540 mV) stays hidden by voltage. Diagnostic: `vf visibility:
+  visible=N first=ciA last=ciB populated=P (was ...)`, logged once per
+  topology change in each process. `VF_PLACEHOLDER_MAX_FREQ_MHz` (500) is
+  only the driver-refused placeholder bound, not a visibility rule.
 - Point locking: flatten the curve tail after a chosen voltage anchor
 - Global GPU clock offset can optionally exclude low-voltage points (`gpuOffsetExcludeLow70`)
 - VF curve apply/save uses sparse user intent: only user-explicit points plus the locked tail are persisted or re-applied. Live NVAPI readback shifts on stock/pre-tail points are diagnostics, not desired curve state.
@@ -885,7 +899,7 @@ the power-target section (no laptop GPU available locally).
 - Service-side applies treat locks as request-scoped. A no-lock request cannot inherit stale service lock markers from a prior locked profile/apply.
 - GUI fan-only applies keep the existing fan-only shortcut and do not reset, reapply, repaint, or de-sparsify OC/UV/power/VF settings.
 - Restore-after-memory-write VF preservation failures are treated as apply failures and route through partial rollback.
-- **Driver-refused VF points (build 353):** some VF entries are populated + marked editable in `vfMask` but are non-operating placeholders (e.g. a high-index point reporting ~400 MHz, below the 500 MHz visible threshold) that the driver silently pins at offset 0. `apply_curve_offsets_verified()` detects refusal (non-zero offset written, write succeeds, readback stays exactly 0) and accepts the point as non-offsettable instead of retrying it across a 2nd batch pass + a per-point fallback — each retry is a ~1s NVAPI `setControl`, so this was ~2s of wasted apply time (it pushed a selective-offset + flatten apply past the 5s client IPC timeout → "Timed out during reading service response", even though the apply succeeded). Accepting is a hardware no-op and mirrors the pre-existing verify-time acceptance (`gpu_backend_apply.cpp` "hardware refused offset … accepting actual", gated by `actualMHz >= 500`). It does NOT touch the flatten-tail correction loop. Guarded by `F-OFFSET-REFUSAL` + `F-DIAG-OFFSET` in `build.py`.
+- **Driver-refused VF points (build 353):** some VF entries are populated + marked editable in `vfMask` but are non-operating placeholders (e.g. a high-index point reporting ~400 MHz, below `VF_PLACEHOLDER_MAX_FREQ_MHz`, 500 MHz) that the driver silently pins at offset 0. `apply_curve_offsets_verified()` detects refusal (non-zero offset written, write succeeds, readback stays exactly 0) and accepts the point as non-offsettable instead of retrying it across a 2nd batch pass + a per-point fallback — each retry is a ~1s NVAPI `setControl`, so this was ~2s of wasted apply time (it pushed a selective-offset + flatten apply past the 5s client IPC timeout → "Timed out during reading service response", even though the apply succeeded). Accepting is a hardware no-op and mirrors the pre-existing verify-time acceptance (`gpu_backend_apply.cpp` "hardware refused offset … accepting actual", gated by `actualMHz >= 500`). It does NOT touch the flatten-tail correction loop. Guarded by `F-OFFSET-REFUSAL` + `F-DIAG-OFFSET` in `build.py`.
 
 ## Diagnostics
 

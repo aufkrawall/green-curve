@@ -1006,6 +1006,9 @@ int run_gpu_location_role_tests(const char* scratchConfigPath);
 // The Linux stored-target rule for the same renumbering
 // (tests/linux_gpu_location_tests.cpp, 7340-7379).
 int run_linux_gpu_location_tests();
+// Editor VF point visibility independent of temperature drift
+// (tests/vf_point_visibility_tests.cpp, 7380-7399).
+int run_vf_point_visibility_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -2629,6 +2632,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int linuxLocationFailure = run_linux_gpu_location_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", linuxLocationFailure);
         return linuxLocationFailure;
+    }
+    if (int visibilityFailure = run_vf_point_visibility_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", visibilityFailure);
+        return visibilityFailure;
     }
 #if defined(_WIN32)
     // Win32 config storage: the named-mutex lock and the Unicode INI writer.

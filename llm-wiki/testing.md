@@ -1,5 +1,20 @@
 # Testing
 
+## VF point visibility independent of temperature (2026-10-24)
+
+Source anchors: `tests/vf_point_visibility_tests.cpp`,
+`source/vf_point_visibility_policy.h`, `tests/regression_main.cpp`,
+`tools/ui_gates.py` (`check_vf_point_visibility_is_drift_free`).
+Fixtures 7380-7389 model an RTX 5070 table (fixed voltages, 180 MHz floor,
+ramp starting at ci 45 warm and ci 47 cold). 7380 proves the fixture
+reproduces the report under the former rule (two points fewer cold); 7381-7382
+require the same visible set cold and warm (the former rule fails 7381,
+checked by compiling the file against it); 7383-7384 every point from 700 mV
+up is visible, floor included; 7385 the 540 mV table-end placeholder stays
+hidden; 7386 unpopulated entries never show; 7387-7388 the inclusive 700 mV
+edge; 7389 frequency never changes the answer. Not covered automatically: the
+GUI rebuild itself (the grid layout on a real window).
+
 ## Linux GPU selection across PCI bus renumbering (2026-10-22)
 
 Source anchors: `tests/linux_gpu_location_tests.cpp`,

@@ -141,7 +141,7 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
             // hardware no-op — the driver was never going to move it.
             if (!converged && vf_offset_zero_readback_is_benign(desiredOffsets[i],
                 g_app.freqOffsets[i], g_app.curve[i].freq_kHz,
-                MIN_VISIBLE_FREQ_MHz * 1000u)) {
+                VF_PLACEHOLDER_MAX_FREQ_MHz * 1000u)) {
                 if (!driverRefused[i]) {
                     driverRefused[i] = true;
                     debug_log("curve offset: driver refuses point %d (wrote %dkHz, readback pinned at 0, liveFreq=%ukHz); accepting as non-offsettable placeholder\n",

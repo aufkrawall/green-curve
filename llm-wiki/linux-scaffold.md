@@ -317,7 +317,7 @@ once, stamped by `[meta] linux_mem_migrated`:
 - **Driver-pinned placeholder entries (2026-09-23).** The Linux VF writer
   (`apply_curve_offsets_verified()` in `linux_backend.cpp`) now shares the
   Windows rule `vf_offset_zero_readback_is_benign()`: a point below
-  `MIN_VISIBLE_FREQ_MHz` that was asked for a positive offset and reads back
+  `VF_PLACEHOLDER_MAX_FREQ_MHz` that was asked for a positive offset and reads back
   exactly 0 is accepted as non-offsettable instead of being rewritten for every
   remaining pass (~1 s each) and failing the phase. On the RTX 5070 the Windows
   placeholder (ci=127) lies outside the Linux graphics domain (see below), so

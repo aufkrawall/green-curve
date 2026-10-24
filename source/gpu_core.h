@@ -88,7 +88,10 @@ enum { FAN_ZERO_RPM_MIN_HYSTERESIS_C = 2, FAN_ZERO_RPM_DEFAULT_HYSTERESIS_C = 5,
 #define NVML_PERF_STR_LEN   2048
 
 #define MIN_VISIBLE_VOLT_mV 700
-#define MIN_VISIBLE_FREQ_MHz 500
+// Below this live frequency a populated entry the driver pins at offset 0 is an
+// idle placeholder, not a refused operating point.  Not a visibility rule:
+// see vf_point_visibility_policy.h.
+#define VF_PLACEHOLDER_MAX_FREQ_MHz 500
 
 // ---------------------------------------------------------------------------
 // Lock mode (tri-state: none / flatten-tail / hard NVML pin)

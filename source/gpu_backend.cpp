@@ -633,13 +633,26 @@ static void rebuild_visible_map() {
         g_app.populatedOrdinal[i] = -1;
         if (g_app.curve[i].freq_kHz == 0) continue;
         g_app.populatedOrdinal[i] = populatedOrdinal++;
-        // Keep the editable VF grid stable across applied offsets and curve edits.
-        // Visibility should follow the baseline point position, not the current live target.
-        unsigned int freq_mhz = (unsigned int)(curve_base_khz_for_point(i) / 1000);
-        unsigned int volt_mv = g_app.curve[i].volt_uV / 1000;
-        if (volt_mv >= MIN_VISIBLE_VOLT_mV && freq_mhz >= MIN_VISIBLE_FREQ_MHz) {
+        // Voltage only: the stock frequency drifts with temperature and must
+        // not move a point into or out of the grid.
+        if (vf_point_visible_in_editor(g_app.curve[i].freq_kHz, g_app.curve[i].volt_uV)) {
             g_app.visibleMap[g_app.numVisible++] = i;
         }
+    }
+    // One line per change of the grid's topology, so a layout shift between
+    // two reads can be matched to the read that caused it.
+    static int lastCount = -1, lastFirstCi = -1, lastLastCi = -1, lastPopulated = -1;
+    int firstCi = g_app.numVisible > 0 ? g_app.visibleMap[0] : -1;
+    int lastCi = g_app.numVisible > 0 ? g_app.visibleMap[g_app.numVisible - 1] : -1;
+    if (g_app.numVisible != lastCount || firstCi != lastFirstCi ||
+        lastCi != lastLastCi || populatedOrdinal != lastPopulated) {
+        debug_log("vf visibility: visible=%d first=ci%d last=ci%d populated=%d (was visible=%d first=ci%d last=ci%d) minVoltMv=%d\n",
+            g_app.numVisible, firstCi, lastCi, populatedOrdinal,
+            lastCount, lastFirstCi, lastLastCi, MIN_VISIBLE_VOLT_mV);
+        lastCount = g_app.numVisible;
+        lastFirstCi = firstCi;
+        lastLastCi = lastCi;
+        lastPopulated = populatedOrdinal;
     }
 }
 static bool restore_locked_tail_from_curve_index_exact(int preferredCi) {

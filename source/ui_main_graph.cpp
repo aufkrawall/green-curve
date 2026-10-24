@@ -172,7 +172,9 @@ static void draw_graph(HDC hdc, RECT* rc) {
     const int VOLT_AXIS_GRID_STEP_MV = 50;
     const int VOLT_AXIS_MIN_SPAN_MV = 300;
     const int VOLT_AXIS_HEADROOM_MV = 10;
-    const int FREQ_AXIS_MIN_MHZ = MIN_VISIBLE_FREQ_MHz;
+    // Visible points include the stock clock floor (~200 MHz), so the floor
+    // follows the data down to 0 instead of clipping it at 500 MHz.
+    const int FREQ_AXIS_MIN_MHZ = 0;
     const int FREQ_AXIS_GRID_STEP_MHZ = 500;
     const int FREQ_AXIS_MIN_SPAN_MHZ = 1000;
     const int FREQ_AXIS_HEADROOM_MHZ = 200;

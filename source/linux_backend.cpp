@@ -523,7 +523,7 @@ static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffs
                 if (pendingMask[i] &&
                     vf_offset_zero_readback_is_benign(desiredOffsets[i],
                         g->freqOffsets[i], g->curve[i].freq_kHz,
-                        MIN_VISIBLE_FREQ_MHz * 1000u)) {
+                        VF_PLACEHOLDER_MAX_FREQ_MHz * 1000u)) {
                     if (!driverRefused[i]) {
                         driverRefused[i] = true;
                         lb_log("curve offset: driver refuses point %d (wrote %dkHz, readback pinned at 0, liveFreq=%ukHz); accepting as non-offsettable placeholder\n",

@@ -1413,6 +1413,29 @@ def check_graph_frequency_axis(ctx, require_text, forbid_text):
                  "axis ceilings round up on the grid with true ceil semantics")
 
 
+def check_vf_point_visibility_is_drift_free(ctx, require_text, forbid_text):
+    """The VF grid's point set depends on voltage only.
+
+    The stock curve's low ramp shifts with GPU temperature, so a 500 MHz
+    frequency term put two points in or out of the grid between a cold logon
+    read and a later warm read, and the grid's columns moved on Refresh.  The
+    grid map and is_curve_point_visible_in_gui() (graph, saved profiles, lock
+    projection) share vf_point_visible_in_editor(); the graph's frequency
+    axis may go below 500 MHz because the stock floor is now plotted.
+    """
+    require_text(_p(ctx, "gpu_backend.cpp"),
+                 "vf_point_visible_in_editor(g_app.curve[i].freq_kHz",
+                 "the VF grid map uses the shared voltage-only rule")
+    require_text(_p(ctx, "main_gpu_state.cpp"), "return vf_point_visible_in_editor(",
+                 "is_curve_point_visible_in_gui uses the shared voltage-only rule")
+    require_text(_p(ctx, "gpu_backend.cpp"), "vf visibility: visible=",
+                 "VF grid topology changes are logged")
+    forbid_text(_p(ctx, "gpu_core.h"), "MIN_VISIBLE_FREQ_MHz",
+                "no frequency threshold decides VF point visibility")
+    forbid_text(_p(ctx, "ui_main_graph.cpp"), "FREQ_AXIS_MIN_MHZ = 500",
+                "the graph frequency axis must not clip the visible stock floor")
+
+
 def check_read_miss_is_not_a_disconnect(ctx, require_text, forbid_text):
     """F-READ-MISS: a busy service must not present as an absent one.
 
@@ -1480,6 +1503,7 @@ def check_all(ctx, require_text, forbid_text):
     check_high_overclock_confirmation(ctx, require_text, forbid_text)
     check_pending_changes(ctx, require_text, forbid_text)
     check_graph_frequency_axis(ctx, require_text, forbid_text)
+    check_vf_point_visibility_is_drift_free(ctx, require_text, forbid_text)
     check_lock_checkbox_render(ctx, require_text, forbid_text)
     check_tray_active_profile(ctx, require_text, forbid_text)
     check_tray_menu_does_not_raise_the_main_window(ctx, require_text, forbid_text)
