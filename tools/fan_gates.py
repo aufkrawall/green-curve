@@ -140,6 +140,28 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
     require_text(linux_daemon_serve_h, "daemon_fan_ownership_shutdown_should_release()",
                  "shutdown preserves inherited handback while releasing this process's writes")
 
+    # Uncertainty idles the worker. Entering it after a write must first return
+    # an owned manual duty to the driver, or that duty stays pinned untracked.
+    ownership_h = _p(ctx, "linux_fan_ownership.h")
+    ctx.require_order_in_operation(
+        ownership_h, "static void daemon_enter_uncertain_state(",
+        "g_stateUncertain = true", "daemon_fan_ownership_release_for_uncertain(",
+        "entering uncertainty returns an owned manual fan")
+    ctx.require_order_in_operation(
+        ownership_h, "static void daemon_fan_ownership_release_for_uncertain(",
+        "linux_backend_set_fan_auto(", "FAN_RUNTIME_EMERGENCY_PERCENT",
+        "a refused uncertainty handback escalates to emergency cooling")
+    for command in ("APPLY", "RESET"):
+        ctx.forbid_text_in_operation(
+            linux_daemon_cpp, f"case SERVICE_CMD_{command}:", "g_stateUncertain = true",
+            f"Linux {command} enters uncertainty through the fan-returning helper")
+        ctx.require_text_in_operation(
+            linux_daemon_cpp, f"case SERVICE_CMD_{command}:", "daemon_enter_uncertain_state(",
+            f"Linux {command} failures return an owned manual fan")
+    for name in ("linux_auto_restore_runtime.h", "linux_startup_policy.h"):
+        forbid_text(_p(ctx, name), "g_stateUncertain = true",
+                    f"{name} enters uncertainty through the fan-returning helper")
+
 
 def check_power_limit_range(ctx, require_text, forbid_text):
     """F-POWER-RANGE: one authoritative power-limit percentage range.

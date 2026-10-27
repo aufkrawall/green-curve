@@ -233,7 +233,7 @@ static void apply_startup_profile_policy() {
         // uncertain.  A GPU that was not ready before any write disturbed no
         // state (see F-PREP-NO-UNCERTAIN), so it must not disable fan
         // reassertion or publish a lockout for the rest of the session.
-        if (outcome.attempted) g_stateUncertain = true;
+        if (outcome.attempted) daemon_enter_uncertain_state("startup profile failed");
         dlog("daemon: startup profile %u did not commit -> %s\n",
              (unsigned int)g_startupPolicy.profileSlot,
              outcome.message[0] ? outcome.message : "unknown reason");

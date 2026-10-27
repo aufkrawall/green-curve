@@ -17,8 +17,8 @@
 #define linux_backend_set_curve_fan_percent fixture_fan_percent
 namespace linux_fan_ownership_fixture {
 static LinuxGpuState g_gpu;
-static bool g_gpuReady, removed, storeFails, autoFails, lockedOut;
-static int writtenAdapter, stores, writes;
+static bool g_gpuReady, g_stateUncertain, removed, storeFails, autoFails, lockedOut;
+static int writtenAdapter, stores, writes, autoWrites, emergencyPercent;
 static LinuxFanOwnershipMarker saved;
 static LinuxAutoRestoreGuard g_autoRestoreGuard;
 static void dlog(const char*, ...) {}
@@ -53,11 +53,13 @@ static bool linux_backend_select_target(LinuxGpuState* gpu, const GpuAdapterInfo
 }
 static bool linux_backend_set_fan_auto(LinuxGpuState* gpu) {
     ++writes;
+    ++autoWrites;
     writtenAdapter = (int)gpu->selectedAdapterIndex;
     return !autoFails;
 }
-static bool linux_backend_set_curve_fan_percent(LinuxGpuState* gpu, unsigned int) {
+static bool linux_backend_set_curve_fan_percent(LinuxGpuState* gpu, unsigned int percent) {
     ++writes;
+    emergencyPercent = (int)percent;
     writtenAdapter = (int)gpu->selectedAdapterIndex;
     return true;
 }
@@ -89,8 +91,8 @@ static void initialize(unsigned int count = 2) {
     g_fanOwnershipMarkerCommitted = false;
     g_fanOwnershipHandbackPending = false;
     g_fanOwnershipRecord = {};
-    removed = storeFails = autoFails = lockedOut = false;
-    stores = writes = 0;
+    removed = storeFails = autoFails = lockedOut = g_stateUncertain = false;
+    stores = writes = autoWrites = emergencyPercent = 0;
     writtenAdapter = -1;
     linux_fan_ownership_marker_initialize(&saved, "fixture-boot",
         &g_gpu.adapters[count - 1]);
@@ -231,6 +233,52 @@ static int run() {
         !daemon_fan_ownership_allows_selected_write(error, sizeof(error), true)) return 7570;
     daemon_fan_ownership_retire("explicit legacy recovery", true);
     if (!removed || g_fanOwnershipMarkerCommitted) return 7570;
+
+    // Uncertainty idles the worker: an owned manual fan returns to the driver
+    // first. Before this, the curve's last duty stayed pinned untracked.
+    initialize();
+    g_gpu.writeIdentityResolved = true;
+    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7580;
+    writes = 0;
+    daemon_enter_uncertain_state("fixture apply rollback failed");
+    if (!g_stateUncertain || writes != 1 || autoWrites != 1 || writtenAdapter != 0 ||
+        !removed || g_fanOwnershipMarkerCommitted) return 7581;
+    initialize();
+    g_gpu.writeIdentityResolved = true;
+    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7582;
+    writes = autoWrites = 0;
+    autoFails = true;
+    daemon_enter_uncertain_state("fixture refused handback");
+    if (writes != 2 || autoWrites != 1 || emergencyPercent != FAN_RUNTIME_EMERGENCY_PERCENT ||
+        removed || !g_fanOwnershipMarkerCommitted) return 7583;
+    initialize();
+    g_gpu.writeIdentityResolved = true;
+    daemon_enter_uncertain_state("fixture without manual fan");
+    if (!g_stateUncertain || writes || removed) return 7584;
+    initialize();
+    g_gpu.writeIdentityResolved = true;
+    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7585;
+    writes = 0;
+    g_gpu.selectedGpu = g_gpu.adapters[1];
+    g_gpu.selectedAdapterIndex = 1;
+    daemon_enter_uncertain_state("fixture other adapter selected");
+    if (writes || removed || !g_fanOwnershipMarkerCommitted) return 7586;
+    initialize();
+    g_gpu.writeIdentityResolved = true;
+    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7587;
+    writes = 0;
+    g_gpuReady = false;
+    daemon_enter_uncertain_state("fixture backend unavailable");
+    if (writes || removed || !g_fanOwnershipMarkerCommitted) return 7588;
+    // Inherited recovery on its own adapter is returned too.
+    initialize();
+    autoFails = true;
+    daemon_fan_ownership_handback_at_start();
+    autoFails = false;
+    writes = autoWrites = 0;
+    daemon_enter_uncertain_state("fixture inherited ownership");
+    if (autoWrites != 1 || writtenAdapter != 1 || g_fanOwnershipMarkerCommitted ||
+        g_fanOwnershipHandbackPending) return 7589;
     return 0;
 }
 } // namespace linux_fan_ownership_fixture

@@ -10,6 +10,20 @@ all six archives, four installers and two Linux packages have fresh timestamps
 and changed hashes, and their payload binaries match the new build outputs.
 Physical GPU failure injection remains unverified.
 
+## Linux uncertain-state fan return (2026-10-27)
+
+Source anchors: `tests/linux_fan_ownership_tests.cpp`,
+`source/linux_fan_ownership.h`, `tools/fan_gates.py`.
+
+Cases 7580-7589 execute `daemon_enter_uncertain_state()` with the fake
+driver: an owned manual fan returns to driver automatic control and retires its
+marker; a refused handback writes the emergency duty and keeps the marker;
+no recorded ownership, another selected adapter or an unavailable backend
+write nothing; inherited startup ownership on its own adapter is returned.
+Case 7581 fails when the release call is removed. `check_runtime_failsafe`
+gates the Apply/Reset/automatic-restore/startup call sites. Full daemon
+orchestration remains outside the fixture.
+
 ## Windows memory recovery (2026-10-27)
 
 Source anchors: `tests/memory_recovery_tests.cpp`,

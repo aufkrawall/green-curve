@@ -5,6 +5,16 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-27: Linux uncertain state returns the owned fan
+
+- Failures that make the daemon state uncertain after a hardware write now
+  return an owned manual fan to the driver before the worker idles, with
+  emergency duty if the driver refuses. Windows rollback already did this.
+- Ownership binding is respected; refusals are logged and change nothing.
+- Cases 7580-7589 execute the helper; case 7581 fails without the release.
+  Fan gates pin every post-write call site. No physical GPU writes.
+- Sources: [fan control](../fan-control.md), [tests](../testing.md).
+
 ## 2026-10-27: Loaded Linux fan ownership remains target-bound
 
 - Retained startup ownership keeps its full adapter, role and UUID binding in

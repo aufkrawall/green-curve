@@ -117,6 +117,44 @@ static void daemon_fan_ownership_retire(const char* reason, bool explicitReset =
          err[0] ? ": " : "", err);
 }
 
+// Uncertain state idles the fan worker, so a manual duty this daemon may hold
+// would stop tracking temperature. Return it to the driver first, as Windows
+// rollback does; only an explicit Apply/Reset takes manual control again.
+static void daemon_fan_ownership_release_for_uncertain(const char* reason) {
+    const char* why = reason && reason[0] ? reason : "unspecified";
+    if (!g_fanOwnershipMarkerCommitted) {
+        dlog("daemon fan ownership: uncertain state (%s); no manual fan recorded\n", why);
+        return;
+    }
+    char err[192] = {};
+    if (!g_gpuReady || !daemon_fan_ownership_allows_selected_write(err, sizeof(err))) {
+        dlog("daemon fan ownership: uncertain state (%s) left the owned fan untouched; "
+             "gpuReady=%d target not selected\n", why, g_gpuReady ? 1 : 0);
+        return;
+    }
+    bool autoOk = linux_backend_set_fan_auto(&g_gpu);
+    bool emergency = false;
+    if (fan_runtime_escalation_after_auto_restore(autoOk) ==
+            FAN_RUNTIME_ESCALATION_EMERGENCY_MAX) {
+        emergency = linux_backend_set_curve_fan_percent(
+            &g_gpu, (unsigned int)FAN_RUNTIME_EMERGENCY_PERCENT);
+    }
+    dlog("daemon fan ownership: uncertain state (%s) returned the fan: driver auto ok=%d%s\n",
+         why, autoOk ? 1 : 0,
+         autoOk ? "" : (emergency ? "; forced emergency duty"
+                                  : "; emergency duty ALSO failed"));
+    if (autoOk) daemon_fan_ownership_retire(why);
+}
+
+// Every transition into uncertainty after a hardware write goes through here.
+static void daemon_enter_uncertain_state(const char* reason) {
+    if (!g_stateUncertain)
+        dlog("daemon state: entering uncertain state (%s)\n",
+             reason && reason[0] ? reason : "unspecified");
+    g_stateUncertain = true;
+    daemon_fan_ownership_release_for_uncertain(reason);
+}
+
 // Latch the automatic-restore guard with the reason clients show as "run
 // Reset".  The guard is loaded before this runs (linux_daemon_run order).
 static void daemon_fan_ownership_latch_incomplete(const char* context) {

@@ -422,10 +422,10 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
         &committed, &committed, outcome.message, sizeof(outcome.message));
     if (!mutation.success) {
         outcome.success = false;
-        g_stateUncertain = true;
         char stateErr[256] = {};
         store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, target, &committed,
                             stateErr, sizeof(stateErr), 0, SERVICE_OPERATION_NONE, role, &binding);
+        daemon_enter_uncertain_state("automatic restore write failed");
         auto_restore_note_automatic_failure(trigger, outcome.message,
                                             mutation.rollbackSucceeded);
         dlog("daemon auto-restore: %s failed -> %s (rollback=%d anyWrite=%d)\n",
@@ -448,11 +448,11 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
         bool rollbackOk = linux_backend_restore_snapshot(
             &g_gpu, &before, mutation.attemptedPhases,
             rollbackErr, sizeof(rollbackErr));
-        g_stateUncertain = true;
         char uncertainErr[256] = {};
         bool uncertaintyRecorded = store_daemon_record(
             LINUX_DAEMON_RECORD_UNCERTAIN, &committedTarget, &committed,
             uncertainErr, sizeof(uncertainErr), 0, SERVICE_OPERATION_NONE, role, &binding);
+        daemon_enter_uncertain_state("automatic restore persistence failed");
         gc_snprintf(outcome.message, sizeof(outcome.message),
                     "automatic restore persistence failed after hardware "
                     "write; hardware rollback %s: %s",

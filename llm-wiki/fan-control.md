@@ -1,5 +1,30 @@
 # Fan Control
 
+## Uncertain state returns the owned fan (2026-10-27)
+
+Source anchors: `source/linux_fan_ownership.h`
+(`daemon_enter_uncertain_state()`), `source/linux_daemon.cpp`,
+`source/linux_auto_restore_runtime.h`, `source/linux_startup_policy.h`,
+`tests/linux_fan_ownership_tests.cpp`, `tools/fan_gates.py`.
+
+The Linux fan worker idles while the daemon state is uncertain. Every failure
+that enters that state after a hardware write therefore returns a fan this
+daemon owns to driver automatic control first, with emergency maximum duty
+when the driver refuses. Covered entries: failed Apply/Reset persistence,
+failed rollback or record restore, and failed automatic or startup restores.
+A verified handback retires the ownership marker; a refused one keeps it.
+
+The rule matches Windows rollback, which already returns the fan to driver
+automatic control. Before it, a curve's last manual duty stayed pinned
+without temperature tracking until a later explicit operation succeeded.
+Ownership binding still applies: another adapter's ownership or an
+unavailable backend is logged and left untouched. Startup state loads and the
+worker's own escalation keep their existing handling. Diagnostics:
+`daemon state: entering uncertain state` and `uncertain state (...) returned
+the fan`. Fake-driver cases cover these paths; hardware is unverified.
+
+Last verified: 2026-10-27.
+
 ## Crash handback target (2026-10-27)
 
 Source anchors: `source/ownership_handback_policy.h`,
