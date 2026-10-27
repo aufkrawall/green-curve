@@ -1252,8 +1252,12 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
                  "the TUI GPU selector steps from the selected GPU")
     require_text(actions_cpp, "tui_select_gpu_step(state, action.value);",
                  "the GPU-name click runs the tested selector")
-    require_text(refresh_cpp, "linux_tui_switch_refusal(&gpu->target, &state->service)",
+    require_text(refresh_cpp, "linux_tui_switch_refusal(&target, &state->service)",
                  "an answered switch refusal is recorded with the state it was refused in")
+    ctx.require_order_in_operation(
+        refresh_cpp, "bool tui_select_gpu_step(",
+        "state->configuredGpu.target = chosen;", "tui_switch_to_configured_gpu(state, true)",
+        "the explicit choice advances before the daemon may refuse its switch")
     require_text(refresh_cpp,
                  "Daemon refused the request; showing the last state it published",
                  "an answered refusal is not reported as a busy daemon")

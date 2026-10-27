@@ -64,6 +64,18 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   Fan gates pin every post-write call site. No physical GPU writes.
 - Sources: [fan control](../fan-control.md), [tests](../testing.md).
 
+## 2026-10-27: Linux TUI selection advances across refused adapters
+
+- Explicit selector choices advance before daemon adoption, so forward cycling
+  reaches a held GPU even through refused intermediate adapters. Writes still
+  require that the chosen GPU is shown.
+- Explicit and automatic switches share refusal tracking. A busy response or
+  disconnect retains the choice for adoption; answered refusals wait for a
+  changed daemon state, another choice or explicit Refresh.
+- Cases 7571-7574 execute three-adapter recovery, refusal suppression, busy and
+  reconnect paths. The held-state case fails without the selector change.
+- Sources: [Linux TUI](../linux-scaffold.md), [tests](../testing.md).
+
 ## 2026-10-27: Loaded Linux fan ownership remains target-bound
 
 - Retained startup ownership keeps its full adapter, role and UUID binding in

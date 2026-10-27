@@ -294,6 +294,15 @@ Source anchors: `tests/linux_tui_gpu_target_tests.cpp`,
 `source/linux_tui_authority.h` (`linux_tui_shown_gpu_write()`,
 `linux_tui_gpu_adoption()`), `source/linux_tui_refresh.cpp`,
 `tools/linux_gates.py` (`check_gpu_location`).
+
+Cases 7571-7574 execute selector steps and refreshes through the same production
+code with a scripted daemon: three-adapter held-state recovery, cycling past
+multiple refused adapters without per-tick retries, busy-switch retry,
+disconnect/reconnect adoption and reverse cycling. The chosen adapter advances
+before switch success, while Apply/Reset remain gated on the adapter shown.
+Case 7571 fails before the selector change. No physical GPU writes or timing
+assumptions are involved.
+
 7400-7402 drive the pure policy: a selection that names a GPU writes only
 while exactly that GPU is shown, otherwise the TUI switches or holds for
 active settings (7400); no selection defers to the daemon (7401); an

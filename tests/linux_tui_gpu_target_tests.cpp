@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
-// The Linux TUI's write target, assertion codes 7400-7409 and 7430-7439.  The
-// TUI sends the GPU it shows (TuiState::targetGpu), so a write is allowed only
-// while the selected GPU -- `--gpu`, config.ini's resolved record, the
-// selector -- IS the one shown.  7400-7402, 7409 and 7430 drive the pure policy
-// (linux_tui_authority.h); 7403-7408 and 7431-7436 drive the real
-// tui_refresh_service() and tui_configured_gpu_allows_write()
+// The Linux TUI's write target, assertion codes 7400-7409, 7430-7439 and
+// 7571-7574. The TUI sends the GPU it shows (TuiState::targetGpu), so a write
+// is allowed only while the selected GPU -- `--gpu`, config.ini's resolved
+// record, the selector -- IS the one shown.  7400-7402, 7409 and 7430 drive
+// the pure policy (linux_tui_authority.h); 7403-7408, 7431-7436 and 7571-7574
+// drive the real tui_refresh_service(), tui_select_gpu_step() and
+// tui_configured_gpu_allows_write()
 // (linux_tui_refresh.cpp) against a scripted daemon that keeps the rule the
 // real one enforces: while it holds active settings it refuses to select
 // another GPU (linux_gpu_switch_preserves_active_intent).
@@ -396,6 +397,77 @@ int refresh_tests() {
 // The way out of a hold, and the steps that keep a switch from being asked
 // for once per telemetry tick.
 int recovery_tests() {
+    // A refused intermediate GPU must still advance the selector's choice.
+    // Otherwise forward cycling cannot reach the held GPU for its Reset.
+    {
+        daemon_reset(true);
+        g_daemon.published.snapshot.adapterCount = 3;
+        g_daemon.published.snapshot.adapters[2] = twin_at(8);
+        TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_RESOLVED, 7);
+        if (!tui_refresh_service(state, false)) return 7571;
+        if (tui_select_gpu_step(state, 1) || shown_bus(state) != 6 ||
+            state->configuredGpu.target.pciBus != 8 ||
+            state->configuredGpu.status != LINUX_CONFIGURED_GPU_EXPLICIT ||
+            tui_configured_gpu_allows_write(state, "Reset")) return 7571;
+        if (!tui_select_gpu_step(state, 1) || shown_bus(state) != 6 ||
+            state->configuredGpu.target.pciBus != 6 ||
+            !tui_configured_gpu_allows_write(state, "Reset")) return 7571;
+        g_daemon.published.state.activeDesiredValid = false;
+        if (!tui_refresh_service(state, false) ||
+            !tui_select_gpu_step(state, 1) || shown_bus(state) != 7) return 7571;
+    }
+    // Explicit answered refusals share adoption's retry suppression. Cycling
+    // can pass each refused adapter and return to the GPU already shown.
+    {
+        daemon_reset(false);
+        g_daemon.published.snapshot.adapterCount = 3;
+        g_daemon.published.snapshot.adapters[2] = twin_at(8);
+        TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_NONE, 0);
+        if (!tui_refresh_service(state, false)) return 7572;
+        g_daemon.refuseTargeted = true;
+        for (unsigned int bus : {7u, 8u}) {
+            if (tui_select_gpu_step(state, 1) ||
+                state->configuredGpu.target.pciBus != bus ||
+                !state->switchRefusal.valid ||
+                tui_configured_gpu_allows_write(state, "Apply")) return 7572;
+            const int refusedReads = g_daemon.switchRequests;
+            if (!tui_refresh_service(state, false) ||
+                !tui_refresh_service(state, false) ||
+                g_daemon.switchRequests != refusedReads ||
+                state->gpuAdoption != LINUX_TUI_GPU_ADOPTION_REFUSED) return 7572;
+        }
+        if (!tui_select_gpu_step(state, 1) ||
+            state->configuredGpu.target.pciBus != 6 ||
+            !tui_configured_gpu_allows_write(state, "Reset")) return 7572;
+    }
+    // A busy switch keeps the explicit choice and retries after the next
+    // answered refresh; it is never latched as an answered refusal.
+    {
+        daemon_reset(false);
+        TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_NONE, 0);
+        if (!tui_refresh_service(state, false)) return 7573;
+        g_daemon.busyTargeted = true;
+        if (tui_select_gpu_step(state, 1) ||
+            state->configuredGpu.target.pciBus != 7 || state->switchRefusal.valid ||
+            tui_configured_gpu_allows_write(state, "Reset")) return 7573;
+        g_daemon.busyTargeted = false;
+        if (!tui_refresh_service(state, false) || shown_bus(state) != 7 ||
+            !tui_configured_gpu_allows_write(state, "Apply")) return 7573;
+    }
+    // A disconnect during a selector request also preserves the choice for
+    // reconnect. Reverse cycling remains available after adoption.
+    {
+        daemon_reset(false);
+        TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_NONE, 0);
+        if (!tui_refresh_service(state, false)) return 7574;
+        g_daemon.offline = true;
+        if (tui_select_gpu_step(state, 1) || state->serviceOnline ||
+            state->configuredGpu.target.pciBus != 7 || state->switchRefusal.valid) return 7574;
+        g_daemon.offline = false;
+        if (!tui_refresh_service(state, false) || shown_bus(state) != 7 ||
+            !tui_select_gpu_step(state, -1) || shown_bus(state) != 6 ||
+            !tui_configured_gpu_allows_write(state, "Reset")) return 7574;
+    }
     // 7431: config.ini names B; A holds active settings, so the daemon keeps
     // A and refuses B.  The TUI used to block every write to A, Reset
     // included, while its selector could only step to B: the hold the

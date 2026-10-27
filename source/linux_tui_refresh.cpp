@@ -24,6 +24,30 @@ static bool tui_gpu_adoption_blocks(LinuxTuiGpuAdoption step) {
            step != LINUX_TUI_GPU_ADOPTION_SWITCH;
 }
 
+// Both automatic adoption and an explicit selector step remember an answered
+// refusal. Busy requests remain retryable on the next answered refresh.
+static bool tui_switch_to_configured_gpu(TuiState* state, bool userRequested) {
+    const GpuAdapterInfo target = state->configuredGpu.target;
+    LinuxDaemonSendOutcome outcome = {};
+    char error[192] = {};
+    const bool refreshed = tui_refresh_from_daemon(state, userRequested,
+        &target, &outcome, error, sizeof(error));
+    if (!refreshed && outcome.answered) {
+        state->switchRefusal = linux_tui_switch_refusal(&target, &state->service);
+        snprintf(state->switchRefusalReason, sizeof(state->switchRefusalReason),
+                 "%s", error[0] ? error : "no reason given");
+        linux_debug_logf("tui: switch to the selected GPU refused: %s "
+                         "(instance=%llu generation=%llu activeSettings=%d); "
+                         "asked again when the daemon's state changes",
+                         state->switchRefusalReason,
+                         (unsigned long long)state->service.state.serviceInstanceId,
+                         (unsigned long long)state->service.state.gpuGeneration,
+                         state->service.state.activeDesiredValid ? 1 : 0);
+    }
+    return refreshed && state->targetGpu.valid &&
+        linux_gpu_identity_matches(&target, &state->targetGpu);
+}
+
 // config.ini's GPU is resolved against the daemon's own adapter list the first
 // time one is available: at start, or on the reconnect after a start without
 // the daemon.  Only the live adapter it resolved to is ever sent; the stored
@@ -51,26 +75,7 @@ static void tui_adopt_configured_gpu(TuiState* state, bool userRequested) {
     }
     LinuxTuiGpuAdoption step = tui_gpu_adoption_step(state);
     if (step == LINUX_TUI_GPU_ADOPTION_SWITCH) {
-        LinuxDaemonSendOutcome outcome = {};
-        char error[192] = {};
-        if (!tui_refresh_from_daemon(state, false, &gpu->target, &outcome,
-                                     error, sizeof(error)) &&
-            outcome.answered) {
-            // A failed refresh leaves state->service as it was: the state the
-            // switch was refused in.
-            state->switchRefusal =
-                linux_tui_switch_refusal(&gpu->target, &state->service);
-            snprintf(state->switchRefusalReason,
-                     sizeof(state->switchRefusalReason), "%s",
-                     error[0] ? error : "no reason given");
-            linux_debug_logf("tui: switch to the selected GPU refused: %s "
-                             "(instance=%llu generation=%llu activeSettings=%d); "
-                             "asked again when the daemon's state changes",
-                             state->switchRefusalReason,
-                             (unsigned long long)state->service.state.serviceInstanceId,
-                             (unsigned long long)state->service.state.gpuGeneration,
-                             state->service.state.activeDesiredValid ? 1 : 0);
-        }
+        tui_switch_to_configured_gpu(state, false);
         step = tui_gpu_adoption_step(state);
     }
     // A blocked selection whose problem changed (unchecked -> not present)
@@ -187,11 +192,17 @@ bool tui_select_gpu_step(TuiState* state, int delta) {
         return false;
     }
     const GpuAdapterInfo chosen = state->service.snapshot.adapters[next];
-    if (!tui_refresh_service(state, true, &chosen) || !state->targetGpu.valid ||
-        !linux_gpu_identity_matches(&chosen, &state->targetGpu)) return false;
-    state->configuredGpu.target = state->targetGpu;
+    // The choice advances even when the daemon must keep showing another GPU.
+    // The shown-GPU write gate remains responsible for mutation authority.
+    state->configuredGpu.target = chosen;
     state->configuredGpu.status = LINUX_CONFIGURED_GPU_EXPLICIT;
-    return true;
+    state->configuredGpu.role = linux_gpu_location_role_for_selection(
+        &chosen, state->service.snapshot.adapters, count);
+    state->switchRefusal = LinuxTuiSwitchRefusal{};
+    state->switchRefusalReason[0] = 0;
+    linux_debug_logf("tui: selector choice advanced to adapter=%d; waiting for the shown GPU to match",
+                     next);
+    return tui_switch_to_configured_gpu(state, true);
 }
 
 bool tui_refresh_service(TuiState* state, bool userRequested,

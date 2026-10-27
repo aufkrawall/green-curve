@@ -806,8 +806,13 @@ boot recovery rebind) keep the exact `linux_gpu_identity_matches()`.
   selection. Stepping from the daemon's selection made a HELD state a dead
   end: the daemon refuses every GPU but the one with active settings, that GPU
   was not selected (so Reset was blocked), and one step from it is always
-  another GPU. Now one step reaches the held GPU, its Reset is allowed, and
-  the next step reaches the wanted one.
+  another GPU. The selector now advances its explicit choice before asking
+  the daemon to adopt it, including when an intermediate adapter is refused
+  (2026-10-27). Repeated forward steps can reach the held GPU with three or
+  more adapters; its Reset is allowed once it is selected and shown. The choice
+  also survives busy responses and disconnects. Explicit and automatic switches
+  share answered-refusal tracking, so telemetry does not repeat refused switches
+  to the selection. Diagnostic: `tui: selector choice advanced to adapter=`.
 - Diagnostics: `linux_format_stored_gpu_detail()` (stored model@BDF, role,
   first four live adapters) in the backend's "stored GPU target ..." line, the
   client's "gpu selection:" lines and the persist line; the daemon logs a moved
