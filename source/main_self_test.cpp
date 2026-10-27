@@ -137,10 +137,13 @@ static void self_test_clk_domain_survey(FILE* out) {
                      " (see debug log)\n");
         return;
     }
+    // A successful read guarantees a pinned row for the response's version.
+    const XbarClkDomainsSchema* schema = xbar_schema_for_version_word(snap.versionWord);
+    if (!schema) return;
     fprintf(out, "control block         : schema=0x%08X base=0x%03X"
                  " stride=0x%03X domains=%u\n",
             snap.versionWord, snap.entryBase, snap.entryStride,
-            g_xbarSchemas[0].domainCount);
+            schema->domainCount);
     static const unsigned short entryWords[] = {
         0x00, 0x04, 0x08, 0x0c, 0x10, 0x14,
         0x110, 0x114, 0x118, 0x11c, 0x120, 0x124,
@@ -161,7 +164,7 @@ static void self_test_clk_domain_survey(FILE* out) {
             measuredValid[id] =
                 self_test_measure_domain(measure, gpu, id, &measuredKhz[id]);
     }
-    for (unsigned int i = 0; i < g_xbarSchemas[0].domainCount; ++i) {
+    for (unsigned int i = 0; i < schema->domainCount; ++i) {
         unsigned int entry = snap.entryBase + i * snap.entryStride;
         fprintf(out, "entry %u:", i);
         for (unsigned int w = 0; w < sizeof(entryWords) / sizeof(entryWords[0]);
@@ -581,7 +584,15 @@ static int clk_domain_probe_report(FILE* out) {
     self_test_measure_all(measure, gpu, baseKhz, baseOk);
 
     const unsigned int kProbeDeltaKhz = 50000;
-    const unsigned int kFreqField = g_xbarSchemas[0].freqOffsetField;
+    // Field geometry comes from the schema the driver answered with, never
+    // from the first request row: this probe WRITES the field it resolves.
+    if (!xbar_read_control(getControl, gpu, &snap)) {
+        fprintf(out, "control block: no pinned schema matched, aborting probe\n");
+        return 2;
+    }
+    const XbarClkDomainsSchema* schema = xbar_schema_for_version_word(snap.versionWord);
+    if (!schema) return 2;
+    const unsigned int kFreqField = schema->freqOffsetField;
     // Optional single-entry targeting for follow-up experiments while a
     // specific engine is loaded (GC_CLK_PROBE_ENTRY env var, or a
     // clk_probe_entry.txt marker beside the INI for elevated launches, which
@@ -611,23 +622,25 @@ static int clk_domain_probe_report(FILE* out) {
         if (selector && selector[0]) {
             unsigned int parsedEntry = 0;
             if (!gc_clk_probe_entry::parse(
-                    selector, g_xbarSchemas[0].domainCount, &parsedEntry)) {
+                    selector, schema->domainCount, &parsedEntry)) {
                 fprintf(out,
                         "invalid %s selector; expected an entry from 0 to %u\n",
-                        selectorSource, g_xbarSchemas[0].domainCount - 1);
+                        selectorSource, schema->domainCount - 1);
                 return 2;
             }
             onlyEntry = (int)parsedEntry;
         }
     }
-    for (unsigned int k = 0; k < g_xbarSchemas[0].domainCount; ++k) {
+    for (unsigned int k = 0; k < schema->domainCount; ++k) {
         if (onlyEntry >= 0 && (unsigned int)onlyEntry != k) continue;
-        if (k == g_xbarSchemas[0].entryIndex && onlyEntry < 0) {
+        if (k == schema->entryIndex && onlyEntry < 0) {
             fprintf(out, "entry %u: XBAR (known owner, skipped)\n", k);
             continue;
         }
-        if (!xbar_read_control(getControl, gpu, &snap)) {
-            fprintf(out, "entry %u: baseline read failed, aborting probe\n", k);
+        if (!xbar_read_control(getControl, gpu, &snap) ||
+            snap.versionWord != schema->versionWord) {
+            fprintf(out, "entry %u: baseline read failed or its schema changed,"
+                         " aborting probe\n", k);
             break;
         }
         unsigned int entryBase =
@@ -730,7 +743,7 @@ static int clk_domain_dump_report(FILE* out) {
     fprintf(f, "# Green Curve ClkDomains dump\n");
     fprintf(f, "# schema_word=0x%08X entry_base=0x%X entry_stride=0x%X"
                " domains=%u\n", snap.versionWord, snap.entryBase,
-            snap.entryStride, g_xbarSchemas[0].domainCount);
+            snap.entryStride, xbar_schema_for_version_word(snap.versionWord)->domainCount);
     for (unsigned int id = 0; id < CLK_PROBE_MAX_DOMAINS; ++id) {
         unsigned int khz = 0;
         if (self_test_measure_domain(

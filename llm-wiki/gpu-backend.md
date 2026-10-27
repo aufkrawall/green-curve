@@ -188,6 +188,16 @@ field, and the documented public clock-frequency query supplies live video
 telemetry. Video has no CLK_MEASURE id; exact control-block readback is its
 transaction proof. Do not blind-write non-offset dwords in the block.
 
+Every SYS/VIDEO reader resolves the entry field from the schema row of the
+driver's RESPONSE (`xbar_read_entry_freq()`): Windows apply, reset-before-
+apply, explicit Reset and the capability probe, matching the Linux backend and
+telemetry. The `--clk-domain-probe` and dump diagnostics take domain count,
+field and XBAR entry from that row too, and the probe aborts if a later read
+answers with another schema. Before 2026-10-27 these Windows paths used the
+first table row, which only matched while the table held one schema; the probe
+would have written the wrong field. `tools/xbar_gates.py` forbids first-row
+geometry in those files.
+
 Windows and Linux XBAR frequency/MSVDD control use the private **NvAPI
 ClkDomains** surface, not Linux RM command IDs and not PropRels:
 

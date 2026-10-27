@@ -70,29 +70,19 @@ static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
                   snap.measuredKhz, g_app.xbarMeasuredVoltageUv);
         // The same validated block carries the SYS entry: extraction is
         // read-only and rides the exact-readback proof already established.
-        unsigned long long sysField =
-            (unsigned long long)snap.entryBase +
-            XBAR_PINNED_SYS_ENTRY_INDEX * snap.entryStride +
-            g_xbarSchemas[0].freqOffsetField;
-        if (sysField + sizeof(unsigned int) <= XBAR_CONTROL_BUF_SIZE) {
+        if (xbar_read_entry_freq(&snap, XBAR_PINNED_SYS_ENTRY_INDEX,
+                                 &g_app.sysClkFreqOffsetKhz)) {
             g_app.sysClkProbeValid = true;
             g_app.sysClkFreqReadbackValid = true;
-            g_app.sysClkFreqOffsetKhz =
-                (int)xbar_get_u32(snap.buf, (unsigned int)sysField);
             debug_log("gpu capability probe: sys-clk entry %u offset=%d kHz\n",
                       XBAR_PINNED_SYS_ENTRY_INDEX, g_app.sysClkFreqOffsetKhz);
         }
         // VIDEO entry: same validated block, pinned index 4 (differentially
         // identified by an exact before/after control-block diff on this board).
-        unsigned long long videoField =
-            (unsigned long long)snap.entryBase +
-            (unsigned long long)XBAR_PINNED_VIDEO_ENTRY_INDEX * snap.entryStride +
-            g_xbarSchemas[0].freqOffsetField;
-        if (videoField + sizeof(unsigned int) <= XBAR_CONTROL_BUF_SIZE) {
+        if (xbar_read_entry_freq(&snap, XBAR_PINNED_VIDEO_ENTRY_INDEX,
+                                 &g_app.videoClkFreqOffsetKhz)) {
             g_app.videoClkProbeValid = true;
             g_app.videoClkFreqReadbackValid = true;
-            g_app.videoClkFreqOffsetKhz =
-                (int)xbar_get_u32(snap.buf, (unsigned int)videoField);
             debug_log("gpu capability probe: video-clk entry %u offset=%d kHz\n",
                       XBAR_PINNED_VIDEO_ENTRY_INDEX,
                       g_app.videoClkFreqOffsetKhz);

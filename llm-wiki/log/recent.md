@@ -5,6 +5,16 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-27: Windows ClkDomains readers use the response schema
+
+- Windows SYS/VIDEO readback after apply, reset-before-apply, Reset and the
+  capability probe now uses `xbar_read_entry_freq()` like Linux and telemetry.
+  The clock probe and dump take their geometry from the response schema; the
+  probe aborts on a schema change. No behaviour change with today's single
+  schema row; a second row would have mis-read and mis-written fields.
+- Gated in `tools/xbar_gates.py`; built and tested once with the batch.
+- Sources: [GPU backend](../gpu-backend.md).
+
 ## 2026-10-27: Windows NVML binding compares device IDs
 
 - Windows matched NVML devices to the selected NvAPI GPU with a clause that

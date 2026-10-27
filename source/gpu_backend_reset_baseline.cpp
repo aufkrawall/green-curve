@@ -175,11 +175,8 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
             XbarControlSnapshot snap{};
             if (xbar_write_entry_freq(sysGetFunc, sysSetFunc, g_app.gpuHandle,
                                       &snap, XBAR_PINNED_SYS_ENTRY_INDEX, 0)) {
-                unsigned int sysField = snap.entryBase +
-                    XBAR_PINNED_SYS_ENTRY_INDEX * snap.entryStride +
-                    g_xbarSchemas[0].freqOffsetField;
-                g_app.sysClkFreqReadbackValid = true;
-                g_app.sysClkFreqOffsetKhz = (int)xbar_get_u32(snap.buf, sysField);
+                g_app.sysClkFreqReadbackValid = xbar_read_entry_freq(
+                    &snap, XBAR_PINNED_SYS_ENTRY_INDEX, &g_app.sysClkFreqOffsetKhz);
                 g_app.appliedAdvancedOwnedSysClk = false;
                 debug_log("reset-before-apply: SYS clock reset to %d kHz\n",
                           g_app.sysClkFreqOffsetKhz);
@@ -199,11 +196,8 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
             XbarControlSnapshot snap{};
             if (xbar_write_entry_freq(vidGetFunc, vidSetFunc, g_app.gpuHandle,
                                       &snap, (unsigned int)XBAR_PINNED_VIDEO_ENTRY_INDEX, 0)) {
-                unsigned int videoField = snap.entryBase +
-                    XBAR_PINNED_VIDEO_ENTRY_INDEX * snap.entryStride +
-                    g_xbarSchemas[0].freqOffsetField;
-                g_app.videoClkFreqReadbackValid = true;
-                g_app.videoClkFreqOffsetKhz = (int)xbar_get_u32(snap.buf, videoField);
+                g_app.videoClkFreqReadbackValid = xbar_read_entry_freq(
+                    &snap, XBAR_PINNED_VIDEO_ENTRY_INDEX, &g_app.videoClkFreqOffsetKhz);
                 g_app.appliedAdvancedOwnedVideoClk = false;
                 debug_log("reset-before-apply: VIDEO clock reset to %d kHz\n",
                           g_app.videoClkFreqOffsetKhz);

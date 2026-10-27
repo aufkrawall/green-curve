@@ -132,6 +132,13 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
                  "F-XBAR-LIVE: VIDEO telemetry actually invokes the public clock reader")
     forbid_text(telemetry_h, "g_xbarSchemas[0].freqOffsetField",
                 "F-XBAR-SCHEMA-TABLE: telemetry resolves entry fields from the response schema")
+    # Every reader and writer resolves geometry from the driver's response; the
+    # first request row only matches it while the table has a single schema.
+    for name in ("gpu_backend_apply_advanced.h", "gpu_backend_reset_baseline.cpp",
+                 "main_service_apply_runtime.cpp", "gpu_capability_xbar_probe.h",
+                 "main_self_test.cpp"):
+        forbid_text(_p(ctx, name), "g_xbarSchemas[0].",
+                    f"F-XBAR-SCHEMA-TABLE: {name} resolves entry fields from the response schema")
     require_text(dialog_cpp, "(int)outerSize.cx, (int)outerSize.cy,",
                  "F-XBAR-DIALOG: CreateWindow receives the adjusted frame size")
     forbid_text(dialog_cpp, "x, y, dlgW, dlgH,",
