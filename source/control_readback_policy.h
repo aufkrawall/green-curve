@@ -155,6 +155,49 @@ static inline bool power_reset_before_apply_required(bool requestOwnsPower,
     return requestOwnsPower && surfaceAvailable && currentPct != targetPct;
 }
 
+// A power write is proven by the limit the driver reports afterwards, not by
+// an accepted call. One watt of tolerance: the nvidia-smi fallback takes whole
+// watts, and a driver may round to them.
+static const unsigned int POWER_LIMIT_READBACK_TOLERANCE_MW = 1000u;
+
+static inline bool power_limit_readback_matches_target(int currentmW,
+                                                       unsigned int targetmW) {
+    if (currentmW <= 0 || targetmW == 0) return false;
+    const unsigned int current = (unsigned int)currentmW;
+    const unsigned int delta = current > targetmW ? current - targetmW
+                                                  : targetmW - current;
+    return delta <= POWER_LIMIT_READBACK_TOLERANCE_MW;
+}
+
+// nvidia-smi applies -pl to EVERY GPU unless -i names one, so the fallback
+// needs the selected GPU's bus ID. It comes from the driver; only the hex
+// domain:bus:device.function shape may reach the command line.
+static inline bool power_limit_smi_bus_id_valid(const char* busId) {
+    if (!busId) return false;
+    int separators = 0;
+    int digits = 0;
+    bool function = false;
+    size_t length = 0;
+    for (const char* p = busId; *p; ++p) {
+        if (++length > 31) return false;
+        const char c = *p;
+        if (c == ':') {
+            if (digits == 0 || function || ++separators > 2) return false;
+            digits = 0;
+        } else if (c == '.') {
+            if (digits == 0 || function || separators != 2) return false;
+            function = true;
+            digits = 0;
+        } else if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') ||
+                   (c >= 'a' && c <= 'f')) {
+            ++digits;
+        } else {
+            return false;
+        }
+    }
+    return function && digits > 0;
+}
+
 struct ControlReadbackFacts {
     // Whether the *published* GPU offset came from a driver reading rather than
     // remembered intent.  Two of the Windows detection branches deliberately

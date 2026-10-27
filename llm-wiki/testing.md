@@ -51,6 +51,18 @@ already assumed by a manual Apply write nothing. Case 7596 fails without the
 deferral flag. Gates pin both readiness transitions ahead of their target
 selection and keep the in-flight count before the write.
 
+## Windows power write verification (2026-10-27)
+
+Source anchors: `tests/regression_main.cpp`, `source/control_readback_policy.h`,
+`source/gpu_backend_power.cpp`, `tools/readback_gates.py`.
+
+Cases 7600-7602 pin the one-watt readback tolerance, including a rejected
+off-target limit and unusable readings. Cases 7603-7606 accept NVML bus-ID
+shapes and reject truncated, malformed, oversized and argument-injecting IDs.
+Gates require both write routes to verify the reported limit and the
+`nvidia-smi` fallback to name the selected GPU and refuse before launch
+without one. The fallback itself is not executed by the harness.
+
 ## Windows memory recovery (2026-10-27)
 
 Source anchors: `tests/memory_recovery_tests.cpp`,

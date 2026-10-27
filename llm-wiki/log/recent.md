@@ -5,6 +5,16 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-27: Windows power writes target and verify one GPU
+
+- The `nvidia-smi` power fallback passes `-i` with the selected GPU's PCI bus
+  ID and refuses without one; without `-i` it changed every GPU, including in
+  rollback. The ID is validated before reaching the command line.
+- Both write routes now require the reported limit to be within 1 W of the
+  target instead of accepting any readback.
+- Cases 7600-7606 and readback gates. Not run on multi-GPU hardware.
+- Sources: [GPU backend](../gpu-backend.md), [tests](../testing.md).
+
 ## 2026-10-27: Deferred Linux fan handback runs when the GPU comes up
 
 - A start that found inherited fan ownership but no usable GPU backend now

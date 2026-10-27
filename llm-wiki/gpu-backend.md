@@ -717,7 +717,7 @@ Expected, and harmless: clocks only fall there.
 `validate_desired_settings_for_ipc()`), `source/gpu_backend_reset_baseline.cpp`,
 `source/gpu_capability_probe.cpp`, `source/linux_backend_mutation.cpp`
 (`linux_power_request_is_inert()`), gates in `tools/readback_gates.py`,
-regressions 5040-5071 + 4756 in `tests/regression_main.cpp`.
+regressions 5040-5071, 7600-7606 + 4756 in `tests/regression_main.cpp`.
 
 ### The unit, and why it can go missing
 
@@ -858,6 +858,26 @@ existing at one of two identical call sites is what made it a defect rather than
 a style difference. Both now ask `linux_nvapi_enum_count_is_usable()`
 (assertions 5331-5336).
 
+### Write verification and the `nvidia-smi` fallback (2026-10-27)
+
+An accepted write is verified by the limit NVML reports afterwards
+(`power_limit_verify_write()`): within `POWER_LIMIT_READBACK_TOLERANCE_MW`
+(1 W) of the target, on both routes. Before, any successful readback counted,
+whatever wattage it reported. The tolerance covers the fallback's whole-watt
+argument and driver rounding.
+
+`nvidia-smi -pl` without `-i` applies the wattage to **every** GPU in the
+machine; on a multi-GPU system a refused NVML write used to change all of
+them, and the rollback wrote the selected board's default wattage to all of
+them too. The fallback now names the selected GPU by PCI bus ID
+(`power_limit_selected_bus_id()`: NVML's own string, else the enriched
+adapter location) and refuses to launch without one. The ID is validated as
+hex `domain:bus:device.function` (`power_limit_smi_bus_id_valid()`) before it
+reaches the command line. Diagnostics: `Power limit via nvidia-smi: gpu=...`,
+`... skipped: the selected GPU's PCI bus ID is unknown` and `... the driver
+reports N mW for target M mW`. Regressions 7600-7606; gates in
+`tools/readback_gates.py`. Not exercised on a multi-GPU machine.
+
 ### Open question / stale-risk
 
 We still do not know **which** NVML call the reported board refuses; the log
@@ -914,7 +934,7 @@ the power-target section (no laptop GPU available locally).
 - GUI graph paint logs when it hides live locked-tail readback drift behind the effective user lock display.
 - Unknown-family diagnostics state that the fallback backend is best-effort but write-enabled. Known Pascal/Turing/Ampere/Lovelace/Blackwell families do not show the warning. Metadata logs include `archStatus`, `pciStatus`, architecture/implementation/revision, PCI identifiers, selected family/backend, and whether the same-PCI backend cache was retained.
 - Fresh service initialization may diagnose a stale/non-effective NVML memory VF offset when PState/SMI cross-validation is unavailable. It logs `diagnostic only, no write`; service startup never "corrects" the register or otherwise mutates GPU state.
-- The board maximum memory clock used by the memory-offset derivation (`pstateMemMaxMHz - nvmlMemMaxMHz`) is `nvmlDeviceGetMaxClockInfo(NVML_CLOCK_MEM)` for the selected device, re-read on every `detect_clock_offsets()` (2026-09-23). It replaced a hidden `nvidia-smi -q -d CLOCK` child with a redirected pipe, which took the **last** GPU's value on multi-GPU systems. Equivalence measured on the RTX 5070 host: NVML 14001 MHz == nvidia-smi "Max Clocks / Memory" 14001 MHz. `debug_log_on_change("nvml max memory clock: ...")` logs value and NVML status. The `getMaxClock` table entry had resolved the nonexistent export `nvmlDeviceGetMaxClock` (always null) until then. The `nvidia-smi -pl` power-limit fallback (plain child, no pipe) is unchanged.
+- The board maximum memory clock used by the memory-offset derivation (`pstateMemMaxMHz - nvmlMemMaxMHz`) is `nvmlDeviceGetMaxClockInfo(NVML_CLOCK_MEM)` for the selected device, re-read on every `detect_clock_offsets()` (2026-09-23). It replaced a hidden `nvidia-smi -q -d CLOCK` child with a redirected pipe, which took the **last** GPU's value on multi-GPU systems. Equivalence measured on the RTX 5070 host: NVML 14001 MHz == nvidia-smi "Max Clocks / Memory" 14001 MHz. `debug_log_on_change("nvml max memory clock: ...")` logs value and NVML status. The `getMaxClock` table entry had resolved the nonexistent export `nvmlDeviceGetMaxClock` (always null) until then. The `nvidia-smi -pl` power-limit fallback (plain child, no pipe) is unchanged; since 2026-10-27 it names the selected GPU with `-i`.
 - Large VF offset diagnostics are aggregated into one high-offset summary per curve batch. This preserves visibility for experimental tail-floor writes while avoiding dozens of repeated per-point warnings in normal locked-tail applies.
 
 ## Validation

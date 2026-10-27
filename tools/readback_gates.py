@@ -90,6 +90,24 @@ def check_all(ctx, require_text, forbid_text):
     require_text(gpu_backend_power_cpp,
                  "post-write readback is unavailable",
                  "a successful power write is not reported as verified if readback disappears")
+    ctx.require_text_in_operation(
+        gpu_backend_power_cpp, "static bool power_limit_verify_write(",
+        "power_limit_readback_matches_target(g_app.powerLimitCurrentmW, targetmW)",
+        "an accepted power write is verified against the reported limit")
+    for route in ('"NVML"', '"nvidia-smi"'):
+        ctx.require_text_in_operation(
+            gpu_backend_power_cpp, "static bool nvapi_set_power_limit(",
+            f"power_limit_verify_write({route}, targetmW)",
+            f"the {route} power route verifies the reported limit")
+    # Without -i, nvidia-smi applies the limit to every GPU in the machine.
+    require_text(gpu_backend_power_cpp, '-i %hs -pl %d',
+                 "the nvidia-smi power fallback names the selected GPU")
+    forbid_text(gpu_backend_power_cpp, '\\"%ls\\" -pl %d',
+                "the nvidia-smi power fallback never runs without a GPU selector")
+    ctx.require_order_in_operation(
+        gpu_backend_power_cpp, "static bool nvapi_set_power_limit(",
+        "if (!power_limit_selected_bus_id(busId, sizeof(busId)))", "CreateProcessW(",
+        "the nvidia-smi fallback refuses before launch without the selected bus ID")
 
     # Capability classification must use the same complete current/default pair
     # as the runtime producer. A current-only probe marked AVAILABLE while the

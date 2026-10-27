@@ -103,6 +103,39 @@ static bool nvml_read_power_limit() {
     return true;
 }
 
+// The selected GPU's PCI bus ID for `nvidia-smi -i`: NVML's own string when
+// NVML resolved the device, else the enriched adapter location.
+static bool power_limit_selected_bus_id(char* out, size_t outSize) {
+    if (!out || outSize == 0) return false;
+    out[0] = 0;
+    if (nvml_ensure_ready() && g_nvml_api.getPciInfo) {
+        nvmlPciInfo_t pci = {};
+        if (g_nvml_api.getPciInfo(g_app.nvmlDevice, &pci) == NVML_SUCCESS)
+            StringCchCopyA(out, outSize, nvml_pci_bus_id_text(&pci));
+    }
+    if (!out[0] && gpu_adapter_has_valid_pci_location(&g_app.selectedGpu)) {
+        StringCchPrintfA(out, outSize, "%08X:%02X:%02X.%X",
+            g_app.selectedGpu.pciDomain, g_app.selectedGpu.pciBus,
+            g_app.selectedGpu.pciDevice, g_app.selectedGpu.pciFunction);
+    }
+    return power_limit_smi_bus_id_valid(out);
+}
+
+// After an accepted write the driver must report the target itself.
+static bool power_limit_verify_write(const char* route, unsigned int targetmW) {
+    if (!nvml_read_power_limit()) {
+        debug_log("Power limit via %s was accepted but post-write readback is unavailable\n",
+            route);
+        return false;
+    }
+    if (!power_limit_readback_matches_target(g_app.powerLimitCurrentmW, targetmW)) {
+        debug_log("Power limit via %s was accepted but the driver reports %d mW for target %u mW\n",
+            route, g_app.powerLimitCurrentmW, targetmW);
+        return false;
+    }
+    return true;
+}
+
 // Every refusal below is logged. These are the only silent failures the apply
 // and reset paths can hit in this domain, and a silent `false` here surfaced as
 // nothing but a generic "Power target did not reset" three layers up.
@@ -142,13 +175,7 @@ static bool nvapi_set_power_limit(int pct) {
     if (nvml_ensure_ready() && g_nvml_api.setPowerLimit) {
         set_last_apply_phase("Power limit NVML write");
         nvmlReturn_t r = g_nvml_api.setPowerLimit(g_app.nvmlDevice, targetmW);
-        if (r == NVML_SUCCESS) {
-            if (!nvml_read_power_limit()) {
-                debug_log("Power limit via NVML was accepted but post-write readback is unavailable\n");
-                return false;
-            }
-            return true;
-        }
+        if (r == NVML_SUCCESS) return power_limit_verify_write("NVML", targetmW);
         debug_log("Power limit via NVML failed: %s\n", nvml_err_name(r));
     }
     WCHAR exePath[MAX_PATH] = {};
@@ -156,9 +183,16 @@ static bool nvapi_set_power_limit(int pct) {
         debug_log("Power limit via nvidia-smi skipped: trusted executable not found\n");
         return false;
     }
+    // Without -i, nvidia-smi sets this wattage on every GPU in the machine.
+    char busId[32] = {};
+    if (!power_limit_selected_bus_id(busId, sizeof(busId))) {
+        debug_log("Power limit via nvidia-smi skipped: the selected GPU's PCI bus ID is unknown\n");
+        return false;
+    }
     int watts = (int)((targetmW + 500) / 1000);
-    WCHAR cmdLine[MAX_PATH + 64] = {};
-    StringCchPrintfW(cmdLine, ARRAY_COUNT(cmdLine), L"\"%ls\" -pl %d", exePath, watts);
+    WCHAR cmdLine[MAX_PATH + 96] = {};
+    StringCchPrintfW(cmdLine, ARRAY_COUNT(cmdLine), L"\"%ls\" -i %hs -pl %d", exePath, busId, watts);
+    debug_log("Power limit via nvidia-smi: gpu=%s watts=%d\n", busId, watts);
     set_last_apply_phase("Power limit nvidia-smi write");
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
@@ -183,9 +217,5 @@ static bool nvapi_set_power_limit(int pct) {
         debug_log("Power limit via nvidia-smi failed with exit code %lu\n", exitCode);
         return false;
     }
-    if (!nvml_read_power_limit()) {
-        debug_log("Power limit via nvidia-smi exited successfully but post-write readback is unavailable\n");
-        return false;
-    }
-    return true;
+    return power_limit_verify_write("nvidia-smi", targetmW);
 }

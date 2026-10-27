@@ -3755,6 +3755,29 @@ static int run_all_tests(int argc, char** argv) {
         // Rounding is half-up, matching the pre-fix arithmetic exactly.
         if (power_limit_pct_from_mw(115000, 130000) != 88) return 5051;
 
+        // A power write is proven by the reported limit, within one watt.
+        // Before, any readback at all counted as success.
+        if (!power_limit_readback_matches_target(237500, 237500u) ||
+            !power_limit_readback_matches_target(238000, 237500u) ||
+            !power_limit_readback_matches_target(236500, 237500u)) return 7600;
+        if (power_limit_readback_matches_target(250000, 237500u) ||
+            power_limit_readback_matches_target(236499, 237500u)) return 7601;
+        if (power_limit_readback_matches_target(0, 237500u) ||
+            power_limit_readback_matches_target(237500, 0u)) return 7602;
+        // nvidia-smi -i needs the selected GPU's bus ID; without -i it sets
+        // every GPU. Only the hex domain:bus:device.function shape is passed.
+        if (!power_limit_smi_bus_id_valid("00000000:01:00.0") ||
+            !power_limit_smi_bus_id_valid("0000:2b:00.1")) return 7603;
+        if (power_limit_smi_bus_id_valid("") || power_limit_smi_bus_id_valid(nullptr) ||
+            power_limit_smi_bus_id_valid("01:00.0") ||
+            power_limit_smi_bus_id_valid("0000:01:00")) return 7604;
+        if (power_limit_smi_bus_id_valid("0000:01:00.0 -pl 999") ||
+            power_limit_smi_bus_id_valid("0000:01:00.0\"") ||
+            power_limit_smi_bus_id_valid("0000::00.0") ||
+            power_limit_smi_bus_id_valid("0000:01:00.0.1") ||
+            power_limit_smi_bus_id_valid("0000:01.00:0")) return 7605;
+        if (power_limit_smi_bus_id_valid("00000000000000000000000000:01:00.0")) return 7606;
+
         // THE reported bug, pinned directly: owning power on a surfaceless
         // board must not schedule a reset write.
         if (power_reset_before_apply_required(true, false, 0, 85)) return 5052;
