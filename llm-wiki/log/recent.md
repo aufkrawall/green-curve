@@ -5,6 +5,22 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-27: Power uncertainty follows actual write attempts
+
+- Missing power writers, unresolved fallback targets and failed process
+  creation preserve prior readback. An invoked NVML setter or started fallback
+  retains uncertainty until its target verifies; failed launch restores the
+  prior state without clearing uncertainty from an earlier write.
+- Cases 7650-7657 execute those boundaries and the unrelated-Apply precheck.
+  Case 7650 fails under the previous assignment; the standalone fixture passes.
+  Process creation is fake and no physical GPU writes are performed.
+- Full native regressions, Linux cross-links, source gates and static analysis
+  pass. Plain build 358 refreshed six archives, four installers and two Linux
+  packages; timestamps, changed content, checksum sidecars and all 20 packaged
+  application/service binary payloads were independently verified.
+- Sources: [clock recovery](../clock-transition-audit.md),
+  [tests](../testing.md).
+
 ## 2026-10-27: Memory recovery requires memory-domain evidence
 
 - The Windows memory setter accepts the P-state fallback only when that

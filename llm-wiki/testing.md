@@ -1,16 +1,18 @@
 # Testing
 
-Validation of the 2026-10-27 recovery review: full native Windows regressions,
-Linux cross-link checks, source gates and `--tidy` pass. The fixture set now
-also executes the production power setter and stock rollback, the deferred
-worker handback, read-time backend discovery and post-preparation restore
-authority. The earlier standalone fan/memory fixtures continue to execute under
-Linux with warnings treated as errors.
+Validation of the 2026-10-27 memory/power recovery follow-up: full native
+Windows regressions, Linux cross-link checks, source gates and `--tidy` pass.
+Cases 7640-7645 and 7650-7657 execute memory evidence and power write boundaries;
+both first regression cases fail under the previous respective implementations.
+The existing deferred worker handback, read-time backend discovery and
+post-preparation restore fixtures also pass. Earlier standalone fan/memory
+fixtures were executed under Linux with warnings treated as errors.
 
-The plain deliverable build completed as build 357. All six archives, four
+The plain deliverable build completed as build 358. All six archives, four
 installers and two Linux packages have fresh timestamps and matching SHA-256
-sidecars. Independent extraction compared every packaged application and
-Windows service image with the corresponding freshly built binary. No physical
+sidecars; their contents differ from the pre-build artifacts. Independent
+extraction compared all 20 packaged application and Windows service images
+with the corresponding freshly built binary. No physical
 GPU write or driver-failure injection was performed; Linux daemon orchestration
 remains cross-linked and source-gated on this Windows host.
 
@@ -100,6 +102,14 @@ rollback and Reset to force an unverified repair, a sparse Apply without the
 power domain to refuse, and a forced power-owning Apply not to be blocked by
 the missing fresh readback. The fallback process and physical failure
 injection are not executed.
+
+Cases 7650-7657 execute absent NVML/fallback writers, an unresolved fallback
+GPU and failed process creation. Those no-write outcomes preserve the previous
+readback and leave unrelated Apply requests eligible; inherited uncertainty
+or a preceding NVML write attempt remains uncertain. The fixture calls the
+production unrelated-Apply precheck and replaces process creation with a
+counted failure, so no external process starts. Case 7650 fails under the
+prior unconditional uncertainty assignment.
 
 ## NVML device-ID matching (2026-10-27)
 

@@ -24,6 +24,9 @@ static int failCurrentReads = 0;
 static int failDefaultReads = 0;
 static int failAfterWrite = 0;
 static bool smiAvailable = false;
+static bool pciLocationValid = true, setterFails = false;
+static int fallbackLaunches = 0;
+static bool launchSawUncertainty = false;
 
 static void debug_log(const char*, ...) {}
 static void set_last_apply_phase(const char*) {}
@@ -31,7 +34,7 @@ static void Sleep(unsigned long) {}
 static bool nvml_ensure_ready() { return true; }
 static const char* nvml_err_name(int) { return "fixture"; }
 static bool gpu_adapter_has_valid_pci_location(const GpuAdapterInfo*) {
-    return true;
+    return pciLocationValid;
 }
 static bool find_trusted_nvidia_smi_path_w(WCHAR* out, size_t outCount) {
     if (!smiAvailable || !out || outCount == 0) return false;
@@ -67,10 +70,22 @@ static nvmlReturn_t set_power(nvmlDevice_t, unsigned int value) {
         failCurrentReads = 1;
         failDefaultReads = 1;
     }
-    return NVML_SUCCESS;
+    return setterFails ? NVML_ERROR_UNKNOWN : NVML_SUCCESS;
 }
 
+// No fixture launches an external process. A failed launch proves whether
+// the production setter restores the state from before that attempt.
+static BOOL WINAPI fixture_create_process(LPCWSTR, LPWSTR,
+    LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD, LPVOID,
+    LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION) {
+    ++fallbackLaunches;
+    launchSawUncertainty = g_app.powerLimitWriteUncertain && !g_app.readback.powerLimit;
+    SetLastError(ERROR_FILE_NOT_FOUND);
+    return FALSE;
+}
+#define CreateProcessW fixture_create_process
 #include "gpu_backend_power.cpp"
+#undef CreateProcessW
 
 static bool vf_curve_global_gpu_offset_supported() { return true; }
 static bool nvapi_set_gpu_offset(int, bool = false) { return true; }
@@ -94,6 +109,17 @@ static nvmlReturn_t release_locked_clocks(nvmlDevice_t) {
 #include "clock_reset_policy.h"
 #include "main_gpu_rollback.h"
 
+struct ApplyClockCeilingGuard {
+    struct { bool required = false; } plan;
+    bool armed = false;
+    void arm() {}
+    bool must_refuse_transition() const { return false; }
+    void retain(const char*) {}
+    void adopt(const char*) {}
+};
+static void refresh_global_state(char*, size_t) {}
+#include "gpu_backend_apply_failure.h"
+
 static void initialize() {
     g_app = {};
     g_nvml_api = {};
@@ -103,6 +129,9 @@ static void initialize() {
     powerWrites = 0;
     failCurrentReads = failDefaultReads = failAfterWrite = 0;
     smiAvailable = false;
+    pciLocationValid = true;
+    setterFails = launchSawUncertainty = false;
+    fallbackLaunches = 0;
     g_app.fanIsAuto = true;
     g_app.activeFanMode = FAN_MODE_AUTO;
     g_app.selectedGpu.valid = true;
@@ -113,6 +142,54 @@ static void initialize() {
     g_nvml_api.getPowerDefaultLimit = get_default;
     g_nvml_api.setPowerLimit = set_power;
     g_nvml_api.resetGpuLockedClocks = release_locked_clocks;
+}
+
+static int run_write_boundary_tests() {
+    DesiredSettings fan = {};
+    fan.hasFan = true;
+    char detail[256] = {};
+    initialize();
+    if (!nvml_read_power_limit()) return 7650;
+    g_nvml_api.setPowerLimit = nullptr;
+    if (nvapi_set_power_limit(80, false) || powerWrites || fallbackLaunches ||
+        g_app.powerLimitWriteUncertain || !g_app.readback.powerLimit ||
+        !apply_power_uncertainty_precheck(&fan, detail, sizeof(detail))) return 7650;
+    if (rollback_to_safe_defaults().power.attempted) return 7651;
+
+    // A fallback that cannot identify its GPU has no authority to write.
+    smiAvailable = true;
+    pciLocationValid = false;
+    if (nvapi_set_power_limit(80, false) || powerWrites || fallbackLaunches ||
+        g_app.powerLimitWriteUncertain || !g_app.readback.powerLimit) return 7652;
+
+    // Failure to create the process preserves a previously verified state.
+    pciLocationValid = true;
+    if (nvapi_set_power_limit(80, false) || fallbackLaunches != 1 ||
+        !launchSawUncertainty || g_app.powerLimitWriteUncertain ||
+        !g_app.readback.powerLimit || hardwareCurrentmW != 250000) return 7653;
+
+    // A failed repair cannot clear uncertainty inherited from an earlier write.
+    g_app.powerLimitWriteUncertain = true;
+    g_app.readback.powerLimit = false;
+    if (nvapi_set_power_limit(100, true) || fallbackLaunches != 2 ||
+        !g_app.powerLimitWriteUncertain || g_app.readback.powerLimit ||
+        apply_power_uncertainty_precheck(&fan, detail, sizeof(detail))) return 7654;
+    smiAvailable = false;
+    if (nvapi_set_power_limit(100, true) || !g_app.powerLimitWriteUncertain ||
+        g_app.readback.powerLimit) return 7655;
+
+    // A real NVML attempt remains uncertain even if fallback cannot start.
+    initialize();
+    if (!nvml_read_power_limit()) return 7656;
+    setterFails = true;
+    if (nvapi_set_power_limit(80, false) || powerWrites != 1 ||
+        hardwareCurrentmW != 200000 || !g_app.powerLimitWriteUncertain ||
+        g_app.readback.powerLimit) return 7656;
+    smiAvailable = true;
+    if (nvapi_set_power_limit(80, true) || powerWrites != 2 ||
+        fallbackLaunches != 1 || !launchSawUncertainty ||
+        !g_app.powerLimitWriteUncertain || g_app.readback.powerLimit) return 7657;
+    return 0;
 }
 
 static int run() {
@@ -160,7 +237,7 @@ static int run() {
     g_app.powerLimitWriteUncertain = true;
     if (nvapi_set_power_limit(150, true) || powerWrites != 0)
         return 7626;
-    return 0;
+    return run_write_boundary_tests();
 }
 } // namespace power_recovery_fixture
 

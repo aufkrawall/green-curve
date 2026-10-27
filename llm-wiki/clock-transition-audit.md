@@ -16,9 +16,13 @@ first fan write now enters the same mixed-result rollback as a failed clock,
 memory or power write. Cases 5446-5448 pin the attempt predicate.
 
 Power has its own attempted/verified recovery result. The setter marks
-`powerLimitWriteUncertain` and clears the fresh readback proof before invoking
-NVML or the selected-GPU fallback. Only a fresh reading within the one-watt
-target tolerance clears uncertainty. A forced repair is permitted only while
+`powerLimitWriteUncertain` and clears the fresh readback proof at each actual
+NVML or selected-GPU fallback write boundary. Missing writers and unresolved
+fallback targets leave prior evidence intact. A failed process creation
+restores the state from before that launch attempt, including any uncertainty
+already inherited from an NVML attempt or earlier operation. Only a fresh
+reading within the one-watt target tolerance clears uncertainty after a write.
+A forced repair is permitted only while
 the last complete surface proof still supplies the board default; rollback,
 explicit Reset and an Apply that owns the power target use that repair. A
 sparse Apply that would leave the uncertain power write untouched is refused.
@@ -28,8 +32,10 @@ scalar and VF curve may release the clock restriction even when power recovery
 could not be verified. The unresolved power domain is still reported and
 blocks later settings that do not repair it. The executing fixture covers a
 write that mutates before readback failure, forced stock recovery, missing
-surface evidence and constraint refusal; live driver failure injection remains
-unverified.
+surface evidence and constraint refusal. Cases 7650-7657 cover absent writers,
+unresolved fallback targets, failed launches, preserved earlier uncertainty and
+the unrelated-Apply precheck. A fake launch function never starts a child;
+live driver failure injection remains unverified.
 
 Last verified: 2026-10-27.
 

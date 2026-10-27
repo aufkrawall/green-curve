@@ -39,7 +39,7 @@ Settings, GPU selection, fan control and recovery are more reliable across hardw
 
 - **Windows memory recovery:** missing memory-clock readings no longer make an unverified reset appear successful.
 - **Windows fan recovery:** a failed first fan-setting write now triggers the normal recovery path instead of leaving the fan change unaccounted for.
-- **Windows power-limit recovery:** an unverified power write is repaired by Apply or Reset, while unrelated settings are refused until the limit is verified.
+- **Windows power-limit recovery:** unverified writes remain repairable; an unavailable writer no longer blocks unrelated settings when nothing was written.
 - **Linux delayed recovery:** an explicit Refresh can rediscover a late GPU, deferred fan handback runs outside state reads, and automatic restore rechecks recovery authority before writing.
 - **Windows profile recovery:** unavailable advanced clocks are skipped; failed Apply reports core and memory recovery.
 - **Clock safety:** unsafe curve raises are refused before any write, with recovery attempted on failure.

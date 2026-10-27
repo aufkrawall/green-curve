@@ -204,12 +204,12 @@ static bool nvapi_set_power_limit(int pct, bool forceWrite) {
     }
     debug_log("set_power_limit: pct=%d defaultmW=%d targetmW=%u force=%d fresh=%d\n",
         pct, defaultmW, targetmW, forceWrite ? 1 : 0, freshSurface ? 1 : 0);
-    // A driver call or fallback process may mutate the board before reporting
-    // failure. Keep recovery authority until this specific target verifies.
-    g_app.powerLimitWriteUncertain = true;
-    g_app.readback.powerLimit = false;
     if (nvml_ensure_ready() && g_nvml_api.setPowerLimit) {
         set_last_apply_phase("Power limit NVML write");
+        // An invoked setter may mutate before reporting failure. An absent
+        // setter leaves the previous evidence intact while fallback is checked.
+        g_app.powerLimitWriteUncertain = true;
+        g_app.readback.powerLimit = false;
         nvmlReturn_t r = g_nvml_api.setPowerLimit(g_app.nvmlDevice, targetmW);
         if (r == NVML_SUCCESS) return power_limit_verify_write("NVML", targetmW);
         debug_log("Power limit via NVML failed: %s\n", nvml_err_name(r));
@@ -236,8 +236,18 @@ static bool nvapi_set_power_limit(int pct, bool forceWrite) {
     si.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION pi = {};
     ScopedProcess proc;
+    const bool previousUncertainty = g_app.powerLimitWriteUncertain;
+    const bool previousReadback = g_app.readback.powerLimit;
+    g_app.powerLimitWriteUncertain = true;
+    g_app.readback.powerLimit = false;
     if (!CreateProcessW(exePath, cmdLine, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        debug_log("Power limit via nvidia-smi failed to launch (error %lu)\n", GetLastError());
+        // No child started, so this fallback cannot have changed the board.
+        // Preserve uncertainty from an earlier NVML attempt or failed repair.
+        g_app.powerLimitWriteUncertain = previousUncertainty;
+        g_app.readback.powerLimit = previousReadback;
+        debug_log("Power limit via nvidia-smi failed to launch (error %lu);"
+                  " no fallback write started uncertain=%d readback=%d\n",
+            GetLastError(), previousUncertainty ? 1 : 0, previousReadback ? 1 : 0);
         return false;
     }
     proc.assign(pi.hProcess, pi.hThread);
