@@ -617,21 +617,7 @@ static bool service_captured_identity_passes_session_rule(
     return true;
 }
 
-class ScopedServiceClientImpersonation {
-public:
-    explicit ScopedServiceClientImpersonation(HANDLE token)
-        : active_(token && ImpersonateLoggedOnUser(token) != FALSE) {}
-    ~ScopedServiceClientImpersonation() {
-        if (active_ && !RevertToSelf())
-            debug_log("service file command: RAII RevertToSelf failed error=%lu\n",
-                GetLastError());
-    }
-    bool active() const { return active_; }
-    ScopedServiceClientImpersonation(const ScopedServiceClientImpersonation&) = delete;
-    ScopedServiceClientImpersonation& operator=(const ScopedServiceClientImpersonation&) = delete;
-private:
-    bool active_;
-};
+#include "service_client_impersonation.h"
 
 static void service_set_pending_operation_source(const char* source) {
     char callerUser[256] = {};

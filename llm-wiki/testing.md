@@ -1,9 +1,10 @@
 # Testing
 
-## Apply transaction boundaries (2026-10-27)
+## Apply, directory and identity boundaries (2026-10-27)
 
 Source anchors: `tests/advanced_apply_tests.cpp`,
-`tests/clock_transition_tests.cpp`, `tools/apply_ceiling_gates.py`.
+`tests/clock_transition_tests.cpp`, `tests/debug_log_identity_tests.cpp`,
+`tests/linux_gpu_selection_store_regression.cpp`, `tools/apply_ceiling_gates.py`.
 
 Advanced cases 7500-7512 execute production ClkDomains writes and the production
 transaction boundary with a scripted driver. They cover partial effects at each
@@ -14,9 +15,18 @@ outside the fake-driver fixture. Pascal scalar checks cover uniform/selective,
 zero/negative/positive offsets, no-reset idempotence and other GPU families.
 The runtime source gate pins both preflights before reset.
 
-Native Linux output-directory tests exercise every ancestor, privileged refusal,
-ordinary-user redirects, nested creation and the real atomic writer as root and
-as an ordinary user. Source: `tests/linux_gpu_selection_store_regression.cpp`.
+Identity cases 7490-7499 exercise the real scope with injected Win32 responses.
+The fatal case runs in a child, must exit with `ERROR_CANNOT_IMPERSONATE`, and
+is terminated and joined if it misses its bounded deadline. No actual service
+identity failure or GPU mutation is induced. The native Linux store fixture
+also exercises the component-by-component output-directory walk, including
+privileged refusal and ordinary-user redirect compatibility.
+
+Validation: full native Windows regressions and the plain deliverable build pass;
+static analysis reports no new findings. Linux output fixtures execute under
+ordinary and root identities. Negative controls reject each removed safeguard.
+The six release archives match the freshly built binaries; current installers
+and Linux packages are freshly produced. These checks perform no real GPU writes.
 
 ## Optional Linux GPU UUID selection
 

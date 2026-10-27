@@ -9,9 +9,50 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <cstdlib>
 #include "debug_log_identity.h"
 #include "debug_log_rotation_policy.h"
 #include "win32_utf8_paths.h"
+
+namespace client_identity_fixture {
+static bool impersonationOk = true, revertOk = true;
+static int reverted = 0;
+static BOOL fixture_impersonate(HANDLE) { return impersonationOk ? TRUE : FALSE; }
+static BOOL fixture_revert() { ++reverted; return revertOk ? TRUE : FALSE; }
+static void debug_log(const char*, ...) {}
+#define ImpersonateLoggedOnUser fixture_impersonate
+#define RevertToSelf fixture_revert
+#include "service_client_impersonation.h"
+#undef RevertToSelf
+#undef ImpersonateLoggedOnUser
+
+static int exercise() {
+    { ScopedServiceClientImpersonation inactive(nullptr); if (inactive.active()) return 7490; }
+    if (reverted != 0) return 7491;
+    impersonationOk = false;
+    { ScopedServiceClientImpersonation refused(GetCurrentProcess()); if (refused.active()) return 7492; }
+    if (reverted != 0) return 7493;
+    impersonationOk = true;
+    { ScopedServiceClientImpersonation active(GetCurrentProcess()); if (!active.active()) return 7494; }
+    if (reverted != 1) return 7495;
+    char executable[MAX_PATH] = {}, command[MAX_PATH + 80] = {};
+    if (!GetModuleFileNameA(nullptr, executable, MAX_PATH)) return 7496;
+    StringCchPrintfA(command, sizeof(command), "\"%s\" --client-identity-failure", executable);
+    STARTUPINFOA startup = {}; startup.cb = sizeof(startup);
+    PROCESS_INFORMATION child = {};
+    if (!CreateProcessA(executable, command, nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &startup, &child)) return 7497;
+    DWORD wait = WaitForSingleObject(child.hProcess, 5000);
+    if (wait != WAIT_OBJECT_0) {
+        TerminateProcess(child.hProcess, 1);
+        WaitForSingleObject(child.hProcess, 5000);
+    }
+    DWORD exitCode = 0;
+    bool exited = GetExitCodeProcess(child.hProcess, &exitCode) != FALSE;
+    CloseHandle(child.hThread); CloseHandle(child.hProcess);
+    return wait == WAIT_OBJECT_0 && exited && exitCode == ERROR_CANNOT_IMPERSONATE ? 0 : 7498;
+}
+} // namespace client_identity_fixture
 
 namespace {
 #define ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
@@ -160,8 +201,17 @@ static int exercise(HANDLE processToken, HANDLE restrictedToken, const char* dir
 } // namespace
 #endif
 
+int run_service_client_identity_failure_child() {
+#if defined(_WIN32)
+    client_identity_fixture::revertOk = false;
+    client_identity_fixture::ScopedServiceClientImpersonation active(GetCurrentProcess());
+#endif
+    return 7499;
+}
+
 int run_debug_log_identity_tests() {
 #if defined(_WIN32)
+    if (int failure = client_identity_fixture::exercise()) return failure;
     InitializeCriticalSection(&g_debugLogLock);
     debug_log_initialize_locks();
     HANDLE process = nullptr;

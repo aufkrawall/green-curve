@@ -961,6 +961,7 @@ int run_clock_transition_tests();
 int run_service_install_tests();
 int run_advanced_apply_tests();
 int run_debug_log_identity_tests();
+int run_service_client_identity_failure_child();
 int run_security_audit_tests();
 int run_installer_fuzz_harness_tests();
 // Post-0.27.0 review follow-ups (tests/review_followup_tests.cpp, 6250-6279).
@@ -1716,6 +1717,8 @@ static int run_ownership_handback_tests() {
 }
 
 int main(int argc, char** argv) {
+    if (argc == 2 && strcmp(argv[1], "--client-identity-failure") == 0)
+        return run_service_client_identity_failure_child();
     bool vehFaultChild = false;
     int vehFaultChildExit = run_veh_driver_fault_child(argc, argv, &vehFaultChild);
     if (vehFaultChild) return vehFaultChildExit;

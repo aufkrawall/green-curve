@@ -5,21 +5,34 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
-## 2026-10-27: Apply and output-directory invariants
+## 2026-10-27: Apply recovery and output identity invariants
 
-- Advanced writes share the apply commit boundary, validate requested surfaces before
-  mutation and recover requested advanced fields and core state on failure. Cleanup
-  ownership covers partial setter effects. SYS editing follows its own probe.
-- Pascal FLATTEN transitions requiring a nonzero uniform scalar write refuse before
-  reset. Selective VF and ordinary unsupported-family operations remain available.
-- Production advanced transaction and clock preflight tests pass; negative controls
-  reject omitted recovery and omitted scalar refusal. Complete apply orchestration
-  and live Pascal/advanced hardware remain unverified.
-- Privileged atomic text output and asset directory creation walk every component
-  by descriptor without following links. Ordinary-user redirects remain supported.
-  The native filesystem fixture passes as root and as an ordinary user; a link-following
-  negative control fails.
-- Sources: [clock transitions](../clock-transition-audit.md), [testing](../testing.md).
+- Advanced controls share the apply commit boundary. Requested surfaces are
+  checked before mutation; failed writes reset requested advanced fields and
+  enter core recovery. Cleanup ownership covers partial setter effects and is
+  released only after verified zero. SYS editing follows its own probe.
+- Pascal FLATTEN plus a nonzero uniform scalar write is refused before reset.
+  Existing selective VF and ordinary unsupported-family operations remain
+  available. This is a transition restriction, not hardware validation of a
+  replacement scalar route.
+- Privileged atomic text output walks/creates every directory by descriptor
+  without following links; ordinary users retain redirected configuration
+  directories. Client-identity restoration has a fatal, non-returning outcome.
+- Focused tests execute the advanced boundary and real ClkDomains helper,
+  partial setter effects and cleanup, scalar-refusal policy, directory walking
+  and the fatal identity scope in a child. Full apply orchestration and live
+  Pascal/advanced hardware remain unverified.
+- Validation: complete native Windows regressions pass, including filesystem
+  security and pipe fixtures; static analysis reports no new findings. The
+  plain deliverable build passes for both Windows toolchains and both Windows
+  and Linux architectures. All six release archives match fresh built binaries;
+  all four installers and both current Linux packages have fresh timestamps.
+  Native Linux output tests pass under ordinary and root identities. Negative
+  controls reject omitted advanced recovery, scalar refusal, identity termination
+  and directory no-follow enforcement. No real GPU writes were performed.
+- Sources: [clock transitions](../clock-transition-audit.md),
+  [Linux output](../linux-scaffold.md#clitui-atomic-text-writer-verified-2026-10-27),
+  [service identity](../windows-architecture.md), [testing](../testing.md).
 
 ## 2026-10-24: Optional physical GPU identity for Linux restore
 
