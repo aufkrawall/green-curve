@@ -434,7 +434,11 @@ once, stamped by `[meta] linux_mem_migrated`:
   (explicit apply and the unattended-write path; fail closed) and retired after
   a confirmed shutdown handback, a committed Reset, or a committed intent that
   leaves the fan to the driver. At start, before the startup policy and the fan
-  worker, a same-boot marker is handed back once (auto, 100% if refused). The
+  worker, a same-boot marker is handed back once (auto, 100% if refused).
+  Marker v2 records adapter/location-role/optional UUID and resolves that
+  target before any write; unresolved targets retain the marker and latch
+  handback-incomplete. Frozen v1 records bind only a sole resolved adapter.
+  See `fan-control.md`, "Crash handback target" (2026-10-27). The
   in-flight flag stops a handback that kills the daemon from looping under
   `Restart=always`. Clocks are left alone, exactly as the graceful stop leaves
   them. Log prefix `daemon fan ownership:`. Unverified on hardware.

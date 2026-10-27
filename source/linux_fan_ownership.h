@@ -19,6 +19,7 @@
 #define GREEN_CURVE_LINUX_FAN_OWNERSHIP_H
 
 static bool g_fanOwnershipMarkerCommitted = false;
+static GpuAdapterInfo g_fanOwnershipTarget = {};
 
 static bool daemon_desired_takes_manual_fan(const DesiredSettings* desired) {
     return desired && desired->hasFan && desired->fanMode != FAN_MODE_AUTO;
@@ -29,8 +30,17 @@ static bool daemon_desired_takes_manual_fan(const DesiredSettings* desired) {
 static bool daemon_fan_ownership_ensure_before_write(
     const DesiredSettings* committed, char* err, size_t errSize) {
     if (err && errSize) err[0] = 0;
-    if (!daemon_desired_takes_manual_fan(committed) ||
-        g_fanOwnershipMarkerCommitted) return true;
+    if (!daemon_desired_takes_manual_fan(committed)) return true;
+    if (!g_gpu.writeIdentityResolved) {
+        gc_strlcpy(err, errSize, "fan ownership requires a resolved GPU target");
+        return false;
+    }
+    if (g_fanOwnershipMarkerCommitted) {
+        if (linux_gpu_identity_matches(&g_fanOwnershipTarget, &g_gpu.selectedGpu)) return true;
+        gc_strlcpy(err, errSize, "return the previous GPU's fan ownership before selecting another GPU");
+        dlog("daemon fan ownership: refusing to replace outstanding adapter ownership\n");
+        return false;
+    }
     char bootId[LINUX_FAN_OWNERSHIP_BOOT_ID_MAX] = {};
     if (!linux_read_boot_id(bootId, sizeof(bootId))) {
         gc_strlcpy(err, errSize,
@@ -38,7 +48,10 @@ static bool daemon_fan_ownership_ensure_before_write(
         return false;
     }
     LinuxFanOwnershipMarker marker = {};
-    linux_fan_ownership_marker_initialize(&marker, bootId);
+    linux_fan_ownership_marker_initialize(&marker, bootId, &g_gpu.selectedGpu,
+        linux_gpu_location_role_for_selection(&g_gpu.selectedGpu, g_gpu.adapters,
+                                              g_gpu.adapterCount),
+        linux_backend_selected_uuid(&g_gpu));
     if (!linux_fan_ownership_marker_store(GC_DAEMON_FAN_MARKER_FILE, &marker,
                                           err, errSize)) {
         dlog("daemon fan ownership: marker could not be committed (%s); "
@@ -46,6 +59,7 @@ static bool daemon_fan_ownership_ensure_before_write(
         return false;
     }
     g_fanOwnershipMarkerCommitted = true;
+    g_fanOwnershipTarget = marker.targetGpu;
     dlog("daemon fan ownership: marker committed before taking manual fan control\n");
     return true;
 }
@@ -54,7 +68,10 @@ static bool daemon_fan_ownership_ensure_before_write(
 static void daemon_fan_ownership_retire(const char* reason) {
     char err[256] = {};
     bool ok = linux_daemon_state_remove(GC_DAEMON_FAN_MARKER_FILE, err, sizeof(err));
-    if (ok) g_fanOwnershipMarkerCommitted = false;
+    if (ok) {
+        g_fanOwnershipMarkerCommitted = false;
+        g_fanOwnershipTarget = {};
+    }
     dlog("daemon fan ownership: marker %s (%s)%s%s\n",
          ok ? "retired" : "could not be retired",
          reason && reason[0] ? reason : "unspecified",
@@ -116,6 +133,26 @@ static void daemon_fan_ownership_handback_at_start() {
         dlog("daemon fan ownership: GPU backend not ready; handback deferred\n");
         return;
     }
+    if (!marker.targetGpu.valid) {
+        // A legacy record carries no target. Multiple live adapters provide
+        // no evidence about which fan the previous instance controlled.
+        if (g_gpu.adapterCount != 1 || !g_gpu.writeIdentityResolved) {
+            daemon_fan_ownership_latch_incomplete("legacy fan ownership target is ambiguous");
+            dlog("daemon fan ownership: legacy target unresolved; marker retained, no write\n");
+            return;
+        }
+        marker.targetGpu = g_gpu.selectedGpu;
+        marker.targetUuid = linux_gpu_uuid_retain(linux_backend_selected_uuid(&g_gpu), nullptr);
+    }
+    if (!linux_backend_select_target(&g_gpu, &marker.targetGpu, err, sizeof(err),
+            (GpuLocationRole)marker.targetLocationRole, &marker.targetUuid) ||
+        !g_gpu.writeIdentityResolved) {
+        daemon_fan_ownership_latch_incomplete("owned fan GPU is unavailable or ambiguous");
+        dlog("daemon fan ownership: target resolution failed; marker retained, no write (%s)\n",
+             err[0] ? err : "unresolved identity");
+        return;
+    }
+    dlog("daemon fan ownership: recorded adapter resolved before handback\n");
     // Counted before writing: a hang here is killed by systemd's start timeout
     // (this runs before READY=1), and the next start retries at most once.
     LinuxFanOwnershipMarker inFlight = marker;

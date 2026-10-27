@@ -653,9 +653,14 @@ int linux_fan_ownership_marker_load(const char* path,
     bool ok = fstat(fd, &status) == 0 && S_ISREG(status.st_mode) &&
         status.st_uid == 0 && status.st_nlink == 1 &&
         (status.st_mode & 0077) == 0 &&
-        status.st_size == (off_t)sizeof(loaded) &&
-        gc_read_record(::read, fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded) &&
-        linux_fan_ownership_marker_valid(&loaded);
+        (status.st_size == (off_t)sizeof(loaded) ||
+         status.st_size == (off_t)sizeof(LinuxFanOwnershipMarkerV1));
+    unsigned char bytes[sizeof(loaded)] = {};
+    if (ok) {
+        size_t length = (size_t)status.st_size;
+        ok = gc_read_record(::read, fd, bytes, length) == (ssize_t)length &&
+             linux_fan_ownership_marker_decode(bytes, length, &loaded);
+    }
     close(fd);
     close(dirfd);
     if (!ok) {

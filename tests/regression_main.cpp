@@ -961,6 +961,7 @@ int run_clock_transition_tests();
 int run_service_install_tests();
 int run_advanced_apply_tests();
 int run_fan_runtime_followup_tests();
+int run_linux_fan_ownership_tests();
 int run_debug_log_identity_tests();
 int run_service_client_identity_failure_child();
 int run_security_audit_tests();
@@ -1711,7 +1712,7 @@ static int run_ownership_handback_tests() {
         bad = marker;
         bad.handbackAttempts = OWNERSHIP_HANDBACK_MAX_ATTEMPTS + 1u;
         if (linux_fan_ownership_marker_valid(&bad)) return 5896;
-        if (sizeof(LinuxFanOwnershipMarker) != 16u + LINUX_FAN_OWNERSHIP_BOOT_ID_MAX)
+        if (sizeof(LinuxFanOwnershipMarkerV1) != 16u + LINUX_FAN_OWNERSHIP_BOOT_ID_MAX)
             return 5897;
     }
     return 0;
@@ -1904,6 +1905,7 @@ int main(int argc, char** argv) {
 
     if (int advancedFailure = run_advanced_apply_tests()) return advancedFailure;
     if (int fanFailure = run_fan_runtime_followup_tests()) return fanFailure;
+    if (int ownershipFailure = run_linux_fan_ownership_tests()) return ownershipFailure;
     if (int logFailure = run_debug_log_identity_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", logFailure);
         return logFailure;

@@ -52,6 +52,7 @@
 #include <string.h>
 #include "gpu_core.h"
 #include "service_recovery_policy.h"
+#include "linux_gpu_uuid.h"
 
 // Attempts per boot, counting the one that died.  Two: a wedge caused by a
 // stale driver image is cured by the restart, and a second death is not.
@@ -246,8 +247,18 @@ static inline bool service_ownership_marker_valid(
 // --- Linux on-disk marker ----------------------------------------------------
 
 #define LINUX_FAN_OWNERSHIP_MARKER_MAGIC 0x4E414647u  // "GFAN"
-#define LINUX_FAN_OWNERSHIP_MARKER_VERSION 1u
+#define LINUX_FAN_OWNERSHIP_MARKER_VERSION 2u
 #define LINUX_FAN_OWNERSHIP_BOOT_ID_MAX 40u
+
+struct LinuxFanOwnershipMarkerV1 {
+    gc_u32 magic;
+    gc_u32 version;
+    gc_u32 size;
+    gc_u32 handbackAttempts;
+    char bootId[LINUX_FAN_OWNERSHIP_BOOT_ID_MAX];
+};
+static_assert(sizeof(LinuxFanOwnershipMarkerV1) == 56,
+              "the legacy fan marker layout is frozen");
 
 struct LinuxFanOwnershipMarker {
     gc_u32 magic;
@@ -255,14 +266,23 @@ struct LinuxFanOwnershipMarker {
     gc_u32 size;
     gc_u32 handbackAttempts;
     char bootId[LINUX_FAN_OWNERSHIP_BOOT_ID_MAX];
+    GpuAdapterInfo targetGpu;
+    LinuxGpuUuid targetUuid;
+    gc_u32 targetLocationRole;
 };
 
 static inline void linux_fan_ownership_marker_initialize(
-    LinuxFanOwnershipMarker* marker, const char* bootId) {
+    LinuxFanOwnershipMarker* marker, const char* bootId,
+    const GpuAdapterInfo* target = nullptr,
+    GpuLocationRole role = GPU_LOCATION_ROLE_REQUIRED,
+    const LinuxGpuUuid* uuid = nullptr) {
     memset(marker, 0, sizeof(*marker));
     marker->magic = LINUX_FAN_OWNERSHIP_MARKER_MAGIC;
     marker->version = LINUX_FAN_OWNERSHIP_MARKER_VERSION;
     marker->size = (gc_u32)sizeof(*marker);
+    if (target) marker->targetGpu = *target;
+    marker->targetLocationRole = (gc_u32)role;
+    marker->targetUuid = linux_gpu_uuid_retain(uuid, nullptr);
     if (bootId) {
         size_t length = strlen(bootId);
         if (length < sizeof(marker->bootId))
@@ -276,6 +296,10 @@ static inline bool linux_fan_ownership_marker_valid(
         marker->version != LINUX_FAN_OWNERSHIP_MARKER_VERSION ||
         marker->size != (gc_u32)sizeof(*marker) ||
         marker->handbackAttempts > OWNERSHIP_HANDBACK_MAX_ATTEMPTS ||
+        marker->targetLocationRole > (gc_u32)GPU_LOCATION_ROLE_REQUIRED ||
+        (marker->targetGpu.valid && !linux_gpu_bdf_valid(&marker->targetGpu) &&
+         !linux_gpu_model_known(&marker->targetGpu)) ||
+        (marker->targetUuid.text[0] && !linux_gpu_uuid_valid(&marker->targetUuid)) ||
         !marker->bootId[0])
         return false;
     // Terminated inside the field, printable, no stray bytes after it.
@@ -290,6 +314,29 @@ static inline bool linux_fan_ownership_marker_valid(
         if (c < 0x21 || c > 0x7e) return false;
     }
     return terminated;
+}
+
+// Frozen predecessors have no adapter evidence. Widen only the boot/attempt
+// fields; runtime may bind such a record only when exactly one GPU exists.
+static inline bool linux_fan_ownership_marker_decode(const void* bytes, size_t size,
+                                                    LinuxFanOwnershipMarker* out) {
+    if (!bytes || !out) return false;
+    LinuxFanOwnershipMarker decoded = {};
+    if (size == sizeof(decoded)) {
+        memcpy(&decoded, bytes, size);
+    } else if (size == sizeof(LinuxFanOwnershipMarkerV1)) {
+        LinuxFanOwnershipMarkerV1 old = {};
+        memcpy(&old, bytes, sizeof(old));
+        if (old.magic != LINUX_FAN_OWNERSHIP_MARKER_MAGIC || old.version != 1u ||
+            old.size != sizeof(old) || !memchr(old.bootId, 0, sizeof(old.bootId))) return false;
+        linux_fan_ownership_marker_initialize(&decoded, old.bootId);
+        // Preserve the exact old text so trailing bytes are still validated.
+        memcpy(decoded.bootId, old.bootId, sizeof(old.bootId));
+        decoded.handbackAttempts = old.handbackAttempts;
+    } else return false;
+    if (!linux_fan_ownership_marker_valid(&decoded)) return false;
+    *out = decoded;
+    return true;
 }
 
 #endif  // GREEN_CURVE_OWNERSHIP_HANDBACK_POLICY_H

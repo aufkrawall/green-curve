@@ -1,5 +1,21 @@
 # Testing
 
+## Linux fan ownership target (2026-10-27)
+
+Source anchors: `tests/linux_fan_ownership_tests.cpp`,
+`source/linux_fan_ownership.h`, `source/ownership_handback_policy.h`.
+
+Cases 7530-7545 execute production handback, pre-write ownership and record
+decoding. They cover a non-default adapter, absent and ambiguous targets,
+UUID replacement/movement, failed persistence, emergency fan duty, legacy
+single/multi-GPU decisions, outstanding ownership and malformed records.
+`GC_FAN_OWNERSHIP_FIXTURE_MAIN` is the standalone entry point. Fake storage
+and driver dependencies do not exercise physical GPU writes.
+
+A bounded native Linux probe also exercises `source/linux_daemon_state.cpp`:
+root-owned current-marker round-trip, v1 widening, overly broad permissions
+and truncated records. No GPU APIs are loaded by that probe.
+
 ## Fan runtime scheduling and target authority (2026-10-27)
 
 Source anchors: `tests/fan_runtime_followup_tests.cpp`,

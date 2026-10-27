@@ -1,5 +1,27 @@
 # Fan Control
 
+## Crash handback target (2026-10-27)
+
+Source anchors: `source/ownership_handback_policy.h`,
+`source/linux_fan_ownership.h`, `source/linux_daemon_state.cpp`,
+`tests/linux_fan_ownership_tests.cpp`.
+
+The Linux fan marker v2 records the written adapter, its location role and
+optional physical UUID. Startup resolves that record before its first fan
+write, including emergency cooling. Unavailable or ambiguous targets retain
+the marker, publish handback-incomplete lockout and perform no write. A
+committed marker cannot be replaced with another adapter's ownership.
+
+The frozen v1 layout widens without inventing target evidence. Its handback
+may bind the sole resolved GPU; multiple GPUs require explicit recovery.
+The in-flight v2 record is durable before the write. The two-attempt limit,
+same-boot check, unsupported-device compatibility and optional-UUID fallback
+remain in effect. Diagnostics distinguish target resolution from driver
+handback failures. Fake-driver tests execute the orchestration and decoder;
+physical multi-GPU handback remains hardware-unverified.
+
+Last verified: 2026-10-27.
+
 ## Worker state and verification authority (2026-10-27)
 
 Source anchors: `source/linux_fan_runtime.h`, `source/fan_runtime_policy.h`,
