@@ -962,6 +962,7 @@ int run_service_install_tests();
 int run_advanced_apply_tests();
 int run_fan_runtime_followup_tests();
 int run_linux_fan_ownership_tests();
+int run_memory_recovery_tests();
 int run_debug_log_identity_tests();
 int run_service_client_identity_failure_child();
 int run_security_audit_tests();
@@ -1906,6 +1907,7 @@ int main(int argc, char** argv) {
     if (int advancedFailure = run_advanced_apply_tests()) return advancedFailure;
     if (int fanFailure = run_fan_runtime_followup_tests()) return fanFailure;
     if (int ownershipFailure = run_linux_fan_ownership_tests()) return ownershipFailure;
+    if (int memoryFailure = run_memory_recovery_tests()) return memoryFailure;
     if (int logFailure = run_debug_log_identity_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", logFailure);
         return logFailure;

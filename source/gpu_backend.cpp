@@ -604,28 +604,7 @@ static bool nvapi_set_gpu_offset(int offsetkHz, bool forceWrite) {
         exactOk ? 1 : 0, uniformkHz, g_app.gpuClockOffsetkHz);
     return exactOk || functionalOk;
 }
-static bool nvapi_set_mem_offset(int offsetkHz) {
-    if (g_app.memClockOffsetkHz == offsetkHz) return true;
-    int nvmlValueMHz = (offsetkHz / 1000) * 2;
-    debug_log("nvapi_set_mem_offset: target_driver_kHz=%d nvml_value_MHz=%d current_driver_kHz=%d\n",
-        offsetkHz, nvmlValueMHz, g_app.memClockOffsetkHz);
-    bool exact = false;
-    char detail[128] = {};
-    set_last_apply_phase("Memory offset NVML write");
-    bool ok = nvml_set_clock_offset_domain(NVML_CLOCK_MEM, nvmlValueMHz, &exact, detail, sizeof(detail));
-    if (!ok) {
-        debug_log("nvapi_set_mem_offset: NVML rejected offset (nvml=%d MHz) detail=%s\n",
-            nvmlValueMHz, detail[0] ? detail : "unknown");
-        return false;
-    }
-    nvml_read_clock_offsets(detail, sizeof(detail));
-    nvapi_read_pstates();
-    detect_clock_offsets();
-    bool verified = (g_app.memClockOffsetkHz == offsetkHz);
-    debug_log("nvapi_set_mem_offset: apply ok, readback_driver_kHz=%d verified=%d\n",
-        g_app.memClockOffsetkHz, verified ? 1 : 0);
-    return verified;
-}
+#include "gpu_backend_memory_offset.h"
 static void rebuild_visible_map() {
     g_app.numVisible = 0;
     int populatedOrdinal = 0;

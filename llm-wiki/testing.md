@@ -1,5 +1,20 @@
 # Testing
 
+## Windows memory recovery (2026-10-27)
+
+Source anchors: `tests/memory_recovery_tests.cpp`,
+`source/gpu_backend_memory_offset.h`, `source/main_gpu_rollback.h`,
+`source/gpu_backend_apply_failure.h`, `tools/readback_gates.py`.
+
+Cases 7550-7558 execute the production setter, stock recovery and failure
+reporting with a scripted driver. Missing readback after an accepted write,
+partial setter effects, repeated reset-verification failure, forced writes
+and valid cached no-ops are covered. Memory uncertainty remains separate
+from core-cap release and suppresses the verified-defaults notice. Apply and
+explicit-Reset integration are source-gated; full service orchestration and
+physical driver failures are not executed. Standalone entry point:
+`GC_MEMORY_RECOVERY_FIXTURE_MAIN`.
+
 ## Linux fan ownership target (2026-10-27)
 
 Source anchors: `tests/linux_fan_ownership_tests.cpp`,

@@ -356,7 +356,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     }
     if (desired->hasMemOffset) {
         targetMemkHz = mem_driver_khz_from_display_mhz(desired->memOffsetMHz);
-        shouldApplyMemOffset = (g_app.memClockOffsetkHz != targetMemkHz);
+        shouldApplyMemOffset = g_app.memOffsetWriteUncertain ||
+            g_app.memClockOffsetkHz != targetMemkHz;
         if (g_app.memOffsetRangeKnown &&
             (desired->memOffsetMHz < g_app.memClockOffsetMinMHz || desired->memOffsetMHz > g_app.memClockOffsetMaxMHz)) {
             // F-DOM-1: intentionally NOT gated. NVIDIA's reported memory-offset

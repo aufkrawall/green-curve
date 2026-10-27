@@ -37,6 +37,7 @@ Hardware changes elsewhere in the PC no longer cost Green Curve its selected GPU
 
 ### Fixed
 
+- **Windows memory recovery:** a failed Apply now resets memory offsets even when verification failed, and reports when defaults cannot be confirmed.
 - **Linux crash recovery:** fan control is returned on the GPU Green Curve previously controlled, including when several GPUs are installed.
 - **Linux fan curves:** applying a curve reliably starts temperature tracking, and a completed Apply cannot be overwritten by a poll using the previous curve's state.
 - **Fan control verification:** a conflicting driver target now rejects a fan-speed change even when the measured speed temporarily matches the request.

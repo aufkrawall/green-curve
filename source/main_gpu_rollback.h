@@ -48,8 +48,12 @@ static ApplyRecoveryResult rollback_to_safe_defaults() {
         vf_curve_global_gpu_offset_supported(), recovery.gpuOffset.verified,
         recovery.curve.verified);
     // Reset memory offset.
-    if (g_app.memClockOffsetkHz != 0) {
-        retry_op([&]() { return nvapi_set_mem_offset(0); }, 3, "Memory offset");
+    if (g_app.memClockOffsetkHz != 0 || g_app.memOffsetWriteUncertain) {
+        recovery.memory.attempted = true;
+        recovery.memory.verified = retry_op(
+            [&]() { return nvapi_set_mem_offset(0, true); }, 3, "Memory offset");
+        debug_log("rollback memory: attempted=1 verified=%d uncertain=%d\n",
+            recovery.memory.verified ? 1 : 0, g_app.memOffsetWriteUncertain ? 1 : 0);
     }
     // Reset power limit to default.
     if (g_app.powerLimitPct != 100) {

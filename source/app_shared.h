@@ -541,6 +541,8 @@ struct AppData {
 
     int gpuClockOffsetkHz;
     int memClockOffsetkHz;
+    // A setter may have changed memory before its verification failed.
+    bool memOffsetWriteUncertain;
     int gpuClockOffsetMinMHz;
     int gpuClockOffsetMaxMHz;
     int memClockOffsetMinMHz;

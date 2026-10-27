@@ -1,5 +1,30 @@
 # Clock transition hardening
 
+## Memory write evidence and recovery (2026-10-27)
+
+Source anchors: `source/gpu_backend_memory_offset.h`,
+`source/main_gpu_rollback.h`, `source/gpu_backend_apply_failure.h`,
+`source/main_service_apply_runtime.cpp`, `tests/memory_recovery_tests.cpp`.
+
+A memory setter invalidates cached provenance before writing and retains an
+uncertain-write flag until fresh NVML or P-state evidence verifies the target.
+Rollback and explicit Reset force a zero write when that flag is set, even
+when the cached pre-write value was zero. A later explicit memory Apply also
+cannot skip a write on cached equality while the flag remains set.
+
+Memory recovery has its own attempted/verified outcome. An uncertain memory
+reset is reported explicitly and cannot claim verified defaults. Core clamp
+release still depends only on graphics scalar and VF verification: a core
+cap does not repair memory uncertainty. The diagnostic includes forced-write,
+readback-evidence and recovery flags without dumping state collections.
+
+The executing fixture includes the production setter, rollback and failure
+formatter. It covers successful writes with missing readback, partial failed
+setters, forced reset, failed verification, cached equality and reporting.
+Live driver-failure recovery remains hardware-unverified.
+
+Last verified: 2026-10-27.
+
 ## Summary
 
 Last verified: 2026-10-27 (transaction boundaries and scalar preflight). Targeted follow-up to

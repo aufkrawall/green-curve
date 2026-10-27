@@ -278,8 +278,8 @@ static bool service_reset_all(char* result, size_t resultSize,
         failCount++;
         append_failure("Core clock reset did not verify; clock protection retained");
     }
-    if (g_app.memClockOffsetkHz != 0) {
-        if (nvapi_set_mem_offset(0)) successCount++;
+    if (g_app.memClockOffsetkHz != 0 || g_app.memOffsetWriteUncertain) {
+        if (nvapi_set_mem_offset(0, true)) successCount++;
         else {
             failCount++;
             append_failure("Memory offset did not reset to default");

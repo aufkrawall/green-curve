@@ -28,6 +28,15 @@ def check_all(ctx, require_text, forbid_text):
     gpu_state_cpp = _p(ctx, "main_gpu_state.cpp")
     gpu_backend_cpp_path = _p(ctx, "gpu_backend.cpp")
     readback_policy_h = _p(ctx, "control_readback_policy.h")
+    require_text(_p(ctx, "gpu_backend_apply.cpp"),
+                 "shouldApplyMemOffset = g_app.memOffsetWriteUncertain ||",
+                 "an uncertain memory write cannot be skipped by cached equality")
+    require_text(_p(ctx, "main_service_apply_runtime.cpp"),
+                 "g_app.memClockOffsetkHz != 0 || g_app.memOffsetWriteUncertain",
+                 "explicit Reset accounts for uncertain memory writes")
+    require_text(_p(ctx, "main_service_apply_runtime.cpp"),
+                 "nvapi_set_mem_offset(0, true)",
+                 "explicit Reset forces the memory setter past cached equality")
     require_text(state_sync_cpp, "apply_control_readback_validity(state, &facts);",
                  "the Windows service publishes per-domain readback validity")
     require_text(state_sync_cpp, "facts.gpuOffsetFromHardware = gpuOffsetFromHardware;",

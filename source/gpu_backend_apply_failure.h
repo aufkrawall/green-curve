@@ -29,13 +29,16 @@ static bool apply_recover_clock_failure(ApplyClockCeilingGuard& ceiling,
     refresh_global_state(refreshDetail, sizeof(refreshDetail));
     // GC_APPLY_RECOVERY_VERIFIED_TEXT is matched by the service to tell the
     // user the clocks are back at stock (auto_apply_failure_notice_policy.h).
-    set_message(result, resultSize, "%s. %s", failure,
+    const char* recoveryText = apply_recovery_domain_is_uncertain(recovery.memory)
+        ? "Recovery could not verify memory defaults; run Reset before applying again"
+        :
         apply_recovery_permits_release(recovery) && recovery.restrictionReleased
             ? GC_APPLY_RECOVERY_VERIFIED_TEXT
-            : "Recovery could not verify core defaults; clock protection retained");
-    debug_log("apply prerequisite failed: %s; recovery scalar=%d curve=%d released=%d\n",
+            : "Recovery could not verify core defaults; clock protection retained";
+    set_message(result, resultSize, "%s. %s", failure, recoveryText);
+    debug_log("apply prerequisite failed: %s; recovery scalar=%d curve=%d released=%d memoryAttempted=%d memoryVerified=%d\n",
         failure, recovery.gpuOffset.verified, recovery.curve.verified,
-        recovery.restrictionReleased);
+        recovery.restrictionReleased, recovery.memory.attempted, recovery.memory.verified);
     return false;
 }
 #endif

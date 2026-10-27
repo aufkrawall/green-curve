@@ -454,13 +454,14 @@ static inline bool apply_recovery_domain_is_uncertain(
     return d.attempted && !d.verified;
 }
 
-// The domains whose state decides whether a clock restriction may be lifted.
-// Memory, power and fan are deliberately absent: none of them can leave the
-// GPU running a higher CORE clock than intended, which is the only thing the
-// clamp bounds.  Including them would make a failed fan write strand a cap.
+// Only curve/scalar verification decides whether a core restriction may be
+// lifted. Memory is reported separately: retaining a core cap cannot repair
+// an uncertain memory offset. Power and fan do not determine core release.
 struct ApplyRecoveryResult {
     ApplyRecoveryDomain curve;
     ApplyRecoveryDomain gpuOffset;
+    // Report memory uncertainty separately; it cannot make a core cap useful.
+    ApplyRecoveryDomain memory;
     // True once the caller has proved the restriction itself is gone.
     bool restrictionReleased;
 };
