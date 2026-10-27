@@ -26,6 +26,39 @@ the fan`. Fake-driver cases cover these paths; hardware is unverified.
 
 Last verified: 2026-10-27.
 
+## State reads never run deferred fan recovery (2026-10-27)
+
+Source anchors: `source/linux_daemon.cpp`,
+`source/linux_daemon_snapshot_runtime.cpp`, `source/linux_gpu_selection.h`,
+`source/linux_fan_runtime.h`, `source/linux_auto_restore_policy.h`,
+`source/linux_auto_restore_runtime.h`, `tests/fan_runtime_followup_tests.cpp`,
+`tests/linux_fan_ownership_tests.cpp`, `tests/linux_tui_gpu_target_tests.cpp`.
+
+An untargeted snapshot or telemetry read may initialize the Linux backend once
+when the daemon started without a GPU. An automatic tick gets that one
+read-only discovery attempt; an explicit TUI Refresh may request another
+through the existing interactive request flag. The request only publishes the
+new backend state and wakes the fan worker. `select_request_gpu()` no longer
+performs deferred fan handback as part of a state read.
+
+The worker performs the deferred handback under `g_lock` before normal fan
+maintenance. If recovery moves ownership to another adapter, it increments the
+daemon GPU generation before capturing the worker's observation generation.
+Case 7631 executes this ordering; case 7630 covers the explicit read-time
+discovery rule.
+
+Automatic restore remains mutation-class: backend preparation may run the
+deferred handback before selecting its restore target. It then rechecks the
+automatic-restore guard, daemon uncertainty, pending ownership recovery, and
+the selected target's fan ownership before the first profile write. Cases
+7632-7633 execute the pure post-preparation authority predicate. The startup
+policy no longer enters uncertainty itself; `daemon_automatic_restore_write()`
+owns that transition and its fan handback on every path that reached a write.
+
+Live GPU scheduling and physical multi-GPU handback remain hardware-unverified.
+
+Last verified: 2026-10-27.
+
 ## Crash handback target (2026-10-27)
 
 Source anchors: `source/ownership_handback_policy.h`,
@@ -49,9 +82,10 @@ Shutdown leaves inherited pending handback for startup; ownership assumed by
 this process is returned even after a failed Apply clears active intent.
 Exhausted startup attempts retain the binding for explicit recovery without
 retrying automatically. A start whose GPU backend was unusable defers the
-handback; when a later request or automatic-restore re-initialization brings
-the backend up in the same process, the counted handback runs on its own
-adapter before that path selects its target
+handback. An untargeted state read may bring the backend up and wake the worker,
+which performs the counted handback on its own adapter before normal
+maintenance. Automatic-restore re-initialization performs it during backend
+preparation and then rechecks ownership before selecting and writing its target
 (`daemon_fan_ownership_resume_deferred_handback()`, 2026-10-27). Legacy multi-adapter ownership still allows an explicit
 Reset to name its target. Diagnostics distinguish loaded ownership, refused
 cross-adapter writes, preserved markers and pending lockout re-arm.
@@ -540,6 +574,12 @@ validates every byte of the summary as UTF-8 on Linux.
 
 ## Last Verified
 
+- 2026-10-27: State reads no longer perform deferred fan handback. Untargeted
+  reads can rediscover a late backend, the worker runs pending recovery before
+  maintenance, and automatic restore rechecks guard, uncertainty, ownership and
+  selected-target authority after preparation. Cases 7630-7633; full native
+  Windows regressions, source gates and the full build passed. Physical GPU
+  handback remains unverified.
 - 2026-09-24: Windows fan worker self-stop/deadlock and runtime-mutex release
   fixed; update-install fan handback added. `python build.py --test` (new tests
   6300-6332, mutation-checked: breaking the self-stop rule fails 6300) and the

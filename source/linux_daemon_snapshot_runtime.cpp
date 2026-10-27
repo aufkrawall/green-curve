@@ -250,6 +250,42 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
 
 #include "linux_daemon_identity.cpp"
 #include "linux_fan_runtime.h"
+
+static bool g_backendReadInitAttempted = false;
+
+// A one-shot read may safely retry backend discovery without selecting write
+// authority. An automatic tick gets one attempt; an explicit user refresh asks
+// for another through the existing interactive request flag.
+static bool daemon_retry_backend_for_read(bool explicitRefresh) {
+    if (g_gpuReady) return true;
+    if (!linux_backend_read_init_needed(
+            g_gpuReady, g_backendReadInitAttempted, explicitRefresh))
+        return false;
+    g_backendReadInitAttempted = true;
+    LinuxGpuState replacement = {};
+    char err[256] = {};
+    if (!linux_backend_init(&replacement, nullptr, err, sizeof(err))) {
+        linux_backend_shutdown(&replacement);
+        dlog("daemon backend retry: untargeted discovery failed: %s\n",
+             err[0] ? err : "unknown error");
+        return false;
+    }
+    const GpuAdapterInfo previous = g_gpu.selectedGpu;
+    linux_backend_shutdown(&g_gpu);
+    g_gpu = replacement;
+    g_gpuReady = true;
+    if (previous.valid &&
+        !linux_gpu_identity_matches(&previous, &g_gpu.selectedGpu))
+        ++g_daemonGpuGeneration;
+    dlog("daemon backend retry: untargeted discovery online adapters=%u"
+         " writeIdentityResolved=%d explicit=%d\n",
+         g_gpu.adapterCount, g_gpu.writeIdentityResolved ? 1 : 0,
+         explicitRefresh ? 1 : 0);
+    // The worker performs any deferred fan handback outside this read request.
+    wake_fan_runtime();
+    return true;
+}
+
 static bool select_request_gpu(const ServiceRequest* req, char* err, size_t errSize) {
     if (g_gpu.adapterCount == 1 && (!req || !req->targetGpu.valid)) {
         if (!g_gpu.writeIdentityResolved) {
@@ -304,11 +340,10 @@ static bool select_request_gpu(const ServiceRequest* req, char* err, size_t errS
     GpuAdapterInfo previous = g_gpu.selectedGpu;
     if (!linux_backend_select_target(&g_gpu, &requested, err, errSize)) return false;
     if (!g_gpuReady) {
-        // This request brought the backend up. A fan handback deferred at
-        // startup runs on its own adapter first; then select the request's.
+        // This read-only request brought the backend up. Deferred fan recovery
+        // runs in the fan worker, outside the state-read deadline.
         g_gpuReady = true;
-        if (daemon_fan_ownership_resume_deferred_handback() &&
-            !linux_backend_select_target(&g_gpu, &requested, err, errSize)) return false;
+        wake_fan_runtime();
     }
     if (!linux_gpu_identity_matches(&previous, &g_gpu.selectedGpu)) {
         ++g_daemonGpuGeneration;

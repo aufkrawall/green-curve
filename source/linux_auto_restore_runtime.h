@@ -355,6 +355,35 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     if (role != GPU_LOCATION_ROLE_REQUIRED)
         role = linux_gpu_location_role_for_selection(&g_gpu.selectedGpu,
             g_gpu.adapters, g_gpu.adapterCount);
+    char postPrepareOwnershipErr[192] = {};
+    const bool selectedFanTargetOwned =
+        daemon_fan_ownership_allows_selected_write(
+            postPrepareOwnershipErr, sizeof(postPrepareOwnershipErr));
+    if (!linux_auto_restore_may_write_after_prepare(
+            &g_autoRestoreGuard, g_stateUncertain,
+            g_fanOwnershipHandbackPending, selectedFanTargetOwned)) {
+        gc_snprintf(outcome.message, sizeof(outcome.message),
+            "automatic restore stopped after backend preparation: %s",
+            !selectedFanTargetOwned && postPrepareOwnershipErr[0]
+                ? postPrepareOwnershipErr
+                : g_autoRestoreGuard.lockedOut
+                    ? linux_auto_restore_lockout_reason_name(
+                          g_autoRestoreGuard.lockoutReason)
+                    : g_fanOwnershipHandbackPending
+                        ? "fan ownership recovery is still pending"
+                        : "daemon state became uncertain");
+        dlog("daemon auto-restore: %s aborted after prepare; lockedOut=%d"
+             " reason=%u stateUncertain=%d handbackPending=%d ownership=%d%s%s\n",
+             linux_auto_restore_trigger_name(trigger),
+             g_autoRestoreGuard.lockedOut ? 1 : 0,
+             (unsigned int)g_autoRestoreGuard.lockoutReason,
+             g_stateUncertain ? 1 : 0,
+             g_fanOwnershipHandbackPending ? 1 : 0,
+             selectedFanTargetOwned ? 1 : 0,
+             postPrepareOwnershipErr[0] ? ": " : "",
+             postPrepareOwnershipErr);
+        return outcome;
+    }
     const LinuxGpuUuid binding = linux_gpu_uuid_retain(linux_backend_selected_uuid(&g_gpu), uuid);
     dlog("daemon auto-restore: UUID binding readable=%d retained=%d\n",
         linux_gpu_uuid_valid(linux_backend_selected_uuid(&g_gpu)) ? 1 : 0,

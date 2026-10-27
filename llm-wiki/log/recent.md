@@ -5,6 +5,26 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-27: Failed writes and late Linux recovery keep clear ownership
+
+- Windows core recovery now accounts for a first fan-setting attempt even when
+  no success counter moved. Power writes stay recoverable until their exact
+  target verifies; rollback, Reset and a power-owning Apply can force a repair
+  from the last proven surface, while an unrelated sparse Apply refuses.
+- Linux state reads may rediscover a backend without performing fan hardware
+  or ownership-record work. Deferred handback runs in the worker, and automatic
+  restore rechecks its guard, uncertainty, pending ownership and selected fan
+  target after backend preparation. Startup no longer adds a second
+  uncertainty transition.
+- Cases 5446-5448, 7607, 7621-7626 and 7630-7633 cover the new boundaries.
+  Full native Windows regressions, Linux cross-links, source gates and tidy
+  passed. Build 357 produced six fresh archives, four installers and two Linux
+  packages; every packaged application and Windows service payload matched the
+  built binary. No physical GPU writes were performed.
+- Sources: [clock recovery](../clock-transition-audit.md),
+  [fan control](../fan-control.md), [GPU backend](../gpu-backend.md),
+  [Linux](../linux-scaffold.md), [tests](../testing.md).
+
 ## 2026-10-27: Review follow-up for recovery and portability
 
 - Portable advanced profile fields, deferred Linux backend bring-up, bounded

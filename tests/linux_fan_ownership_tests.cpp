@@ -99,6 +99,24 @@ static void initialize(unsigned int count = 2) {
         &g_gpu.adapters[count - 1]);
 }
 static int run() {
+    LinuxAutoRestoreGuard gate = {};
+    if (!linux_auto_restore_may_write_after_prepare(
+            &gate, false, false, true)) return 7632;
+    gate.lockedOut = 1;
+    gate.lockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE;
+    if (linux_auto_restore_may_write_after_prepare(
+            &gate, false, false, true) ||
+        linux_auto_restore_may_write_after_prepare(
+            &gate, false, true, true))
+        return 7633;
+    gate = {};
+    if (linux_auto_restore_may_write_after_prepare(
+            &gate, true, false, true) ||
+        linux_auto_restore_may_write_after_prepare(
+            &gate, false, true, true) ||
+        linux_auto_restore_may_write_after_prepare(
+            &gate, false, false, false)) return 7633;
+
     initialize();
     daemon_fan_ownership_handback_at_start();
     if (writtenAdapter != 1 || writes != 1 || !removed || !g_gpu.writeIdentityResolved) return 7530;

@@ -922,6 +922,38 @@ boot replay. Diagnostics include `prior uncertain intent captured` and `restored
 mutation deadline counts eight durable writes, including the fan ownership
 marker and its removal after an uncertainty handback. Cases 7590-7594.
 
+### Read-time backend discovery and post-prepare authority (2026-10-27)
+
+Source anchors: `source/linux_daemon.cpp`,
+`source/linux_daemon_snapshot_runtime.cpp`, `source/linux_gpu_selection.h`,
+`source/linux_daemon_client_verbs.cpp`, `source/linux_tui_refresh.cpp`,
+`source/linux_auto_restore_policy.h`,
+`source/linux_auto_restore_runtime.h`, `source/linux_fan_runtime.h`,
+`tools/linux_gates.py`, `tools/fan_gates.py`.
+
+An untargeted snapshot or telemetry request may initialize the backend once
+when the daemon has none. Automatic ticks do not retry that expensive
+discovery forever; an explicit TUI Refresh sets the existing interactive
+request flag and may ask for another attempt. The read does not select write
+authority, perform deferred fan handback, or write the ownership marker. It
+replaces the unavailable backend state, bumps the GPU generation when the
+identity changes, publishes the result, and wakes the fan worker.
+
+Deferred fan handback now belongs to the worker, which runs it under `g_lock`
+before normal maintenance and records an adapter change. Automatic restore
+may also run it during backend preparation, because that caller is already a
+mutation-class operation. After preparation it rechecks the restore guard,
+uncertainty, pending fan recovery and selected-target ownership before the
+first profile write. A failed check returns without mutation.
+
+Startup policy no longer makes its own uncertainty transition after a failed
+startup profile. The single unattended-write function owns that transition and
+the fan handback, avoiding a duplicate enter/exit sequence.
+
+Cases 7630-7633 cover one-shot read discovery, explicit Refresh, worker
+ordering and post-preparation authority. The full daemon sequence remains
+cross-linked and source-gated rather than executed on Linux hardware.
+
 ### The published lockout (fixed 2026-07-31, v0.22.1)
 
 `ServiceSnapshot::autoRestoreLockoutReason` is what the TUI, `--status` and the
@@ -954,8 +986,9 @@ evidence. Windows has always fed the same field from its real lockout state
   uncertain flag** (`F-PREP-NO-UNCERTAIN`): nothing was written and no state
   was disturbed, so the attempt is spent but the daemon stays healthy, the fan
   reassertion thread keeps its authority, and the next resume is allowed to
-  try again. `apply_startup_profile_policy()` follows the same rule — it marks
-  the daemon uncertain only when the failure reached a hardware write.
+  try again. `apply_startup_profile_policy()` adds no transition of its own;
+  `daemon_automatic_restore_write()` marks uncertainty only after a hardware
+  write failed or its durable result did not commit.
 - The reason is **persisted**, not just logged: it is published in every
   snapshot, so losing it across a restart would report the generic failed-write
   reason for a lockout no write ever caused. `LINUX_DAEMON_GUARD_VERSION` is
@@ -1010,8 +1043,10 @@ once, with no proof gate.
   `After=nvidia-resume.service`, the driver's own "the GPU is usable again"
   unit, so there is no sleep and no retry loop. `auto_restore_prepare_backend()`
   does one `linux_backend_init` retry (the character devices are torn down and
-  rebuilt across a suspend) plus the existing same-PCI rebind, and refuses to
-  write if the GPU still is not there.
+  rebuilt across a suspend), runs deferred fan handback, performs the existing
+  same-PCI rebind, and refuses to write if the GPU still is not there. A
+  post-preparation check revalidates the guard, uncertainty, pending ownership
+  and selected fan target before the profile write.
 - `ConditionPathExists=/run/greencurve/greencurve.sock` means a machine whose
   daemon is not running **skips** the unit rather than failing it once per wake.
 - No active intent is reported as success, not failure: a machine with no Green
@@ -1793,6 +1828,12 @@ escaped" was true only of the shell layer; read it that way.
 
 ## Last verified
 
+- 2026-10-27: Untargeted state reads may initialize or explicitly retry an
+  unavailable backend without performing deferred fan work. The worker owns
+  that handback, and automatic restore revalidates recovery authority after
+  backend preparation. Cases 7630-7633; full native Windows regressions, Linux
+  cross-links, source gates and the full build passed. Live daemon execution
+  and physical GPU recovery remain unverified.
 - 2026-09-05: **Linux PATH command symlink, XDG config policy, Arch Linux packaging.**
   Installed binary symlinked to `/usr/local/bin/greencurve` so running `greencurve`
   works from any terminal directory. Non-root user configuration resolved via

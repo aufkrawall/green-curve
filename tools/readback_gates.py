@@ -85,8 +85,20 @@ def check_all(ctx, require_text, forbid_text):
     forbid_text(gpu_backend_power_cpp, "if (cur == 0) cur = def;",
                 "Windows never fabricates the current power limit from the default")
     require_text(gpu_backend_power_cpp,
-                 "if (!power_limit_surface_available(g_app.readback.powerLimit,",
-                 "the Windows power writer refuses calls without complete readback")
+                 "const bool freshSurface = power_limit_surface_available(",
+                 "the Windows power writer starts from a complete readback")
+    require_text(gpu_backend_power_cpp,
+                 "const bool forcedSurface = forceWrite &&\n"
+                 "        power_limit_forced_write_available(",
+                 "only a proven surface permits a forced repair")
+    require_text(gpu_backend_power_cpp,
+                 "g_app.powerLimitWriteUncertain = true;",
+                 "a power write attempt remains recoverable until verified")
+    ctx.require_order_in_operation(
+        gpu_backend_power_cpp, "static bool power_limit_verify_write(",
+        "power_limit_readback_matches_target(g_app.powerLimitCurrentmW, targetmW)",
+        "g_app.powerLimitWriteUncertain = false;",
+        "only the requested target clears power write uncertainty")
     require_text(gpu_backend_power_cpp,
                  "post-write readback is unavailable",
                  "a successful power write is not reported as verified if readback disappears")
@@ -127,6 +139,30 @@ def check_all(ctx, require_text, forbid_text):
     require_text(_p(ctx, "gpu_backend_apply_failure.h"),
                  "invalidate_scalar_readbacks(&g_app.readback);",
                  "a rollback drops readback validity with the scalars it zeroes")
+    require_text(_p(ctx, "main_gpu_rollback.h"),
+                 "g_app.powerLimitPct != 100 || g_app.powerLimitWriteUncertain",
+                 "rollback forces an uncertain power write even when cached percent is unknown")
+    require_text(_p(ctx, "main_gpu_rollback.h"),
+                 "nvapi_set_power_limit(100, true)",
+                 "power rollback uses the forced verified route")
+    require_text(_p(ctx, "gpu_backend_apply.cpp"),
+                 "const bool forcePowerWrite = g_app.powerLimitWriteUncertain;",
+                 "Apply carries uncertain power intent into the forced write")
+    require_text(_p(ctx, "gpu_backend_apply.cpp"),
+                 "!forcePowerWrite && !power_limit_surface_available(",
+                 "an uncertain power repair is not blocked by missing fresh readback")
+    require_text(_p(ctx, "gpu_backend_apply_failure.h"),
+                 "if (!desired || !g_app.powerLimitWriteUncertain || desired->hasPowerLimit)",
+                 "a sparse Apply cannot ignore an unverified power write")
+    require_text(_p(ctx, "main_service_apply_runtime.cpp"),
+                 "g_app.powerLimitPct != 100 || g_app.powerLimitWriteUncertain",
+                 "explicit Reset also repairs uncertain power state")
+    power_fixture = os.path.join(
+        ctx.SOURCE_DIR, "..", "tests", "power_recovery_tests.cpp")
+    require_text(power_fixture, "nvapi_set_power_limit(80, false)",
+                 "the power fixture exercises a write that mutates before verification fails")
+    require_text(power_fixture, "rollback_to_safe_defaults()",
+                 "the power fixture executes stock recovery")
     require_text(readback_policy_h, "all_fans_known",
                  "a partially answering fan set is not a readback")
 

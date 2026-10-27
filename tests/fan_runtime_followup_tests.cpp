@@ -23,7 +23,10 @@ static GpuAdapterInfo g_activeTarget;
 static bool g_gpuReady, g_hasActiveDesired, g_stateUncertain;
 static int g_lock, g_fanWakeMutex, g_fanWakeCondition, g_running;
 static unsigned long long g_fanWakeGeneration;
+static unsigned long long g_daemonGpuGeneration = 1;
 static unsigned int g_fanFailureCount;
+static bool g_fanOwnershipHandbackDeferred;
+static int deferredHandbacks;
 enum Schedule { IDLE, APPLY_BEFORE_WAIT, APPLY_BEFORE_POLL, NORMAL, TELEMETRY_LOST };
 static Schedule schedule;
 static bool injected, afterTimedWait, stateLocked, wakeLocked;
@@ -90,6 +93,12 @@ static bool linux_backend_set_curve_fan_percent(LinuxGpuState*, unsigned int dut
 }
 static bool linux_backend_set_fan_auto(LinuxGpuState*) { return !autoRefused; }
 static bool linux_backend_fans_are_auto(LinuxGpuState*) { return false; }
+static bool daemon_fan_ownership_resume_deferred_handback() {
+    if (!g_fanOwnershipHandbackDeferred) return false;
+    g_fanOwnershipHandbackDeferred = false;
+    ++deferredHandbacks;
+    return true;
+}
 static void dlog(const char*, ...) {}
 static bool store_daemon_record(int, const GpuAdapterInfo*, const DesiredSettings*, char*, size_t) { return true; }
 static void daemon_enter_uncertain_after_fan_lockout(const char*, bool autoOk) {
@@ -128,7 +137,10 @@ static void initialize(Schedule next) {
     g_hasActiveDesired = g_stateUncertain = false;
     g_running = 1;
     g_fanWakeGeneration = 0;
+    g_daemonGpuGeneration = 1;
     g_fanFailureCount = 0;
+    g_fanOwnershipHandbackDeferred = false;
+    deferredHandbacks = 0;
     injected = afterTimedWait = stateLocked = wakeLocked = false;
     lockOrderValid = true;
     autoRefused = lockoutAutoOk = false;
@@ -150,6 +162,14 @@ static int run() {
     commit_curve(30);
     fan_reassert_thread(nullptr);
     if (waits || polls != 1 || writes != 1 || lastDuty != 30 || !lockOrderValid) return 7523;
+    // Backend discovery may finish outside a request. The worker performs the
+    // deferred fan handback once before normal fan maintenance.
+    initialize(NORMAL);
+    commit_curve(30);
+    g_fanOwnershipHandbackDeferred = true;
+    fan_reassert_thread(nullptr);
+    if (deferredHandbacks != 1 || g_fanOwnershipHandbackDeferred ||
+        polls != 1 || writes != 1 || !lockOrderValid) return 7631;
     if (fan_manual_write_confirmed(80, 80, 30, true)) return 7524;
     if (fan_manual_write_confirmed(0, 0, 30, true)) return 7525;
     if (!fan_manual_write_confirmed(80, 0, 80, true)) return 7526;

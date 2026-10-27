@@ -462,6 +462,8 @@ struct ApplyRecoveryResult {
     ApplyRecoveryDomain gpuOffset;
     // Report memory uncertainty separately; it cannot make a core cap useful.
     ApplyRecoveryDomain memory;
+    // A power setter can also mutate before its verification fails.
+    ApplyRecoveryDomain power;
     // True once the caller has proved the restriction itself is gone.
     bool restrictionReleased;
 };

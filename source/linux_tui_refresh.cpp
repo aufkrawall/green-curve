@@ -261,7 +261,7 @@ static bool tui_refresh_from_daemon(TuiState* state, bool userRequested,
     ServiceResponse previous = state->service;
     LinuxDaemonSendOutcome outcome = {};
     if (!linux_daemon_get_state_ex(target, &next, &outcome,
-                                   error, sizeof(error))) {
+                                   error, sizeof(error), userRequested)) {
         if (outcomeOut) *outcomeOut = outcome;
         if (errorOut && errorOutSize)
             snprintf(errorOut, errorOutSize, "%s", error);

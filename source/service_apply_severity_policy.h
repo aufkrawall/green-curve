@@ -42,6 +42,18 @@ static constexpr bool service_apply_core_requires_recovery(
     return anyCoreDomainAttempted && coreFailCount > 0;
 }
 
+// Every core domain that can mutate hardware must contribute its own attempt
+// fact. Success counters alone miss a first setter that changes the device and
+// then reports failure.
+static constexpr bool service_apply_core_was_attempted(
+    int coreSuccessCount, bool partialApplyRisk, bool curveTouched,
+    bool gpuApplied, bool memApplied, bool powerChanged, bool fanChanged,
+    bool clockWriteAttempted, bool resetOcBeforeApply) {
+    return coreSuccessCount > 0 || partialApplyRisk || curveTouched ||
+        gpuApplied || memApplied || powerChanged || fanChanged ||
+        clockWriteAttempted || resetOcBeforeApply;
+}
+
 static_assert(service_apply_core_requires_recovery(true, 1),
     "a first core write that mutated and then failed must still recover");
 static_assert(!service_apply_core_requires_recovery(false, 1),

@@ -293,8 +293,8 @@ static bool service_reset_all(char* result, size_t resultSize,
             append_failure("Memory offset did not reset to default");
         }
     }
-    if (g_app.powerLimitPct != 100) {
-        if (nvapi_set_power_limit(100)) successCount++;
+    if (g_app.powerLimitPct != 100 || g_app.powerLimitWriteUncertain) {
+        if (nvapi_set_power_limit(100, true)) successCount++;
         else {
             failCount++;
             append_failure("Power limit did not reset to default");

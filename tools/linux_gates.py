@@ -1249,6 +1249,18 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
                  "if (!requestedTarget) tui_adopt_configured_gpu(state, userRequested);",
                  "the TUI resolves and switches to its selected GPU after each "
                  "answered untargeted refresh, never inside its own switch")
+    require_text(refresh_cpp,
+                 "error, sizeof(error), userRequested)",
+                 "an explicit TUI Refresh requests an unavailable-backend retry")
+    require_text(
+        _p(ctx, "linux_daemon_client_verbs.cpp"),
+        "service_request_flags_for_command(\n        req.command, forceBackendRetry)",
+        "state-read backend retry uses the existing interactive request flag")
+    require_text(
+        _p(ctx, "linux_daemon.cpp"),
+        "daemon_retry_backend_for_read(\n"
+        "                    (req->flags & SERVICE_REQUEST_FLAG_INTERACTIVE) != 0);",
+        "an untargeted state read initializes or retries backend discovery")
     # A hold must stay recoverable from the TUI: the selector steps from the
     # selected GPU, so the GPU the daemon keeps for its active settings can be
     # selected and Reset.  A switch the daemon answered with a refusal is not

@@ -259,6 +259,17 @@ static inline LinuxAutoRestoreVerdict linux_auto_restore_decide(
     return LINUX_AUTO_RESTORE_ALLOW;
 }
 
+// Preparation can change the authority it was authorized under: bringing the
+// backend up may run a deferred fan handback, which can leave ownership pending
+// or latch an incomplete-recovery lockout. Recheck those facts before the first
+// profile write.
+static inline bool linux_auto_restore_may_write_after_prepare(
+    const LinuxAutoRestoreGuard* guard, bool stateUncertain,
+    bool fanHandbackPending, bool selectedFanTargetOwned) {
+    return guard && !guard->lockedOut && !stateUncertain &&
+        !fanHandbackPending && selectedFanTargetOwned;
+}
+
 // Recorded BEFORE the hardware write and persisted before it is attempted.  A
 // crash mid-write must leave the attempt counted; an attempt that is only
 // remembered after a successful return counts nothing at all in exactly the

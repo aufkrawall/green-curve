@@ -38,7 +38,7 @@ static bool nvml_read_clock_offsets(char*, size_t) {
 static bool nvapi_read_pstates() { return false; }
 static void detect_clock_offsets() {}
 #include "gpu_backend_memory_offset.h"
-static bool nvapi_set_power_limit(int) { return true; }
+static bool nvapi_set_power_limit(int, bool = false) { return true; }
 static void stop_fan_curve_runtime() {}
 static bool app_is_service_process() { return true; }
 static void stop_service_fan_runtime_thread() {}

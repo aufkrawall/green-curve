@@ -63,7 +63,8 @@ bool linux_daemon_get_state(const GpuAdapterInfo* target, ServiceResponse* respo
 bool linux_daemon_get_state_ex(const GpuAdapterInfo* target,
                                ServiceResponse* response,
                                LinuxDaemonSendOutcome* outcome,
-                               char* err, size_t errSize);
+                               char* err, size_t errSize,
+                               bool forceBackendRetry = false);
 
 // Convenience client helpers used by the CLI/TUI.
 bool linux_daemon_apply(const GpuAdapterInfo* target, const DesiredSettings* desired, bool interactive,

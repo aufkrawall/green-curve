@@ -40,6 +40,8 @@ static bool nvml_read_power_limit() {
         if (conRet == NVML_SUCCESS) {
             g_app.powerLimitMinmW = (int)mn;
             g_app.powerLimitMaxmW = (int)mx;
+            if (mn > 0) g_app.powerLimitRecoveryMinmW = (int)mn;
+            if (mx > 0) g_app.powerLimitRecoveryMaxmW = (int)mx;
         } else {
             debug_log("read_power_limit: nvmlDeviceGetPowerManagementLimitConstraints failed: %s\n",
                 nvml_err_name(conRet));
@@ -94,6 +96,8 @@ static bool nvml_read_power_limit() {
     g_app.powerLimitDefaultmW = (int)def;
     g_app.powerLimitPct = power_limit_pct_from_mw(g_app.powerLimitCurrentmW,
                                                   g_app.powerLimitDefaultmW);
+    g_app.powerLimitSurfaceProven = true;
+    g_app.powerLimitRecoveryDefaultmW = g_app.powerLimitDefaultmW;
     debug_log_on_change("read_power_limit: current=%d mW default=%d mW -> %d%%"
                         " (constraints %d..%d mW, curRet=%s defRet=%s)\n",
         g_app.powerLimitCurrentmW, g_app.powerLimitDefaultmW, g_app.powerLimitPct,
@@ -133,45 +137,77 @@ static bool power_limit_verify_write(const char* route, unsigned int targetmW) {
             route, g_app.powerLimitCurrentmW, targetmW);
         return false;
     }
+    g_app.powerLimitWriteUncertain = false;
     return true;
 }
 
 // Every refusal below is logged. These are the only silent failures the apply
 // and reset paths can hit in this domain, and a silent `false` here surfaced as
 // nothing but a generic "Power target did not reset" three layers up.
-static bool nvapi_set_power_limit(int pct) {
+static bool nvapi_set_power_limit(int pct, bool forceWrite) {
     if (pct < POWER_LIMIT_MIN_PCT || pct > POWER_LIMIT_MAX_PCT) {
         debug_log("set_power_limit: refused pct=%d outside %d..%d%%\n",
             pct, POWER_LIMIT_MIN_PCT, POWER_LIMIT_MAX_PCT);
         return false;
     }
-    if (!power_limit_surface_available(g_app.readback.powerLimit,
-                                       g_app.powerLimitDefaultmW,
-                                       g_app.powerLimitCurrentmW)) {
+    const bool freshSurface = power_limit_surface_available(
+        g_app.readback.powerLimit, g_app.powerLimitDefaultmW,
+        g_app.powerLimitCurrentmW);
+    const bool forcedSurface = forceWrite &&
+        power_limit_forced_write_available(
+            g_app.powerLimitSurfaceProven,
+            g_app.powerLimitRecoveryDefaultmW);
+    if (!freshSurface && !forcedSurface) {
         debug_log("set_power_limit: refused pct=%d - no complete power readback"
-                  " (readback=%d current=%d mW default=%d mW constraints %d..%d mW)\n",
-            pct, g_app.readback.powerLimit ? 1 : 0,
+                  " and no proven surface for a forced repair"
+                  " (force=%d readback=%d proven=%d current=%d mW default=%d mW"
+                  " recoveryDefault=%d mW constraints %d..%d mW)\n",
+            pct, forceWrite ? 1 : 0, g_app.readback.powerLimit ? 1 : 0,
+            g_app.powerLimitSurfaceProven ? 1 : 0,
             g_app.powerLimitCurrentmW, g_app.powerLimitDefaultmW,
+            g_app.powerLimitRecoveryDefaultmW,
             g_app.powerLimitMinmW, g_app.powerLimitMaxmW);
         return false;
     }
-    unsigned int targetmW = (unsigned int)(((long long)g_app.powerLimitDefaultmW * pct + 50) / 100);
+    const int defaultmW = g_app.powerLimitDefaultmW > 0
+        ? g_app.powerLimitDefaultmW
+        : g_app.powerLimitRecoveryDefaultmW;
+    const int minmW = g_app.powerLimitMinmW > 0
+        ? g_app.powerLimitMinmW
+        : g_app.powerLimitRecoveryMinmW;
+    const int maxmW = g_app.powerLimitMaxmW > 0
+        ? g_app.powerLimitMaxmW
+        : g_app.powerLimitRecoveryMaxmW;
+    if (defaultmW <= 0) {
+        debug_log("set_power_limit: refused pct=%d - no trustworthy default limit"
+                  " (current=%d mW recoveryDefault=%d mW)\n",
+            pct, g_app.powerLimitDefaultmW,
+            g_app.powerLimitRecoveryDefaultmW);
+        return false;
+    }
+    unsigned int targetmW =
+        (unsigned int)(((long long)defaultmW * pct + 50) / 100);
     if (targetmW < 1) {
         debug_log("set_power_limit: refused pct=%d - target rounds to 0 mW from default %d mW\n",
-            pct, g_app.powerLimitDefaultmW);
+            pct, defaultmW);
         return false;
     }
-    if (g_app.powerLimitMinmW > 0 && targetmW < (unsigned int)g_app.powerLimitMinmW) {
+    if (minmW > 0 && targetmW < (unsigned int)minmW) {
         debug_log("set_power_limit: refused pct=%d - target %u mW below the board minimum %d mW\n",
-            pct, targetmW, g_app.powerLimitMinmW);
+            pct, targetmW, minmW);
         return false;
     }
-    if (g_app.powerLimitMaxmW > 0 && targetmW > (unsigned int)g_app.powerLimitMaxmW) {
+    if (maxmW > 0 && targetmW > (unsigned int)maxmW) {
         debug_log("set_power_limit: refused pct=%d - target %u mW above the board maximum %d mW\n",
-            pct, targetmW, g_app.powerLimitMaxmW);
+            pct, targetmW, maxmW);
         return false;
     }
-    debug_log("set_power_limit: pct=%d defaultmW=%d targetmW=%u\n", pct, g_app.powerLimitDefaultmW, targetmW);
+    debug_log("set_power_limit: pct=%d defaultmW=%d targetmW=%u force=%d fresh=%d\n",
+        pct, defaultmW, targetmW, forceWrite ? 1 : 0, freshSurface ? 1 : 0);
+    // A driver call or fallback process may mutate the board before reporting
+    // failure. Keep recovery authority until this specific target verifies.
+    g_app.powerLimitWriteUncertain = true;
+    g_app.readback.powerLimit = false;
     if (nvml_ensure_ready() && g_nvml_api.setPowerLimit) {
         set_last_apply_phase("Power limit NVML write");
         nvmlReturn_t r = g_nvml_api.setPowerLimit(g_app.nvmlDevice, targetmW);

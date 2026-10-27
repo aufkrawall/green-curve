@@ -229,11 +229,8 @@ static void apply_startup_profile_policy() {
         &g_startupPolicy.targetGpu, &g_startupPolicy.desired,
         (GpuLocationRole)g_startupPolicy.targetLocationRole, &g_startupPolicy.targetUuid);
     if (!outcome.success) {
-        // Only a failure that reached a hardware write leaves the daemon
-        // uncertain.  A GPU that was not ready before any write disturbed no
-        // state (see F-PREP-NO-UNCERTAIN), so it must not disable fan
-        // reassertion or publish a lockout for the rest of the session.
-        if (outcome.attempted) daemon_enter_uncertain_state("startup profile failed");
+        // daemon_automatic_restore_write owns the uncertainty transition and
+        // its fan handback on every path that reached a write.
         dlog("daemon: startup profile %u did not commit -> %s\n",
              (unsigned int)g_startupPolicy.profileSlot,
              outcome.message[0] ? outcome.message : "unknown reason");

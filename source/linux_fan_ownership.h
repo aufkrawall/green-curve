@@ -325,9 +325,9 @@ static void daemon_fan_ownership_run_handback(LinuxFanOwnershipMarker marker) {
 }
 
 // A start whose backend was unusable kept inherited ownership without a write.
-// Once a later request brings the backend up, run that handback before the GPU
-// is used for anything else. True when it ran: the caller's selected adapter
-// may then have changed to the owned one.
+// Once a read or automatic restore brings the backend up, the fan worker runs
+// this counted handback before normal maintenance. True when it ran: the
+// selected adapter may then have changed to the owned one.
 static bool daemon_fan_ownership_resume_deferred_handback() {
     if (!g_fanOwnershipHandbackDeferred || !g_gpuReady) return false;
     g_fanOwnershipHandbackDeferred = false;

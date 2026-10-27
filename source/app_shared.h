@@ -565,6 +565,14 @@ struct AppData {
     int powerLimitCurrentmW;
     int powerLimitMinmW;
     int powerLimitMaxmW;
+    // The setter may mutate the board before post-write verification fails.
+    // Keep the last complete surface evidence separately so recovery can force
+    // the board back to its default without trusting an unknown current value.
+    bool powerLimitSurfaceProven;
+    bool powerLimitWriteUncertain;
+    int powerLimitRecoveryDefaultmW;
+    int powerLimitRecoveryMinmW;
+    int powerLimitRecoveryMaxmW;
 
     // Board maximum memory clock without the user offset (NVML "Max Clocks").
     unsigned int nvmlMemMaxMHz;

@@ -12,6 +12,7 @@ REGRESSION_SOURCES = (
     'fan_runtime_followup_tests.cpp',
     'linux_fan_ownership_tests.cpp',
     'memory_recovery_tests.cpp',
+    'power_recovery_tests.cpp',
     'security_audit_tests.cpp',
     'installer_fuzz_harness_tests.cpp',
     'review_followup_tests.cpp',

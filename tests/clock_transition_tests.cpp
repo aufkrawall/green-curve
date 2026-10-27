@@ -22,7 +22,7 @@ enum {NVML_SUCCESS=0,NVML_ERROR_NOT_SUPPORTED=3,
       XBAR_PINNED_SYS_ENTRY_INDEX=1,XBAR_PINNED_VIDEO_ENTRY_INDEX=2};
 struct Point {unsigned int freq_kHz,volt_uV;};
 struct DesiredSettings {
- bool hasLock{},resetOcBeforeApply{},hasGpuOffset{};
+ bool hasLock{},resetOcBeforeApply{},hasGpuOffset{},hasPowerLimit{};
  LockMode lockMode{}; unsigned int lockMHz{}; int gpuOffsetMHz{},gpuOffsetExcludeLowCount{};
  bool hasCurvePoint[VF_NUM_POINTS]{};
  unsigned int curvePointMHz[VF_NUM_POINTS]{};
@@ -147,7 +147,7 @@ struct App {
  int gpuClockOffsetkHz{}; LockMode lockMode{};
  GpuFamily gpuFamily{};
  unsigned int appliedLockFreq{},lockedFreq{},transitionClockCapMHz{}; bool transitionClockCapActive{};
- int readback{};
+ int readback{}; bool powerLimitWriteUncertain{};
 };
 static App g_app;
 static Api g_nvml_api;

@@ -1,14 +1,18 @@
 # Testing
 
-Validation of the 2026-10-27 fan/recovery follow-ups: full native Windows
-regressions and Linux cross-link checks pass. The three new standalone
-fixtures also execute under Linux and compile with warnings treated as
-errors. Negative controls reject the old worker ordering, non-authoritative
-fan target, omitted ownership resolution and skipped uncertain-memory reset.
-Static analysis reports no new findings. The plain deliverable build passes;
-all six archives, four installers and two Linux packages have fresh timestamps
-and changed hashes, and their payload binaries match the new build outputs.
-Physical GPU failure injection remains unverified.
+Validation of the 2026-10-27 recovery review: full native Windows regressions,
+Linux cross-link checks, source gates and `--tidy` pass. The fixture set now
+also executes the production power setter and stock rollback, the deferred
+worker handback, read-time backend discovery and post-preparation restore
+authority. The earlier standalone fan/memory fixtures continue to execute under
+Linux with warnings treated as errors.
+
+The plain deliverable build completed as build 357. All six archives, four
+installers and two Linux packages have fresh timestamps and matching SHA-256
+sidecars. Independent extraction compared every packaged application and
+Windows service image with the corresponding freshly built binary. No physical
+GPU write or driver-failure injection was performed; Linux daemon orchestration
+remains cross-linked and source-gated on this Windows host.
 
 ## Linux uncertain-state fan return (2026-10-27)
 
@@ -41,8 +45,10 @@ harness.
 
 Source anchors: `tests/linux_fan_ownership_tests.cpp`,
 `source/linux_fan_ownership.h`, `source/linux_daemon_snapshot_runtime.cpp`,
-`source/linux_auto_restore_runtime.h`, `tools/fan_gates.py`,
-`tools/apply_ceiling_gates.py`.
+`source/linux_fan_runtime.h`, `source/linux_auto_restore_policy.h`,
+`source/linux_auto_restore_runtime.h`, `tests/fan_runtime_followup_tests.cpp`,
+`tests/linux_tui_gpu_target_tests.cpp`, `tools/fan_gates.py`,
+`tools/apply_ceiling_gates.py`, `tools/linux_gates.py`.
 
 Cases 7595-7599 defer the startup handback for an unusable backend, then run
 it once the backend becomes ready: the owned adapter receives the counted
@@ -50,6 +56,15 @@ driver-auto write and the marker retires; a second resume and ownership
 already assumed by a manual Apply write nothing. Case 7596 fails without the
 deferral flag. Gates pin both readiness transitions ahead of their target
 selection and keep the in-flight count before the write.
+
+The 2026-10-27 follow-up moves request-driven recovery out of state reads.
+Case 7630 covers one-shot untargeted backend discovery and a retry only from
+an explicit Refresh. Case 7631 executes the worker performing deferred
+handback before its normal poll. Cases 7632-7633 execute the post-preparation
+authority predicate for reset guard, daemon uncertainty, pending ownership and
+the selected target. The power/readback gates also require the first fan
+attempt to participate in core recovery (5446-5448). Full daemon orchestration
+remains outside the host-neutral fixture.
 
 ## Windows power write verification (2026-10-27)
 
@@ -59,9 +74,32 @@ Source anchors: `tests/regression_main.cpp`, `source/control_readback_policy.h`,
 Cases 7600-7602 pin the one-watt readback tolerance, including a rejected
 off-target limit and unusable readings. Cases 7603-7606 accept NVML bus-ID
 shapes and reject truncated, malformed, oversized and argument-injecting IDs.
+Case 7607 pins the predicate that requires prior surface evidence before a
+forced repair.
 Gates require both write routes to verify the reported limit and the
 `nvidia-smi` fallback to name the selected GPU and refuse before launch
 without one. The fallback itself is not executed by the harness.
+
+## Windows power write uncertainty and recovery (2026-10-27)
+
+Source anchors: `tests/power_recovery_tests.cpp`,
+`source/gpu_backend_power.cpp`, `source/main_gpu_rollback.h`,
+`source/gpu_backend_apply_failure.h`, `source/gpu_backend_apply.cpp`,
+`source/gpu_backend_reset_baseline.cpp`,
+`source/main_service_apply_runtime.cpp`, `tools/readback_gates.py`.
+
+Fixture cases 7621-7626 execute the production power setter and stock rollback
+with a scripted driver. A write reaches the board before both post-write
+getters fail; the attempt remains uncertain, rollback supplies the saved
+default and verifies 100%, and no write reaches a driver without previous
+surface proof. The final case proves saved constraints still refuse an
+out-of-range repair.
+
+Source gates require the write boundary to precede both NVML and fallback,
+rollback and Reset to force an unverified repair, a sparse Apply without the
+power domain to refuse, and a forced power-owning Apply not to be blocked by
+the missing fresh readback. The fallback process and physical failure
+injection are not executed.
 
 ## NVML device-ID matching (2026-10-27)
 

@@ -963,6 +963,7 @@ int run_advanced_apply_tests();
 int run_fan_runtime_followup_tests();
 int run_linux_fan_ownership_tests();
 int run_memory_recovery_tests();
+int run_power_recovery_tests();
 int run_debug_log_identity_tests();
 int run_service_client_identity_failure_child();
 int run_security_audit_tests();
@@ -1908,6 +1909,7 @@ int main(int argc, char** argv) {
     if (int fanFailure = run_fan_runtime_followup_tests()) return fanFailure;
     if (int ownershipFailure = run_linux_fan_ownership_tests()) return ownershipFailure;
     if (int memoryFailure = run_memory_recovery_tests()) return memoryFailure;
+    if (int powerFailure = run_power_recovery_tests()) return powerFailure;
     if (int logFailure = run_debug_log_identity_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", logFailure);
         return logFailure;
@@ -3768,6 +3770,9 @@ static int run_all_tests(int argc, char** argv) {
         // every GPU. Only the hex domain:bus:device.function shape is passed.
         if (!power_limit_smi_bus_id_valid("00000000:01:00.0") ||
             !power_limit_smi_bus_id_valid("0000:2b:00.1")) return 7603;
+        if (!power_limit_forced_write_available(true, 250000) ||
+            power_limit_forced_write_available(false, 250000) ||
+            power_limit_forced_write_available(true, 0)) return 7607;
         if (power_limit_smi_bus_id_valid("") || power_limit_smi_bus_id_valid(nullptr) ||
             power_limit_smi_bus_id_valid("01:00.0") ||
             power_limit_smi_bus_id_valid("0000:01:00")) return 7604;
@@ -9597,6 +9602,17 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
         // The two rules still agree on the case the old one got right.
         if (!service_apply_core_requires_recovery(true, 1) ||
             !service_apply_core_requires_mixed_failure_rollback(1, 1)) return 5445;
+        // A first fan write is an attempt even when no success counter moved.
+        if (!service_apply_core_was_attempted(
+                0, false, false, false, false, false, true, false, false))
+            return 5446;
+        if (service_apply_core_was_attempted(
+                0, false, false, false, false, false, false, false, false))
+            return 5447;
+        if (!service_apply_core_requires_recovery(
+                service_apply_core_was_attempted(
+                    0, false, false, false, false, false, true, false, false),
+                1)) return 5448;
     }
 
     {

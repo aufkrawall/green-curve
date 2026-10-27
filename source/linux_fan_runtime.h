@@ -37,6 +37,21 @@ static pl_thread_ret fan_reassert_thread(void*) {
     while (g_running) {
         unsigned int pollMs = 0;
         pl_mutex_lock(&g_lock);
+        if (g_fanOwnershipHandbackDeferred && g_gpuReady) {
+            const GpuAdapterInfo before = g_gpu.selectedGpu;
+            if (daemon_fan_ownership_resume_deferred_handback()) {
+                const GpuAdapterInfo& after = g_gpu.selectedGpu;
+                const bool changed = before.valid != after.valid ||
+                    (before.valid && after.valid &&
+                     !linux_gpu_identity_matches(&before, &after));
+                if (changed) {
+                    ++g_daemonGpuGeneration;
+                    dlog("daemon fan ownership: deferred handback changed the"
+                         " selected GPU; generation=%llu\n",
+                         (unsigned long long)g_daemonGpuGeneration);
+                }
+            }
+        }
         observedGeneration = fan_runtime_generation();
         bool active = g_gpuReady && g_hasActiveDesired && !g_stateUncertain &&
                       linux_gpu_identity_matches(

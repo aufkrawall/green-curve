@@ -126,6 +126,12 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
     require_order(linux_daemon_cpp, "pl_thread_join(fanThread)",
                   "daemon_release_fan_to_driver()",
                   "fan worker is joined before the shutdown handback, so they cannot race")
+    require_text(_p(ctx, "gpu_backend_apply.cpp"),
+                 "service_apply_core_was_attempted(",
+                 "the Windows apply evaluates core recovery from explicit attempts")
+    require_text(_p(ctx, "gpu_backend_apply.cpp"),
+                 "memApplied, powerChanged, fanChanged, clockCeiling.writeAttempted",
+                 "a first fan write participates in Windows core recovery")
     for command in ("APPLY", "RESET"):
         ctx.require_order_in_operation(
             linux_daemon_cpp, f"case SERVICE_CMD_{command}:",
@@ -161,6 +167,8 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
     for name in ("linux_auto_restore_runtime.h", "linux_startup_policy.h"):
         forbid_text(_p(ctx, name), "g_stateUncertain = true",
                     f"{name} enters uncertainty through the fan-returning helper")
+    forbid_text(_p(ctx, "linux_startup_policy.h"), "daemon_enter_uncertain_state(",
+                "automatic restore owns the startup uncertainty transition")
     # The worker's lockout already returned the fan; its helper records the
     # uncertainty and retires the marker without a second fan write.
     forbid_text(_p(ctx, "linux_fan_runtime.h"), "g_stateUncertain = true",
@@ -173,17 +181,31 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
                  'daemon_enter_uncertain_after_fan_lockout(\n'
                  '                    "fixed fan maintenance locked out", autoOk);',
                  "a fixed-duty lockout retires the marker once the driver holds the fan")
-    # A startup handback deferred for an unusable backend runs where the
-    # backend later becomes usable, before that path selects its own target.
+    # A backend brought up by a request is recovered by the fan worker, outside
+    # the request deadline. Automatic restore remains mutation-class and runs
+    # the handback before selecting its restore target.
+    forbid_text(_p(ctx, "linux_daemon_snapshot_runtime.cpp"),
+                "daemon_fan_ownership_resume_deferred_handback()",
+                "state reads do not perform fan hardware or durable-record writes")
     ctx.require_order_in_operation(
-        _p(ctx, "linux_daemon_snapshot_runtime.cpp"), "static bool select_request_gpu(",
+        linux_fan_runtime_h, "static pl_thread_ret fan_reassert_thread(",
         "daemon_fan_ownership_resume_deferred_handback()",
-        "if (!linux_gpu_identity_matches(&previous, &g_gpu.selectedGpu))",
-        "a request that brings the backend up runs the deferred fan handback first")
+        "observedGeneration = fan_runtime_generation();",
+        "the fan worker performs deferred recovery before its normal poll")
     ctx.require_order_in_operation(
         runtime, "g_gpuReady = true;", "daemon_fan_ownership_resume_deferred_handback();",
         "linux_backend_select_target(&g_gpu, target,",
         "an automatic-restore re-init runs the deferred fan handback before selecting")
+    ctx.require_order_in_operation(
+        runtime, "static LinuxAutoRestoreOutcome daemon_automatic_restore_write(",
+        "auto_restore_prepare_backend(",
+        "linux_auto_restore_may_write_after_prepare(",
+        "automatic restore rechecks authority after backend preparation")
+    ctx.require_order_in_operation(
+        runtime, "static LinuxAutoRestoreOutcome daemon_automatic_restore_write(",
+        "linux_auto_restore_may_write_after_prepare(",
+        "LinuxMutationResult mutation = linux_backend_apply(",
+        "no automatic mutation follows a failed post-preparation authority check")
     # A failed operation that started uncertain stays uncertain, in memory and
     # in the record it restores.
     ctx.require_text_in_operation(

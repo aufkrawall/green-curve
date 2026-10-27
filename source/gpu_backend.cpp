@@ -182,6 +182,16 @@ static void reset_gpu_runtime_selection() {
     g_app.adapterCount = 0;
     memset(g_app.adapters, 0, sizeof(g_app.adapters));
     memset(&g_app.selectedGpu, 0, sizeof(g_app.selectedGpu));
+    g_app.powerLimitPct = POWER_LIMIT_DEFAULT_PCT;
+    g_app.powerLimitDefaultmW = 0;
+    g_app.powerLimitCurrentmW = 0;
+    g_app.powerLimitMinmW = 0;
+    g_app.powerLimitMaxmW = 0;
+    g_app.powerLimitSurfaceProven = false;
+    g_app.powerLimitWriteUncertain = false;
+    g_app.powerLimitRecoveryDefaultmW = 0;
+    g_app.powerLimitRecoveryMinmW = 0;
+    g_app.powerLimitRecoveryMaxmW = 0;
 }
 
 static bool nvapi_enum_gpu() {

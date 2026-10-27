@@ -86,7 +86,8 @@ enum {
     SERVICE_PROTOCOL_VERSION = 29,
 };
 
-// ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an
+// ServiceRequest.flags bits. Bit 0 = interactive apply; on a state read it
+// permits one explicit retry of an unavailable GPU backend. Bit 30 marks an
 // "apply shared slot N" request (N in bits 8..15): under the shared-only policy
 // the service ignores the client-supplied settings and applies its OWN copy of
 // shared bank slot N, so a restricted user cannot smuggle custom OC.

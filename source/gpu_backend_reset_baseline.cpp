@@ -46,12 +46,20 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
     // the VF curve was touched.  See power_reset_before_apply_required().
     bool powerSurfaceAvailable = power_limit_surface_available(
         g_app.readback.powerLimit, g_app.powerLimitDefaultmW, g_app.powerLimitCurrentmW);
+    const bool forcePowerWrite = g_app.powerLimitWriteUncertain &&
+        power_limit_forced_write_available(g_app.powerLimitSurfaceProven,
+                                           g_app.powerLimitRecoveryDefaultmW);
+    powerSurfaceAvailable = powerSurfaceAvailable || forcePowerWrite;
     if (desired && desired->hasPowerLimit && !powerSurfaceAvailable) {
         debug_log("reset-before-apply: skipping power reset — no power control surface"
-                  " (readback=%d current=%d mW default=%d mW constraints %d..%d mW);"
+                  " (readback=%d proven=%d current=%d mW default=%d mW"
+                  " recoveryDefault=%d mW constraints %d..%d mW);"
                   " Green Curve cannot have moved this board's power target\n",
-            g_app.readback.powerLimit ? 1 : 0, g_app.powerLimitCurrentmW,
-            g_app.powerLimitDefaultmW, g_app.powerLimitMinmW, g_app.powerLimitMaxmW);
+            g_app.readback.powerLimit ? 1 : 0,
+            g_app.powerLimitSurfaceProven ? 1 : 0,
+            g_app.powerLimitCurrentmW, g_app.powerLimitDefaultmW,
+            g_app.powerLimitRecoveryDefaultmW,
+            g_app.powerLimitMinmW, g_app.powerLimitMaxmW);
     }
     // Write the target this apply will END at, not the board default.  See
     // power_reset_before_apply_target_pct(): passing through 100% first left a
@@ -62,16 +70,18 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
         power_reset_before_apply_target_pct(requestOwnsPower,
             requestOwnsPower ? desired->powerLimitPct : POWER_LIMIT_DEFAULT_PCT));
     if (power_reset_before_apply_required(requestOwnsPower, powerSurfaceAvailable,
-                                          g_app.powerLimitPct, powerResetTargetPct)) {
+                                          g_app.powerLimitPct, powerResetTargetPct) ||
+        (requestOwnsPower && forcePowerWrite)) {
         debug_log("reset-before-apply: power target %d%% -> %d%% (writing the"
-                  " apply's own target, never passing through %d%%)\n",
-            g_app.powerLimitPct, powerResetTargetPct, POWER_LIMIT_DEFAULT_PCT);
-        if (nvapi_set_power_limit(powerResetTargetPct)) {
+                  " apply's own target, never passing through %d%%; force=%d)\n",
+            g_app.powerLimitPct, powerResetTargetPct, POWER_LIMIT_DEFAULT_PCT,
+            forcePowerWrite ? 1 : 0);
+        if (nvapi_set_power_limit(powerResetTargetPct, forcePowerWrite)) {
             if (powerTargetAlreadyWrittenOut) *powerTargetAlreadyWrittenOut = true;
         } else {
             append_failure("Power target did not apply");
         }
-    } else if (requestOwnsPower && powerSurfaceAvailable) {
+    } else if (requestOwnsPower && powerSurfaceAvailable && !forcePowerWrite) {
         // Already at the requested target: the apply phase must still count it
         // as satisfied rather than re-issuing an identical write.
         if (powerTargetAlreadyWrittenOut) *powerTargetAlreadyWrittenOut = true;

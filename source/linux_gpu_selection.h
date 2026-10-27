@@ -401,6 +401,15 @@ static inline const GpuAdapterInfo* linux_configured_gpu_bring_up_target(
     return &gpu->target;
 }
 
+// A read-only backend discovery is cheap enough to try once when the daemon
+// starts without a GPU, but expensive enough that telemetry ticks must not
+// retry it forever. An explicit user Refresh may ask for another attempt.
+static inline bool linux_backend_read_init_needed(bool gpuReady,
+                                                  bool alreadyAttempted,
+                                                  bool explicitRefresh) {
+    return !gpuReady && (!alreadyAttempted || explicitRefresh);
+}
+
 // Why a write stopped, for the CLI error and the TUI status line.
 static inline const char* linux_configured_gpu_problem(
     LinuxConfiguredGpuStatus status) {

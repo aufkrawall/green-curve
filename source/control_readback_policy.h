@@ -115,6 +115,14 @@ static inline bool power_limit_surface_available(bool powerReadbackValid,
     return powerReadbackValid && powerDefaultmW > 0 && powerCurrentmW > 0;
 }
 
+// A forced repair may run after the write invalidated its fresh readback. It
+// still requires evidence that this GPU session previously exposed a complete
+// power surface and supplied the default denominator.
+static inline bool power_limit_forced_write_available(
+    bool surfaceProven, int recoveryDefaultmW) {
+    return surfaceProven && recoveryDefaultmW > 0;
+}
+
 // The published percentage for a pair of mW readings.  An unusable pair yields
 // the board default rather than 0; see POWER_LIMIT_DEFAULT_PCT.
 static inline int power_limit_pct_from_mw(int currentmW, int defaultmW) {

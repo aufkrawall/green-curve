@@ -55,9 +55,17 @@ static ApplyRecoveryResult rollback_to_safe_defaults() {
         debug_log("rollback memory: attempted=1 verified=%d uncertain=%d\n",
             recovery.memory.verified ? 1 : 0, g_app.memOffsetWriteUncertain ? 1 : 0);
     }
-    // Reset power limit to default.
-    if (g_app.powerLimitPct != 100) {
-        retry_op([&]() { return nvapi_set_power_limit(100); }, 3, "Power limit");
+    // Reset power limit to default. A failed write may have changed hardware
+    // while leaving the cached percentage unknown, so use the forced path and
+    // retain the last complete surface evidence for its denominator.
+    if (g_app.powerLimitPct != 100 || g_app.powerLimitWriteUncertain) {
+        recovery.power.attempted = true;
+        recovery.power.verified = retry_op(
+            [&]() { return nvapi_set_power_limit(100, true); }, 3,
+            "Power limit");
+        debug_log("rollback power: attempted=1 verified=%d uncertain=%d\n",
+            recovery.power.verified ? 1 : 0,
+            g_app.powerLimitWriteUncertain ? 1 : 0);
     }
     // Stop fan runtime and return to driver auto.
     stop_fan_curve_runtime();

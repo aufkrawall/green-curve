@@ -1,5 +1,38 @@
 # Clock transition hardening
 
+## Power write evidence and core attempt accounting (2026-10-27)
+
+Source anchors: `source/service_apply_severity_policy.h`,
+`source/gpu_backend_apply.cpp`, `source/gpu_backend_apply_failure.h`,
+`source/gpu_backend_power.cpp`, `source/gpu_backend_reset_baseline.cpp`,
+`source/main_gpu_rollback.h`, `source/main_service_apply_runtime.cpp`,
+`tests/power_recovery_tests.cpp`, `tools/readback_gates.py`.
+
+A core setter can change hardware and then report or verify failure. Success
+counters alone are therefore not evidence that no recovery is needed.
+`service_apply_core_was_attempted()` explicitly includes every core domain,
+including a first `fanChanged` attempt that contributes no success. A failed
+first fan write now enters the same mixed-result rollback as a failed clock,
+memory or power write. Cases 5446-5448 pin the attempt predicate.
+
+Power has its own attempted/verified recovery result. The setter marks
+`powerLimitWriteUncertain` and clears the fresh readback proof before invoking
+NVML or the selected-GPU fallback. Only a fresh reading within the one-watt
+target tolerance clears uncertainty. A forced repair is permitted only while
+the last complete surface proof still supplies the board default; rollback,
+explicit Reset and an Apply that owns the power target use that repair. A
+sparse Apply that would leave the uncertain power write untouched is refused.
+
+The recovery domain is separate from the transition clamp. A verified graphics
+scalar and VF curve may release the clock restriction even when power recovery
+could not be verified. The unresolved power domain is still reported and
+blocks later settings that do not repair it. The executing fixture covers a
+write that mutates before readback failure, forced stock recovery, missing
+surface evidence and constraint refusal; live driver failure injection remains
+unverified.
+
+Last verified: 2026-10-27.
+
 ## Memory write evidence and recovery (2026-10-27)
 
 Source anchors: `source/gpu_backend_memory_offset.h`,

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
-// The Linux TUI's write target, assertion codes 7400-7409, 7430-7439 and
-// 7571-7574. The TUI sends the GPU it shows (TuiState::targetGpu), so a write
+// The Linux TUI's write target, assertion codes 7400-7409, 7430-7439,
+// 7571-7574 and 7630. The TUI sends the GPU it shows (TuiState::targetGpu), so a write
 // is allowed only while the selected GPU -- `--gpu`, config.ini's resolved
 // record, the selector -- IS the one shown.  7400-7402, 7409 and 7430 drive
 // the pure policy (linux_tui_authority.h); 7403-7408, 7431-7436 and 7571-7574
@@ -29,9 +29,11 @@ struct ScriptedDaemon {
     bool refuseTargeted;  // a targeted read to another GPU is answered "no"
     bool offline;         // connect() fails
     bool upOnTargeted;    // a backend that was down comes up on a named read
+    bool upOnExplicitRefresh;
     int reads;
     int targetedReads;
     int switchRequests;   // targeted reads naming a GPU it does not show
+    int explicitRefreshes;
 };
 
 ScriptedDaemon g_daemon;
@@ -123,7 +125,8 @@ LinuxStartupSnapshotReport linux_startup_snapshot_report(
 bool linux_daemon_get_state_ex(const GpuAdapterInfo* target,
                                ServiceResponse* response,
                                LinuxDaemonSendOutcome* outcome,
-                               char* error, size_t errorSize) {
+                               char* error, size_t errorSize,
+                               bool forceBackendRetry) {
     ++g_daemon.reads;
     *outcome = LinuxDaemonSendOutcome{};
     if (g_daemon.offline) {
@@ -134,6 +137,14 @@ bool linux_daemon_get_state_ex(const GpuAdapterInfo* target,
     outcome->reachability = LINUX_DAEMON_REACHABILITY_CONNECTED;
     outcome->requestSubmitted = true;
     ServiceSnapshot& snapshot = g_daemon.published.snapshot;
+    if (forceBackendRetry) ++g_daemon.explicitRefreshes;
+    if (!target && forceBackendRetry &&
+        g_daemon.upOnExplicitRefresh && snapshot.adapterCount == 0) {
+        snapshot.adapterCount = 2;
+        snapshot.adapters[0] = twin_at(6);
+        snapshot.adapters[1] = twin_at(7);
+        snapshot.selectedAdapterIndex = 0;
+    }
     if (target) {
         ++g_daemon.targetedReads;
         if (g_daemon.upOnTargeted && snapshot.adapterCount == 0) {
@@ -650,6 +661,28 @@ int recovery_tests() {
             gpu.status = status;
             if (linux_configured_gpu_bring_up_target(&gpu, 0)) return 7439;
         }
+    }
+    // 7630: without a saved target, an explicit Refresh can still ask the
+    // daemon for an untargeted backend discovery. Automatic ticks do not retry
+    // that expensive operation.
+    {
+        daemon_reset(false);
+        g_daemon.published.snapshot.adapterCount = 0;
+        g_daemon.upOnExplicitRefresh = true;
+        TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_NONE, 0);
+        state->configuredGpu.target = GpuAdapterInfo{};
+        if (!tui_refresh_service(state, false) ||
+            g_daemon.explicitRefreshes != 0 || g_daemon.targetedReads != 0 ||
+            state->service.snapshot.adapterCount != 0) return 7630;
+        if (!tui_refresh_service(state, true) ||
+            g_daemon.explicitRefreshes != 1 || g_daemon.targetedReads != 0 ||
+            state->service.snapshot.adapterCount != 2 ||
+            shown_bus(state) != 6 ||
+            !tui_configured_gpu_allows_write(state, "Apply")) return 7630;
+        if (!linux_backend_read_init_needed(false, false, false) ||
+            !linux_backend_read_init_needed(false, true, true) ||
+            linux_backend_read_init_needed(false, true, false) ||
+            linux_backend_read_init_needed(true, false, true)) return 7630;
     }
     return 0;
 }

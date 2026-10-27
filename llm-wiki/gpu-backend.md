@@ -5,7 +5,7 @@
 The GPU backend handles VF-curve read/write, clock offsets, power limit, and fan control through dynamically loaded NVIDIA driver interfaces (NVAPI private + NVML public).
 
 Current clock transition/reset/verification invariants are documented in
-[clock-transition-audit.md](clock-transition-audit.md), updated 2026-09-17.
+[clock-transition-audit.md](clock-transition-audit.md), updated 2026-10-27.
 Derived selective points own offsets, explicit points own absolute MHz, and
 failed recovery retains independently tracked protection. Earlier incident
 narratives below are historical observations, not acceptance of every current
@@ -732,14 +732,18 @@ Expected, and harmless: clocks only fall there.
 
 ## Power target (TGP): the control surface, and what "unknown" means (F-POWER-SURFACE)
 
-**Source anchors:** `source/gpu_backend_power.cpp` (read + write pair),
+**Source anchors:** `source/app_shared.h` (saved power surface and uncertainty),
+`source/gpu_backend_power.cpp` (read + write pair),
 `source/control_readback_policy.h` (`power_limit_surface_available()`,
-`power_limit_pct_from_mw()`, `power_reset_before_apply_required()`),
+`power_limit_forced_write_available()`, `power_limit_pct_from_mw()`,
+`power_reset_before_apply_required()`),
 `source/gpu_core.h` (`POWER_LIMIT_DEFAULT_PCT`, `POWER_LIMIT_MIN_PCT/MAX_PCT`,
 `validate_desired_settings_for_ipc()`), `source/gpu_backend_reset_baseline.cpp`,
-`source/gpu_capability_probe.cpp`, `source/linux_backend_mutation.cpp`
-(`linux_power_request_is_inert()`), gates in `tools/readback_gates.py`,
-regressions 5040-5071, 7600-7606 + 4756 in `tests/regression_main.cpp`.
+`source/gpu_backend_apply_failure.h`, `source/main_gpu_rollback.h`,
+`source/main_service_apply_runtime.cpp`, `source/gpu_capability_probe.cpp`,
+`source/linux_backend_mutation.cpp` (`linux_power_request_is_inert()`),
+`tests/power_recovery_tests.cpp`, gates in `tools/readback_gates.py`,
+regressions 5040-5071, 7600-7607 + 4756, and fixture cases 7621-7626.
 
 ### The unit, and why it can go missing
 
@@ -779,6 +783,15 @@ feed this domain and **all three are independently refused in the wild**:
 6. **A non-default request on a surfaceless board still fails loudly**, by name:
    `Power limit N% cannot be set: this GPU's driver does not report a power
    target (constraints X..Y mW)`.
+7. **A write attempt remains recoverable until its own target verifies.**
+   `powerLimitWriteUncertain` is set before either NVML or the fallback can
+   mutate the board, and the fresh readback proof is cleared immediately. Only
+   a new limit within 1 W of the requested target clears uncertainty.
+8. **A forced repair cannot invent a denominator.** The last complete surface
+   read retains the default and constraint values, while
+   `power_limit_forced_write_available()` still requires positive proof that
+   this GPU session exposed a power surface. Without that proof the forced
+   write is refused before launch.
 
 ### The 2026-09-07 failure this section exists for
 
@@ -897,8 +910,33 @@ adapter location) and refuses to launch without one. The ID is validated as
 hex `domain:bus:device.function` (`power_limit_smi_bus_id_valid()`) before it
 reaches the command line. Diagnostics: `Power limit via nvidia-smi: gpu=...`,
 `... skipped: the selected GPU's PCI bus ID is unknown` and `... the driver
-reports N mW for target M mW`. Regressions 7600-7606; gates in
+reports N mW for target M mW`. Regressions 7600-7607; gates in
 `tools/readback_gates.py`. Not exercised on a multi-GPU machine.
+
+### Uncertain writes and forced recovery (2026-10-27)
+
+A driver call or fallback process can mutate the board and then fail to return
+a usable verification reading. The setter now keeps that ambiguity instead of
+leaving the cached percentage looking authoritative:
+
+- `powerLimitWriteUncertain` is set before dispatch; `readback.powerLimit` is
+  cleared at the same boundary.
+- A successful verification of the requested target is the only clear path.
+  Off-target or unavailable readback leaves the uncertainty intact.
+- The last complete default, minimum and maximum remain available for repair,
+  plus the positive surface-proof bit. A forced write may use those values but
+  still applies the saved board constraints.
+- Rollback, explicit Reset, and an Apply that owns the power limit force and
+  verify a repair. A sparse Apply that does not own the power limit is refused
+  before any write until the limit is verified.
+- A forced repair with no previously proven surface, or one whose target is
+  outside the saved constraints, is refused without a hardware call.
+
+The production setter and rollback execute in `tests/power_recovery_tests.cpp`
+cases 7621-7626: a write mutates before both post-write getters fail, stock
+recovery forces the default, and absent surface evidence or an out-of-range
+target refuses the repair. Pure case 7607 pins the forced-surface predicate.
+The fallback process and physical driver failure remain unexecuted.
 
 ### Open question / stale-risk
 
@@ -907,7 +945,9 @@ predates the per-call logging. The fix does not depend on the answer, and the
 next report will say. *Unverified on hardware:* the fix is reasoned from the
 user's log and covered by pure regressions, not reproduced on a laptop GPU here.
 
-**Last verified:** 2026-09-16 for the F-APPLY-CEILING section (rewritten for
+**Last verified:** 2026-10-27 for power-write uncertainty and recovery; the
+forced path is fake-driver tested but has no physical failure injection.
+2026-09-16 for the F-APPLY-CEILING section (rewritten for
 the CT-01..CT-08 implementation: required-vs-available, the min(outgoing,
 incoming) ceiling, verified-curve-gated release, recovery that proves stock
 before unlocking — all deterministic-tested, none hardware-accepted).

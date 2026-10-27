@@ -113,12 +113,15 @@ bool linux_daemon_snapshot(ServiceSnapshot* snapshot, char* err, size_t errSize)
 bool linux_daemon_get_state_ex(const GpuAdapterInfo* target,
                                ServiceResponse* response,
                                LinuxDaemonSendOutcome* outcomeOut,
-                               char* err, size_t errSize) {
+                               char* err, size_t errSize,
+                               bool forceBackendRetry) {
     ServiceRequest req = {};
     ServiceResponse resp = {};
     req.magic = SERVICE_PROTOCOL_MAGIC;
     req.version = SERVICE_PROTOCOL_VERSION;
     req.command = SERVICE_CMD_GET_SNAPSHOT;
+    req.flags = service_request_flags_for_command(
+        req.command, forceBackendRetry);
     req.callerPid = (gc_u32)getpid();
     if (target) req.targetGpu = *target;
     LinuxDaemonSendOutcome outcome = {};
@@ -133,7 +136,8 @@ bool linux_daemon_get_state_ex(const GpuAdapterInfo* target,
 
 bool linux_daemon_get_state(const GpuAdapterInfo* target, ServiceResponse* response,
                             char* err, size_t errSize) {
-    return linux_daemon_get_state_ex(target, response, nullptr, err, errSize);
+    return linux_daemon_get_state_ex(target, response, nullptr, err, errSize,
+                                     true);
 }
 
 bool linux_daemon_resolve_write_target(const GpuAdapterInfo* preferred,

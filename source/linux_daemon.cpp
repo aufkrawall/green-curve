@@ -278,6 +278,9 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             break;
         case SERVICE_CMD_GET_SNAPSHOT:
         case SERVICE_CMD_GET_TELEMETRY:
+            if (!g_gpuReady && !req->targetGpu.valid)
+                daemon_retry_backend_for_read(
+                    (req->flags & SERVICE_REQUEST_FLAG_INTERACTIVE) != 0);
             if (req->targetGpu.valid) {
                 char targetErr[256] = {};
                 if (!select_request_gpu(req, targetErr, sizeof(targetErr))) {
