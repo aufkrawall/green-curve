@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-27: Agent workflow baseline alignment
+
+- Synchronized `AGENTS.md` with upstream template updates:
+  - Added universal harness sandboxing and auto-approval denial guidance: agents
+    must adapt execution within sandbox, environment, or auto-approval constraints
+    (using project-local paths, workspace temporary directories, or approved
+    non-interactive flags) and must never skip or weaken validation checks.
+  - Added explicit pre-commit workflow rule requiring task-owned changelog-worthy
+    changes to be recorded in the `## Unreleased` section of `CHANGELOG.md`.
+- Sources: `AGENTS.md`, `llm-wiki/changelog-style.md`.
+
 ## 2026-10-27: Apply recovery and output identity invariants
 
 - Advanced controls share the apply commit boundary. Requested surfaces are

@@ -16,6 +16,7 @@ Keep always-on rules here (commit gates, tool and platform precedence, stop cond
 - Always git commit after code changes!
 - Before committing, run relevant tests/unit tests and ensure build/test results succeed.
 - Verify the change itself, not just command exit status: prefer a check that would fail without the change; otherwise inspect the artifact directly (it exists and its content, format, or size changed as expected); otherwise read the actual output to confirm the relevant tests or build ran. If none is practical, state what was and was not verified!
+- If operations, builds, or tests fail due to harness sandboxing, environment restrictions, or auto-approval denials, adapt the execution (e.g. using project-local paths, workspace temporary directories, or approved non-interactive flags) to work properly within those constraints. Never skip tests, weaken checks, or bypass validation due to harness restrictions; resolve execution blockers before proceeding with the task!
 - Keep large logs, generated output, traces, dumps, and minified files out of working context unless needed; inspect targeted ranges or summaries and retain full output only as evidence.
 - When committing, use a concise title plus a short bullet-point body for non-trivial changes stating what changed and why!
 - Split up non-trivial tasks into a series of small, self-contained commits (but don't compile every small commit!), not one large commit, so later review stays easy; each commit must independently hold together and pass verification and secret-leak checks!
@@ -24,6 +25,7 @@ Keep always-on rules here (commit gates, tool and platform precedence, stop cond
 - Always consult `llm-wiki/` for code, bug, build, test, config, debugging, or behavior work!
 - Keep `llm-wiki/` linted / quality-checked and updated when durable project knowledge changes!
 - Always update `llm-wiki/` after code changes!
+- Record changelog-worthy task-owned changes in the current unreleased section of `CHANGELOG.md` before committing!
 - Mistrust code, code annotations and llm-wiki! Each of them might be stale or outdated! Come to your own conclusion and act based on that!
 - When fixing a bug or implementing a feature, generally always add new regression test units, or adjust existing ones!
 - When fixing a bug or implementing a feature, generally always increase or improve debug logging to make bug diagnosis easier!
@@ -67,8 +69,9 @@ Keep always-on rules here (commit gates, tool and platform precedence, stop cond
 
 ## Changelog and release notes
 
-- `CHANGELOG.md` is USER-FACING release notes, not an engineering record. The
+- Maintain `CHANGELOG.md` as USER-FACING release notes, not an engineering record. The
   engineering record is `llm-wiki/` and the git history; do not duplicate it here!
+- Record changelog-worthy task-owned changes in the current unreleased section before committing!
 - Write it to be SCANNED, not read. Someone skimming only the bold lead of each
   bullet must come away knowing what area changed!
 - One bullet per user-visible change, ONE LINE where possible, never more than
