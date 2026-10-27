@@ -161,6 +161,21 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
     for name in ("linux_auto_restore_runtime.h", "linux_startup_policy.h"):
         forbid_text(_p(ctx, name), "g_stateUncertain = true",
                     f"{name} enters uncertainty through the fan-returning helper")
+    # A failed operation that started uncertain stays uncertain, in memory and
+    # in the record it restores.
+    ctx.require_text_in_operation(
+        linux_daemon_cpp, "static bool restore_committed_record(",
+        "linux_failed_operation_record(wasUncertain, hadPrevious)",
+        "a failed operation keeps an uncertain record instead of rewriting ACTIVE intent")
+    for command in ("APPLY", "RESET"):
+        ctx.require_text_in_operation(
+            linux_daemon_cpp, f"case SERVICE_CMD_{command}:",
+            "linux_failed_operation_leaves_uncertain(wasUncertain,",
+            f"a failed Linux {command} never clears existing uncertainty")
+        ctx.forbid_text_in_operation(
+            linux_daemon_cpp, f"case SERVICE_CMD_{command}:",
+            "restore_committed_record(hadPrevious",
+            f"Linux {command} passes its starting uncertainty to the record restore")
 
 
 def check_power_limit_range(ctx, require_text, forbid_text):

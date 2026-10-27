@@ -157,13 +157,28 @@ static bool store_daemon_record(LinuxDaemonRecordState state,
     return linux_daemon_state_store(GC_DAEMON_STATE_FILE, &record, err, errSize);
 }
 
-static bool restore_committed_record(bool hadPrevious, const GpuAdapterInfo* previousTarget,
+static bool restore_committed_record(bool wasUncertain, bool hadPrevious,
+                                     const GpuAdapterInfo* previousTarget,
                                      const DesiredSettings* previousDesired) {
     char err[256] = {};
-    if (!hadPrevious) return linux_daemon_state_remove(GC_DAEMON_STATE_FILE, err, sizeof(err));
-    return store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE, previousTarget,
-                               previousDesired, err, sizeof(err), 0, SERVICE_OPERATION_NONE,
-                               g_activeTargetRole, &g_activeTargetUuid);
+    switch (linux_failed_operation_record(wasUncertain, hadPrevious)) {
+        case LINUX_FAILED_OPERATION_KEEP_UNCERTAIN: {
+            const bool ok = store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN,
+                hadPrevious ? previousTarget : &g_gpu.selectedGpu, previousDesired,
+                err, sizeof(err), 0, SERVICE_OPERATION_NONE,
+                g_activeTargetRole, &g_activeTargetUuid);
+            dlog("daemon state: failed operation kept the uncertain record ok=%d%s%s\n",
+                 ok ? 1 : 0, err[0] ? ": " : "", err);
+            return ok;
+        }
+        case LINUX_FAILED_OPERATION_RESTORE_ACTIVE:
+            return store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE, previousTarget,
+                                       previousDesired, err, sizeof(err), 0, SERVICE_OPERATION_NONE,
+                                       g_activeTargetRole, &g_activeTargetUuid);
+        case LINUX_FAILED_OPERATION_REMOVE_RECORD:
+            break;
+    }
+    return linux_daemon_state_remove(GC_DAEMON_STATE_FILE, err, sizeof(err));
 }
 
 // The fan ownership marker and once-per-crash startup handback.  Before the
@@ -319,6 +334,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 }
             }
             bool hadPrevious = g_hasActiveDesired;
+            const bool wasUncertain = g_stateUncertain;
             DesiredSettings previousDesired = g_activeDesired;
             GpuAdapterInfo previousTarget = g_activeTarget;
             const GpuLocationRole committedRole = linux_gpu_location_role_for_selection(
@@ -361,20 +377,20 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                     char rollbackErr[256] = {};
                     bool rollbackOk = linux_backend_restore_snapshot(&g_gpu, &before,
                         mutation.attemptedPhases, rollbackErr, sizeof(rollbackErr));
-                    bool recordOk = restore_committed_record(hadPrevious, &previousTarget,
-                                                              &previousDesired);
-                    g_stateUncertain = false;
-                    if (!rollbackOk || !recordOk) {
+                    bool recordOk = restore_committed_record(wasUncertain, hadPrevious,
+                                                              &previousTarget, &previousDesired);
+                    if (!rollbackOk || !recordOk)
                         store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
                                             &committedDesired, stateErr, sizeof(stateErr));
+                    if (linux_failed_operation_leaves_uncertain(wasUncertain, rollbackOk, recordOk))
                         daemon_enter_uncertain_state("apply persistence failed");
-                    }
                     gc_snprintf(resp->message, sizeof(resp->message),
                         "Apply persistence failed; hardware rollback %s",
                         rollbackOk ? "succeeded" : "is uncertain");
                 }
             } else if (mutation.rollbackSucceeded || !mutation.anyWrite) {
-                bool recordOk = restore_committed_record(hadPrevious, &previousTarget, &previousDesired);
+                bool recordOk = restore_committed_record(wasUncertain, hadPrevious,
+                                                         &previousTarget, &previousDesired);
                 if (!recordOk) {
                     store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
                                         &committedDesired, stateErr, sizeof(stateErr));
@@ -432,6 +448,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 break;
             }
             bool hadPrevious = g_hasActiveDesired;
+            const bool wasUncertain = g_stateUncertain;
             DesiredSettings previousDesired = g_activeDesired;
             GpuAdapterInfo previousTarget = g_activeTarget;
             LinuxHardwareSnapshot before = {};
@@ -454,10 +471,10 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 char rollbackErr[256] = {};
                 bool rollbackOk = linux_backend_restore_snapshot(&g_gpu, &before,
                     mutation.attemptedPhases, rollbackErr, sizeof(rollbackErr));
-                bool recordOk = restore_committed_record(hadPrevious, &previousTarget, &previousDesired);
-                g_stateUncertain = false;
+                bool recordOk = restore_committed_record(wasUncertain, hadPrevious,
+                                                         &previousTarget, &previousDesired);
                 // The rollback put back the pre-Reset fan, possibly a manual duty.
-                if (!rollbackOk || !recordOk)
+                if (linux_failed_operation_leaves_uncertain(wasUncertain, rollbackOk, recordOk))
                     daemon_enter_uncertain_state("reset persistence failed");
                 gc_snprintf(resp->message, sizeof(resp->message),
                     "Reset persistence failed; hardware rollback %s",
@@ -467,7 +484,8 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                                     &empty, stateErr, sizeof(stateErr));
                 daemon_enter_uncertain_state("reset rollback failed");
             } else if (!mutation.success) {
-                bool recordOk = restore_committed_record(hadPrevious, &previousTarget, &previousDesired);
+                bool recordOk = restore_committed_record(wasUncertain, hadPrevious,
+                                                         &previousTarget, &previousDesired);
                 if (!recordOk) {
                     store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
                                         &empty, stateErr, sizeof(stateErr));

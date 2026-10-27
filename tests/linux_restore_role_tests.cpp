@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 // Durable restore authority and pre-role layout migration (7420-7429,
-// 7440-7459).
+// 7440-7459), and failed-operation uncertainty retention (7590-7594).
 #include <initializer_list>
 #include "linux_daemon_state.h"
 #include "linux_gpu_selection.h"
@@ -325,9 +325,25 @@ int first_generation_roles_reread() {
         boot.desired.hasCurvePoint[74] || linux_gpu_uuid_valid(&boot.targetUuid)) return 7459;
     return 0;
 }
+// A failed Apply/Reset that started uncertain keeps that state in memory and
+// on disk; before this, a clean rollback cleared it and rewrote ACTIVE intent.
+int failed_operation_keeps_uncertainty() {
+    if (linux_failed_operation_record(true, true) != LINUX_FAILED_OPERATION_KEEP_UNCERTAIN ||
+        linux_failed_operation_record(true, false) != LINUX_FAILED_OPERATION_KEEP_UNCERTAIN)
+        return 7590;
+    if (linux_failed_operation_record(false, true) != LINUX_FAILED_OPERATION_RESTORE_ACTIVE ||
+        linux_failed_operation_record(false, false) != LINUX_FAILED_OPERATION_REMOVE_RECORD)
+        return 7591;
+    if (!linux_failed_operation_leaves_uncertain(true, true, true)) return 7592;
+    if (linux_failed_operation_leaves_uncertain(false, true, true)) return 7593;
+    if (!linux_failed_operation_leaves_uncertain(false, false, true) ||
+        !linux_failed_operation_leaves_uncertain(false, true, false)) return 7594;
+    return 0;
+}
 } // namespace
 
 int run_linux_restore_role_tests() {
+    if (int result = failed_operation_keeps_uncertainty()) return result;
     if (int result = run_linux_gpu_uuid_tests()) return result;
     if (int result = current_records()) return result;
     if (int result = legacy_records()) return result;

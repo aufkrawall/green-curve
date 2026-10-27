@@ -72,11 +72,13 @@
 // The persistence-failure APPLY path is the longest: the operation tracker
 // stores IN_PROGRESS, state stores PREPARED, the ACTIVE commit is attempted,
 // restore_committed_record() restores the prior state, an UNCERTAIN marker may
-// follow, and the operation tracker stores the final result.  These all use
-// the same fsync-ed atomic-record machinery (state removal is no more expensive
-// than this allowance).  The successful guard re-arm is on a shorter path, so
-// it does not add a seventh write to the worst case.
-#define GC_DAEMON_MUTATION_RECORD_WRITES 6u
+// follow, and the operation tracker stores the final result.  A manual fan adds
+// its ownership marker before the write and, when uncertainty returns that fan
+// to the driver, the marker's removal.  These all use the same fsync-ed
+// atomic-record machinery (state removal is no more expensive than this
+// allowance).  The successful guard re-arm is on a shorter path, so it does
+// not add another write to the worst case.
+#define GC_DAEMON_MUTATION_RECORD_WRITES 8u
 
 // One full hardware pass: the VF curve, clock offsets, power limit, fan, and
 // the write-verify readback that goes with them.
@@ -350,9 +352,9 @@ static constexpr bool linux_daemon_outcome_is_unknown(bool recovered,
 
 // --- Contract enforcement ----------------------------------------------------
 
-static_assert(GC_DAEMON_MUTATION_RECORD_WRITES >= 6u,
-    "The mutation budget must include the durable operation tracker as well "
-    "as the PREPARED/ACTIVE/rollback state records");
+static_assert(GC_DAEMON_MUTATION_RECORD_WRITES >= 8u,
+    "The mutation budget must include the durable operation tracker, the "
+    "PREPARED/ACTIVE/rollback state records and the fan ownership marker");
 static_assert(linux_daemon_mutation_handler_budget_ms() >
     linux_daemon_record_write_handler_budget_ms(),
     "A mutation writes the GPU twice on the rollback path and fsyncs multiple "

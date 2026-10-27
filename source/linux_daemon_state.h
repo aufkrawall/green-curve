@@ -18,6 +18,29 @@ enum LinuxDaemonRecordState : gc_u32 {
     LINUX_DAEMON_RECORD_UNCERTAIN = 3,
 };
 
+// What a failed explicit Apply/Reset puts back on disk. A state that was
+// already uncertain stays UNCERTAIN: rewriting the last intent as ACTIVE would
+// let the next start replay settings nobody proved are what the GPU holds.
+enum LinuxFailedOperationRecord {
+    LINUX_FAILED_OPERATION_REMOVE_RECORD = 0,
+    LINUX_FAILED_OPERATION_RESTORE_ACTIVE,
+    LINUX_FAILED_OPERATION_KEEP_UNCERTAIN,
+};
+
+static inline LinuxFailedOperationRecord linux_failed_operation_record(
+    bool wasUncertain, bool hadPrevious) {
+    if (wasUncertain) return LINUX_FAILED_OPERATION_KEEP_UNCERTAIN;
+    return hadPrevious ? LINUX_FAILED_OPERATION_RESTORE_ACTIVE
+                       : LINUX_FAILED_OPERATION_REMOVE_RECORD;
+}
+
+// A failed operation never clears uncertainty: a successful rollback returns
+// the GPU to the state before the operation, which was itself unproven.
+static inline bool linux_failed_operation_leaves_uncertain(
+    bool wasUncertain, bool rollbackOk, bool recordOk) {
+    return wasUncertain || !rollbackOk || !recordOk;
+}
+
 enum {
     LINUX_DAEMON_RECORD_MAGIC = 0x4752434Cu, // "LCRG"
     // v7 adds the optional physical GPU UUID.

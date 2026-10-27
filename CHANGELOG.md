@@ -44,6 +44,7 @@ GPU selection, fan control and recovery are more reliable across hardware change
 - **Selected GPU after hardware changes:** disabling or adding a device such as an on-board network adapter no longer makes Green Curve report the GPU as missing and stop applying your profile, on Windows and Linux.
 - **Linux GPU replacement:** after swapping in a different GPU model, the previous card's settings are no longer applied to it at boot.
 - **Linux fan safety after failed operations:** when an Apply, Reset or automatic restore cannot be completed or rolled back cleanly, a fan under Green Curve's manual control is returned to the driver instead of staying at its last speed.
+- **Linux failed operations:** a failed Apply or Reset no longer marks unconfirmed GPU settings as safe to restore at the next start.
 
 ### Compatibility notes
 

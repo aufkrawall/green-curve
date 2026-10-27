@@ -24,6 +24,19 @@ Case 7581 fails when the release call is removed. `check_runtime_failsafe`
 gates the Apply/Reset/automatic-restore/startup call sites. Full daemon
 orchestration remains outside the fixture.
 
+## Linux failed-operation uncertainty (2026-10-27)
+
+Source anchors: `tests/linux_restore_role_tests.cpp`,
+`source/linux_daemon_state.h`, `source/linux_daemon.cpp`, `tools/fan_gates.py`.
+
+Cases 7590-7594 pin the failed Apply/Reset rule: a state that started
+uncertain keeps an UNCERTAIN record and stays uncertain after a clean
+rollback; otherwise ACTIVE intent is restored or the record removed, and only
+a failed rollback or record restore makes the state uncertain. Case 7592 fails
+under the previous clearing rule. Fan gates require both operations and the
+record restore to use the helpers. Daemon orchestration remains outside the
+harness.
+
 ## Windows memory recovery (2026-10-27)
 
 Source anchors: `tests/memory_recovery_tests.cpp`,

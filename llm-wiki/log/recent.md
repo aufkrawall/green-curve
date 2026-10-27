@@ -5,6 +5,16 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-27: Failed Linux operations keep existing uncertainty
+
+- A failed explicit Apply/Reset that started uncertain stays uncertain after
+  a clean rollback, and its record restore writes UNCERTAIN instead of the last
+  ACTIVE intent, so no later start replays unproven settings.
+- The mutation deadline now counts the fan ownership marker writes.
+- Cases 7590-7594; case 7592 fails under the previous rule. No GPU writes.
+- Sources: [Linux](../linux-scaffold.md#durable-state-is-part-of-automatic-success),
+  [tests](../testing.md).
+
 ## 2026-10-27: Linux uncertain state returns the owned fan
 
 - Failures that make the daemon state uncertain after a hardware write now

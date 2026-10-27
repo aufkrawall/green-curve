@@ -895,6 +895,15 @@ and leaves the hardware/active-state operation committed, so the response is
 message. This avoids both false claims: the mutation did succeed, but automatic
 restoration was not durably re-armed.
 
+A failed explicit Apply/Reset never clears an uncertain state it started in
+(`linux_failed_operation_leaves_uncertain()` in `linux_daemon_state.h`,
+2026-10-27). Its record restore keeps UNCERTAIN instead of rewriting the last
+intent as ACTIVE (`linux_failed_operation_record()`), so a clean rollback to
+an unproven state cannot re-enable fan reassertion, automatic restores or a
+boot replay. Diagnostic: `failed operation kept the uncertain record`. The
+mutation deadline counts eight durable writes, including the fan ownership
+marker and its removal after an uncertainty handback. Cases 7590-7594.
+
 ### The published lockout (fixed 2026-07-31, v0.22.1)
 
 `ServiceSnapshot::autoRestoreLockoutReason` is what the TUI, `--status` and the
