@@ -14,6 +14,10 @@ outside the fake-driver fixture. Pascal scalar checks cover uniform/selective,
 zero/negative/positive offsets, no-reset idempotence and other GPU families.
 The runtime source gate pins both preflights before reset.
 
+Native Linux output-directory tests exercise every ancestor, privileged refusal,
+ordinary-user redirects, nested creation and the real atomic writer as root and
+as an ordinary user. Source: `tests/linux_gpu_selection_store_regression.cpp`.
+
 ## Optional Linux GPU UUID selection
 
 Source anchors: `source/linux_gpu_uuid.h`, `tests/linux_gpu_uuid_tests.cpp`.

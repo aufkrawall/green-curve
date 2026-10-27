@@ -5,7 +5,7 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
-## 2026-10-27: Apply transaction invariants
+## 2026-10-27: Apply and output-directory invariants
 
 - Advanced writes share the apply commit boundary, validate requested surfaces before
   mutation and recover requested advanced fields and core state on failure. Cleanup
@@ -15,6 +15,10 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 - Production advanced transaction and clock preflight tests pass; negative controls
   reject omitted recovery and omitted scalar refusal. Complete apply orchestration
   and live Pascal/advanced hardware remain unverified.
+- Privileged atomic text output and asset directory creation walk every component
+  by descriptor without following links. Ordinary-user redirects remain supported.
+  The native filesystem fixture passes as root and as an ordinary user; a link-following
+  negative control fails.
 - Sources: [clock transitions](../clock-transition-audit.md), [testing](../testing.md).
 
 ## 2026-10-24: Optional physical GPU identity for Linux restore

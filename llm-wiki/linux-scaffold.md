@@ -641,23 +641,33 @@ stays false). `tests/linux_transport_regression.cpp` 67-75 constructs both
 orders explicitly plus a peer that vanished without answering; executed under
 WSL Arch on 2026-10-01 in addition to the Windows cross-link.
 
-## CLI/TUI atomic text writer (review fix 2026-10-01)
+## CLI/TUI atomic text writer (verified 2026-10-27)
 
-`write_text_file_atomic()` (`linux_port.cpp`; config saves, `--probe-output`,
-desktop/autostart assets) uses a CSPRNG `O_CREAT|O_EXCL|O_NOFOLLOW` temp and
-`renameat()` on a dirfd, so a planted LEAF symlink is replaced, never followed.
-The first hardened version also refused bare file names (`--probe-output
-report.md`, `--config my.ini` -- "Output path has no directory") and opened the
-directory with `O_NOFOLLOW`, which broke `--save-config` for anyone whose
-`~/.config/greencurve` is a symlink into a dotfiles checkout while protecting
-only one path component. Now: path rules live in `linux_atomic_write_policy.h`
-(bare name = cwd, `/x` = root, empty/`.`/`..` leaf refused; temp name bounded
-inside NAME_MAX), `O_NOFOLLOW` on the directory applies to euid 0 only, retries
-cover temp-name collisions only (a write/sync/rename error stops at once and
-reports its own errno), and the directory is fsynced after the rename
-(best-effort). Harness 6260-6267; an ad-hoc WSL probe on 2026-10-01 confirmed
-relative names, a symlinked dir as user, refusal as root, and an unfollowed leaf
-symlink.
+Source anchors: `source/linux_port.cpp`, `source/linux_output_directory.h`,
+`source/linux_atomic_write_policy.h`,
+`tests/linux_gpu_selection_store_regression.cpp`, `tools/linux_gates.py`.
+
+`write_text_file_atomic()` pins its directory through
+`linux_open_output_directory()`. Each path component is opened with `openat()`
+relative to the already-held directory; missing components are created with
+`mkdirat()` through that same handle. Privileged callers require `O_NOFOLLOW`
+for every component and refuse parent traversal. Ordinary users retain
+redirected configuration directories and normal relative paths. The walk
+accepts bare output names, repeated separators and current-directory components.
+Failures return the failing operation's errno through the existing bounded
+output-path diagnostic. A refused ancestor creates nothing through that path.
+
+A CSPRNG `O_CREAT|O_EXCL|O_NOFOLLOW` temporary file and `renameat()` remain
+relative to the pinned directory. A leaf symlink is replaced without following
+its target. Temp names fit NAME_MAX; retries cover collisions only. Actual
+write, sync or rename errors stop and report their own errno. The final
+directory fsync remains best effort after replacement.
+
+The native filesystem fixture covers directory links at final and ancestor
+positions, refusal before directory creation, ordinary-user redirects, nested
+creation, parent traversal, bare names and non-directory ancestors. Pure
+path/name cases 6260-6267 remain in the host-neutral harness. The fixture is
+cross-linked by the Windows suite and also executed in native Linux.
 
 ## GPU selection across PCI bus renumbering (2026-10-22)
 

@@ -4,6 +4,7 @@
 #include "linux_port_internal.h"
 #include "linux_config_path_policy.h"
 #include "linux_atomic_write_policy.h"
+#include "linux_output_directory.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -94,11 +95,6 @@ static bool path_exists(const char* path) {
     return path && stat(path, &st) == 0;
 }
 
-static bool directory_exists(const char* path) {
-    struct stat st = {};
-    return path && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
-}
-
 std::string path_dirname(const std::string& path) {
     if (path.empty()) return std::string(".");
     size_t slash = path.find_last_of('/');
@@ -115,27 +111,12 @@ std::string path_join(const std::string& left, const std::string& right) {
 }
 
 bool ensure_directory_recursive(const char* path, char* err, size_t errSize) {
-    if (!path || !*path) return false;
-    std::string current;
-    std::string normalized(path);
-    if (normalized[0] == '/') current = "/";
-
-    size_t start = normalized[0] == '/' ? 1u : 0u;
-    while (start <= normalized.size()) {
-        size_t slash = normalized.find('/', start);
-        std::string part = normalized.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
-        if (!part.empty()) {
-            current = path_join(current, part);
-            if (!directory_exists(current.c_str())) {
-                if (mkdir(current.c_str(), 0700) != 0 && errno != EEXIST) {
-                    set_message(err, errSize, "Failed to create %s (%s)", current.c_str(), strerror(errno));
-                    return false;
-                }
-            }
-        }
-        if (slash == std::string::npos) break;
-        start = slash + 1;
+    int directory = linux_open_output_directory(path, geteuid() == 0);
+    if (directory < 0) {
+        set_message(err, errSize, "Cannot create output directory (%s)", strerror(errno));
+        return false;
     }
+    close(directory);
     return true;
 }
 
@@ -219,17 +200,7 @@ bool write_text_file_atomic(const char* path, const std::string& data, char* err
         set_message(err, errSize, "Output path has no file name: %s", path);
         return false;
     }
-    if (!ensure_directory_recursive(dir.c_str(), err, errSize)) return false;
-
-    // O_NOFOLLOW on the directory only guards its LAST component -- every
-    // ancestor is still followed -- so it is not what makes this safe; the
-    // exclusive no-follow temp and renameat() are.  It is kept for root, where
-    // the caller may name a directory another account controls, and dropped
-    // otherwise: a user's ~/.config/greencurve is routinely a symlink into a
-    // dotfiles checkout, and refusing it broke --save-config for that user.
-    const int dirFlags = O_RDONLY | O_DIRECTORY | O_CLOEXEC |
-                         (geteuid() == 0 ? O_NOFOLLOW : 0);
-    int dirfd = open(dir.c_str(), dirFlags);
+    int dirfd = linux_open_output_directory(dir.c_str(), geteuid() == 0);
     if (dirfd < 0) {
         set_message(err, errSize, "Cannot open %s (%s)", dir.c_str(), strerror(errno));
         return false;

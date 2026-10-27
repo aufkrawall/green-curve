@@ -16,6 +16,7 @@
 #include "linux_port.h"
 #include "linux_port_internal.h"
 #include "posix_test_environment.h"
+#include "linux_output_directory.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -155,6 +156,58 @@ void test_unreadable_permissions_are_not_overwritten() {
            "the unreadable (mode 0200) config.ini is unchanged");
 }
 
+void test_output_directory_walk() {
+    const std::string real = path_in_root("real");
+    const std::string link = path_in_root("redirect");
+    expect(mkdir(real.c_str(), 0700) == 0, "creating the real output directory");
+    expect(symlink("real", link.c_str()) == 0, "creating the redirected directory");
+    int fd = linux_open_output_directory((link + "/new/child").c_str(), true);
+    expect(fd < 0, "privileged ancestor traversal refuses a symlink");
+    if (fd >= 0) close(fd);
+    struct stat status = {};
+    expect(lstat((real + "/new").c_str(), &status) != 0 && errno == ENOENT,
+           "refusal creates no directories through a symlink");
+    fd = linux_open_output_directory(link.c_str(), true);
+    expect(fd < 0, "privileged final directory refuses a symlink");
+    if (fd >= 0) close(fd);
+    fd = linux_open_output_directory((link + "/user").c_str(), false);
+    expect(fd >= 0, "ordinary users retain redirected directory creation");
+    if (fd >= 0) close(fd);
+    expect(stat((real + "/user").c_str(), &status) == 0,
+           "ordinary-user creation reaches the intended redirect");
+    char outputError[320] = {};
+    const bool outputWritten = write_text_file_atomic((link + "/output/report.ini").c_str(),
+        "generated output", outputError, sizeof(outputError));
+    expect(outputWritten == (geteuid() != 0),
+           "the real atomic writer selects the effective caller's path policy");
+    if (geteuid() == 0)
+        expect(lstat((real + "/output").c_str(), &status) != 0 && errno == ENOENT,
+               "the privileged writer refuses before creating redirected output");
+    unlink((real + "/output/report.ini").c_str());
+    rmdir((real + "/output").c_str());
+    fd = linux_open_output_directory((real + "/./nested//child").c_str(), true);
+    expect(fd >= 0, "privileged walk creates nested directories");
+    if (fd >= 0) close(fd);
+    fd = linux_open_output_directory((real + "/../escape").c_str(), true);
+    expect(fd < 0, "privileged walk refuses parent traversal");
+    if (fd >= 0) close(fd);
+    fd = linux_open_output_directory(".", true);
+    expect(fd >= 0, "bare-file output can pin the current directory");
+    if (fd >= 0) close(fd);
+    const std::string regular = path_in_root("regular");
+    expect(write_file(regular, "unchanged"), "creating the regular-file ancestor");
+    fd = linux_open_output_directory((regular + "/child").c_str(), true);
+    expect(fd < 0 && read_file(regular) == "unchanged",
+           "a regular-file ancestor is refused without modifying it");
+    if (fd >= 0) close(fd);
+    unlink(regular.c_str());
+    unlink(link.c_str());
+    rmdir((real + "/user").c_str());
+    rmdir((real + "/nested/child").c_str());
+    rmdir((real + "/nested").c_str());
+    rmdir(real.c_str());
+}
+
 bool make_root() {
     return gc_test_make_temp_dir(g_root, sizeof(g_root), "gc-gpu-selection", 0) != nullptr;
 }
@@ -177,6 +230,7 @@ int main() {
     test_readable_file_keeps_profiles();
     test_unreadable_file_is_not_overwritten();
     test_unreadable_permissions_are_not_overwritten();
+    test_output_directory_walk();
     remove_root();
     if (g_failures != 0) {
         fprintf(stderr, "Linux GPU selection store regression FAILED (%d)\n",

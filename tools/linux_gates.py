@@ -1022,8 +1022,9 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
     # directories for ordinary users; the rules are pure and harness-tested.
     require_text(_p(ctx, "linux_port.cpp"), "linux_atomic_write_split(path, &dir, &name)",
                  "the atomic text writer uses the tested path split")
-    require_text(_p(ctx, "linux_port.cpp"), "(geteuid() == 0 ? O_NOFOLLOW : 0)",
-                 "only root refuses a symlinked output directory")
+    require_text(_p(ctx, "linux_port.cpp"),
+                 "linux_open_output_directory(dir.c_str(), geteuid() == 0)",
+                 "privileged output walks every directory without following links")
     require_text(runtime_h, "F-PREP-NO-UNCERTAIN",
                  "a pre-write GPU-not-available failure does not poison the daemon state")
 
