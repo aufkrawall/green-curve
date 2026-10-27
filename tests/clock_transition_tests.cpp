@@ -23,7 +23,7 @@ enum {NVML_SUCCESS=0,NVML_ERROR_NOT_SUPPORTED=3,
 struct Point {unsigned int freq_kHz,volt_uV;};
 struct DesiredSettings {
  bool hasLock{},resetOcBeforeApply{},hasGpuOffset{};
- LockMode lockMode{}; unsigned int lockMHz{}; int gpuOffsetMHz{};
+ LockMode lockMode{}; unsigned int lockMHz{}; int gpuOffsetMHz{},gpuOffsetExcludeLowCount{};
  bool hasCurvePoint[VF_NUM_POINTS]{};
  unsigned int curvePointMHz[VF_NUM_POINTS]{};
  bool curvePointFromGpuOffset[VF_NUM_POINTS]{};
@@ -213,6 +213,23 @@ static void refresh_global_state(char*,size_t){}
 #define CHECK(condition) do { if(!(condition)){std::fprintf(stderr,"clock transition check failed at %d: %s\n",__LINE__,#condition);return __LINE__;} } while(0)
 
 static int run(){
+ CHECK(apply_clock_requires_unavailable_scalar_guard(true,true,true,150,0,true,150000));
+ CHECK(apply_clock_requires_unavailable_scalar_guard(true,true,true,150,0,false,0));
+ CHECK(apply_clock_requires_unavailable_scalar_guard(true,true,true,-100,0,true,0));
+ CHECK(!apply_clock_requires_unavailable_scalar_guard(true,true,true,150,0,false,150000));
+ CHECK(!apply_clock_requires_unavailable_scalar_guard(true,true,true,150,1,true,0));
+ CHECK(!apply_clock_requires_unavailable_scalar_guard(true,true,true,0,0,true,0));
+ CHECK(!apply_clock_requires_unavailable_scalar_guard(true,true,false,150,0,true,0));
+ CHECK(!apply_clock_requires_unavailable_scalar_guard(true,false,true,150,0,true,0));
+ CHECK(!apply_clock_requires_unavailable_scalar_guard(false,true,true,150,0,true,0));
+ {
+   DesiredSettings request{}; request.hasGpuOffset=true; request.gpuOffsetMHz=150;
+   g_app.gpuFamily=GPU_FAMILY_PASCAL; char message[384]{};
+   CHECK(!apply_clock_scalar_transition_precheck(&request,true,message,sizeof(message)));
+   CHECK(std::strstr(message,"Nothing was changed") && scalarWrites==0 && curveWrites==0);
+   CHECK(apply_clock_scalar_transition_precheck(&request,false,message,sizeof(message)));
+   g_app={};
+ }
  LinuxGpuState g{};g.nvml.setGpuLockedClocks=setCap;g.nvml.resetGpuLockedClocks=resetCap;
  g.curve[0].freq_kHz=3600000;
  DesiredSettings old{},next{};old.hasLock=next.hasLock=true;

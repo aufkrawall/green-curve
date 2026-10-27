@@ -959,6 +959,7 @@ static int run_all_tests_final();
 int run_clock_transition_tests();
 // Service registration / install-location suite (tests/service_install_tests.cpp).
 int run_service_install_tests();
+int run_advanced_apply_tests();
 int run_debug_log_identity_tests();
 int run_security_audit_tests();
 int run_installer_fuzz_harness_tests();
@@ -1897,6 +1898,7 @@ int main(int argc, char** argv) {
         return installFailure;
     }
 
+    if (int advancedFailure = run_advanced_apply_tests()) return advancedFailure;
     if (int logFailure = run_debug_log_identity_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", logFailure);
         return logFailure;

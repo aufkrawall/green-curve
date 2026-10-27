@@ -383,7 +383,7 @@ def run_linux_fixtures(ctx, tmp_dir, extra_flags, test_env):
             "-o", harness_exe,
             harness_path,
             *[os.path.join(ctx.SCRIPT_DIR, "tests", name) for name in (
-                "clock_transition_tests.cpp", "service_install_tests.cpp",
+                "clock_transition_tests.cpp", "advanced_apply_tests.cpp", "service_install_tests.cpp",
                 "apply_profile_followup_tests.cpp", "apply_correction_tests.cpp",
                 "fan_worker_lock_tests.cpp", "security_audit_tests.cpp",
                 "installer_fuzz_harness_tests.cpp", "review_followup_tests.cpp", "wer_local_dumps_tests.cpp",

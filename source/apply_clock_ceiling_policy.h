@@ -284,6 +284,17 @@ static inline bool apply_clock_control_proven_absent(
     return knownPascal && !installedOrRetainedCap && !outgoingHardPin;
 }
 
+// Pascal cannot guard the separate scalar write that precedes the VF tail
+// batch. Refuse only requests that would actually execute that sequence;
+// ordinary offsets, selective VF batches and flatten-only requests remain usable.
+static inline bool apply_clock_requires_unavailable_scalar_guard(
+    bool knownPascal, bool flatten, bool ownsGpuOffset, int offsetMHz,
+    int excludeLowCount, bool resetsToStock, int liveScalarKHz) {
+    return knownPascal && flatten && ownsGpuOffset && offsetMHz != 0 &&
+        excludeLowCount <= 0 &&
+        (resetsToStock || (long long)offsetMHz * 1000 != liveScalarKHz);
+}
+
 // The transition is going ahead although the protection it wanted is not
 // installed.  Exists so the one log line that says so cannot drift apart from
 // the rule that allows it.

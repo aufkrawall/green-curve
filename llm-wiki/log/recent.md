@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-27: Apply transaction invariants
+
+- Advanced writes share the apply commit boundary, validate requested surfaces before
+  mutation and recover requested advanced fields and core state on failure. Cleanup
+  ownership covers partial setter effects. SYS editing follows its own probe.
+- Pascal FLATTEN transitions requiring a nonzero uniform scalar write refuse before
+  reset. Selective VF and ordinary unsupported-family operations remain available.
+- Production advanced transaction and clock preflight tests pass; negative controls
+  reject omitted recovery and omitted scalar refusal. Complete apply orchestration
+  and live Pascal/advanced hardware remain unverified.
+- Sources: [clock transitions](../clock-transition-audit.md), [testing](../testing.md).
+
 ## 2026-10-24: Optional physical GPU identity for Linux restore
 
 - State v7/startup v6 store an optional physical UUID. Frozen schema-3 loaders

@@ -336,4 +336,24 @@ static inline void apply_log_curve_peak_after_batch(
     }
 }
 
+
+static bool apply_clock_scalar_transition_precheck(const DesiredSettings* desired,
+    bool inheritedFlatten, char* result, size_t resultSize) {
+    if (apply_clock_requires_unavailable_scalar_guard(
+            g_app.gpuFamily == GPU_FAMILY_PASCAL,
+            (desired->hasLock && desired->lockMode == LOCK_MODE_FLATTEN) || inheritedFlatten,
+            desired->hasGpuOffset != 0, desired->gpuOffsetMHz,
+            desired->gpuOffsetExcludeLowCount, desired->resetOcBeforeApply != 0,
+            g_app.gpuClockOffsetkHz)) {
+        set_message(result, resultSize,
+            "This GPU cannot safely combine a uniform GPU offset with a FLATTEN transition."
+            " Use a selective GPU offset or apply FLATTEN without a uniform GPU offset."
+            " Nothing was changed.");
+        debug_log("apply: refused unguarded scalar-to-flatten transition offset=%d MHz reset=%d\n",
+            desired->gpuOffsetMHz, desired->resetOcBeforeApply ? 1 : 0);
+        set_last_apply_phase("apply: refused (unguarded scalar transition)");
+        return false;
+    }
+    return true;
+}
 #endif

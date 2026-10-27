@@ -1,5 +1,19 @@
 # Testing
 
+## Apply transaction boundaries (2026-10-27)
+
+Source anchors: `tests/advanced_apply_tests.cpp`,
+`tests/clock_transition_tests.cpp`, `tools/apply_ceiling_gates.py`.
+
+Advanced cases 7500-7512 execute production ClkDomains writes and the production
+transaction boundary with a scripted driver. They cover partial effects at each
+setter, all requested cleanup, core-recovery invocation, failed cleanup ownership,
+unrequested field preservation, preflight refusals and success. Core recovery
+itself has a separate executing fixture; the complete apply orchestrator remains
+outside the fake-driver fixture. Pascal scalar checks cover uniform/selective,
+zero/negative/positive offsets, no-reset idempotence and other GPU families.
+The runtime source gate pins both preflights before reset.
+
 ## Optional Linux GPU UUID selection
 
 Source anchors: `source/linux_gpu_uuid.h`, `tests/linux_gpu_uuid_tests.cpp`.

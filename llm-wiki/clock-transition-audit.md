@@ -2,17 +2,48 @@
 
 ## Summary
 
-Last verified: 2026-09-23 (source/API compatibility review; see the open
-finding below). Targeted follow-up to
+Last verified: 2026-10-27 (transaction boundaries and scalar preflight). Targeted follow-up to
 `b695583e278a758b0f1fd2ec35215de84c1d33a1`. The September 16 review found nine
 remaining defects. The follow-up fixes those software paths and a verification
 regression reported during user testing. It does not complete the original
 42-scenario hardware acceptance plan.
 
-Historical evidence and the broader plan are local, untracked artifacts
-(`temp/stability-review-b695583.md`, `temp/stability-harden.md`) that are not
-part of the repository. Their reviewed-commit findings are historical, not
-descriptions of the current working tree.
+## Apply transaction boundary and scalar preflight (2026-10-27)
+
+Source anchors: `source/gpu_backend_apply_advanced.h`,
+`source/gpu_backend_apply.cpp`, `source/gpu_backend_apply_ceiling.h`,
+`source/apply_clock_ceiling_policy.h`, `tests/advanced_apply_tests.cpp`,
+`tests/clock_transition_tests.cpp`, `tools/apply_ceiling_gates.py`.
+
+Requested advanced surfaces are validated before reset or other hardware writes.
+The apply stops new advanced writes at the first failure, resets all requested
+advanced fields through fresh masked transactions, and invokes protected core
+recovery before returning failure. Cleanup attempts every requested field even
+if an earlier cleanup fails. Each attempted advanced setter claims cleanup
+ownership before its call; only verified zero readback releases that ownership.
+Unrequested advanced fields remain untouched. Failed cleanup is reported, and
+the existing durable crash-handback marker remains available after restore
+lockout. No failure publishes the requested intent as successfully applied.
+The SYS editor follows its own probe bit, independently of XBAR availability.
+
+Pascal's separate uniform scalar write cannot be protected by NVML locked clocks.
+A FLATTEN request that would execute a nonzero uniform scalar write is refused
+before reset or any write. The same check covers a locally inherited FLATTEN.
+A no-reset request whose scalar already matches does not execute that write and
+remains usable. Zero offsets, selective VF offsets, flatten-only requests,
+ordinary unlocked offsets, other families and unknown-family support retain
+normal routing. The source gates pin this refusal ahead of baseline reset.
+This deliberately restricts that transition until a route preserving uniform
+ownership and readback has been validated on Pascal hardware; it does not claim
+that the driver atomically applies VF batches or eliminate the general
+unsupported-clamp reset-to-stock limitation.
+
+The fake ClkDomains driver executes real read/modify/write and the production
+advanced transaction boundary for each failing setter, partial driver effects,
+failed cleanup, sparse preservation and successful commits. Its core-recovery
+collaborator is fake; the separate clock-transition fixture executes the real
+core-recovery helper. A complete fake execution of the full apply orchestrator
+and live Pascal/advanced-domain hardware acceptance remain unverified.
 
 ## 2026-09-23 compatibility correction: unsupported locked clocks
 
@@ -801,28 +832,10 @@ Last verified: 2026-10-17, hardware-free regression harness; no Linux GPU run.
 - The broad executor seam, all SH-01..SH-42 lifecycle/fault scenarios and complete
   voltage/memory/power acceptance remain deferred to keep this patch targeted.
   Existing settle/retry delays were not added as fixes and do not prove safety.
-- **Known accepted gap (2026-09-24 review): Pascal FLATTEN + uniform GPU
-  offset has an uncapped transient.** In `apply_desired_settings_service()` the
-  dedicated `nvapi_set_gpu_offset()` write runs BEFORE the curve batch that
-  floors the FLATTEN tail. On non-Blackwell it is the NVML graphics offset, a
-  scalar that shifts the whole curve, tail included, so between the two writes
-  the top VF points run at stock + offset at full voltage (scalar write +
-  settled readback + batch, roughly 0.2-1.5 s). Every GPU that installs the
-  clamp is capped at `min(lock, outgoing)` there; Pascal cannot, and FLATTEN is
-  deliberately let through unprotected, so on Pascal the window is uncapped.
-  Selective offsets (exclude-low) and Blackwell are unaffected (single batch /
-  clamp); Linux composes the offset into the curve for locked profiles
-  (`desired_gpu_offset_uses_curve`) and is unaffected.
-  **Rejected fix:** a Pascal-only "tail-first" pre-write (floor the tail, anchor
-  pre-lowered by the rise, then raise the scalar). After the scalar write the
-  apply refreshes originals and derives the anchor base as `freq - offset`;
-  the FLATTEN verifier expects floored tail points to read back AT the lock,
-  i.e. readback appears to be the driver's effective (monotonic) curve, so a
-  pre-lowered anchor or a higher explicit pre-tail point can be read back
-  clamped and the anchor base mis-derived. The default order never reads the
-  anchor with a non-zero offset. Unverifiable without Pascal hardware, and the
-  maintainer judged it not worth risking; reverted before commit. Revisit only
-  with a Pascal board and a readback trace (raw vs effective per-point MHz).
+- Pascal FLATTEN requests that would write a nonzero uniform scalar now stop
+  before mutation; see the scalar preflight contract above. Selective VF offsets
+  remain available. The absent-clamp compatibility exception is still required
+  for ordinary Pascal VF operations and reset-to-stock transitions.
 - Hot-applied FLATTEN/explicit points keep their offset when the GPU cools and
   can run thermal bins above the typed MHz; project rule is not to fight this.
 - Opaque driver atomicity, voltage/frequency behavior, other clock-writing tools,

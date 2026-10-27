@@ -104,7 +104,7 @@ static void xbar_dialog_sync_controls() {
     }
     EnableWindow(g_xbarDialog.hOffsetEdit, TRUE);
     EnableWindow(g_xbarDialog.hMsvddEdit, TRUE);
-    EnableWindow(g_xbarDialog.hSysEdit, TRUE);
+    EnableWindow(g_xbarDialog.hSysEdit, g_app.sysClkProbeValid ? TRUE : FALSE);
     if (g_xbarDialog.hVideoEdit)
         EnableWindow(g_xbarDialog.hVideoEdit, g_app.videoClkProbeValid ? TRUE : FALSE);
     EnableWindow(g_xbarDialog.hOkBtn, TRUE);
@@ -287,9 +287,11 @@ static bool xbar_dialog_commit(HWND hwnd) {
     set_gui_state_dirty(true);
     StringCchPrintfA(g_app.guiDraft.xbarOffsetText, 32, "%d", offsetMhz);
     StringCchPrintfA(g_app.guiDraft.xbarMsvddOffsetText, 32, "%d", msvddMv);
-    g_app.guiSysClkOffsetKhz = sysKhz;
-    g_app.guiSysClkOffsetFromProfileLoad = false;
-    StringCchPrintfA(g_app.guiDraft.sysClkOffsetText, 32, "%d", sysMhz);
+    if (g_app.sysClkProbeValid) {
+        g_app.guiSysClkOffsetKhz = sysKhz;
+        g_app.guiSysClkOffsetFromProfileLoad = false;
+        StringCchPrintfA(g_app.guiDraft.sysClkOffsetText, 32, "%d", sysMhz);
+    }
     debug_log("xbar dialog: committed offset %d MHz (%d kHz) msvdd %d mV (%d uV)\n", offsetMhz, offsetKhz, msvddMv, msvddUv);
     gui_pending_changes_refresh();
     return true;

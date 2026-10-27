@@ -8,40 +8,41 @@
 // file-size guidance, and included from the exact position it occupied so the
 // amalgamated ordering is unchanged.
 //
-// These are a SEPARATE transaction from the core clock domains on purpose.
-// They are independently verified through a fresh full-block
-// read-modify-write (gpu_backend_xbar.h), they contribute to the aggregate
-// result the caller reports, and neither their successes nor their failures
-// trigger another core rollback -- rollback_to_safe_defaults() deliberately
-// does not cover them.
-//
-// What is NOT separate is the direction of the dependency.  CT-08: none of
-// these writes may run after core recovery has fired.  The pre-fix code walked
-// straight from rollback_to_safe_defaults() into raising private clock and
-// rail-voltage offsets on a GPU whose core state had just been declared
-// untrustworthy, because the "advanced domains are independent" rule was read
-// as independence in both directions.  It is not: a core failure invalidates
-// the state these offsets would be layered on top of.
+// Advanced writes share the apply's commit boundary. A failure resets every
+// requested advanced field and enters core recovery before returning failure.
 #ifndef GREEN_CURVE_GPU_BACKEND_APPLY_ADVANCED_H
 #define GREEN_CURVE_GPU_BACKEND_APPLY_ADVANCED_H
+
+static bool validate_advanced_clock_request(const DesiredSettings* desired,
+                                            char* result, size_t resultSize) {
+    const bool xbar = desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv;
+    const bool sys = desired->hasSysClkOffsetKhz != 0;
+    const bool video = desired->hasVideoClkOffsetKhz != 0;
+    if (!xbar && !sys && !video) return true;
+    const bool control = nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL) &&
+                         nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
+    const bool available = control &&
+        (!xbar || (g_app.xbarProbeValid && nvapi_qi(XBAR_NVAPI_CLK_MEASURE))) &&
+        (!sys || g_app.sysClkProbeValid) && (!video || g_app.videoClkProbeValid);
+    if (!available) {
+        set_message(result, resultSize,
+            "A requested advanced clock control is unavailable. Nothing was changed.");
+        debug_log("apply: advanced preflight refused control=%d xbar=%d/%d sys=%d/%d video=%d/%d\n",
+            control ? 1 : 0, xbar ? 1 : 0, g_app.xbarProbeValid ? 1 : 0,
+            sys ? 1 : 0, g_app.sysClkProbeValid ? 1 : 0,
+            video ? 1 : 0, g_app.videoClkProbeValid ? 1 : 0);
+    }
+    return available;
+}
 
 static void apply_advanced_clock_domains(const DesiredSettings* desired,
                                          bool coreRecoveryRan,
                                          int& successCount, int& failCount,
                                          bool& partialApplyRisk,
                                          char* failureDetails,
-                                         size_t failureDetailsSize) {
-    // Advanced-clock transaction boundary.  XBAR/SYS/VIDEO are independently
-    // verified writes and intentionally live outside rollback_to_safe_defaults().
-    // They still contribute to the aggregate result reported to the caller, but
-    // neither their successes nor their failures trigger another core rollback.
-    //
-    // CT-04.  New advanced tuning does NOT run after core recovery.  The old
-    // code walked straight into XBAR/SYS/VIDEO writes moments after
-    // rollback_to_safe_defaults() had just returned the core domain to stock
-    // because something failed -- raising private clock and voltage offsets on
-    // a GPU whose core state had just been declared untrustworthy.  These are
-    // clock and rail offsets, not cosmetic settings.
+                                         size_t failureDetailsSize,
+                                         bool recovering = false) {
+    const int failuresBefore = failCount;
     if (coreRecoveryRan) {
         const bool advancedRequested = desired &&
             (desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv ||
@@ -71,6 +72,8 @@ static void apply_advanced_clock_domains(const DesiredSettings* desired,
                 ? desired->xbarOffsetKhz : g_app.xbarFreqOffsetKhz;
             int targetMsvddUv = desired->hasXbarMsvddOffsetUv
                 ? desired->xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv;
+            if (desired->hasXbarOffsetKhz) g_app.appliedAdvancedOwnedXbar = true;
+            if (desired->hasXbarMsvddOffsetUv) g_app.appliedAdvancedOwnedMsvdd = true;
             if (xbar_write(xbarGetCtrl, xbarSetCtrl, xbarMeasure,
                            g_app.gpuHandle, &snap, targetFreqKhz, targetMsvddUv,
                            desired->hasXbarOffsetKhz, desired->hasXbarMsvddOffsetUv)) {
@@ -109,6 +112,7 @@ static void apply_advanced_clock_domains(const DesiredSettings* desired,
                       g_app.xbarProbeValid ? 1 : 0, functionsAvailable ? 1 : 0);
         }
     }
+    if (!recovering && failCount != failuresBefore) return;
     // SYS clock domain offset apply (second ClkDomains aux entry, identified
     // empirically).  Same full-block transaction discipline as XBAR; a
     // failure is reported rather than silently skipped.
@@ -117,6 +121,7 @@ static void apply_advanced_clock_domains(const DesiredSettings* desired,
         auto sysSetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
         if (g_app.sysClkProbeValid && sysGetCtrl && sysSetCtrl) {
             XbarControlSnapshot snap{};
+            g_app.appliedAdvancedOwnedSysClk = true;
             if (xbar_write_entry_freq(sysGetCtrl, sysSetCtrl, g_app.gpuHandle,
                                       &snap, XBAR_PINNED_SYS_ENTRY_INDEX,
                                       desired->sysClkOffsetKhz)) {
@@ -152,6 +157,7 @@ static void apply_advanced_clock_domains(const DesiredSettings* desired,
                       g_app.sysClkProbeValid ? 1 : 0);
         }
     }
+    if (!recovering && failCount != failuresBefore) return;
     // VIDEO clock offset apply.  Entry 4 identified by differential dump;
     // the engine's physical clock has no CLK_MEASURE id, so verification is
     // the exact readback itself.
@@ -160,6 +166,7 @@ static void apply_advanced_clock_domains(const DesiredSettings* desired,
         auto vidSetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
         if (g_app.videoClkProbeValid && vidGetCtrl && vidSetCtrl) {
             XbarControlSnapshot snap{};
+            g_app.appliedAdvancedOwnedVideoClk = true;
             if (xbar_write_entry_freq(vidGetCtrl, vidSetCtrl, g_app.gpuHandle,
                                       &snap, (unsigned int)XBAR_PINNED_VIDEO_ENTRY_INDEX,
                                       desired->videoClkOffsetKhz)) {
@@ -195,6 +202,34 @@ static void apply_advanced_clock_domains(const DesiredSettings* desired,
                       g_app.videoClkProbeValid ? 1 : 0);
         }
     }
+}
+
+// Execute the same boundary in production and hardware-free driver tests.
+// Cleanup includes failed setters: their cached readback may still be stale.
+template<class RecoverCore>
+static bool apply_advanced_clock_transaction(const DesiredSettings* desired,
+    int& successCount, int& failCount, bool& partialApplyRisk,
+    char* failureDetails, size_t failureDetailsSize, RecoverCore recoverCore) {
+    const int failuresBefore = failCount;
+    apply_advanced_clock_domains(desired, false, successCount, failCount,
+        partialApplyRisk, failureDetails, failureDetailsSize);
+    if (failCount == failuresBefore) return true;
+    DesiredSettings stock = {};
+    stock.hasXbarOffsetKhz = desired->hasXbarOffsetKhz;
+    stock.hasXbarMsvddOffsetUv = desired->hasXbarMsvddOffsetUv;
+    stock.hasSysClkOffsetKhz = desired->hasSysClkOffsetKhz;
+    stock.hasVideoClkOffsetKhz = desired->hasVideoClkOffsetKhz;
+    int recovered = 0, failed = 0;
+    bool risk = false;
+    char detail[256] = {};
+    apply_advanced_clock_domains(&stock, false, recovered, failed, risk,
+                                 detail, sizeof(detail), true);
+    debug_log("apply: advanced recovery verified=%d failed=%d; entering core recovery\n",
+              recovered, failed);
+    if (failed) StringCchCatA(failureDetails, failureDetailsSize,
+        "; advanced defaults could not be verified; cleanup ownership retained");
+    recoverCore();
+    return false;
 }
 
 #endif  // GREEN_CURVE_GPU_BACKEND_APPLY_ADVANCED_H

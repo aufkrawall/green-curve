@@ -6,12 +6,8 @@
 // so it must not turn a successful pin into a warning.  Boost-region partial
 // counts still matter, and a failed step still outranks everything.
 //
-// Mixed-result rollback is deliberately scoped to the core apply domain:
-// VF/GPU/memory/power/lock/fan.  Individual core helpers report success/failure
-// through the shared counters, and the caller snapshots those counters before
-// entering the advanced-clock domain.  XBAR/SYS/VIDEO writes happen only after
-// this decision and are independently verified; they are intentionally outside
-// the core rollback performed by the legacy-named rollback_to_safe_defaults().
+// Core failures recover before advanced writes. Advanced failures recover their
+// requested fields and the core transaction before an apply can return failure.
 
 #ifndef GREEN_CURVE_SERVICE_APPLY_SEVERITY_POLICY_H
 #define GREEN_CURVE_SERVICE_APPLY_SEVERITY_POLICY_H

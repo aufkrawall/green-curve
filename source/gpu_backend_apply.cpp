@@ -39,6 +39,11 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     const ULONGLONG applyStartTickMs = GetTickCount64();
     const ULONGLONG correctionDeadlineTickMs =
         applyStartTickMs + apply_correction_budget_ms();
+    const bool inheritedFlatten = interactive && !app_is_service_process() &&
+        !desired->hasLock && g_app.lockedVi >= 0 && g_app.lockedVi < g_app.numVisible &&
+        (g_app.lockMode == LOCK_MODE_FLATTEN || g_app.lockMode == LOCK_MODE_NONE);
+    if (!apply_clock_scalar_transition_precheck(desired, inheritedFlatten, result, resultSize))
+        return false;
     if (!validate_desired_fan_settings_for_apply(desired, result, resultSize)) {
         debug_log("apply_desired_settings: fan prevalidation failed: %s\n", result && result[0] ? result : "unknown");
         return false;
@@ -62,6 +67,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         set_last_apply_phase("apply: refused (GPU offset outside range)");
         return false;
     }
+    if (!validate_advanced_clock_request(desired, result, resultSize)) return false;
     if (!apply_scalar_shift_precheck_before_writes(desired, result, resultSize)) {
         set_last_apply_phase("apply: refused (NVML shift evidence unavailable)");
         return false;
@@ -1362,34 +1368,24 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     apply_fan_settings(desired, failureDetails, sizeof(failureDetails),
         successCount, failCount, result, resultSize, fanChanged);
 
-    // Snapshot the core domain before entering advanced clocks.  The aggregate
-    // counters continue below for final reporting, but XBAR/SYS/VIDEO outcomes
-    // must never become inputs to this core rollback decision.
+    // Recover core failures before attempting advanced writes. Advanced failures
+    // below recover both their requested fields and this same core transaction.
     const int coreSuccessCount = successCount;
     const int coreFailCount = failCount;
-    // CT-04.  Recovery now keys off whether a core domain was ATTEMPTED, not
-    // off a success count.  A counter only moves after a driver call returns,
-    // so the first core write of an apply -- a curve batch that partly applied
-    // before the driver rejected a later point, a baseline reset that got
-    // halfway, the transition clamp itself -- produced (success=0, fail=1),
-    // which the old mixed-result rule classified as "nothing to roll back"
-    // while the hardware sat in a partial state.
-    //
-    // `clockCeiling.writeAttempted` is in the disjunction for exactly that
-    // reason: arming is a hardware write the success counters never saw.
-    //
-    // F-01-002 legacy source gate searches for "fan failure triggered rollback".
-    // The executable guarantee is the typed core policy below: any fan or other
-    // core failure after an earlier attempted core write enters rollback.
+    // Failed setters can mutate before reporting failure; a first failed write
+    // needs recovery even with zero successes. Clamp/reset attempts count too.
+    // Legacy source gate: fan failure triggered rollback. The typed policy
+    // includes fan and all other core failures before advanced writes begin.
     const bool anyCoreDomainAttempted =
         coreSuccessCount > 0 || partialApplyRisk || curveTouched || gpuApplied ||
         memApplied || powerChanged || clockCeiling.writeAttempted ||
         desired->resetOcBeforeApply != 0;
     if (service_apply_core_requires_recovery(anyCoreDomainAttempted, coreFailCount))
         return apply_recover_clock_failure(clockCeiling, failureDetails, result, resultSize);
-    apply_advanced_clock_domains(desired, false, successCount,
-                                 failCount, partialApplyRisk, failureDetails,
-                                 ARRAY_COUNT(failureDetails));
+    if (!apply_advanced_clock_transaction(desired, successCount, failCount,
+            partialApplyRisk, failureDetails, ARRAY_COUNT(failureDetails), [&]() {
+                apply_recover_clock_failure(clockCeiling, failureDetails, result, resultSize);
+            })) return false;
     char detail[128] = {};
     if (memApplied || powerChanged || fanChanged) {
         refresh_global_state(detail, sizeof(detail));
@@ -1400,9 +1396,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     // A post-apply global refresh may suppress live lock auto-detection (for example
     // on selective GPU offset profiles) and clear the GUI lock markers even though
     // this apply explicitly requested a lock. Restore the requested lock state only
-    // when the core transaction itself had no failures. Advanced-clock failures are
-    // outside the core domain and must not erase a successfully applied core lock;
-    // conversely, a failed or rolled-back core apply must not resurrect lock markers.
+    // after the entire transaction succeeds. Recovery returns above, so a failed
+    // or rolled-back apply cannot resurrect requested lock markers.
     if (hasLock && coreFailCount == 0) {
         unsigned int displayedLockMHz = lockMhz;
         g_app.lockedVi = lockVi;

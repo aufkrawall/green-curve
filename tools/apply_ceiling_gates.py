@@ -39,6 +39,21 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     linux_mutation_cpp = _p(ctx, "linux_backend_mutation.cpp")
     linux_ceiling_h = _p(ctx, "linux_apply_ceiling.h")
 
+    require_order_in_operation(
+        apply_cpp, "static bool apply_desired_settings_service(const DesiredSettings* desired",
+        "apply_clock_scalar_transition_precheck(desired, inheritedFlatten, result, resultSize)",
+        "if (desired->resetOcBeforeApply) {",
+        "unguardable scalar transitions are refused before baseline writes")
+    require_order_in_operation(
+        apply_cpp, "static bool apply_desired_settings_service(const DesiredSettings* desired",
+        "validate_advanced_clock_request(desired, result, resultSize)",
+        "if (desired->resetOcBeforeApply) {",
+        "advanced controls are checked before baseline writes")
+    require_text(apply_cpp, "if (!apply_advanced_clock_transaction(desired,",
+                 "advanced failure returns through the shared recovery boundary")
+    require_text(apply_cpp, "apply_recover_clock_failure(clockCeiling, failureDetails, result, resultSize);",
+                 "advanced failure invokes protected core recovery")
+
     # One decision, shared. Two independent copies would drift, and the drift
     # would be invisible until a platform-specific TDR report.
     require_text(policy_h, "static inline ApplyClockCeilingPlan apply_clock_ceiling_plan(",
