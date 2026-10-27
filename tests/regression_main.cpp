@@ -4987,6 +4987,20 @@ static int run_all_tests(int argc, char** argv) {
             !linux_gpu_device_id_matches(0x2B85u, 0x2B8510DEu) ||
             linux_gpu_device_id_matches(0x268410DEu, 0x2B8510DEu))
             return 1271;
+        // Windows NVML-to-NvAPI matching shares this rule. Its own loose
+        // clause compared the low words, the shared NVIDIA vendor ID, so two
+        // different packed NVIDIA devices matched.
+        if (gpu_pci_nvidia_device_ids_match(0x268410DEu, 0x2B8510DEu) ||
+            gpu_pci_nvidia_device_ids_match(0x10DE2684u, 0x10DE2B85u)) return 7610;
+        if (!gpu_pci_nvidia_device_ids_match(0x268410DEu, 0x268410DEu) ||
+            !gpu_pci_nvidia_device_ids_match(0x2684u, 0x268410DEu) ||
+            !gpu_pci_nvidia_device_ids_match(0x268410DEu, 0x2684u) ||
+            !gpu_pci_nvidia_device_ids_match(0x10DE2684u, 0x268410DEu)) return 7611;
+        if (gpu_pci_nvidia_device_ids_match(0u, 0x268410DEu) ||
+            gpu_pci_nvidia_device_ids_match(0x268410DEu, 0u)) return 7612;
+        if (gpu_pci_nvidia_device_ids_match(0x10DEu, 0x268410DEu) ||
+            gpu_pci_nvidia_device_ids_match(0x10DE10DEu, 0x268410DEu) ||
+            gpu_pci_nvidia_device_ids_match(0x26841002u, 0x268410DEu)) return 7613;
         if (!linux_gpu_subsystem_id_matches(0x14583842u, 0x38421458u) ||
             !linux_gpu_subsystem_id_matches(0x1458u, 0x38421458u) ||
             linux_gpu_subsystem_id_matches(0x14583842u, 0x99993842u))

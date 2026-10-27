@@ -586,12 +586,10 @@ static bool fan_setting_matches_current(int wantMode, int wantPct, const FanCurv
     return true;
 }
 
+// Compares device IDs only. The low word of a packed ID is the vendor, which
+// every NVIDIA GPU shares; matching on it accepted any NVIDIA device.
 static bool nvml_pci_device_matches_nvapi(unsigned int nvapiDeviceId, unsigned int nvmlDeviceId) {
-    if (!nvapiDeviceId || !nvmlDeviceId) return false;
-    if (nvapiDeviceId == nvmlDeviceId) return true;
-    if ((nvmlDeviceId & 0xFFFFu) == (nvapiDeviceId & 0xFFFFu)) return true;
-    if (((nvmlDeviceId >> 16) & 0xFFFFu) == (nvapiDeviceId & 0xFFFFu)) return true;
-    return false;
+    return gpu_pci_nvidia_device_ids_match(nvapiDeviceId, nvmlDeviceId);
 }
 
 static bool nvml_pci_matches_selected_gpu(const nvmlPciInfo_t* pci) {
@@ -621,7 +619,12 @@ static bool nvml_select_device_for_selected_gpu(char* detail, size_t detailSize)
             if (g_nvml_api.getHandleByIndex(i, &candidate) != NVML_SUCCESS || !candidate) continue;
             nvmlPciInfo_t pci = {};
             if (g_nvml_api.getPciInfo(candidate, &pci) != NVML_SUCCESS) continue;
-            if (!nvml_pci_matches_selected_gpu(&pci)) continue;
+            if (!nvml_pci_matches_selected_gpu(&pci)) {
+                debug_log("nvml_select_device: NVML index %u (device 0x%08X bus %s) is not"
+                          " the selected GPU (device 0x%08X)\n", i, pci.pciDeviceId,
+                          nvml_pci_bus_id_text(&pci), g_app.selectedGpu.deviceId);
+                continue;
+            }
             if (matched >= 0) {
                 set_message(detail, detailSize, "Multiple NVML devices match selected GPU PCI identity");
                 return false;

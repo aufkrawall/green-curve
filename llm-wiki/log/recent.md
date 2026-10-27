@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-27: Windows NVML binding compares device IDs
+
+- Windows matched NVML devices to the selected NvAPI GPU with a clause that
+  compared the low words of packed IDs, which is the NVIDIA vendor ID on every
+  board; identity then rested on subsystem ID and location alone.
+- Both platforms now share one extractor (`gpu_selection_policy.h`); each
+  rejected NVML candidate is logged with its device and bus ID.
+- Cases 7610-7613. Not run on multi-GPU hardware.
+- Sources: [GPU backend](../gpu-backend.md#gpu-identity-and-selection),
+  [tests](../testing.md).
+
 ## 2026-10-27: Windows power writes target and verify one GPU
 
 - The `nvidia-smi` power fallback passes `-i` with the selected GPU's PCI bus

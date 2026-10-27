@@ -475,6 +475,7 @@ checks, and full build 433; RTX 5080 hardware acceptance remains pending.
 - NVAPI enumeration records up to `MAX_GPU_ADAPTERS` adapters in `GpuAdapterInfo`.
 - The GUI selector shows ordinal, name, family, and PCI identity when available. It is placed in the top-right graph header gap, not in the VF edit/grid area.
 - NVML device selection prefers PCI identity matching against the selected NVAPI adapter. On multi-GPU systems, if PCI identity is available but does not match any NVML device, the selection fails closed (`refusing ordinal fallback`). Ordinal fallback is only allowed on single-GPU systems or when no PCI identity is available for the selected GPU.
+- The device-ID part of that match uses the shared `gpu_pci_nvidia_device_ids_match()` (`gpu_selection_policy.h`, also behind the Linux extractor): bare, packed and reversed spellings of one device match; vendor words alone never do. The former Windows clause compared the low words of packed IDs, the NVIDIA vendor ID on every board, so any two NVIDIA GPUs matched and identity rested on subsystem ID and location alone (fixed 2026-10-27; cases 7610-7613). Each rejected NVML candidate logs `nvml_select_device: NVML index N (device ... bus ...) is not the selected GPU`.
 - The selected GPU is carried in `ServiceRequest::targetGpu`; the service reinitializes or rejects if the request target differs from the active hardware target.
 - Config persistence stores the selected GPU under `[gpu] selected_index`; this is an ordinal fallback until a richer stable identity key is added.
 

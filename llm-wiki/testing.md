@@ -63,6 +63,18 @@ Gates require both write routes to verify the reported limit and the
 `nvidia-smi` fallback to name the selected GPU and refuse before launch
 without one. The fallback itself is not executed by the harness.
 
+## NVML device-ID matching (2026-10-27)
+
+Source anchors: `tests/regression_main.cpp`, `source/gpu_selection_policy.h`,
+`source/main_runtime_nvml.cpp`, `tools/readback_gates.py`.
+
+Cases 7610-7613 pin the shared device-ID rule Windows now uses to bind NVML
+to the selected NvAPI GPU: two different packed NVIDIA devices never match
+(the former low-word clause matched any pair), bare, packed and reversed
+spellings of one device do, and unknown or vendor-only IDs never match.
+Gates require the Windows matcher to delegate to the shared helper and the
+Linux extractor to reuse it.
+
 ## Windows memory recovery (2026-10-27)
 
 Source anchors: `tests/memory_recovery_tests.cpp`,

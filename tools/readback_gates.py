@@ -178,3 +178,20 @@ def check_all(ctx, require_text, forbid_text):
                  "bool pairValid = ok &&\n                linux_read_power_limit_pair(g, &currentmW, &defaultmW);",
                  "Linux reset-to-default requires complete post-write readback")
 
+
+    # NVML readback and writes reach the selected GPU only through this
+    # match. Packed IDs share the NVIDIA vendor word, so it must compare device
+    # IDs through the shared extractor, never the low words.
+    runtime_nvml_cpp = _p(ctx, "main_runtime_nvml.cpp")
+    ctx.require_text_in_operation(
+        runtime_nvml_cpp, "static bool nvml_pci_device_matches_nvapi(",
+        "return gpu_pci_nvidia_device_ids_match(nvapiDeviceId, nvmlDeviceId);",
+        "Windows NVML device matching compares device IDs, not vendor words")
+    forbid_text(runtime_nvml_cpp, "(nvmlDeviceId & 0xFFFFu) == (nvapiDeviceId & 0xFFFFu)",
+                "Windows NVML device matching never accepts a shared vendor word")
+    require_text(_p(ctx, "linux_gpu_selection.h"),
+                 "return gpu_pci_extract_nvidia_device_id(encoded, deviceId);",
+                 "Linux and Windows share one NVIDIA device-ID extractor")
+    require_text(_p(ctx, "gpu_selection_policy.h"),
+                 "if (low == nvidiaVendorId && high && high != nvidiaVendorId)",
+                 "shared PCI matching recognizes NVIDIA vendor/device low-word encoding")

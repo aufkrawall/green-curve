@@ -16,27 +16,7 @@ static inline bool linux_gpu_bdf_valid(const GpuAdapterInfo* gpu) {
 
 static inline bool linux_gpu_extract_nvidia_device_id(
     unsigned int encoded, unsigned int* deviceId) {
-    const unsigned int nvidiaVendorId = 0x10DEu;
-    if (!encoded || !deviceId) return false;
-    if (encoded <= 0xFFFFu) {
-        if (encoded == nvidiaVendorId) return false;
-        *deviceId = encoded;
-        return true;
-    }
-    unsigned int low = encoded & 0xFFFFu;
-    unsigned int high = (encoded >> 16) & 0xFFFFu;
-    // NvAPI and NVML releases have exposed the 16-bit vendor/device pair in
-    // both word orders. Identify the device by the NVIDIA vendor word instead
-    // of assuming that either the high or low word is always the device.
-    if (low == nvidiaVendorId && high && high != nvidiaVendorId) {
-        *deviceId = high;
-        return true;
-    }
-    if (high == nvidiaVendorId && low && low != nvidiaVendorId) {
-        *deviceId = low;
-        return true;
-    }
-    return false;
+    return gpu_pci_extract_nvidia_device_id(encoded, deviceId);
 }
 
 static inline bool linux_gpu_device_id_matches(unsigned int left,

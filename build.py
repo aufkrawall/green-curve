@@ -3507,10 +3507,10 @@ def run_source_regression_checks():
                  "Linux Apply/Reset use the pure ordered transaction engine")
     require_text(linux_transaction_h, "result.rollbackSucceeded",
                  "Linux phase failure exposes verified versus uncertain rollback")
-    require_text(linux_gpu_selection_h, "low == nvidiaVendorId",
-                 "Linux PCI matching recognizes NVIDIA vendor/device low-word encoding")
-    require_text(linux_gpu_selection_h, "high == nvidiaVendorId",
-                 "Linux PCI matching recognizes NVIDIA vendor/device high-word encoding")
+    require_text(linux_gpu_selection_h, "gpu_pci_extract_nvidia_device_id(encoded, deviceId)",
+                 "Linux PCI matching uses the shared NVIDIA device-ID extractor")
+    require_text(os.path.join(SOURCE_DIR, "gpu_selection_policy.h"), "high == nvidiaVendorId",
+                 "shared PCI matching recognizes NVIDIA vendor/device high-word encoding")
     require_text(linux_daemon_snapshot_cpp,
                  "linux_gpu_switch_preserves_active_intent",
                  "Linux daemon cannot move one active intent onto another selected GPU")

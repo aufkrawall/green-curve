@@ -46,6 +46,7 @@ GPU selection, fan control and recovery are more reliable across hardware change
 - **Linux fan safety after failed operations:** when an Apply, Reset or automatic restore cannot be completed or rolled back cleanly, a fan under Green Curve's manual control is returned to the driver instead of staying at its last speed.
 - **Linux failed operations:** a failed Apply or Reset no longer marks unconfirmed GPU settings as safe to restore at the next start.
 - **Windows power limit with several GPUs:** when the driver refuses a direct power-limit change, the fallback now changes only the selected GPU, and a limit the driver does not actually hold is reported as a failure.
+- **Windows with several NVIDIA GPUs:** fan, power and clock readings and writes can no longer be bound to a different NVIDIA GPU than the selected one when its location is unknown.
 
 ### Compatibility notes
 

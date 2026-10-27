@@ -6,6 +6,42 @@
 #include <stdio.h>
 #include <string.h>
 
+// NvAPI and NVML have reported the PCI device ID bare (0x2684) and packed with
+// the vendor ID in either word (0x268410DE or 0x10DE2684). Locate the NVIDIA
+// vendor word rather than assuming an order; never compare vendor words alone.
+static inline bool gpu_pci_extract_nvidia_device_id(unsigned int encoded,
+                                                    unsigned int* deviceId) {
+    const unsigned int nvidiaVendorId = 0x10DEu;
+    if (!encoded || !deviceId) return false;
+    if (encoded <= 0xFFFFu) {
+        if (encoded == nvidiaVendorId) return false;
+        *deviceId = encoded;
+        return true;
+    }
+    const unsigned int low = encoded & 0xFFFFu;
+    const unsigned int high = (encoded >> 16) & 0xFFFFu;
+    if (low == nvidiaVendorId && high && high != nvidiaVendorId) {
+        *deviceId = high;
+        return true;
+    }
+    if (high == nvidiaVendorId && low && low != nvidiaVendorId) {
+        *deviceId = low;
+        return true;
+    }
+    return false;
+}
+
+// Both IDs known and naming the same NVIDIA device, in any reported shape.
+static inline bool gpu_pci_nvidia_device_ids_match(unsigned int left,
+                                                   unsigned int right) {
+    if (!left || !right) return false;
+    if (left == right) return true;
+    unsigned int leftDevice = 0, rightDevice = 0;
+    return gpu_pci_extract_nvidia_device_id(left, &leftDevice) &&
+        gpu_pci_extract_nvidia_device_id(right, &rightDevice) &&
+        leftDevice == rightDevice;
+}
+
 enum ConfiguredGpuResolveResult {
     CONFIGURED_GPU_RESOLVE_LEGACY_ORDINAL = 0,
     CONFIGURED_GPU_RESOLVE_STABLE,
