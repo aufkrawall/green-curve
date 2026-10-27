@@ -336,7 +336,8 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                      committedDesired.hasFan ? 1 : 0);
             LinuxHardwareSnapshot before = {};
             char stateErr[256] = {};
-            if (!linux_backend_capture_snapshot(&g_gpu, &before, stateErr, sizeof(stateErr)) ||
+            if (!daemon_fan_ownership_allows_selected_write(stateErr, sizeof(stateErr)) ||
+                !linux_backend_capture_snapshot(&g_gpu, &before, stateErr, sizeof(stateErr)) ||
                 !daemon_fan_ownership_ensure_before_write(&committedDesired,
                                                           stateErr, sizeof(stateErr)) ||
                 !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu,
@@ -391,7 +392,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 g_stateUncertain = false;
                 g_fanFailureCount = 0;
                 if (g_fanOwnershipMarkerCommitted &&
-                    !daemon_desired_takes_manual_fan(&committedDesired))
+                    d.hasFan && d.fanMode == FAN_MODE_AUTO)
                     daemon_fan_ownership_retire("committed intent leaves the fan to the driver");
                 char guardErr[256] = {};
                 if (!auto_restore_note_explicit_success("apply", guardErr,
@@ -434,7 +435,8 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             LinuxHardwareSnapshot before = {};
             char stateErr[256] = {};
             DesiredSettings empty = {};
-            if (!linux_backend_capture_snapshot(&g_gpu, &before, stateErr, sizeof(stateErr)) ||
+            if (!daemon_fan_ownership_allows_selected_write(stateErr, sizeof(stateErr), true) ||
+                !linux_backend_capture_snapshot(&g_gpu, &before, stateErr, sizeof(stateErr)) ||
                 !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu,
                                      &empty, stateErr, sizeof(stateErr),
                                      req->operationId, SERVICE_OPERATION_IN_PROGRESS)) {
@@ -478,7 +480,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 g_stateUncertain = false;
                 g_fanFailureCount = 0;
                 // Reset returned the fan to the driver: nothing to hand back.
-                daemon_fan_ownership_retire("reset committed");
+                daemon_fan_ownership_retire("reset committed", true);
                 char guardErr[256] = {};
                 if (!auto_restore_note_explicit_success("reset", guardErr,
                                                         sizeof(guardErr))) {

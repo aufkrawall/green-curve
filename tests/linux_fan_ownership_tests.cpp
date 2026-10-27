@@ -87,7 +87,8 @@ static void initialize(unsigned int count = 2) {
     g_gpuReady = true;
     g_autoRestoreGuard = {};
     g_fanOwnershipMarkerCommitted = false;
-    g_fanOwnershipTarget = {};
+    g_fanOwnershipHandbackPending = false;
+    g_fanOwnershipRecord = {};
     removed = storeFails = autoFails = lockedOut = false;
     stores = writes = 0;
     writtenAdapter = -1;
@@ -142,6 +143,7 @@ static int run() {
     if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error)) ||
         !linux_gpu_identity_matches(&saved.targetGpu, &g_gpu.selectedGpu)) return 7540;
     g_gpu.selectedGpu = g_gpu.adapters[1];
+    g_gpu.selectedAdapterIndex = 1;
     if (daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7541;
     LinuxFanOwnershipMarker decoded = {};
     if (!linux_fan_ownership_marker_decode(&saved, sizeof(saved), &decoded) ||
@@ -158,6 +160,77 @@ static int run() {
     if (linux_fan_ownership_marker_decode(&old, sizeof(old), &decoded)) return 7544;
     saved.targetLocationRole = 99;
     if (linux_fan_ownership_marker_decode(&saved, sizeof(saved), &decoded)) return 7545;
+    // A failed startup handback keeps the original GPU's durable ownership.
+    // A later manual Apply on another adapter must not replace that record.
+    initialize();
+    autoFails = true;
+    daemon_fan_ownership_handback_at_start();
+    const LinuxFanOwnershipMarker outstanding = saved;
+    g_gpu.selectedAdapterIndex = 0;
+    g_gpu.selectedGpu = g_gpu.adapters[0];
+    if (daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error)) ||
+        std::memcmp(&saved, &outstanding, sizeof(saved))) return 7560;
+    if (daemon_fan_ownership_allows_selected_write(error, sizeof(error), true)) return 7561;
+    daemon_fan_ownership_retire("unrelated reset", true);
+    if (removed || std::memcmp(&saved, &outstanding, sizeof(saved))) return 7561;
+    if (daemon_fan_ownership_shutdown_should_release()) return 7562;
+    g_gpu.selectedAdapterIndex = 1;
+    g_gpu.selectedGpu = g_gpu.adapters[1];
+    if (!daemon_fan_ownership_allows_selected_write(error, sizeof(error), true)) return 7563;
+    daemon_fan_ownership_retire("owned GPU reset", true);
+    if (!removed || g_fanOwnershipMarkerCommitted || g_fanOwnershipHandbackPending) return 7563;
+
+    initialize();
+    autoFails = true;
+    daemon_fan_ownership_handback_at_start();
+    const int startupStores = stores;
+    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error)) ||
+        stores != startupStores + 1 || saved.handbackAttempts ||
+        g_fanOwnershipHandbackPending || !daemon_fan_ownership_shutdown_should_release()) return 7564;
+
+    initialize();
+    saved.targetGpu.deviceId++;
+    daemon_fan_ownership_handback_at_start();
+    g_gpu.writeIdentityResolved = true;
+    if (!g_fanOwnershipMarkerCommitted || !g_fanOwnershipHandbackPending ||
+        daemon_fan_ownership_allows_selected_write(error, sizeof(error))) return 7565;
+    initialize();
+    g_gpuReady = false;
+    daemon_fan_ownership_handback_at_start();
+    if (!g_fanOwnershipMarkerCommitted || !g_fanOwnershipHandbackPending ||
+        daemon_fan_ownership_shutdown_should_release() || removed || writes) return 7566;
+
+    initialize();
+    saved.handbackAttempts = OWNERSHIP_HANDBACK_MAX_ATTEMPTS;
+    daemon_fan_ownership_handback_at_start();
+    if (writes || stores || removed || !lockedOut ||
+        !g_fanOwnershipMarkerCommitted || !g_fanOwnershipHandbackPending) return 7567;
+
+    initialize();
+    saved.targetUuid = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000001");
+    g_gpu.adapterUuids[1] = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000002");
+    daemon_fan_ownership_handback_at_start();
+    g_gpu.selectedAdapterIndex = 1;
+    g_gpu.selectedGpu = g_gpu.adapters[1];
+    g_gpu.writeIdentityResolved = true;
+    if (daemon_fan_ownership_allows_selected_write(error, sizeof(error), true)) return 7568;
+
+    initialize();
+    saved.targetUuid = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000001");
+    g_gpu.adapterUuids[0] = saved.targetUuid;
+    autoFails = true;
+    daemon_fan_ownership_handback_at_start();
+    if (!daemon_fan_ownership_allows_selected_write(error, sizeof(error)) ||
+        !linux_gpu_bdf_equal(&g_fanOwnershipRecord.targetGpu, &g_gpu.selectedGpu)) return 7569;
+
+    initialize();
+    saved.targetGpu = {};
+    daemon_fan_ownership_handback_at_start();
+    g_gpu.writeIdentityResolved = true;
+    if (daemon_fan_ownership_allows_selected_write(error, sizeof(error)) ||
+        !daemon_fan_ownership_allows_selected_write(error, sizeof(error), true)) return 7570;
+    daemon_fan_ownership_retire("explicit legacy recovery", true);
+    if (!removed || g_fanOwnershipMarkerCommitted) return 7570;
     return 0;
 }
 } // namespace linux_fan_ownership_fixture

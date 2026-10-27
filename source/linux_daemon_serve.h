@@ -296,14 +296,12 @@ static int daemon_serve_until_stopped(int srv) {
 // Otherwise `systemctl stop` strands the fan at the last written percentage.
 // Call only after the fan worker is joined, so the two cannot race.
 static void daemon_release_fan_to_driver() {
-    if (!(g_gpuReady && g_hasActiveDesired && g_activeDesired.hasFan &&
-          g_activeDesired.fanMode != FAN_MODE_AUTO)) {
-        // Nothing manual is held.  A marker left from a handback that could
-        // not run yet (GPU not ready) is kept for the next start in this boot.
-        if (g_fanOwnershipMarkerCommitted)
-            daemon_fan_ownership_retire("clean stop with no manual fan held");
-        return;
-    }
+    const bool activeManual = g_hasActiveDesired &&
+        daemon_desired_takes_manual_fan(&g_activeDesired);
+    if (!g_gpuReady || (!activeManual &&
+                       !daemon_fan_ownership_shutdown_should_release())) return;
+    char ownershipErr[192] = {};
+    if (!daemon_fan_ownership_allows_selected_write(ownershipErr, sizeof(ownershipErr))) return;
     bool autoOk = linux_backend_set_fan_auto(&g_gpu);
     dlog("daemon: shutdown fan handback: driver auto restore ok=%d\n",
          autoOk ? 1 : 0);

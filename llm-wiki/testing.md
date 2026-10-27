@@ -34,6 +34,15 @@ Cases 7530-7545 execute production handback, pre-write ownership and record
 decoding. They cover a non-default adapter, absent and ambiguous targets,
 UUID replacement/movement, failed persistence, emergency fan duty, legacy
 single/multi-GPU decisions, outstanding ownership and malformed records.
+Cases 7560-7570 extend those executions across startup and later operations:
+retained ownership refuses another adapter's Apply and Reset, matching recovery
+retires it, matching manual-fan Apply durably assumes it, pending shutdown keeps
+it, unavailable backends/targets and exhausted attempts preserve it, physical
+identity mismatches refuse recovery, moved UUID matches remain usable, and an
+explicit legacy Reset can name its adapter. Case 7560 fails without loaded
+ownership retention. Source gates cover Apply/Reset preflight, shutdown routing
+and pending lockout preservation; complete daemon orchestration remains outside
+the fake-driver fixture.
 `GC_FAN_OWNERSHIP_FIXTURE_MAIN` is the standalone entry point. Fake storage
 and driver dependencies do not exercise physical GPU writes.
 

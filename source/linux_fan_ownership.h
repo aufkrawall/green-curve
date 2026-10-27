@@ -19,7 +19,43 @@
 #define GREEN_CURVE_LINUX_FAN_OWNERSHIP_H
 
 static bool g_fanOwnershipMarkerCommitted = false;
-static GpuAdapterInfo g_fanOwnershipTarget = {};
+static bool g_fanOwnershipHandbackPending = false;
+static LinuxFanOwnershipMarker g_fanOwnershipRecord = {};
+
+// Loaded ownership has the same authority as a new marker. Resolve its full
+// binding so a moved card can be recovered without accepting a replacement.
+// A legacy marker has no binding: only an explicit Reset may name its GPU
+// among several adapters; automatic recovery still requires a lone adapter.
+static bool daemon_fan_ownership_allows_selected_write(char* err, size_t errSize,
+                                                       bool explicitReset = false) {
+    if (!g_fanOwnershipMarkerCommitted) return true;
+    bool matches = false;
+    if (g_gpu.writeIdentityResolved) {
+        if (!g_fanOwnershipRecord.targetGpu.valid) {
+            matches = explicitReset || g_gpu.adapterCount == 1;
+        } else {
+            const auto selected = linux_gpu_restore_selection(
+                &g_fanOwnershipRecord.targetGpu,
+                (GpuLocationRole)g_fanOwnershipRecord.targetLocationRole,
+                g_gpu.adapters, g_gpu.adapterCount,
+                &g_fanOwnershipRecord.targetUuid, g_gpu.adapterUuids, nullptr);
+            matches = selected.writeResolved &&
+                (unsigned int)selected.index == g_gpu.selectedAdapterIndex;
+        }
+    }
+    if (!matches) {
+        gc_strlcpy(err, errSize,
+            "recover the previous GPU's fan ownership with Reset before writing another GPU");
+        dlog("daemon fan ownership: write refused; outstanding target does not resolve to the selected adapter\n");
+    }
+    return matches;
+}
+
+static bool daemon_fan_ownership_shutdown_should_release() {
+    // An inherited handback belongs to startup. A write this process took
+    // ownership of still needs release after a failed Apply cleared intent.
+    return g_fanOwnershipMarkerCommitted && !g_fanOwnershipHandbackPending;
+}
 
 static bool daemon_desired_takes_manual_fan(const DesiredSettings* desired) {
     return desired && desired->hasFan && desired->fanMode != FAN_MODE_AUTO;
@@ -35,12 +71,8 @@ static bool daemon_fan_ownership_ensure_before_write(
         gc_strlcpy(err, errSize, "fan ownership requires a resolved GPU target");
         return false;
     }
-    if (g_fanOwnershipMarkerCommitted) {
-        if (linux_gpu_identity_matches(&g_fanOwnershipTarget, &g_gpu.selectedGpu)) return true;
-        gc_strlcpy(err, errSize, "return the previous GPU's fan ownership before selecting another GPU");
-        dlog("daemon fan ownership: refusing to replace outstanding adapter ownership\n");
-        return false;
-    }
+    if (!daemon_fan_ownership_allows_selected_write(err, errSize)) return false;
+    if (g_fanOwnershipMarkerCommitted && !g_fanOwnershipHandbackPending) return true;
     char bootId[LINUX_FAN_OWNERSHIP_BOOT_ID_MAX] = {};
     if (!linux_read_boot_id(bootId, sizeof(bootId))) {
         gc_strlcpy(err, errSize,
@@ -59,18 +91,25 @@ static bool daemon_fan_ownership_ensure_before_write(
         return false;
     }
     g_fanOwnershipMarkerCommitted = true;
-    g_fanOwnershipTarget = marker.targetGpu;
+    g_fanOwnershipHandbackPending = false;
+    g_fanOwnershipRecord = marker;
     dlog("daemon fan ownership: marker committed before taking manual fan control\n");
     return true;
 }
 
 // The fan is the driver's again (or was never ours): nothing to hand back.
-static void daemon_fan_ownership_retire(const char* reason) {
+static void daemon_fan_ownership_retire(const char* reason, bool explicitReset = false) {
     char err[256] = {};
+    if (!daemon_fan_ownership_allows_selected_write(err, sizeof(err), explicitReset)) {
+        dlog("daemon fan ownership: marker retained (%s); selected adapter has not recovered its target\n",
+             reason ? reason : "unspecified");
+        return;
+    }
     bool ok = linux_daemon_state_remove(GC_DAEMON_FAN_MARKER_FILE, err, sizeof(err));
     if (ok) {
         g_fanOwnershipMarkerCommitted = false;
-        g_fanOwnershipTarget = {};
+        g_fanOwnershipHandbackPending = false;
+        g_fanOwnershipRecord = {};
     }
     dlog("daemon fan ownership: marker %s (%s)%s%s\n",
          ok ? "retired" : "could not be retired",
@@ -116,16 +155,24 @@ static void daemon_fan_ownership_handback_at_start() {
          in.currentBootKnown ? 1 : 0, in.sameBoot ? 1 : 0,
          in.previousAttempts, (unsigned int)OWNERSHIP_HANDBACK_MAX_ATTEMPTS,
          plan.retry ? 1 : 0, err[0] ? " detail=" : "", err);
-    if (plan.deleteMarker) {
-        if (plan.verdict == OWNERSHIP_HANDBACK_GIVE_UP_PREVIOUS_ATTEMPT_DIED) {
-            dlog("daemon fan ownership: every allowed handback attempt died or "
-                 "hung (systemd start timeout); NOT retrying (restart-loop guard). "
-                 "Reset returns the fan.\n");
-            // Published to clients (protocol v28) so the TUI/CLI say what to do.
-            daemon_fan_ownership_latch_incomplete(
-                "every allowed fan handback attempt died");
-        }
+    if (plan.deleteMarker &&
+        plan.verdict != OWNERSHIP_HANDBACK_GIVE_UP_PREVIOUS_ATTEMPT_DIED) {
         daemon_fan_ownership_retire(ownership_handback_verdict_name(plan.verdict));
+        return;
+    }
+    // Keep the complete loaded binding even when no startup write can run.
+    // Exhausting automatic attempts stops retries, not explicit recovery.
+    g_fanOwnershipMarkerCommitted = true;
+    g_fanOwnershipHandbackPending = true;
+    g_fanOwnershipRecord = marker;
+    dlog("daemon fan ownership: loaded outstanding marker retained for target-bound recovery\n");
+    if (plan.verdict == OWNERSHIP_HANDBACK_GIVE_UP_PREVIOUS_ATTEMPT_DIED) {
+        dlog("daemon fan ownership: every allowed handback attempt died or "
+             "hung (systemd start timeout); NOT retrying (restart-loop guard). "
+             "Reset returns the fan.\n");
+        // Published to clients (protocol v28) so the TUI/CLI say what to do.
+        daemon_fan_ownership_latch_incomplete(
+            "every allowed fan handback attempt died");
         return;
     }
     if (!g_gpuReady) {
@@ -152,6 +199,9 @@ static void daemon_fan_ownership_handback_at_start() {
              err[0] ? err : "unresolved identity");
         return;
     }
+    marker.targetGpu = g_gpu.selectedGpu;
+    marker.targetUuid = linux_gpu_uuid_retain(linux_backend_selected_uuid(&g_gpu),
+                                             &marker.targetUuid);
     dlog("daemon fan ownership: recorded adapter resolved before handback\n");
     // Counted before writing: a hang here is killed by systemd's start timeout
     // (this runs before READY=1), and the next start retries at most once.
@@ -163,6 +213,7 @@ static void daemon_fan_ownership_handback_at_start() {
              "(an unguarded handback could loop)\n", err[0] ? err : "unknown");
         return;
     }
+    g_fanOwnershipRecord = inFlight;
     bool autoOk = linux_backend_set_fan_auto(&g_gpu);
     bool emergency = false;
     if (fan_runtime_escalation_after_auto_restore(autoOk) ==

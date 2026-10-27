@@ -126,6 +126,19 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
     require_order(linux_daemon_cpp, "pl_thread_join(fanThread)",
                   "daemon_release_fan_to_driver()",
                   "fan worker is joined before the shutdown handback, so they cannot race")
+    for command in ("APPLY", "RESET"):
+        ctx.require_order_in_operation(
+            linux_daemon_cpp, f"case SERVICE_CMD_{command}:",
+            "daemon_fan_ownership_allows_selected_write(",
+            "linux_backend_capture_snapshot(",
+            f"Linux {command} checks outstanding fan ownership before mutation")
+    runtime = _p(ctx, "linux_auto_restore_runtime.h")
+    ctx.require_order_in_operation(
+        runtime, "static bool auto_restore_note_explicit_success(",
+        "g_fanOwnershipHandbackPending", "linux_auto_restore_note_explicit_success(",
+        "unrecovered fan ownership cannot clear the automatic-restore lockout")
+    require_text(linux_daemon_serve_h, "daemon_fan_ownership_shutdown_should_release()",
+                 "shutdown preserves inherited handback while releasing this process's writes")
 
 
 def check_power_limit_range(ctx, require_text, forbid_text):

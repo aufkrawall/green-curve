@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-27: Loaded Linux fan ownership remains target-bound
+
+- Retained startup ownership keeps its full adapter, role and UUID binding in
+  memory. Apply and Reset validate it before mutation; only matching verified
+  recovery retires it. A matching manual-fan Apply durably assumes ownership.
+- Pending inherited recovery survives shutdown and exhausted automatic attempts.
+  Sparse writes without fan recovery retain the restore lockout. Legacy explicit
+  Reset selection and optional-identity compatibility remain supported.
+- Executing cases 7560-7570 cover retained ownership across later operations;
+  the first case rejects the prior behavior. Integration gates cover mutation
+  ordering, shutdown routing and lockout preservation. Full native Windows
+  regressions pass. No physical GPU writes.
+- Sources: [fan control](../fan-control.md), [tests](../testing.md).
+
 ## 2026-10-27: Fan runtime and recovery evidence
 
 - Linux worker state and wake generations are captured coherently, and a

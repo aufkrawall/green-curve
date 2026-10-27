@@ -90,8 +90,9 @@ struct OwnershipHandbackInputs {
 struct OwnershipHandbackPlan {
     OwnershipHandbackVerdict verdict;
     OwnershipHandbackScope scope;
-    // Whether the marker file must be deleted now (every non-RUN verdict that
-    // found one).  A RUN keeps it until the handback has returned the state.
+    // Non-RUN verdicts discard the marker by default. Linux retains an
+    // exhausted fan binding for explicit recovery without retrying it.
+    // A RUN keeps it until the handback has returned the state.
     bool deleteMarker;
     // RUN after an attempt that died: the retry in a fresh process.
     bool retry;

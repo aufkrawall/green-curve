@@ -137,6 +137,13 @@ static bool auto_restore_note_explicit_success(const char* origin,
                                                char* errorOut,
                                                size_t errorSize) {
     if (errorOut && errorSize) errorOut[0] = 0;
+    if (g_fanOwnershipHandbackPending) {
+        gc_strlcpy(errorOut, errorSize,
+            "fan recovery is still pending; apply a fan setting or Reset the owned GPU");
+        dlog("daemon auto-restore: explicit %s left fan recovery pending; retaining the previous guard\n",
+             origin ? origin : "operation");
+        return false;
+    }
     LinuxAutoRestoreGuard previous = g_autoRestoreGuard;
     if (!linux_auto_restore_note_explicit_success(&g_autoRestoreGuard)) return true;
     if (!persist_auto_restore_guard("explicit success", errorOut, errorSize)) {
@@ -473,6 +480,8 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     g_hasActiveDesired = true;
     g_stateUncertain = false;
     g_fanFailureCount = 0;
+    if (committed.hasFan && committed.fanMode == FAN_MODE_AUTO)
+        daemon_fan_ownership_retire("automatic restore returned the fan");
     wake_fan_runtime();
     dlog("daemon auto-restore: %s committed -> %s\n",
          linux_auto_restore_trigger_name(trigger), outcome.message);

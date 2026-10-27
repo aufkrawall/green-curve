@@ -4,6 +4,8 @@
 
 Source anchors: `source/ownership_handback_policy.h`,
 `source/linux_fan_ownership.h`, `source/linux_daemon_state.cpp`,
+`source/linux_daemon.cpp`, `source/linux_daemon_serve.h`,
+`source/linux_auto_restore_runtime.h`,
 `tests/linux_fan_ownership_tests.cpp`.
 
 The Linux fan marker v2 records the written adapter, its location role and
@@ -11,6 +13,18 @@ optional physical UUID. Startup resolves that record before its first fan
 write, including emergency cooling. Unavailable or ambiguous targets retain
 the marker, publish handback-incomplete lockout and perform no write. A
 committed marker cannot be replaced with another adapter's ownership.
+
+Loaded ownership retains its complete binding in memory until verified recovery.
+Apply and Reset check that binding before mutation; another adapter cannot
+replace or retire it. A same-target manual-fan Apply durably assumes ownership,
+and a verified fan-auto Apply or Reset retires it. A sparse Apply without a fan
+write keeps inherited recovery pending and cannot clear its restore lockout.
+Shutdown leaves inherited pending handback for startup; ownership assumed by
+this process is returned even after a failed Apply clears active intent.
+Exhausted startup attempts retain the binding for explicit recovery without
+retrying automatically. Legacy multi-adapter ownership still allows an explicit
+Reset to name its target. Diagnostics distinguish loaded ownership, refused
+cross-adapter writes, preserved markers and pending lockout re-arm.
 
 The frozen v1 layout widens without inventing target evidence. Its handback
 may bind the sole resolved GPU; multiple GPUs require explicit recovery.
