@@ -1,5 +1,17 @@
 # Testing
 
+## Fan runtime scheduling and target authority (2026-10-27)
+
+Source anchors: `tests/fan_runtime_followup_tests.cpp`,
+`source/linux_fan_runtime.h`, `source/fan_runtime_policy.h`, `build.py`.
+
+Cases 7520-7527 execute the production worker with explicit scheduling
+boundaries: inactive-to-active Apply before wait, curve replacement before
+an already-due poll, idle and ordinary polling, lock order, authoritative
+target mismatches and missing-target fallback. The fixture runs on either
+host and has no timing assumptions or GPU writes. Its standalone entry point
+is `GC_FAN_RUNTIME_FIXTURE_MAIN`. Live hardware scheduling is not exercised.
+
 ## Apply, directory and identity boundaries (2026-10-27)
 
 Source anchors: `tests/advanced_apply_tests.cpp`,

@@ -70,9 +70,8 @@ static inline bool fan_manual_write_confirmed(int wantPercent,
                                               int measuredPercent,
                                               int intendedPercent,
                                               bool intendedKnown) {
-    if (intendedKnown &&
-        fan_percent_within_readback_tolerance(wantPercent, intendedPercent))
-        return true;
+    if (intendedKnown)
+        return fan_percent_within_readback_tolerance(wantPercent, intendedPercent);
     // No intent readback: a stopped fan reads 0 under driver auto too, so a
     // 0% request cannot be confirmed by a tolerance window around 0.
     if (wantPercent == 0) return measuredPercent == 0;

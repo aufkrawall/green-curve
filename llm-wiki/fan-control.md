@@ -1,5 +1,23 @@
 # Fan Control
 
+## Worker state and verification authority (2026-10-27)
+
+Source anchors: `source/linux_fan_runtime.h`, `source/fan_runtime_policy.h`,
+`tests/fan_runtime_followup_tests.cpp`.
+
+The Linux worker captures its wake generation while holding the state lock,
+using the same state-lock then wake-lock order as Apply. It rejects a changed
+generation both before waiting and after reacquiring state for a poll. A
+notification cannot be consumed with an older inactive snapshot, and a new
+curve cannot inherit the previous curve's hysteresis on an already-due poll.
+Each rejected snapshot emits one generation-labelled diagnostic.
+
+A known intended fan duty is authoritative, including a mismatch and zero.
+Measured-duty fallback is used only when intent is unavailable. The executing
+worker fixture covers both Apply interleavings, idle and normal operation,
+lock order, contradictory intent and legacy fallback without sleeps.
+Live GPU scheduling remains hardware-unverified. Last verified: 2026-10-27.
+
 ## Fan modes
 
 Defined in `source/gpu_core.h`:
@@ -324,8 +342,9 @@ full minute of 500 ms-interval curve mode.
   succeeding — a driver without the range getter can still be driven manually
   over the full 0..100 span, and tying the gate to the getter would disable the
   controls outright.
-- **A manual fan write is verified against driver intent, never against measured
-  fan speed.** See "Measured duty vs. intended duty" above. Both the forward
+- **A known driver intent is authoritative for a manual fan write; measured
+  speed is only a fallback when intent is unavailable.** See "Measured duty vs.
+  intended duty" above. Both the forward
   write and the rollback snapshot/restore in `linux_backend_mutation.cpp` use
   `nvml_read_fan_intent()`; the snapshot records `fanTargetKnown[]` so a missing
   intent getter is distinguishable from an intent of 0. Guarded by

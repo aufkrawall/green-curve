@@ -4,6 +4,15 @@
 // Fixed duty is re-checked on the same cadence Windows re-asserts it.
 static const unsigned int LINUX_FAN_FIXED_MAINTENANCE_INTERVAL_MS = 5000u;
 
+// Capture under g_lock, in the same lock order as Apply's notification. The
+// generation must describe the state snapshot, not the later start of a wait.
+static unsigned long long fan_runtime_generation() {
+    pthread_mutex_lock(&g_fanWakeMutex);
+    unsigned long long generation = g_fanWakeGeneration;
+    pthread_mutex_unlock(&g_fanWakeMutex);
+    return generation;
+}
+
 // A committed fixed duty the driver no longer holds is written again; a read
 // that cannot tell counts toward the same escalation as a curve failure.
 // Caller holds g_lock.
@@ -28,6 +37,7 @@ static pl_thread_ret fan_reassert_thread(void*) {
     while (g_running) {
         unsigned int pollMs = 0;
         pl_mutex_lock(&g_lock);
+        observedGeneration = fan_runtime_generation();
         bool active = g_gpuReady && g_hasActiveDesired && !g_stateUncertain &&
                       linux_gpu_identity_matches(
                           &g_activeTarget, &g_gpu.selectedGpu) &&
@@ -45,7 +55,12 @@ static pl_thread_ret fan_reassert_thread(void*) {
         pl_mutex_unlock(&g_lock);
 
         pthread_mutex_lock(&g_fanWakeMutex);
-        observedGeneration = g_fanWakeGeneration;
+        if (observedGeneration != g_fanWakeGeneration) {
+            pthread_mutex_unlock(&g_fanWakeMutex);
+            dlog("daemon: fan runtime state changed before wait; refreshing generation=%llu\n",
+                 observedGeneration);
+            continue;
+        }
         if (active && runtimeGeneration != observedGeneration) {
             // A successful Apply already established the new curve's initial
             // hardware policy/target.  Drop the previous curve's hysteresis
@@ -89,6 +104,12 @@ static pl_thread_ret fan_reassert_thread(void*) {
         if (!pollDue) continue;
 
         pl_mutex_lock(&g_lock);
+        if (observedGeneration != fan_runtime_generation()) {
+            pl_mutex_unlock(&g_lock);
+            dlog("daemon: fan runtime state changed before poll; discarding generation=%llu\n",
+                 observedGeneration);
+            continue;
+        }
         active = g_gpuReady && g_hasActiveDesired && !g_stateUncertain &&
                  linux_gpu_identity_matches(
                      &g_activeTarget, &g_gpu.selectedGpu) &&
