@@ -26,9 +26,12 @@ static bool nvapi_set_mem_offset(int offsetkHz, bool forceWrite) {
     const bool freshMemMatch = g_app.readback.memOffset &&
         g_app.memClockOffsetkHz == offsetkHz;
     const bool freshPstate = nvapi_read_pstates();
+    // Pstates may answer with graphics clocks only. Cached memory equality
+    // is not evidence unless this response supplied a usable memory clock.
+    const bool freshPstateMem = freshPstate && g_app.pstateMemMaxMHz > 0;
     detect_clock_offsets();
     const bool verified = exact || freshMemMatch ||
-        (freshPstate && g_app.nvmlMemMaxMHz > 0 && g_app.memClockOffsetkHz == offsetkHz);
+        (freshPstateMem && g_app.nvmlMemMaxMHz > 0 && g_app.memClockOffsetkHz == offsetkHz);
     if (verified) {
         g_app.memClockOffsetkHz = offsetkHz;
         g_app.readback.memOffset = true;
@@ -36,9 +39,10 @@ static bool nvapi_set_mem_offset(int offsetkHz, bool forceWrite) {
     } else {
         g_app.readback.memOffset = false;
     }
-    debug_log("nvapi_set_mem_offset: readback_driver_kHz=%d verified=%d nvmlMatch=%d freshMemMatch=%d freshPstate=%d uncertain=%d\n",
+    debug_log("nvapi_set_mem_offset: readback_driver_kHz=%d verified=%d nvmlMatch=%d freshMemMatch=%d freshPstate=%d pstateMemMHz=%u maxMemMHz=%u uncertain=%d\n",
         g_app.memClockOffsetkHz, verified ? 1 : 0, exact ? 1 : 0,
-        freshMemMatch ? 1 : 0, freshPstate ? 1 : 0, g_app.memOffsetWriteUncertain ? 1 : 0);
+        freshMemMatch ? 1 : 0, freshPstate ? 1 : 0, g_app.pstateMemMaxMHz,
+        g_app.nvmlMemMaxMHz, g_app.memOffsetWriteUncertain ? 1 : 0);
     return verified;
 }
 #endif

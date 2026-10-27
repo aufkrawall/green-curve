@@ -41,6 +41,10 @@ Source anchors: `source/gpu_backend_memory_offset.h`,
 
 A memory setter invalidates cached provenance before writing and retains an
 uncertain-write flag until fresh NVML or P-state evidence verifies the target.
+The P-state fallback requires a usable memory-clock entry from that response
+and a readable stock memory maximum. A graphics-only response cannot verify
+cached equality or clear uncertainty. Diagnostics include both memory-clock
+inputs alongside the overall P-state read result.
 Rollback and explicit Reset force a zero write when that flag is set, even
 when the cached pre-write value was zero. A later explicit memory Apply also
 cannot skip a write on cached equality while the flag remains set.
@@ -54,6 +58,9 @@ readback-evidence and recovery flags without dumping state collections.
 The executing fixture includes the production setter, rollback and failure
 formatter. It covers successful writes with missing readback, partial failed
 setters, forced reset, failed verification, cached equality and reporting.
+Cases 7640-7645 additionally execute graphics-only P-state responses, repeated
+unverified stock recovery, matching and contradictory fresh memory clocks,
+and a missing stock denominator. Case 7640 rejects the prior predicate.
 Live driver-failure recovery remains hardware-unverified.
 
 Last verified: 2026-10-27.

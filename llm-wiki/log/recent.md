@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-27: Memory recovery requires memory-domain evidence
+
+- The Windows memory setter accepts the P-state fallback only when that
+  response supplies a usable memory clock and the stock maximum is readable.
+  Graphics-only responses retain uncertainty; diagnostics show both inputs.
+- Cases 7640-7645 execute missing, matching and contradictory evidence,
+  repeated stock recovery and a missing denominator. Case 7640 fails with
+  the previous predicate. The standalone fixture passes without GPU writes.
+- Sources: [clock recovery](../clock-transition-audit.md),
+  [tests](../testing.md).
+
 ## 2026-10-27: Failed writes and late Linux recovery keep clear ownership
 
 - Windows core recovery now accounts for a first fan-setting attempt even when

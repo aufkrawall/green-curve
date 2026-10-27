@@ -128,6 +128,13 @@ explicit-Reset integration are source-gated; full service orchestration and
 physical driver failures are not executed. Standalone entry point:
 `GC_MEMORY_RECOVERY_FIXTURE_MAIN`.
 
+Cases 7640-7645 execute the memory setter with graphics-only P-state data,
+matching and contradictory memory clocks, and a missing stock denominator.
+A graphics-only response leaves the write and repeated stock recovery
+unverified even when cached zero matches the requested reset. Case 7640 fails
+under the prior predicate. The fake driver's P-state projection follows the
+production memory-clock calculation; no physical GPU writes are performed.
+
 ## Linux fan ownership target (2026-10-27)
 
 Source anchors: `tests/linux_fan_ownership_tests.cpp`,

@@ -14,6 +14,7 @@ static NvmlApi g_nvml_api;
 static void* g_serviceFanThread;
 static int hardwareMHz, writes, releases;
 static bool verifyReset, setterFails, coreFails;
+static bool pstateReadSucceeds, pstateMemoryPresent, setterLeavesUnchanged;
 static void debug_log(const char*, ...) {}
 static void set_last_apply_phase(const char*) {}
 static void Sleep(unsigned long) {}
@@ -25,7 +26,7 @@ static bool nvapi_read_curve() { g_app.curve[0].freq_kHz = 2000000; return true;
 static bool apply_curve_offsets_verified(const int*, const bool*, int) { return !coreFails; }
 static bool nvml_set_clock_offset_domain(unsigned int, int value, bool* exact, char*, size_t) {
     ++writes;
-    hardwareMHz = value;
+    if (!setterLeavesUnchanged) hardwareMHz = value;
     *exact = verifyReset && value == 0;
     return !setterFails;
 }
@@ -35,8 +36,18 @@ static bool nvml_read_clock_offsets(char*, size_t) {
     g_app.readback.memOffset = true;
     return true;
 }
-static bool nvapi_read_pstates() { return false; }
-static void detect_clock_offsets() {}
+static bool nvapi_read_pstates() {
+    g_app.pstateMemMaxMHz = pstateReadSucceeds && pstateMemoryPresent
+        ? (unsigned int)(10000 + hardwareMHz / 2) : 0;
+    return pstateReadSucceeds;
+}
+static void detect_clock_offsets() {
+    if (g_app.pstateMemMaxMHz > 0 && g_app.nvmlMemMaxMHz > 0) {
+        g_app.memClockOffsetkHz =
+            ((int)g_app.pstateMemMaxMHz - (int)g_app.nvmlMemMaxMHz) * 1000;
+        g_app.readback.memOffset = true;
+    }
+}
 #include "gpu_backend_memory_offset.h"
 static bool nvapi_set_power_limit(int, bool = false) { return true; }
 static void stop_fan_curve_runtime() {}
@@ -72,6 +83,43 @@ static void initialize(bool canVerifyReset) {
     hardwareMHz = writes = releases = 0;
     verifyReset = canVerifyReset;
     setterFails = coreFails = false;
+    pstateReadSucceeds = pstateMemoryPresent = setterLeavesUnchanged = false;
+}
+static int run_pstate_evidence_tests() {
+    // A graphics-only Pstates response cannot certify cached stock memory.
+    initialize(false);
+    pstateReadSucceeds = setterLeavesUnchanged = true;
+    g_app.nvmlMemMaxMHz = 10000;
+    hardwareMHz = 3000;
+    if (nvapi_set_mem_offset(0, true) || !g_app.memOffsetWriteUncertain ||
+        g_app.readback.memOffset || hardwareMHz != 3000 || writes != 1)
+        return 7640;
+    const auto recovery = rollback_to_safe_defaults();
+    if (!apply_recovery_domain_is_uncertain(recovery.memory) ||
+        !g_app.memOffsetWriteUncertain || hardwareMHz != 3000 || writes != 4)
+        return 7641;
+
+    // Real memory evidence still verifies without NVML's offset getters.
+    initialize(false);
+    pstateReadSucceeds = pstateMemoryPresent = true;
+    g_app.nvmlMemMaxMHz = 10000;
+    if (!nvapi_set_mem_offset(1500000, true) || g_app.memOffsetWriteUncertain ||
+        !g_app.readback.memOffset || g_app.memClockOffsetkHz != 1500000)
+        return 7642;
+    if (!nvapi_set_mem_offset(0, true) || g_app.memOffsetWriteUncertain || hardwareMHz)
+        return 7643;
+
+    // A fresh contradictory memory clock and an absent stock denominator
+    // must both fail verification rather than reuse cached equality.
+    setterLeavesUnchanged = true;
+    hardwareMHz = 3000;
+    if (nvapi_set_mem_offset(0, true) || !g_app.memOffsetWriteUncertain ||
+        g_app.readback.memOffset) return 7644;
+    initialize(false);
+    pstateReadSucceeds = pstateMemoryPresent = true;
+    if (nvapi_set_mem_offset(0, true) || !g_app.memOffsetWriteUncertain ||
+        g_app.readback.memOffset) return 7645;
+    return 0;
 }
 static int run() {
     initialize(true);
@@ -112,7 +160,7 @@ static int run() {
     if (!nvapi_set_mem_offset(0, true) || writes != 1) return 7557;
     initialize(true);
     if (!nvapi_set_mem_offset(0, false) || writes) return 7558;
-    return 0;
+    return run_pstate_evidence_tests();
 }
 } // namespace memory_recovery_fixture
 
