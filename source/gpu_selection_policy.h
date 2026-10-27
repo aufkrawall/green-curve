@@ -210,8 +210,53 @@ static inline bool configured_gpu_selection_location_moved(
          !configured_gpu_location_equal(&configured->identity, live));
 }
 
-// One bounded diagnostic line: the stored model, location and role, and where
-// the live adapters are (first four, then an ellipsis).
+// One bounded diagnostic line, shared by both platforms: the stored model,
+// location and role, then where the live adapters are and whether each carries
+// the stored model (first four, then an ellipsis).  Windows and Linux differ
+// only in what counts as a known location and a matching model, so they pass
+// those rules in; the stored ids are printed as given (zero when unknown).
+typedef bool (*GpuDetailLocationKnown)(const GpuAdapterInfo* gpu);
+typedef bool (*GpuDetailModelMatches)(const GpuAdapterInfo* stored,
+                                      const GpuAdapterInfo* live);
+
+static inline void format_gpu_resolution_detail(
+    const GpuAdapterInfo* stored, unsigned int storedDeviceId,
+    unsigned int storedSubSystemId, GpuLocationRole role,
+    const GpuAdapterInfo* adapters, unsigned int adapterCount,
+    GpuDetailLocationKnown locationKnown, GpuDetailModelMatches modelMatches,
+    bool uppercaseLocation, char* out, size_t outSize) {
+    if (!out || outSize == 0) return;
+    out[0] = 0;
+    if (!stored || !locationKnown || !modelMatches) return;
+    char location[24] = "unknown";
+    if (locationKnown(stored))
+        snprintf(location, sizeof(location), uppercaseLocation ? "%04X:%02X:%02X.%u" : "%04x:%02x:%02x.%u",
+                 stored->pciDomain, stored->pciBus, stored->pciDevice,
+                 stored->pciFunction);
+    int written = snprintf(out, outSize,
+        "stored=%08X/%08X@%s role=%s adapters=%u live=[", storedDeviceId,
+        storedSubSystemId, location, configured_gpu_location_role_name(role),
+        adapterCount);
+    if (written < 0 || (size_t)written >= outSize) return;
+    size_t used = (size_t)written;
+    const unsigned int shown = adapterCount < 4u ? adapterCount : 4u;
+    for (unsigned int i = 0; adapters && i < shown; ++i) {
+        const GpuAdapterInfo* live = &adapters[i];
+        const char* kind = modelMatches(stored, live) ? "model" : "other";
+        written = locationKnown(live)
+            ? snprintf(out + used, outSize - used,
+                uppercaseLocation ? "%s%u:%s@%04X:%02X:%02X.%u" : "%s%u:%s@%04x:%02x:%02x.%u", i ? " " : "", i, kind,
+                live->pciDomain, live->pciBus, live->pciDevice,
+                live->pciFunction)
+            : snprintf(out + used, outSize - used, "%s%u:%s@unknown",
+                i ? " " : "", i, kind);
+        if (written < 0 || (size_t)written >= outSize - used) return;
+        used += (size_t)written;
+    }
+    snprintf(out + used, outSize - used, "%s]",
+        adapterCount > shown ? " ..." : "");
+}
+
 static inline void format_configured_gpu_resolution_detail(
     const ConfiguredGpuSelection* configured,
     const GpuAdapterInfo* adapters, unsigned int adapterCount,
@@ -224,36 +269,10 @@ static inline void format_configured_gpu_resolution_detail(
         return;
     }
     const GpuAdapterInfo* stored = &configured->identity;
-    const char* role =
-        configured_gpu_location_role_name(configured->locationRole);
-    int written = configured_gpu_identity_has_bdf(stored)
-        ? snprintf(out, outSize,
-            "stored=%08X/%08X@%04X:%02X:%02X.%u role=%s adapters=%u live=[",
-            stored->deviceId, stored->subSystemId, stored->pciDomain,
-            stored->pciBus, stored->pciDevice, stored->pciFunction, role,
-            adapterCount)
-        : snprintf(out, outSize,
-            "stored=%08X/%08X@unknown role=%s adapters=%u live=[",
-            stored->deviceId, stored->subSystemId, role, adapterCount);
-    if (written < 0 || (size_t)written >= outSize) return;
-    size_t used = (size_t)written;
-    const unsigned int shown = adapterCount < 4u ? adapterCount : 4u;
-    for (unsigned int i = 0; adapters && i < shown; ++i) {
-        const GpuAdapterInfo* live = &adapters[i];
-        const char* kind = configured_gpu_base_identity_matches(stored, live)
-            ? "model" : "other";
-        written = configured_gpu_identity_has_bdf(live)
-            ? snprintf(out + used, outSize - used,
-                "%s%u:%s@%04X:%02X:%02X.%u", i ? " " : "", i, kind,
-                live->pciDomain, live->pciBus, live->pciDevice,
-                live->pciFunction)
-            : snprintf(out + used, outSize - used, "%s%u:%s@unknown",
-                i ? " " : "", i, kind);
-        if (written < 0 || (size_t)written >= outSize - used) return;
-        used += (size_t)written;
-    }
-    snprintf(out + used, outSize - used, "%s]",
-        adapterCount > shown ? " ..." : "");
+    format_gpu_resolution_detail(stored, stored->deviceId, stored->subSystemId,
+        configured->locationRole, adapters, adapterCount,
+        configured_gpu_identity_has_bdf, configured_gpu_base_identity_matches,
+        true, out, outSize);
 }
 
 static inline bool gpu_adapter_info_equal(const GpuAdapterInfo* left,

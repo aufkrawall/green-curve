@@ -1025,6 +1025,9 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
     require_text(_p(ctx, "linux_port.cpp"),
                  "linux_open_output_directory(dir.c_str(), geteuid() == 0)",
                  "privileged output walks every directory without following links")
+    require_text(_p(ctx, "linux_output_directory.h"),
+                 "!linux_output_directory_may_follow_link((unsigned int)link.st_uid,",
+                 "root follows only a link root placed in a root-only directory")
     require_text(runtime_h, "F-PREP-NO-UNCERTAIN",
                  "a pre-write GPU-not-available failure does not poison the daemon state")
 
@@ -1174,8 +1177,12 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
                  "backend replacement retains the restore location role")
     require_text(discovery_cpp, "linux_gpu_uuid_compatible(uuid, &observed)",
                  "the selection fast path checks fresh optional physical identity evidence")
-    require_text(discovery_cpp, "linux_gpu_read_uuid(getUuid, devices[i])",
+    require_text(discovery_cpp, "linux_gpu_read_uuid(g->getUuid, devices[i])",
                  "enumerated adapters acquire optional UUIDs without a new prerequisite")
+    forbid_text(discovery_cpp, "auto query = sym<LinuxGetGpuUuid>",
+                "the per-request UUID check reuses the symbol resolved at init")
+    require_text(discovery_cpp, "linux_gpu_read_uuid(g->getUuid, g->nvmlDevice)",
+                 "the selection fast path reads the UUID through the cached query")
     require_text(restore_h, "g_activeTargetRole, &g_activeTargetUuid)",
                  "resume forwards the committed physical identity")
     require_text(restore_h, "linux_gpu_uuid_retain(linux_backend_selected_uuid(&g_gpu), uuid)",

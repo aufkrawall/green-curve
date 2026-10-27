@@ -271,6 +271,12 @@ struct LinuxFanOwnershipMarker {
     LinuxGpuUuid targetUuid;
     gc_u32 targetLocationRole;
 };
+// The loader admits a marker by its size, and GpuAdapterInfo is embedded, so
+// this covers a change to either struct.  A changed layout must be frozen as
+// LinuxFanOwnershipMarkerV2 and decoded, or an in-flight handback is dropped.
+static_assert(sizeof(LinuxFanOwnershipMarker) == 336,
+              "LinuxFanOwnershipMarker changed size: freeze the outgoing layout "
+              "and teach linux_fan_ownership_marker_decode() its size");
 
 static inline void linux_fan_ownership_marker_initialize(
     LinuxFanOwnershipMarker* marker, const char* bootId,

@@ -380,8 +380,7 @@ static bool linux_backend_reenumerate_same_nvml_gpu(
         }
         if (!linux_gpu_same_pci_nonconflicting(&g->selectedGpu, &candidate))
             continue;
-        auto query = sym<LinuxGetGpuUuid>(g->nvmlLib, "nvmlDeviceGetUUID");
-        const auto observed = linux_gpu_read_uuid(query, device);
+        const auto observed = linux_gpu_read_uuid(g->getUuid, device);
         if (!linux_gpu_uuid_compatible(linux_backend_selected_uuid(g), &observed)) {
             gc_strlcpy(err, errSize,
                 "different physical GPU at the selected PCI location during recovery");
@@ -469,14 +468,14 @@ bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
     }
     nvmlDeviceGetName_t getName = sym<nvmlDeviceGetName_t>(g->nvmlLib,
         "nvmlDeviceGetName");
-    LinuxGetGpuUuid getUuid = sym<LinuxGetGpuUuid>(g->nvmlLib, "nvmlDeviceGetUUID");
+    g->getUuid = sym<LinuxGetGpuUuid>(g->nvmlLib, "nvmlDeviceGetUUID");
     nvmlDevice_t devices[MAX_GPU_ADAPTERS] = {};
     unsigned int enumerate = count > MAX_GPU_ADAPTERS
         ? MAX_GPU_ADAPTERS : count;
     for (unsigned int i = 0; i < enumerate; ++i) {
         if (g->nvml.getHandleByIndex(i, &devices[i]) != NVML_SUCCESS)
             continue;
-        g->adapterUuids[g->adapterCount] = linux_gpu_read_uuid(getUuid, devices[i]);
+        g->adapterUuids[g->adapterCount] = linux_gpu_read_uuid(g->getUuid, devices[i]);
         GpuAdapterInfo* adapter = &g->adapters[g->adapterCount++];
         adapter->valid = true;
         adapter->nvmlIndex = i;
@@ -583,8 +582,7 @@ bool linux_backend_select_target(LinuxGpuState* g,
         role, g->adapters, g->adapterCount, nullptr);
     if (g->writeIdentityResolved && current >= 0 &&
         (unsigned int)current == g->selectedAdapterIndex) {
-        auto query = sym<LinuxGetGpuUuid>(g->nvmlLib, "nvmlDeviceGetUUID");
-        const LinuxGpuUuid observed = linux_gpu_read_uuid(query, g->nvmlDevice);
+        const LinuxGpuUuid observed = linux_gpu_read_uuid(g->getUuid, g->nvmlDevice);
         if (linux_gpu_uuid_compatible(uuid, &observed)) {
             // A fresh query proves a match. If the optional query fails, keep
             // the old fast path rather than requiring a new NVML init to work.

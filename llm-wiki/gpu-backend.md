@@ -11,6 +11,17 @@ failed recovery retains independently tracked protection. Earlier incident
 narratives below are historical observations, not acceptance of every current
 transition/failure path.
 
+## Advanced profile portability (2026-10-27)
+
+Source anchors: `source/main_service_apply_runtime.cpp`,
+`source/desired_advanced_domains_policy.h`, `tests/advanced_apply_tests.cpp`.
+After hardware initialization, unavailable XBAR, SYS and VIDEO profile fields
+are removed for this apply; available settings remain eligible. A request
+containing only unavailable controls is refused without a hardware write.
+The stripped fields and availability probes are logged. Recovery reporting
+separately describes core protection and unverified memory defaults. GPU
+hardware verification remains outstanding.
+
 ## Driver interfaces
 
 ### NVAPI (private, dynamically loaded)

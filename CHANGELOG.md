@@ -29,25 +29,30 @@
 
 ## Unreleased
 
-GPU selection, fan control and recovery are more reliable across hardware changes and failed operations.
+Settings, GPU selection, fan control and recovery are more reliable across hardware changes and failed operations.
 
 ### Improved
 
-- **Linux GPU identity:** saved settings can recognize the same physical GPU after PCI bus changes, including among identical cards, when the driver provides its identity. Existing settings and GPUs without this information keep their previous restore behavior.
+- **Linux GPU identity:** saved settings follow the same physical GPU across PCI bus changes, including among identical cards.
 
 ### Fixed
 
-- **Windows memory recovery:** a failed Apply now resets memory offsets even when verification failed, and reports when defaults cannot be confirmed.
-- **Linux crash recovery:** fan control is returned on the GPU Green Curve previously controlled, including when several GPUs are installed. Unfinished recovery stays bound to that GPU until it is recovered.
-- **Linux GPU selector:** cycling past a GPU that cannot be selected now reaches the other GPUs, including the GPU that needs Reset before switching.
-- **Linux fan curves:** applying a curve reliably starts temperature tracking, and a completed Apply cannot be overwritten by a poll using the previous curve's state.
-- **Fan control verification:** a conflicting driver target now rejects a fan-speed change even when the measured speed temporarily matches the request.
-- **Selected GPU after hardware changes:** disabling or adding a device such as an on-board network adapter no longer makes Green Curve report the GPU as missing and stop applying your profile, on Windows and Linux.
-- **Linux GPU replacement:** after swapping in a different GPU model, the previous card's settings are no longer applied to it at boot.
-- **Linux fan safety after failed operations:** when an Apply, Reset or automatic restore cannot be completed or rolled back cleanly, a fan under Green Curve's manual control is returned to the driver instead of staying at its last speed.
-- **Linux failed operations:** a failed Apply or Reset no longer marks unconfirmed GPU settings as safe to restore at the next start.
-- **Windows power limit with several GPUs:** when the driver refuses a direct power-limit change, the fallback now changes only the selected GPU, and a limit the driver does not actually hold is reported as a failure.
-- **Windows with several NVIDIA GPUs:** fan, power and clock readings and writes can no longer be bound to a different NVIDIA GPU than the selected one when its location is unknown.
+- **Windows profile recovery:** unavailable advanced clocks are skipped; failed Apply reports core and memory recovery.
+- **Clock safety:** unsafe curve raises are refused before any write, with recovery attempted on failure.
+- **Voltage/frequency grid:** curve points remain visible as GPU temperature changes.
+- **Linux backend startup:** clients can reconnect after the driver becomes available.
+- **Linux output folders:** privileged saves accept trusted redirected system directories.
+- **Linux fan maintenance:** failed handbacks stay recoverable; successful ones clear stale ownership.
+- **Windows GPU selection:** failed saved-location updates retry automatically.
+- **Linux crash recovery:** the previously controlled GPU's fan is restored, including on multi-GPU systems.
+- **Linux GPU selector:** cycling reaches GPUs that first require Reset.
+- **Linux fan curves:** curve tracking starts reliably and cannot be overwritten by a stale poll.
+- **Fan control verification:** a conflicting driver target still fails a fan-speed write.
+- **GPU selection:** adding or disabling unrelated devices no longer hides the GPU.
+- **Linux GPU replacement:** another model no longer receives the previous card's boot settings.
+- **Linux failed operations:** manual fans are returned, and unconfirmed settings stay uncertain instead of being replayed.
+- **Windows power limit on several GPUs:** fallback writes only the selected GPU and verifies the reported limit.
+- **Windows multi-GPU binding:** fan, power and clock I/O stay on the selected NVIDIA GPU.
 
 ### Compatibility notes
 

@@ -37,21 +37,6 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         set_message(result, resultSize, "No desired settings provided");
         return false;
     }
-    DesiredSettings sanitizedRequest = {};
-    if (!g_app.xbarProbeValid &&
-        (desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv)) {
-        int requestedXbarFreqKhz = desired->xbarOffsetKhz;
-        int requestedXbarMsvddUv = desired->xbarMsvddOffsetUv;
-        sanitizedRequest = *desired;
-        sanitizedRequest.hasXbarOffsetKhz = false;
-        sanitizedRequest.xbarOffsetKhz = 0;
-        sanitizedRequest.hasXbarMsvddOffsetUv = false;
-        sanitizedRequest.xbarMsvddOffsetUv = 0;
-        desired = &sanitizedRequest;
-        debug_log("service apply: ignored portable XBAR fields; surface unavailable"
-                  " requestedFreq=%d requestedMsvdd=%d\n",
-                  requestedXbarFreqKhz, requestedXbarMsvddUv);
-    }
     if (!service_desired_has_owned_intent(desired)) {
         set_message(result, resultSize,
             "No Green Curve-owned settings were requested");
@@ -65,6 +50,29 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         set_message(result, resultSize, "%s", detail[0] ? detail : "Hardware initialization failed");
         set_last_apply_phase("service apply: hardware initialize failed");
         return false;
+    }
+    // After initialization, so the probe bits describe this GPU: a cold
+    // service must not drop a field its surface is about to offer.
+    DesiredSettings sanitizedRequest = *desired;
+    const unsigned int strippedAdvanced = desired_strip_unavailable_advanced_fields(
+        &sanitizedRequest, g_app.xbarProbeValid, g_app.sysClkProbeValid,
+        g_app.videoClkProbeValid);
+    if (strippedAdvanced) {
+        debug_log("service apply: ignored portable advanced fields; surface unavailable"
+                  " stripped=0x%X xbarFreq=%d xbarMsvdd=%d sys=%d video=%d"
+                  " probes xbar=%d sys=%d video=%d\n",
+                  strippedAdvanced, desired->xbarOffsetKhz,
+                  desired->xbarMsvddOffsetUv, desired->sysClkOffsetKhz,
+                  desired->videoClkOffsetKhz, g_app.xbarProbeValid ? 1 : 0,
+                  g_app.sysClkProbeValid ? 1 : 0, g_app.videoClkProbeValid ? 1 : 0);
+        desired = &sanitizedRequest;
+        if (!service_desired_has_owned_intent(desired)) {
+            set_message(result, resultSize,
+                "The requested advanced clock controls are unavailable on this GPU."
+                " Nothing was changed.");
+            set_last_apply_phase("service apply: only unavailable advanced fields");
+            return false;
+        }
     }
     // A previous instance that died owning GPU state gets it handed back
     // before anything is layered over it (ownership_handback_policy.h).

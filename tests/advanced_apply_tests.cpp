@@ -3,6 +3,7 @@
 // Execute production advanced writes and recovery through a fake ClkDomains
 // driver. A failed setter deliberately mutates the live block before failing.
 #include "app_shared.h"
+#include "desired_advanced_domains_policy.h"
 #include <cstdio>
 #include <cstring>
 
@@ -51,6 +52,52 @@ static void initialize() {
     for (unsigned int i = 0; i < schema.domainCount; ++i)
         xbar_put_u32(live, schema.entryBase + i * schema.entryStride, schema.entryMarker);
 }
+// A portable profile names advanced fields the selected GPU may not offer.
+// Every unavailable surface is dropped alike, so the service apply never
+// reaches the refusing preflight with them (desired_advanced_domains_policy.h).
+static int run_portable_field_tests() {
+    DesiredSettings all = {};
+    all.hasXbarOffsetKhz = all.hasXbarMsvddOffsetUv = true;
+    all.hasSysClkOffsetKhz = all.hasVideoClkOffsetKhz = true;
+    all.xbarOffsetKhz = 90000; all.xbarMsvddOffsetUv = 5000;
+    all.sysClkOffsetKhz = 30000; all.videoClkOffsetKhz = 60000;
+    all.hasPowerLimit = true; all.powerLimitPct = 90;
+    DesiredSettings desired = all;
+    if (desired_strip_unavailable_advanced_fields(&desired, true, true, true) ||
+        !desired.hasXbarOffsetKhz || !desired.hasXbarMsvddOffsetUv ||
+        !desired.hasSysClkOffsetKhz || !desired.hasVideoClkOffsetKhz ||
+        desired.sysClkOffsetKhz != 30000 || desired.videoClkOffsetKhz != 60000)
+        return 7513;
+    desired = all;
+    if (desired_strip_unavailable_advanced_fields(&desired, true, false, true) !=
+            DESIRED_ADVANCED_FIELD_SYS_CLOCK ||
+        desired.hasSysClkOffsetKhz || desired.sysClkOffsetKhz ||
+        !desired.hasXbarOffsetKhz || !desired.hasVideoClkOffsetKhz ||
+        !desired.hasPowerLimit) return 7514;
+    desired = all;
+    if (desired_strip_unavailable_advanced_fields(&desired, true, true, false) !=
+            DESIRED_ADVANCED_FIELD_VIDEO_CLOCK ||
+        desired.hasVideoClkOffsetKhz || desired.videoClkOffsetKhz) return 7515;
+    desired = all;
+    if (desired_strip_unavailable_advanced_fields(&desired, false, true, true) !=
+            (DESIRED_ADVANCED_FIELD_XBAR_CLOCK | DESIRED_ADVANCED_FIELD_XBAR_MSVDD) ||
+        desired.hasXbarOffsetKhz || desired.hasXbarMsvddOffsetUv ||
+        desired.xbarOffsetKhz || desired.xbarMsvddOffsetUv) return 7516;
+    // What survives the strip passes the backend preflight that refuses an
+    // unavailable control outright.
+    initialize(); g_app.sysClkProbeValid = g_app.videoClkProbeValid = false;
+    desired = all;
+    char detail[256] = {};
+    if (validate_advanced_clock_request(&desired, detail, sizeof(detail))) return 7517;
+    desired_strip_unavailable_advanced_fields(&desired, g_app.xbarProbeValid,
+        g_app.sysClkProbeValid, g_app.videoClkProbeValid);
+    if (!validate_advanced_clock_request(&desired, detail, sizeof(detail)) ||
+        !desired.hasPowerLimit) return 7518;
+    if (desired_strip_unavailable_advanced_fields(nullptr, false, false, false))
+        return 7519;
+    return 0;
+}
+
 static int run() {
     DesiredSettings desired = {};
     desired.hasXbarOffsetKhz = desired.hasXbarMsvddOffsetUv = true;
@@ -102,7 +149,7 @@ static int run() {
     initialize(); success = failed = recovered = 0; risk = false;
     if (!apply_advanced_clock_transaction(&desired, success, failed, risk,
             detail, sizeof(detail), [&]() { ++recovered; }) || recovered || failed) return 7512;
-    return 0;
+    return run_portable_field_tests();
 }
 } // namespace advanced_apply_fixture
 int run_advanced_apply_tests() { return advanced_apply_fixture::run(); }

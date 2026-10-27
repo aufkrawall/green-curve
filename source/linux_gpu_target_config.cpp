@@ -240,20 +240,40 @@ void linux_configured_gpu_resolve_against(const char* configPath,
 }
 
 // The CLI resolves once per process, against an untargeted snapshot taken
-// right before the first request that names config.ini's GPU.
-static void resolve_configured_from_daemon(const char* configPath,
-                                           LinuxConfiguredGpu* gpu) {
-    if (!gpu || gpu->status != LINUX_CONFIGURED_GPU_PENDING) return;
+// right before the first request that names config.ini's GPU.  Returns the
+// number of adapters that snapshot published, or -1 when none was taken or
+// the daemon did not answer.
+static int resolve_configured_from_daemon(const char* configPath,
+                                          LinuxConfiguredGpu* gpu) {
+    if (!gpu || gpu->status != LINUX_CONFIGURED_GPU_PENDING) return -1;
     ServiceSnapshot snapshot = {};
     char snapshotErr[256] = {};
     if (!linux_daemon_snapshot(&snapshot, snapshotErr, sizeof(snapshotErr))) {
         gpu->status = LINUX_CONFIGURED_GPU_UNVALIDATED;
         linux_debug_logf("gpu selection: config.ini GPU left unvalidated: %s",
                          snapshotErr[0] ? snapshotErr : "daemon request failed");
-        return;
+        return -1;
     }
     linux_configured_gpu_resolve_against(configPath, gpu, snapshot.adapters,
                                          snapshot.adapterCount);
+    const GpuAdapterInfo* bringUp = linux_configured_gpu_bring_up_target(
+        gpu, snapshot.adapterCount);
+    if (bringUp) {
+        // This is a read: the stored identity starts the backend, but is never
+        // authorized as a write until its freshly published list resolves it.
+        ServiceResponse response = {};
+        char bringUpErr[256] = {};
+        const bool answered = linux_daemon_get_state(bringUp, &response,
+                                                    bringUpErr, sizeof(bringUpErr));
+        linux_debug_logf("gpu selection: backend bring-up read ok=%d%s%s",
+                         answered ? 1 : 0, bringUpErr[0] ? " error=" : "", bringUpErr);
+        if (answered) snapshot = response.snapshot;
+        else if (!linux_daemon_snapshot(&snapshot, snapshotErr, sizeof(snapshotErr)))
+            return -1;
+        linux_configured_gpu_resolve_against(configPath, gpu, snapshot.adapters,
+                                             snapshot.adapterCount);
+    }
+    return (int)snapshot.adapterCount;
 }
 
 static bool configured_gpu_needs_reselection(const LinuxConfiguredGpu* gpu) {
@@ -264,7 +284,7 @@ static bool configured_gpu_needs_reselection(const LinuxConfiguredGpu* gpu) {
 
 const GpuAdapterInfo* linux_gpu_target_for_read(const char* configPath,
                                                 LinuxConfiguredGpu* gpu) {
-    resolve_configured_from_daemon(configPath, gpu);
+    (void)resolve_configured_from_daemon(configPath, gpu);
     const GpuAdapterInfo* target = nullptr;
     linux_configured_gpu_request_target(gpu, false, &target);
     if (configured_gpu_needs_reselection(gpu))
@@ -280,7 +300,7 @@ bool linux_gpu_target_for_write(const char* configPath,
                                 const GpuAdapterInfo** target,
                                 char* err, size_t errSize) {
     if (err && errSize) err[0] = 0;
-    resolve_configured_from_daemon(configPath, gpu);
+    (void)resolve_configured_from_daemon(configPath, gpu);
     if (linux_configured_gpu_request_target(gpu, true, target)) return true;
     linux_debug_logf("gpu selection: write stopped before the daemon; "
                      "config.ini GPU status=%s",

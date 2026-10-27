@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tarfile
 
+import regression_sources
 import release_manifest  # same one-way dependency: it never imports build.py
 import static_analysis  # ditto; owns the clang-tidy ratchet's own self-tests
 import build_scheduler
@@ -382,12 +383,7 @@ def run_linux_fixtures(ctx, tmp_dir, extra_flags, test_env):
             f"-I{ctx.SOURCE_DIR}",
             "-o", harness_exe,
             harness_path,
-            *[os.path.join(ctx.SCRIPT_DIR, "tests", name) for name in (
-                "clock_transition_tests.cpp", "advanced_apply_tests.cpp", "service_install_tests.cpp",
-                "apply_profile_followup_tests.cpp", "apply_correction_tests.cpp",
-                "fan_worker_lock_tests.cpp", "fan_runtime_followup_tests.cpp", "linux_fan_ownership_tests.cpp", "memory_recovery_tests.cpp", "security_audit_tests.cpp",
-                "installer_fuzz_harness_tests.cpp", "review_followup_tests.cpp", "wer_local_dumps_tests.cpp",
-                "diagnostics_followup_tests.cpp", "gpu_family_wire_tests.cpp", "update_release_030_tests.cpp", "offset_intent_tests.cpp", "gui_auto_restore_notice_tests.cpp", "scalar_shift_retention_tests.cpp", "debug_log_identity_tests.cpp", "veh_driver_fault_tests.cpp", "crash_dump_notice_tests.cpp", "module_version_tests.cpp", "restart_snapshot_cleanup_tests.cpp", "driver_recovery_sequence_tests.cpp", "peer_stall_tests.cpp", "gpu_location_role_tests.cpp", "linux_gpu_location_tests.cpp", "linux_restore_role_tests.cpp", "linux_gpu_uuid_tests.cpp", "vf_point_visibility_tests.cpp", "linux_tui_gpu_target_tests.cpp")],
+            *[os.path.join(ctx.SCRIPT_DIR, "tests", name) for name in regression_sources.REGRESSION_SOURCES],
             os.path.join(ctx.SOURCE_DIR, "fan_curve.cpp"),
             os.path.join(ctx.SOURCE_DIR, "config_text_utils.cpp"),
             os.path.join(ctx.SOURCE_DIR, "app_shared.cpp"),

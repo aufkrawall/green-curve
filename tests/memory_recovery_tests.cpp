@@ -13,16 +13,16 @@ static AppData g_app;
 static NvmlApi g_nvml_api;
 static void* g_serviceFanThread;
 static int hardwareMHz, writes, releases;
-static bool verifyReset, setterFails;
+static bool verifyReset, setterFails, coreFails;
 static void debug_log(const char*, ...) {}
 static void set_last_apply_phase(const char*) {}
 static void Sleep(unsigned long) {}
 static bool nvml_ensure_ready() { return true; }
 static const char* nvml_err_name(int) { return "fixture"; }
 static bool vf_curve_global_gpu_offset_supported() { return true; }
-static bool nvapi_set_gpu_offset(int, bool) { return true; }
+static bool nvapi_set_gpu_offset(int, bool) { return !coreFails; }
 static bool nvapi_read_curve() { g_app.curve[0].freq_kHz = 2000000; return true; }
-static bool apply_curve_offsets_verified(const int*, const bool*, int) { return true; }
+static bool apply_curve_offsets_verified(const int*, const bool*, int) { return !coreFails; }
 static bool nvml_set_clock_offset_domain(unsigned int, int value, bool* exact, char*, size_t) {
     ++writes;
     hardwareMHz = value;
@@ -71,7 +71,7 @@ static void initialize(bool canVerifyReset) {
     g_nvml_api.resetGpuLockedClocks = release;
     hardwareMHz = writes = releases = 0;
     verifyReset = canVerifyReset;
-    setterFails = false;
+    setterFails = coreFails = false;
 }
 static int run() {
     initialize(true);
@@ -91,7 +91,17 @@ static int run() {
     char message[512] = {};
     apply_recover_clock_failure(ceiling, "fixture failure", message, sizeof(message));
     if (!std::strstr(message, "memory defaults") ||
+        !std::strstr(message, "restored core clocks") ||
         std::strstr(message, GC_APPLY_RECOVERY_VERIFIED_TEXT)) return 7554;
+    // Unverified memory must not hide that core protection is still holding.
+    initialize(false);
+    coreFails = true;
+    nvapi_set_mem_offset(1500000, false);
+    message[0] = 0;
+    apply_recover_clock_failure(ceiling, "fixture failure", message, sizeof(message));
+    if (!std::strstr(message, "memory defaults") ||
+        !std::strstr(message, "clock protection retained") || releases ||
+        std::strstr(message, GC_APPLY_RECOVERY_VERIFIED_TEXT)) return 7559;
     initialize(true);
     setterFails = true;
     if (nvapi_set_mem_offset(1500000, false) || !g_app.memOffsetWriteUncertain) return 7555;

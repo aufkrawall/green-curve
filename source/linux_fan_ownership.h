@@ -32,6 +32,8 @@ static bool daemon_fan_ownership_allows_selected_write(char* err, size_t errSize
                                                        bool explicitReset = false) {
     if (!g_fanOwnershipMarkerCommitted) return true;
     bool matches = false;
+    bool recordedAbsent = false;
+    int recorded = -1;
     if (g_gpu.writeIdentityResolved) {
         if (!g_fanOwnershipRecord.targetGpu.valid) {
             matches = explicitReset || g_gpu.adapterCount == 1;
@@ -41,14 +43,26 @@ static bool daemon_fan_ownership_allows_selected_write(char* err, size_t errSize
                 (GpuLocationRole)g_fanOwnershipRecord.targetLocationRole,
                 g_gpu.adapters, g_gpu.adapterCount,
                 &g_fanOwnershipRecord.targetUuid, g_gpu.adapterUuids, nullptr);
+            recorded = selected.index;
+            recordedAbsent = selected.index == -1;
             matches = selected.writeResolved &&
                 (unsigned int)selected.index == g_gpu.selectedAdapterIndex;
         }
     }
     if (!matches) {
-        gc_strlcpy(err, errSize,
-            "recover the previous GPU's fan ownership with Reset before writing another GPU");
-        dlog("daemon fan ownership: write refused; outstanding target does not resolve to the selected adapter\n");
+        // The binding stays: a fan only the recorded GPU can return must not
+        // be forgotten because that GPU is missing from this enumeration.  A
+        // marker is per boot, so a restart of the machine releases it.
+        gc_strlcpy(err, errSize, recordedAbsent
+            ? "the GPU whose fan Green Curve controlled is not present; reconnect it "
+              "and Reset it, or restart the computer, before writing another GPU"
+            : "recover the previous GPU's fan ownership with Reset before writing another GPU");
+        dlog("daemon fan ownership: write refused; outstanding target %s "
+             "(recorded=%d selected=%u adapters=%u explicitReset=%d)\n",
+             recordedAbsent ? "is not present"
+                            : "does not resolve to the selected adapter",
+             recorded, g_gpu.selectedAdapterIndex, g_gpu.adapterCount,
+             explicitReset ? 1 : 0);
     }
     return matches;
 }
@@ -155,6 +169,25 @@ static void daemon_enter_uncertain_state(const char* reason) {
              reason && reason[0] ? reason : "unspecified");
     g_stateUncertain = true;
     daemon_fan_ownership_release_for_uncertain(reason);
+}
+
+// The fan worker's lockout has already asked the driver for the fan (and
+// forced the emergency duty if that failed), so this records the uncertainty
+// without writing the fan again.  A fan the driver took back is no longer
+// owned; one it refused keeps the marker for the next start's handback.
+static void daemon_enter_uncertain_after_fan_lockout(const char* reason,
+                                                     bool autoOk) {
+    const char* why = reason && reason[0] ? reason : "unspecified";
+    if (!g_stateUncertain)
+        dlog("daemon state: entering uncertain state (%s)\n", why);
+    g_stateUncertain = true;
+    if (!g_fanOwnershipMarkerCommitted) return;
+    if (autoOk) {
+        daemon_fan_ownership_retire(why);
+    } else {
+        dlog("daemon fan ownership: marker retained (%s); the driver did not "
+             "take the fan back\n", why);
+    }
 }
 
 // Latch the automatic-restore guard with the reason clients show as "run

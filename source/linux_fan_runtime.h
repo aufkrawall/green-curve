@@ -130,7 +130,6 @@ static pl_thread_ret fan_reassert_thread(void*) {
             if (failure.escalation == FAN_RUNTIME_ESCALATION_RESTORE_AUTO) {
                 bool autoOk = linux_backend_set_fan_auto(&g_gpu);
                 char stateErr[256] = {};
-                g_stateUncertain = true;
                 store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_activeTarget,
                                     &g_activeDesired, stateErr, sizeof(stateErr));
                 dlog("daemon: fixed fan maintenance locked out after repeated failures;"
@@ -144,6 +143,8 @@ static pl_thread_ret fan_reassert_thread(void*) {
                          " forced %d%% ok=%d\n", FAN_RUNTIME_EMERGENCY_PERCENT,
                          emergencyOk ? 1 : 0);
                 }
+                daemon_enter_uncertain_after_fan_lockout(
+                    "fixed fan maintenance locked out", autoOk);
             }
         } else if (active) {
             // Telemetry loss is escalated exactly like a refused write: either
@@ -224,7 +225,6 @@ static pl_thread_ret fan_reassert_thread(void*) {
             if (failure.escalation == FAN_RUNTIME_ESCALATION_RESTORE_AUTO) {
                 bool autoOk = linux_backend_set_fan_auto(&g_gpu);
                 char stateErr[256] = {};
-                g_stateUncertain = true;
                 store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_activeTarget,
                                     &g_activeDesired, stateErr, sizeof(stateErr));
                 dlog("daemon: fan runtime locked out after repeated failures; auto=%d state=%s\n",
@@ -236,6 +236,8 @@ static pl_thread_ret fan_reassert_thread(void*) {
                     dlog("daemon: fan runtime emergency: driver auto restore failed, forced %d%% ok=%d\n",
                          FAN_RUNTIME_EMERGENCY_PERCENT, emergencyOk ? 1 : 0);
                 }
+                daemon_enter_uncertain_after_fan_lockout(
+                    "fan curve runtime locked out", autoOk);
             }
         }
         pl_mutex_unlock(&g_lock);

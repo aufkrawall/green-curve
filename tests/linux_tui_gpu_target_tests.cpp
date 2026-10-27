@@ -28,6 +28,7 @@ struct ScriptedDaemon {
     bool busyTargeted;    // a targeted read is accepted, then not answered
     bool refuseTargeted;  // a targeted read to another GPU is answered "no"
     bool offline;         // connect() fails
+    bool upOnTargeted;    // a backend that was down comes up on a named read
     int reads;
     int targetedReads;
     int switchRequests;   // targeted reads naming a GPU it does not show
@@ -135,6 +136,11 @@ bool linux_daemon_get_state_ex(const GpuAdapterInfo* target,
     ServiceSnapshot& snapshot = g_daemon.published.snapshot;
     if (target) {
         ++g_daemon.targetedReads;
+        if (g_daemon.upOnTargeted && snapshot.adapterCount == 0) {
+            snapshot.adapterCount = 2;
+            snapshot.adapters[0] = twin_at(6);
+            snapshot.adapters[1] = twin_at(7);
+        }
         int index = -1;
         for (unsigned int i = 0; i < snapshot.adapterCount; ++i)
             if (linux_gpu_identity_matches(target, &snapshot.adapters[i]))
@@ -591,6 +597,59 @@ int recovery_tests() {
         if (!tui_refresh_service(state, false) ||
             state->configuredGpu.status != LINUX_CONFIGURED_GPU_NOT_PRESENT ||
             !strstr(state->status, "not present")) return 7436;
+    }
+    // 7437: a daemon whose backend is down publishes no adapters; one read
+    // naming config.ini's record brings it up, the record is then checked
+    // against the adapters it publishes, and writes reach the resolved GPU.
+    {
+        daemon_reset(false);
+        g_daemon.published.snapshot.adapterCount = 0;
+        g_daemon.upOnTargeted = true;
+        TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_PENDING, 7);
+        if (!tui_refresh_service(state, false) || g_daemon.targetedReads < 1 ||
+            state->configuredGpu.status != LINUX_CONFIGURED_GPU_RESOLVED ||
+            shown_bus(state) != 7 ||
+            !tui_configured_gpu_allows_write(state, "Apply")) return 7437;
+    }
+    // 7438: a backend that stays down is asked once per daemon instance, not
+    // once per telemetry tick; an explicit Refresh or a restarted daemon asks
+    // again, and writes stay blocked throughout.
+    {
+        daemon_reset(false);
+        g_daemon.published.snapshot.adapterCount = 0;
+        TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_PENDING, 7);
+        tui_refresh_service(state, false);
+        tui_refresh_service(state, false);
+        tui_refresh_service(state, false);
+        if (g_daemon.targetedReads != 1 ||
+            state->configuredGpu.status != LINUX_CONFIGURED_GPU_UNVALIDATED ||
+            tui_configured_gpu_allows_write(state, "Apply")) return 7438;
+        tui_refresh_service(state, true);
+        if (g_daemon.targetedReads != 2) return 7438;
+        g_daemon.published.state.serviceInstanceId = 5;
+        tui_refresh_service(state, false);
+        if (g_daemon.targetedReads != 3) return 7438;
+    }
+    // 7439: without a record, or with one already checked, nothing is named
+    // to bring a backend up (the policy names only an unchecked record).
+    {
+        daemon_reset(false);
+        g_daemon.published.snapshot.adapterCount = 0;
+        TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_NONE, 7);
+        state->configuredGpu.target = GpuAdapterInfo{};
+        tui_refresh_service(state, false);
+        if (g_daemon.targetedReads != 0) return 7439;
+        LinuxConfiguredGpu gpu = {twin_at(7), GPU_LOCATION_ROLE_REQUIRED,
+                                  LINUX_CONFIGURED_GPU_UNVALIDATED};
+        if (linux_configured_gpu_bring_up_target(&gpu, 0) != &gpu.target ||
+            linux_configured_gpu_bring_up_target(&gpu, 2) ||
+            linux_configured_gpu_bring_up_target(nullptr, 0)) return 7439;
+        for (LinuxConfiguredGpuStatus status : {LINUX_CONFIGURED_GPU_RESOLVED,
+                 LINUX_CONFIGURED_GPU_EXPLICIT, LINUX_CONFIGURED_GPU_NOT_PRESENT,
+                 LINUX_CONFIGURED_GPU_MALFORMED, LINUX_CONFIGURED_GPU_PENDING}) {
+            gpu.status = status;
+            if (linux_configured_gpu_bring_up_target(&gpu, 0)) return 7439;
+        }
     }
     return 0;
 }

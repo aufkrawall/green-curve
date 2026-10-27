@@ -161,34 +161,41 @@ static bool validate_configured_gpu_selection_for_client(
 //    finds its exact location again.
 // An unresolved record is never rewritten: it waits for an explicit selection.
 // Runs on every service snapshot, but reads the record only when the adapter
-// list differs from the one it last checked: locations change at boot or on a
-// driver re-enumeration, never between two snapshots of the same adapters.
+// list differs from the one it last settled: locations change at boot or on a
+// driver re-enumeration, never between two snapshots of the same adapters.  A
+// record whose rewrite failed is not settled, so the next snapshot tries
+// again; that failure is logged once per distinct reason.
 static void maintain_configured_gpu_selection_record() {
     if (!g_app.configPath[0] || g_app.adapterCount == 0) return;
     char err[256] = {};
     if (!config_section_has_keys(g_app.configPath, "gpu")) {
         if (g_app.adapterCount == 1 && g_app.adapters[0].valid &&
             !save_configured_gpu_selection_atomic(0, err, sizeof(err))) {
-            debug_log("gpu selection: auto-save failed for single adapter: %s\n",
+            debug_log_on_change("gpu selection: auto-save failed for single adapter: %s\n",
                 err[0] ? err : "unknown error");
         }
         return;
     }
-    static GpuAdapterInfo checkedAdapters[MAX_GPU_ADAPTERS];
-    static unsigned int checkedAdapterCount;
-    bool adaptersChanged = checkedAdapterCount != g_app.adapterCount;
+    static GpuAdapterInfo settledAdapters[MAX_GPU_ADAPTERS];
+    static unsigned int settledAdapterCount;
+    bool adaptersChanged = settledAdapterCount != g_app.adapterCount;
     for (unsigned int i = 0; !adaptersChanged && i < g_app.adapterCount &&
             i < MAX_GPU_ADAPTERS; ++i) {
-        adaptersChanged = !gpu_adapter_info_equal(&checkedAdapters[i],
+        adaptersChanged = !gpu_adapter_info_equal(&settledAdapters[i],
             &g_app.adapters[i]);
     }
     if (!adaptersChanged) return;
-    memcpy(checkedAdapters, g_app.adapters, sizeof(checkedAdapters));
-    checkedAdapterCount = g_app.adapterCount;
+    auto settle = [&]() {
+        memcpy(settledAdapters, g_app.adapters, sizeof(settledAdapters));
+        settledAdapterCount = g_app.adapterCount;
+    };
     ConfiguredGpuSelection configured = {};
     unsigned int resolved = 0;
     if (!load_configured_gpu_selection(g_app.configPath, &configured,
             err, sizeof(err))) {
+        // A malformed record waits for an explicit selection, like an
+        // unresolved one; only a failed rewrite is worth repeating.
+        settle();
         debug_log("gpu selection: record refresh skipped; the record is unreadable: %s\n",
             err[0] ? err : "unknown error");
         return;
@@ -199,20 +206,24 @@ static void maintain_configured_gpu_selection_record() {
             g_app.adapterCount, &resolved) != CONFIGURED_GPU_RESOLVE_STABLE ||
         resolved >= g_app.adapterCount || resolved >= MAX_GPU_ADAPTERS ||
         !configured_gpu_identity_has_bdf(&g_app.adapters[resolved])) {
+        settle();
         return;
     }
     const bool moved = configured_gpu_selection_location_moved(
         &configured, &g_app.adapters[resolved]);
-    if (!moved && configured.locationRole != GPU_LOCATION_ROLE_UNRECORDED)
+    if (!moved && configured.locationRole != GPU_LOCATION_ROLE_UNRECORDED) {
+        settle();
         return;
+    }
     char detail[256] = {};
     format_configured_gpu_resolution_detail(&configured, g_app.adapters,
         g_app.adapterCount, detail, sizeof(detail));
     if (!save_configured_gpu_selection_atomic(resolved, err, sizeof(err))) {
-        debug_log("gpu selection: refreshing the durable record failed for nvapi=%u: %s (%s)\n",
+        debug_log_on_change("gpu selection: refreshing the durable record failed for nvapi=%u: %s (%s); retried on the next snapshot\n",
             resolved, err[0] ? err : "unknown error", detail);
         return;
     }
+    settle();
     debug_log("gpu selection: refreshed the durable record for nvapi=%u moved=%d (was %s)\n",
         resolved, moved ? 1 : 0, detail);
 }

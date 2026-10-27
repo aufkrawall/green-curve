@@ -197,6 +197,10 @@ static int run() {
     g_gpu.writeIdentityResolved = true;
     if (!g_fanOwnershipMarkerCommitted || !g_fanOwnershipHandbackPending ||
         daemon_fan_ownership_allows_selected_write(error, sizeof(error))) return 7565;
+    // A recorded GPU missing from enumeration keeps the binding (even for an
+    // explicit Reset elsewhere) and says how the user gets out of it.
+    if (daemon_fan_ownership_allows_selected_write(error, sizeof(error), true) ||
+        !std::strstr(error, "not present") || removed) return 7548;
     initialize();
     g_gpuReady = false;
     daemon_fan_ownership_handback_at_start();
@@ -271,6 +275,20 @@ static int run() {
     g_gpuReady = false;
     daemon_enter_uncertain_state("fixture backend unavailable");
     if (writes || removed || !g_fanOwnershipMarkerCommitted) return 7588;
+    // The fan worker's own lockout already wrote the fan: uncertainty follows
+    // without a second write, and a fan the driver took back is not owned.
+    initialize();
+    g_gpu.writeIdentityResolved = true;
+    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7549;
+    writes = 0;
+    daemon_enter_uncertain_after_fan_lockout("fixture worker lockout", true);
+    if (!g_stateUncertain || writes || !removed || g_fanOwnershipMarkerCommitted) return 7549;
+    initialize();
+    g_gpu.writeIdentityResolved = true;
+    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7549;
+    writes = 0;
+    daemon_enter_uncertain_after_fan_lockout("fixture worker lockout refused", false);
+    if (!g_stateUncertain || writes || removed || !g_fanOwnershipMarkerCommitted) return 7549;
     // Inherited recovery on its own adapter is returned too.
     initialize();
     autoFails = true;

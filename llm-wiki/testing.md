@@ -725,7 +725,9 @@ of the five again; negative control performed.
 Recorded 2026-09-15 by the code audit, because the sentence above was being
 read more broadly than it is true.
 
-`run_regression_tests()` in `build.py` links `tests/regression_main.cpp` plus
+`run_regression_tests()` in `build.py` links `tests/regression_main.cpp` and
+the test units listed in `tools/regression_sources.py`, shared with the Linux
+cross-link, plus
 exactly these production translation units:
 
 - `fan_curve.cpp`, `config_text_utils.cpp`, `app_shared.cpp`, `vf_backends.cpp`

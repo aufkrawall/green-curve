@@ -78,6 +78,11 @@ struct TuiState {
     // and its reason; not asked again until something it depends on changes.
     LinuxTuiSwitchRefusal switchRefusal;
     char switchRefusalReason[192];
+    // A daemon without a GPU backend was asked once (per daemon instance, or
+    // again on an explicit Refresh) to bring it up for config.ini's GPU
+    // (linux_configured_gpu_bring_up_target).
+    bool backendBringUpAsked;
+    gc_u64 backendBringUpInstance;
     TuiEditState edit;
     TuiLayout layout;
     std::vector<std::string> renderedRows;

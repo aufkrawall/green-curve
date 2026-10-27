@@ -24,11 +24,11 @@ static bool g_gpuReady, g_hasActiveDesired, g_stateUncertain;
 static int g_lock, g_fanWakeMutex, g_fanWakeCondition, g_running;
 static unsigned long long g_fanWakeGeneration;
 static unsigned int g_fanFailureCount;
-enum Schedule { IDLE, APPLY_BEFORE_WAIT, APPLY_BEFORE_POLL, NORMAL };
+enum Schedule { IDLE, APPLY_BEFORE_WAIT, APPLY_BEFORE_POLL, NORMAL, TELEMETRY_LOST };
 static Schedule schedule;
 static bool injected, afterTimedWait, stateLocked, wakeLocked;
-static bool lockOrderValid;
-static int waits, polls, writes, lastDuty, iterations;
+static bool lockOrderValid, autoRefused, lockoutAutoOk;
+static int waits, polls, writes, lastDuty, iterations, lockouts;
 
 static void commit_curve(int duty) {
     g_hasActiveDesired = true;
@@ -74,6 +74,8 @@ static int fixture_clock_gettime(int, timespec* value) { *value = {}; return 0; 
 static int temperature(nvmlDevice_t, unsigned int, unsigned int* value) {
     ++polls;
     *value = 80;
+    // Lost telemetry keeps failing until the worker locks itself out.
+    if (schedule == TELEMETRY_LOST) return 3;
     if (schedule != APPLY_BEFORE_POLL || polls == 2) g_running = 0;
     return NVML_SUCCESS;
 }
@@ -86,10 +88,15 @@ static bool linux_backend_set_curve_fan_percent(LinuxGpuState*, unsigned int dut
     lastDuty = (int)duty;
     return true;
 }
-static bool linux_backend_set_fan_auto(LinuxGpuState*) { return true; }
+static bool linux_backend_set_fan_auto(LinuxGpuState*) { return !autoRefused; }
 static bool linux_backend_fans_are_auto(LinuxGpuState*) { return false; }
 static void dlog(const char*, ...) {}
 static bool store_daemon_record(int, const GpuAdapterInfo*, const DesiredSettings*, char*, size_t) { return true; }
+static void daemon_enter_uncertain_after_fan_lockout(const char*, bool autoOk) {
+    ++lockouts;
+    lockoutAutoOk = autoOk;
+    g_stateUncertain = true;
+}
 #define LINUX_DAEMON_RECORD_UNCERTAIN 1
 #define pthread_mutex_lock fixture_mutex_lock
 #define pthread_mutex_unlock fixture_mutex_unlock
@@ -124,7 +131,8 @@ static void initialize(Schedule next) {
     g_fanFailureCount = 0;
     injected = afterTimedWait = stateLocked = wakeLocked = false;
     lockOrderValid = true;
-    waits = polls = writes = lastDuty = iterations = 0;
+    autoRefused = lockoutAutoOk = false;
+    waits = polls = writes = lastDuty = iterations = lockouts = 0;
     schedule = next;
 }
 static int run() {
@@ -148,6 +156,21 @@ static int run() {
     if (!fan_manual_write_confirmed(80, 80, 0, false)) return 7527;
     if (fan_manual_write_confirmed(80, 80, 0, true)) return 7528;
     if (!fan_manual_write_confirmed(80, 80, 30, false)) return 7529;
+    // Repeated telemetry loss locks the worker out: the fan goes back to the
+    // driver and uncertainty is entered through the ownership helper, which
+    // retires a marker the driver took the fan back for.
+    initialize(TELEMETRY_LOST);
+    commit_curve(30);
+    fan_reassert_thread(nullptr);
+    if (lockouts != 1 || !lockoutAutoOk || !g_stateUncertain || writes ||
+        polls != (int)FAN_RUNTIME_DEFAULT_FAILURE_LIMIT || !lockOrderValid) return 7546;
+    // A refused handback forces the emergency duty first and keeps the marker.
+    initialize(TELEMETRY_LOST);
+    autoRefused = true;
+    commit_curve(30);
+    fan_reassert_thread(nullptr);
+    if (lockouts != 1 || lockoutAutoOk || writes != 1 ||
+        lastDuty != FAN_RUNTIME_EMERGENCY_PERCENT) return 7547;
     return 0;
 }
 } // namespace fan_runtime_fixture

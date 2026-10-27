@@ -27,10 +27,32 @@
 
 #include <string>
 
-// linux_gpu_target_config.cpp's other half talks to the daemon; these tests
-// only save and load the record, so the client and the log are inert.
+// linux_gpu_target_config.cpp's other half talks to this scripted daemon.
+static bool g_daemonReachable;
+static bool g_backendStartsOnTargetedRead;
+static int g_targetedReads;
+static GpuAdapterInfo g_liveGpu;
 void linux_debug_logf(const char*, ...) {}
-bool linux_daemon_snapshot(ServiceSnapshot*, char* err, size_t errSize) {
+bool linux_daemon_snapshot(ServiceSnapshot* snapshot, char* err, size_t errSize) {
+    if (g_daemonReachable) {
+        if (snapshot) *snapshot = ServiceSnapshot{};
+        return true;
+    }
+    if (err && errSize) snprintf(err, errSize, "%s", "no daemon in this fixture");
+    return false;
+}
+bool linux_daemon_get_state(const GpuAdapterInfo* target, ServiceResponse* response,
+                            char* err, size_t errSize) {
+    if (target && target->valid) {
+        ++g_targetedReads;
+        if (g_backendStartsOnTargetedRead) {
+            if (response) {
+                response->snapshot.adapterCount = 1;
+                response->snapshot.adapters[0] = g_liveGpu;
+            }
+            return true;
+        }
+    }
     if (err && errSize) snprintf(err, errSize, "%s", "no daemon in this fixture");
     return false;
 }
@@ -156,11 +178,60 @@ void test_unreadable_permissions_are_not_overwritten() {
            "the unreadable (mode 0200) config.ini is unchanged");
 }
 
+// A daemon that started before the driver was ready publishes no adapters.
+// A read may name config.ini's stored GPU to bring the backend up, but that
+// request is not write authority: the same record must resolve against the
+// fresh adapter list before the client sends any mutation.
+void test_backend_bring_up_on_read() {
+    const std::string path = path_in_root("bring-up.ini");
+    const GpuAdapterInfo stored = selected_gpu();
+    char err[320] = {};
+    expect(save_linux_gpu_selection(path.c_str(), &stored,
+               GPU_LOCATION_ROLE_REQUIRED, err, sizeof(err)),
+           "writing the stored GPU for backend bring-up");
+    g_daemonReachable = true;
+    g_backendStartsOnTargetedRead = true;
+    g_targetedReads = 0;
+    g_liveGpu = stored;
+    g_liveGpu.valid = g_liveGpu.pciInfoValid = true;
+    LinuxConfiguredGpu selection = {};
+    linux_configured_gpu_load(path.c_str(), nullptr, &selection);
+    const GpuAdapterInfo* readTarget = linux_gpu_target_for_read(
+        path.c_str(), &selection);
+    expect(g_targetedReads == 1 && readTarget &&
+               linux_gpu_identity_matches(readTarget, &g_liveGpu),
+           "a stored GPU brings up a deferred backend and resolves for reads");
+    expect(selection.status == LINUX_CONFIGURED_GPU_RESOLVED,
+           "the freshly published list validates the stored GPU");
+    const GpuAdapterInfo* writeTarget = nullptr;
+    expect(linux_gpu_target_for_write(path.c_str(), &selection, &writeTarget,
+                                      err, sizeof(err)) && writeTarget &&
+               linux_gpu_identity_matches(writeTarget, &g_liveGpu),
+           "the resolved GPU is then authorized for writes");
+
+    // If the backend stays down, the targeted read is not persisted as proof.
+    LinuxConfiguredGpu unavailable = {};
+    linux_configured_gpu_load(path.c_str(), nullptr, &unavailable);
+    g_backendStartsOnTargetedRead = false;
+    g_targetedReads = 0;
+    expect(linux_gpu_target_for_read(path.c_str(), &unavailable) == nullptr &&
+               g_targetedReads == 1 &&
+               unavailable.status == LINUX_CONFIGURED_GPU_UNVALIDATED &&
+               !linux_gpu_target_for_write(path.c_str(), &unavailable,
+                                           &writeTarget, err, sizeof(err)),
+           "an unavailable backend leaves reads untargeted and writes blocked");
+}
+
 void test_output_directory_walk() {
     const std::string real = path_in_root("real");
-    const std::string link = path_in_root("redirect");
+    // The redirect sits in a shared, sticky, world-writable directory like
+    // /tmp, so root refuses it even when root created it.
+    const std::string shared = path_in_root("shared");
+    const std::string link = shared + "/redirect";
     expect(mkdir(real.c_str(), 0700) == 0, "creating the real output directory");
-    expect(symlink("real", link.c_str()) == 0, "creating the redirected directory");
+    expect(mkdir(shared.c_str(), 0700) == 0 && chmod(shared.c_str(), 01777) == 0,
+           "creating the shared link directory");
+    expect(symlink("../real", link.c_str()) == 0, "creating the redirected directory");
     int fd = linux_open_output_directory((link + "/new/child").c_str(), true);
     expect(fd < 0, "privileged ancestor traversal refuses a symlink");
     if (fd >= 0) close(fd);
@@ -200,8 +271,36 @@ void test_output_directory_walk() {
     expect(fd < 0 && read_file(regular) == "unchanged",
            "a regular-file ancestor is refused without modifying it");
     if (fd >= 0) close(fd);
+    // A link root placed in a directory only root can change is a distribution
+    // layout (/home -> var/home): root follows it.  The same link owned by
+    // anyone else stays refused, so an unprivileged run expects refusal.
+    const std::string trusted = path_in_root("trusted");
+    expect(symlink("real", trusted.c_str()) == 0, "creating the root-placed link");
+    fd = linux_open_output_directory((trusted + "/layout").c_str(), true);
+    expect((fd >= 0) == (geteuid() == 0),
+           "root follows only a link it owns in a directory only it can change");
+    if (fd >= 0) close(fd);
+    // A trusted link may itself name a link in a writable directory. The
+    // second link must still be checked, and no output may be created there.
+    const std::string chain = path_in_root("chain");
+    expect(symlink("shared/redirect", chain.c_str()) == 0, "creating a link chain");
+    fd = linux_open_output_directory((chain + "/escaped").c_str(), true);
+    expect(fd < 0, "privileged walk refuses an untrusted link in a trusted target");
+    if (fd >= 0) close(fd);
+    expect(lstat((real + "/escaped").c_str(), &status) != 0 && errno == ENOENT,
+           "link-chain refusal creates no output");
+    unlink(chain.c_str());
+    const std::string loop = path_in_root("loop");
+    expect(symlink("loop", loop.c_str()) == 0, "creating a link loop");
+    fd = linux_open_output_directory(loop.c_str(), true);
+    expect(fd < 0, "privileged link resolution is bounded");
+    if (fd >= 0) close(fd);
+    unlink(loop.c_str());
+    unlink(trusted.c_str());
     unlink(regular.c_str());
     unlink(link.c_str());
+    rmdir(shared.c_str());
+    rmdir((real + "/layout").c_str());
     rmdir((real + "/user").c_str());
     rmdir((real + "/nested/child").c_str());
     rmdir((real + "/nested").c_str());
@@ -214,7 +313,7 @@ bool make_root() {
 
 void remove_root() {
     const char* names[] = {"missing.ini", "profiles.ini", "oversized.ini",
-                           "locked.ini"};
+                           "locked.ini", "bring-up.ini"};
     for (const char* name : names) unlink(path_in_root(name).c_str());
     rmdir(g_root);
 }
@@ -230,6 +329,7 @@ int main() {
     test_readable_file_keeps_profiles();
     test_unreadable_file_is_not_overwritten();
     test_unreadable_permissions_are_not_overwritten();
+    test_backend_bring_up_on_read();
     test_output_directory_walk();
     remove_root();
     if (g_failures != 0) {

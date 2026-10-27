@@ -48,6 +48,40 @@ static bool tui_switch_to_configured_gpu(TuiState* state, bool userRequested) {
         linux_gpu_identity_matches(&target, &state->targetGpu);
 }
 
+// A daemon whose GPU backend did not come up publishes no adapters, so
+// config.ini's GPU stays unchecked, and only a request that names a GPU makes
+// it try the backend again.  Ask once per daemon instance (again after an
+// explicit Refresh) with the stored record, then check the adapters it now
+// publishes; writes still wait for that check.
+static void tui_bring_up_daemon_backend(TuiState* state, bool userRequested) {
+    LinuxConfiguredGpu* gpu = &state->configuredGpu;
+    if (userRequested) state->backendBringUpAsked = false;
+    const GpuAdapterInfo* stored = linux_configured_gpu_bring_up_target(gpu,
+        state->service.snapshot.adapterCount);
+    if (!stored) return;
+    const gc_u64 instance = state->service.state.serviceInstanceId;
+    if (state->backendBringUpAsked && state->backendBringUpInstance == instance)
+        return;
+    state->backendBringUpAsked = true;
+    state->backendBringUpInstance = instance;
+    const GpuAdapterInfo request = *stored;
+    LinuxDaemonSendOutcome outcome = {};
+    char error[192] = {};
+    const bool refreshed = tui_refresh_from_daemon(state, false, &request,
+        &outcome, error, sizeof(error));
+    linux_debug_logf("tui: asked the daemon (instance=%llu) to bring its GPU "
+                     "backend up for config.ini's GPU: ok=%d answered=%d "
+                     "adapters=%u%s%s",
+                     (unsigned long long)instance, refreshed ? 1 : 0,
+                     outcome.answered ? 1 : 0,
+                     state->service.snapshot.adapterCount,
+                     error[0] ? " error=" : "", error);
+    if (refreshed && state->service.snapshot.adapterCount > 0)
+        linux_configured_gpu_resolve_against(state->configPath, gpu,
+            state->service.snapshot.adapters,
+            state->service.snapshot.adapterCount);
+}
+
 // config.ini's GPU is resolved against the daemon's own adapter list the first
 // time one is available: at start, or on the reconnect after a start without
 // the daemon.  Only the live adapter it resolved to is ever sent; the stored
@@ -68,6 +102,7 @@ static void tui_adopt_configured_gpu(TuiState* state, bool userRequested) {
         linux_configured_gpu_resolve_against(state->configPath, gpu,
             state->service.snapshot.adapters,
             state->service.snapshot.adapterCount);
+    tui_bring_up_daemon_backend(state, userRequested);
     // An explicit Refresh asks a refused switch again.
     if (userRequested && state->switchRefusal.valid) {
         linux_debug_logf("tui: refresh asks the refused GPU switch again");

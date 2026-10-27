@@ -75,6 +75,16 @@ static int atomic_write_path_tests() {
     if (!linux_atomic_write_temp_name("x.ini", 0x1ull, temporary, sizeof(temporary)) ||
         strcmp(temporary, ".x.ini.tmp.0000000000000001") != 0) return 6266;
     if (linux_atomic_write_temp_name("x.ini", 1, temporary, 8)) return 6267;
+    // Root follows only a root-owned link in a directory only root can change
+    // (/home -> var/home); any other owner, or a shared writable parent such as
+    // /tmp, keeps the link refused.
+    if (!linux_output_directory_may_follow_link(0, 0, 040755u) ||
+        !linux_output_directory_may_follow_link(0, 0, 040700u) ||
+        linux_output_directory_may_follow_link(1000, 0, 040755u) ||
+        linux_output_directory_may_follow_link(0, 1000, 040755u) ||
+        linux_output_directory_may_follow_link(0, 0, 041777u) ||
+        linux_output_directory_may_follow_link(0, 0, 040775u) ||
+        linux_output_directory_may_follow_link(0, 0, 040757u)) return 6268;
     return 0;
 }
 

@@ -384,6 +384,23 @@ static inline bool linux_configured_gpu_request_target(
     return !write;
 }
 
+// A daemon whose GPU backend did not come up (driver not loaded yet at its
+// start) publishes no adapters, so config.ini's GPU stays UNVALIDATED, and
+// only a request that NAMES a GPU makes the daemon try its backend again.  A
+// READ may then name the stored record as written: the daemon resolves it with
+// the role-less rule (a moved model is followed only while it is the one
+// adapter present), and the client checks the adapters it then publishes
+// before anything is written.  A write never names the record.  Returns the
+// record to name, or null when the selection does not need the daemon brought
+// up.
+static inline const GpuAdapterInfo* linux_configured_gpu_bring_up_target(
+    const LinuxConfiguredGpu* gpu, unsigned int publishedAdapterCount) {
+    if (!gpu || publishedAdapterCount != 0 ||
+        gpu->status != LINUX_CONFIGURED_GPU_UNVALIDATED || !gpu->target.valid)
+        return nullptr;
+    return &gpu->target;
+}
+
 // Why a write stopped, for the CLI error and the TUI status line.
 static inline const char* linux_configured_gpu_problem(
     LinuxConfiguredGpuStatus status) {
@@ -410,36 +427,15 @@ static inline void linux_format_stored_gpu_detail(
     const GpuAdapterInfo* stored, GpuLocationRole role,
     const GpuAdapterInfo* adapters, unsigned int count,
     char* out, size_t outSize) {
-    if (!out || outSize == 0) return;
-    out[0] = 0;
-    if (!stored) return;
-    char location[24] = "unknown";
-    if (linux_gpu_bdf_valid(stored))
-        snprintf(location, sizeof(location), "%04x:%02x:%02x.%u",
-                 stored->pciDomain, stored->pciBus, stored->pciDevice,
-                 stored->pciFunction);
-    int written = snprintf(out, outSize,
-        "stored=%08X/%08X@%s role=%s adapters=%u live=[",
-        linux_gpu_model_known(stored) ? stored->deviceId : 0u,
-        linux_gpu_model_known(stored) ? stored->subSystemId : 0u, location,
-        configured_gpu_location_role_name(role), count);
-    if (written < 0 || (size_t)written >= outSize) return;
-    size_t used = (size_t)written;
-    const unsigned int shown = count < 4u ? count : 4u;
-    for (unsigned int i = 0; adapters && i < shown; ++i) {
-        const GpuAdapterInfo* live = &adapters[i];
-        const char* kind = linux_gpu_model_matches(stored, live)
-            ? "model" : "other";
-        written = linux_gpu_bdf_valid(live)
-            ? snprintf(out + used, outSize - used, "%s%u:%s@%04x:%02x:%02x.%u",
-                i ? " " : "", i, kind, live->pciDomain, live->pciBus,
-                live->pciDevice, live->pciFunction)
-            : snprintf(out + used, outSize - used, "%s%u:%s@unknown",
-                i ? " " : "", i, kind);
-        if (written < 0 || (size_t)written >= outSize - used) return;
-        used += (size_t)written;
+    if (!stored) {
+        if (out && outSize) out[0] = 0;
+        return;
     }
-    snprintf(out + used, outSize - used, "%s]", count > shown ? " ..." : "");
+    format_gpu_resolution_detail(stored,
+        linux_gpu_model_known(stored) ? stored->deviceId : 0u,
+        linux_gpu_model_known(stored) ? stored->subSystemId : 0u,
+        role, adapters, count, linux_gpu_bdf_valid, linux_gpu_model_matches,
+        false, out, outSize);
 }
 
 #endif

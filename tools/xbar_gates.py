@@ -254,8 +254,19 @@ def check_xbar_profile_contract(ctx, require_text, forbid_text):
                  "if (g_app.xbarProbeValid) {",
                  "capture owns XBAR only when the selected surface answered")
     require_text(_p(ctx, "main_service_apply_runtime.cpp"),
-                 "ignored portable XBAR fields; surface unavailable",
+                 "ignored portable advanced fields; surface unavailable",
                  "portable profiles do not make an unsupported GPU fail")
+    require_text(_p(ctx, "main_service_apply_runtime.cpp"),
+                 "desired_strip_unavailable_advanced_fields(\n"
+                 "        &sanitizedRequest, g_app.xbarProbeValid, g_app.sysClkProbeValid,\n"
+                 "        g_app.videoClkProbeValid);",
+                 "SYS and VIDEO fields are as portable as XBAR fields")
+    ctx.require_order_in_operation(
+        _p(ctx, "main_service_apply_runtime.cpp"),
+        "static bool service_apply_desired_settings(",
+        "if (!hardware_initialize(detail, sizeof(detail))) {",
+        "desired_strip_unavailable_advanced_fields(",
+        "advanced fields are judged against the initialized GPU's probes")
     require_text(sync_cpp,
                  "snapshot->xbarOffsetReadbackValid = g_app.xbarFreqReadbackValid;",
                  "service snapshots carry truthful XBAR clock provenance")

@@ -30,6 +30,18 @@ static inline bool linux_atomic_write_split(const std::string& path,
     return !name->empty() && *name != "." && *name != "..";
 }
 
+// Whether root's output walk (linux_open_output_directory) may follow a
+// symlinked directory component.  Only a link root itself placed: owned by
+// root, inside a directory only root can modify, so nobody else can create or
+// swap it between the check and the open.  Distribution layouts such as
+// /home -> var/home and /root -> var/roothome keep working, while a link
+// another account controls (or one in a shared, writable directory such as
+// /tmp) is still refused.
+static inline bool linux_output_directory_may_follow_link(
+    unsigned int linkUid, unsigned int parentUid, unsigned int parentMode) {
+    return linkUid == 0 && parentUid == 0 && (parentMode & 0022u) == 0;
+}
+
 // Hidden temporary beside the leaf.  The leaf may be up to NAME_MAX (255)
 // bytes, so only a bounded prefix of it is reused: ".", 200 bytes, ".tmp." and
 // 16 hex digits stay inside NAME_MAX for every valid leaf.

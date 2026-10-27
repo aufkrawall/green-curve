@@ -5,6 +5,15 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-27: Review follow-up for recovery and portability
+
+- Portable advanced profile fields, deferred Linux backend bring-up, bounded
+  trusted output-directory links, fan ownership and durable uncertain intent
+  now have focused coverage and diagnostics. Physical GPU replay is unverified.
+- The native and Linux cross-link harnesses share their test-source list.
+- Sources: [Linux](../linux-scaffold.md), [fan control](../fan-control.md),
+  [GPU backend](../gpu-backend.md), [tests](../testing.md).
+
 ## 2026-10-27: Windows ClkDomains readers use the response schema
 
 - Windows SYS/VIDEO readback after apply, reset-before-apply, Reset and the

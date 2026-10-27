@@ -208,6 +208,19 @@ static inline void linux_daemon_record_initialize(LinuxDaemonStateRecord* record
     record->checksum = linux_daemon_record_checksum(record);
 }
 
+// Preserve the last durable intent and GPU binding when a failed operation
+// returns to an already uncertain state. Never promote it to ACTIVE.
+static inline LinuxDaemonStateRecord linux_daemon_record_as_uncertain(
+    const LinuxDaemonStateRecord* previous) {
+    LinuxDaemonStateRecord record = {};
+    if (previous)
+        linux_daemon_record_initialize(&record, LINUX_DAEMON_RECORD_UNCERTAIN,
+            &previous->targetGpu, &previous->desired, previous->operationId,
+            previous->operationState, (GpuLocationRole)previous->targetLocationRole,
+            &previous->targetUuid);
+    return record;
+}
+
 // Every invariant except the version constant, evaluated with whatever
 // version bytes the record carries: a stored pre-parity checksum was computed
 // over bytes that contained the old version, so it validates only before any

@@ -43,6 +43,25 @@ def check_all(ctx, require_text, forbid_text):
     daemon_state_cpp = _p(ctx, "linux_daemon_state.cpp")
     protocol_h = _p(ctx, "service_protocol.h")
 
+    # The GUI's [gpu] refresh settles an adapter list only on a final outcome;
+    # a failed rewrite is retried on the next snapshot instead of being
+    # forgotten until the adapters change again.
+    require_text(_p(ctx, "gpu_selection_config.cpp"),
+                 "retried on the next snapshot\\n\",\n"
+                 "            resolved, err[0] ? err : \"unknown error\", detail);\n"
+                 "        return;\n"
+                 "    }\n"
+                 "    settle();",
+                 "a failed [gpu] record refresh leaves the adapter list unsettled")
+    forbid_text(_p(ctx, "gpu_selection_config.cpp"),
+                "memcpy(checkedAdapters, g_app.adapters",
+                "the [gpu] refresh does not mark adapters checked before the outcome")
+
+    # The fan ownership marker is admitted by size and embeds GpuAdapterInfo.
+    require_text(_p(ctx, "ownership_handback_policy.h"),
+                 "static_assert(sizeof(LinuxFanOwnershipMarker) == 336,",
+                 "the fan ownership marker layout is frozen like the state records")
+
     # The frozen layout and its exact size. 836 is not a measurement, it is the
     # contract with every 0.25.2 file still on disk.
     require_text(schema_h, "struct DesiredSettingsSchema1",

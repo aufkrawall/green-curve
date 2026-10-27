@@ -19,7 +19,8 @@ automatic control. Before it, a curve's last manual duty stayed pinned
 without temperature tracking until a later explicit operation succeeded.
 Ownership binding still applies: another adapter's ownership or an
 unavailable backend is logged and left untouched. Startup state loads and the
-worker's own escalation keep their existing handling. Diagnostics:
+worker's own escalation retires the marker only when driver automatic control
+was restored; a failed handback retains it. Diagnostics:
 `daemon state: entering uncertain state` and `uncertain state (...) returned
 the fan`. Fake-driver cases cover these paths; hardware is unverified.
 

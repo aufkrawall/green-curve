@@ -338,6 +338,23 @@ int failed_operation_keeps_uncertainty() {
     if (linux_failed_operation_leaves_uncertain(false, true, true)) return 7593;
     if (!linux_failed_operation_leaves_uncertain(false, false, true) ||
         !linux_failed_operation_leaves_uncertain(false, true, false)) return 7594;
+    GpuAdapterInfo target = {};
+    target.valid = true;
+    target.pciBus = 42;
+    DesiredSettings intent = {};
+    intent.hasMemOffset = true;
+    intent.memOffsetMHz = 123;
+    LinuxGpuUuid uuid = {};
+    LinuxDaemonStateRecord previous = {};
+    linux_daemon_record_initialize(&previous, LINUX_DAEMON_RECORD_PREPARED,
+        &target, &intent, 77, SERVICE_OPERATION_IN_PROGRESS,
+        GPU_LOCATION_ROLE_REQUIRED, &uuid);
+    const LinuxDaemonStateRecord restored = linux_daemon_record_as_uncertain(&previous);
+    if (restored.state != LINUX_DAEMON_RECORD_UNCERTAIN ||
+        restored.targetGpu.pciBus != 42 || !restored.desired.hasMemOffset ||
+        restored.desired.memOffsetMHz != 123 || restored.operationId != 77 ||
+        restored.targetLocationRole != GPU_LOCATION_ROLE_REQUIRED ||
+        !linux_daemon_record_valid_except_version(&restored)) return 7620;
     return 0;
 }
 } // namespace

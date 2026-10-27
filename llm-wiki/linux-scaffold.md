@@ -655,7 +655,10 @@ Source anchors: `source/linux_port.cpp`, `source/linux_output_directory.h`,
 `linux_open_output_directory()`. Each path component is opened with `openat()`
 relative to the already-held directory; missing components are created with
 `mkdirat()` through that same handle. Privileged callers require `O_NOFOLLOW`
-for every component and refuse parent traversal. Ordinary users retain
+for every component and refuse user-supplied parent traversal. A root-owned link
+in a root-owned, non-writable directory is expanded component by component;
+every subsequent link must independently satisfy the same rule. Link expansion
+is bounded. Ordinary users retain
 redirected configuration directories and normal relative paths. The walk
 accepts bare output names, repeated separators and current-directory components.
 Failures return the failing operation's errno through the existing bounded
@@ -671,7 +674,8 @@ The native filesystem fixture covers directory links at final and ancestor
 positions, refusal before directory creation, ordinary-user redirects, nested
 creation, parent traversal, bare names and non-directory ancestors. Pure
 path/name cases 6260-6267 remain in the host-neutral harness. The fixture is
-cross-linked by the Windows suite and also executed in native Linux.
+cross-linked by the Windows suite and also executed in native Linux. Trusted
+link chains, untrusted nested links and cycles have native filesystem cases.
 
 ## GPU selection across PCI bus renumbering (2026-10-22)
 
@@ -749,6 +753,13 @@ boot recovery rebind) keep the exact `linux_gpu_identity_matches()`.
   adapter. `--gpu` records the role
   (`linux_gpu_location_role_for_selection()`). The in-process `--self-test`
   keeps the raw stored target and the init rule.
+  If that snapshot publishes no adapters, an UNVALIDATED stored record is
+  named once on a targeted read so the daemon can retry its deferred backend
+  initialization. The client then resolves the record against the fresh list;
+  the stored identity is never sent as write authority. The TUI asks once per
+  daemon instance or explicit Refresh, while telemetry ticks do not repeat the
+  request. TUI cases 7437-7439 and the native store fixture cover success,
+  repeated ticks and a backend that stays unavailable.
 - **An unresolved selection stops every client write** (2026-10-23,
   `linux_configured_gpu_request_target()`). Invariant: config.ini's GPU
   reaches the daemon only as the live adapter it resolved to. The daemon
@@ -903,9 +914,11 @@ restoration was not durably re-armed.
 A failed explicit Apply/Reset never clears an uncertain state it started in
 (`linux_failed_operation_leaves_uncertain()` in `linux_daemon_state.h`,
 2026-10-27). Its record restore keeps UNCERTAIN instead of rewriting the last
-intent as ACTIVE (`linux_failed_operation_record()`), so a clean rollback to
+intent as ACTIVE (`linux_failed_operation_record()`). Before PREPARED replaces
+the record, the prior durable intent and GPU binding are captured and restored
+as UNCERTAIN; a read error aborts the mutation. This means a clean rollback to
 an unproven state cannot re-enable fan reassertion, automatic restores or a
-boot replay. Diagnostic: `failed operation kept the uncertain record`. The
+boot replay. Diagnostics include `prior uncertain intent captured` and `restored prior uncertain intent`. The
 mutation deadline counts eight durable writes, including the fan ownership
 marker and its removal after an uncertainty handback. Cases 7590-7594.
 

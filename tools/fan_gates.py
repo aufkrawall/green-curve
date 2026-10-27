@@ -161,6 +161,18 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
     for name in ("linux_auto_restore_runtime.h", "linux_startup_policy.h"):
         forbid_text(_p(ctx, name), "g_stateUncertain = true",
                     f"{name} enters uncertainty through the fan-returning helper")
+    # The worker's lockout already returned the fan; its helper records the
+    # uncertainty and retires the marker without a second fan write.
+    forbid_text(_p(ctx, "linux_fan_runtime.h"), "g_stateUncertain = true",
+                "the fan worker's lockout enters uncertainty through the ownership helper")
+    require_text(_p(ctx, "linux_fan_runtime.h"),
+                 'daemon_enter_uncertain_after_fan_lockout(\n'
+                 '                    "fan curve runtime locked out", autoOk);',
+                 "a curve lockout retires the marker once the driver holds the fan")
+    require_text(_p(ctx, "linux_fan_runtime.h"),
+                 'daemon_enter_uncertain_after_fan_lockout(\n'
+                 '                    "fixed fan maintenance locked out", autoOk);',
+                 "a fixed-duty lockout retires the marker once the driver holds the fan")
     # A startup handback deferred for an unusable backend runs where the
     # backend later becomes usable, before that path selects its own target.
     ctx.require_order_in_operation(
