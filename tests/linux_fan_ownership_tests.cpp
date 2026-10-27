@@ -90,6 +90,7 @@ static void initialize(unsigned int count = 2) {
     g_autoRestoreGuard = {};
     g_fanOwnershipMarkerCommitted = false;
     g_fanOwnershipHandbackPending = false;
+    g_fanOwnershipHandbackDeferred = false;
     g_fanOwnershipRecord = {};
     removed = storeFails = autoFails = lockedOut = g_stateUncertain = false;
     stores = writes = autoWrites = emergencyPercent = 0;
@@ -279,6 +280,27 @@ static int run() {
     daemon_enter_uncertain_state("fixture inherited ownership");
     if (autoWrites != 1 || writtenAdapter != 1 || g_fanOwnershipMarkerCommitted ||
         g_fanOwnershipHandbackPending) return 7589;
+
+    // A handback deferred for an unusable backend runs once the backend comes
+    // up later in the same process. Before, it waited for the next start.
+    initialize();
+    g_gpuReady = false;
+    daemon_fan_ownership_handback_at_start();
+    if (writes || daemon_fan_ownership_resume_deferred_handback()) return 7595;
+    g_gpuReady = true;
+    if (!daemon_fan_ownership_resume_deferred_handback() || writes != 1 ||
+        writtenAdapter != 1 || !removed || g_fanOwnershipMarkerCommitted) return 7596;
+    if (daemon_fan_ownership_resume_deferred_handback() || writes != 1) return 7597;
+    initialize();
+    g_gpuReady = false;
+    daemon_fan_ownership_handback_at_start();
+    g_gpuReady = true;
+    g_gpu.writeIdentityResolved = true;
+    g_gpu.selectedAdapterIndex = 1;
+    g_gpu.selectedGpu = g_gpu.adapters[1];
+    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7598;
+    writes = 0;
+    if (daemon_fan_ownership_resume_deferred_handback() || writes) return 7599;
     return 0;
 }
 } // namespace linux_fan_ownership_fixture

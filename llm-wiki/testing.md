@@ -37,6 +37,20 @@ under the previous clearing rule. Fan gates require both operations and the
 record restore to use the helpers. Daemon orchestration remains outside the
 harness.
 
+## Linux deferred fan handback (2026-10-27)
+
+Source anchors: `tests/linux_fan_ownership_tests.cpp`,
+`source/linux_fan_ownership.h`, `source/linux_daemon_snapshot_runtime.cpp`,
+`source/linux_auto_restore_runtime.h`, `tools/fan_gates.py`,
+`tools/apply_ceiling_gates.py`.
+
+Cases 7595-7599 defer the startup handback for an unusable backend, then run
+it once the backend becomes ready: the owned adapter receives the counted
+driver-auto write and the marker retires; a second resume and ownership
+already assumed by a manual Apply write nothing. Case 7596 fails without the
+deferral flag. Gates pin both readiness transitions ahead of their target
+selection and keep the in-flight count before the write.
+
 ## Windows memory recovery (2026-10-27)
 
 Source anchors: `tests/memory_recovery_tests.cpp`,

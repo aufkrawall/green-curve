@@ -5,6 +5,14 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-27: Deferred Linux fan handback runs when the GPU comes up
+
+- A start that found inherited fan ownership but no usable GPU backend now
+  runs the counted handback once a later request or automatic-restore
+  re-initialization brings the backend up, before that path selects its GPU.
+- Cases 7595-7599; case 7596 fails without the deferral. No GPU writes.
+- Sources: [fan control](../fan-control.md), [tests](../testing.md).
+
 ## 2026-10-27: Failed Linux operations keep existing uncertainty
 
 - A failed explicit Apply/Reset that started uncertain stays uncertain after

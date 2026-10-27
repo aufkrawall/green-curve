@@ -802,10 +802,16 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         "an unattended Linux write records fan ownership before writing")
     require_order_in_operation(
         _p(ctx, "linux_fan_ownership.h"),
-        "static void daemon_fan_ownership_handback_at_start()",
+        "// Return an inherited manual fan on its recorded adapter.",
         "inFlight.handbackAttempts = marker.handbackAttempts + 1u;",
         "bool autoOk = linux_backend_set_fan_auto(&g_gpu);",
         "the Linux handback records itself in flight before writing (loop guard)")
+    require_order_in_operation(
+        _p(ctx, "linux_fan_ownership.h"),
+        "static void daemon_fan_ownership_handback_at_start()",
+        "g_fanOwnershipHandbackDeferred = true;",
+        "daemon_fan_ownership_run_handback(marker);",
+        "startup defers or runs the counted handback, never an uncounted write")
     # A clean Windows stop returns every write this process made whose return
     # was never proven, so the next start never runs a crash handback for it.
     require_order_in_operation(

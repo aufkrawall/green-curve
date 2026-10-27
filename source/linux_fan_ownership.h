@@ -20,6 +20,8 @@
 
 static bool g_fanOwnershipMarkerCommitted = false;
 static bool g_fanOwnershipHandbackPending = false;
+// Startup found inherited ownership but no usable backend.
+static bool g_fanOwnershipHandbackDeferred = false;
 static LinuxFanOwnershipMarker g_fanOwnershipRecord = {};
 
 // Loaded ownership has the same authority as a new marker. Resolve its full
@@ -168,6 +170,8 @@ static void daemon_fan_ownership_latch_incomplete(const char* context) {
          guardErr[0] ? " detail=" : "", guardErr);
 }
 
+static void daemon_fan_ownership_run_handback(LinuxFanOwnershipMarker marker);
+
 // Once per start, before the startup policy runs and before the fan worker
 // exists, so nothing races it.
 static void daemon_fan_ownership_handback_at_start() {
@@ -214,10 +218,20 @@ static void daemon_fan_ownership_handback_at_start() {
         return;
     }
     if (!g_gpuReady) {
-        // Kept for the next start in this boot; nothing can be written now.
+        // Nothing can be written now. Retried when the backend becomes usable
+        // in this process, otherwise at the next start in this boot.
+        g_fanOwnershipHandbackDeferred = true;
         dlog("daemon fan ownership: GPU backend not ready; handback deferred\n");
         return;
     }
+    daemon_fan_ownership_run_handback(marker);
+}
+
+// Return an inherited manual fan on its recorded adapter. Runs at startup, or
+// later when that start found no usable backend; either way under the state
+// lock and before anything else writes the GPU.
+static void daemon_fan_ownership_run_handback(LinuxFanOwnershipMarker marker) {
+    char err[256] = {};
     if (!marker.targetGpu.valid) {
         // A legacy record carries no target. Multiple live adapters provide
         // no evidence about which fan the previous instance controlled.
@@ -241,8 +255,9 @@ static void daemon_fan_ownership_handback_at_start() {
     marker.targetUuid = linux_gpu_uuid_retain(linux_backend_selected_uuid(&g_gpu),
                                              &marker.targetUuid);
     dlog("daemon fan ownership: recorded adapter resolved before handback\n");
-    // Counted before writing: a hang here is killed by systemd's start timeout
-    // (this runs before READY=1), and the next start retries at most once.
+    // Counted before writing: a hang is killed by systemd (the start timeout
+    // before READY=1, the watchdog after it), and the next start retries at
+    // most once.
     LinuxFanOwnershipMarker inFlight = marker;
     inFlight.handbackAttempts = marker.handbackAttempts + 1u;
     if (!linux_fan_ownership_marker_store(GC_DAEMON_FAN_MARKER_FILE, &inFlight,
@@ -274,6 +289,22 @@ static void daemon_fan_ownership_handback_at_start() {
         daemon_fan_ownership_latch_incomplete(
             "the driver refused to take the fan back after an unexpected stop");
     }
+}
+
+// A start whose backend was unusable kept inherited ownership without a write.
+// Once a later request brings the backend up, run that handback before the GPU
+// is used for anything else. True when it ran: the caller's selected adapter
+// may then have changed to the owned one.
+static bool daemon_fan_ownership_resume_deferred_handback() {
+    if (!g_fanOwnershipHandbackDeferred || !g_gpuReady) return false;
+    g_fanOwnershipHandbackDeferred = false;
+    if (!g_fanOwnershipMarkerCommitted || !g_fanOwnershipHandbackPending) {
+        dlog("daemon fan ownership: deferred handback no longer needed\n");
+        return false;
+    }
+    dlog("daemon fan ownership: GPU backend became ready; running the deferred handback\n");
+    daemon_fan_ownership_run_handback(g_fanOwnershipRecord);
+    return true;
 }
 
 #endif // GREEN_CURVE_LINUX_FAN_OWNERSHIP_H

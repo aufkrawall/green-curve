@@ -288,6 +288,8 @@ static bool auto_restore_prepare_backend(const GpuAdapterInfo* target,
         linux_backend_shutdown(&g_gpu);
         g_gpu = replacement;
         g_gpuReady = true;
+        // The target is selected below, after any deferred fan handback.
+        daemon_fan_ownership_resume_deferred_handback();
         dlog("daemon auto-restore: GPU backend re-initialized (%s health=%s)\n",
              g_gpu.gpuName,
              service_gpu_health_reason_name(g_gpu.health.reason));

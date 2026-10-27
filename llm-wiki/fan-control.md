@@ -47,7 +47,11 @@ write keeps inherited recovery pending and cannot clear its restore lockout.
 Shutdown leaves inherited pending handback for startup; ownership assumed by
 this process is returned even after a failed Apply clears active intent.
 Exhausted startup attempts retain the binding for explicit recovery without
-retrying automatically. Legacy multi-adapter ownership still allows an explicit
+retrying automatically. A start whose GPU backend was unusable defers the
+handback; when a later request or automatic-restore re-initialization brings
+the backend up in the same process, the counted handback runs on its own
+adapter before that path selects its target
+(`daemon_fan_ownership_resume_deferred_handback()`, 2026-10-27). Legacy multi-adapter ownership still allows an explicit
 Reset to name its target. Diagnostics distinguish loaded ownership, refused
 cross-adapter writes, preserved markers and pending lockout re-arm.
 

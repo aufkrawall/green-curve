@@ -303,6 +303,13 @@ static bool select_request_gpu(const ServiceRequest* req, char* err, size_t errS
     }
     GpuAdapterInfo previous = g_gpu.selectedGpu;
     if (!linux_backend_select_target(&g_gpu, &requested, err, errSize)) return false;
+    if (!g_gpuReady) {
+        // This request brought the backend up. A fan handback deferred at
+        // startup runs on its own adapter first; then select the request's.
+        g_gpuReady = true;
+        if (daemon_fan_ownership_resume_deferred_handback() &&
+            !linux_backend_select_target(&g_gpu, &requested, err, errSize)) return false;
+    }
     if (!linux_gpu_identity_matches(&previous, &g_gpu.selectedGpu)) {
         ++g_daemonGpuGeneration;
         dlog("daemon state: selected GPU changed; generation=%llu\n",

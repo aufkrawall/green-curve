@@ -161,6 +161,17 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
     for name in ("linux_auto_restore_runtime.h", "linux_startup_policy.h"):
         forbid_text(_p(ctx, name), "g_stateUncertain = true",
                     f"{name} enters uncertainty through the fan-returning helper")
+    # A startup handback deferred for an unusable backend runs where the
+    # backend later becomes usable, before that path selects its own target.
+    ctx.require_order_in_operation(
+        _p(ctx, "linux_daemon_snapshot_runtime.cpp"), "static bool select_request_gpu(",
+        "daemon_fan_ownership_resume_deferred_handback()",
+        "if (!linux_gpu_identity_matches(&previous, &g_gpu.selectedGpu))",
+        "a request that brings the backend up runs the deferred fan handback first")
+    ctx.require_order_in_operation(
+        runtime, "g_gpuReady = true;", "daemon_fan_ownership_resume_deferred_handback();",
+        "linux_backend_select_target(&g_gpu, target,",
+        "an automatic-restore re-init runs the deferred fan handback before selecting")
     # A failed operation that started uncertain stays uncertain, in memory and
     # in the record it restores.
     ctx.require_text_in_operation(
