@@ -686,12 +686,12 @@ static bool validate_fan_curve_for_runtime(const FanCurveConfig* curve, char* de
     }
     return true;
 }
-// Thin adapter over the shared reducer.  `requestedPct` is g_app.fanTargetPercent,
-// which is only refreshed while a fan is under manual policy, so a 0 there means
-// "no intent readback for this fan" rather than "the driver intends 0%".
-static bool manual_fan_readback_matches_target(int wantPct, int actualPct, unsigned int requestedPct) {
+// Validity is independent of the value: zero can be a known target, and a
+// nonzero cached target can survive a failed read.
+static bool manual_fan_readback_matches_target(int wantPct, int actualPct,
+    unsigned int requestedPct, bool targetKnown) {
     return fan_manual_write_confirmed(wantPct, actualPct, (int)requestedPct,
-                                      requestedPct > 0);
+                                      targetKnown);
 }
 static bool is_gpu_offset_excluded_low_point(int pointIndex, int gpuOffsetMHz, int excludeLowCount) {
     if (excludeLowCount <= 0) return false;

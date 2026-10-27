@@ -571,7 +571,8 @@ static bool fan_setting_matches_current(int wantMode, int wantPct, const FanCurv
 static bool nvml_manual_fan_matches_target(int pct, bool* matches, char* detail, size_t detailSize);
 static int current_displayed_fan_percent();
 static int current_manual_fan_target_percent();
-static bool manual_fan_readback_matches_target(int wantPct, int actualPct, unsigned int requestedPct);
+static bool manual_fan_readback_matches_target(int wantPct, int actualPct,
+    unsigned int requestedPct, bool targetKnown);
 static void refresh_live_fan_telemetry(bool redrawControls = true);
 static bool window_should_redraw_fan_controls();
 static void sync_fan_ui_from_cached_state(bool redrawControls = true);

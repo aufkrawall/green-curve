@@ -29,7 +29,7 @@
 
 ## Unreleased
 
-Hardware changes elsewhere in the PC no longer cost Green Curve its selected GPU.
+GPU selection, fan control and recovery are more reliable across hardware changes and failed operations.
 
 ### Improved
 
@@ -46,7 +46,7 @@ Hardware changes elsewhere in the PC no longer cost Green Curve its selected GPU
 
 ### Compatibility notes
 
-Existing configuration and profiles remain compatible. Identical GPUs without a recorded physical identity may still need selection after a bus move.
+Existing configuration and profiles remain compatible. Identical GPUs without a recorded physical identity may still need selection after a bus move. Legacy Linux fan recovery with multiple GPUs may require selecting the GPU and running Reset.
 
 ### Downloads and verification
 

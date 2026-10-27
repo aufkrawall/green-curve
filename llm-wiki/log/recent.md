@@ -5,6 +5,29 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-27: Fan runtime and recovery evidence
+
+- Linux worker state and wake generations are captured coherently, and a
+  completed Apply invalidates an already-due poll's old hysteresis state.
+- Fan verification treats a known driver target as authoritative. Windows
+  carries target validity independently of zero or stale numeric values.
+- Linux fan ownership v2 retains adapter, location role and optional UUID.
+  Startup resolves that evidence before handback; ambiguous legacy records
+  retain ownership and publish the recovery action without writing.
+- Memory setters retain uncertainty until fresh evidence verifies the target.
+  Rollback and explicit Reset force writes past cached equality; memory
+  recovery is reported separately from graphics-core clamp release.
+- Executing fixtures cover these boundaries and fail under negative controls.
+  Full native Windows regressions pass, the new fixtures execute under Linux,
+  and native Linux marker storage preserves identity and legacy compatibility
+  while rejecting invalid permissions and truncation. No real GPU writes.
+- Static analysis reports no new findings. The plain build passes; all six
+  release archives, four installers and two Linux packages are fresh, with
+  payload binaries matched against their build outputs. Staged and committed
+  changes pass redacted secret scanning.
+- Sources: [fan control](../fan-control.md),
+  [clock recovery](../clock-transition-audit.md), [tests](../testing.md).
+
 ## 2026-10-27: Agent workflow baseline alignment
 
 - Synchronized `AGENTS.md` with upstream template updates:

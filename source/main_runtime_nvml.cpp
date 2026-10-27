@@ -528,7 +528,8 @@ static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_
         ok = (g_app.fanCount > 0);
         for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
             int got = (int)g_app.fanPercent[fan];
-            if (!manual_fan_readback_matches_target(pct, got, g_app.fanTargetPercent[fan])) ok = false;
+            if (!manual_fan_readback_matches_target(pct, got,
+                    g_app.fanTargetPercent[fan], g_app.readback.fan.target[fan])) ok = false;
         }
         if (ok) break;
     }
@@ -558,7 +559,8 @@ static bool nvml_manual_fan_matches_target(int pct, bool* matches, char* detail,
     bool ok = true;
     for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
         int got = (int)g_app.fanPercent[fan];
-        if (!manual_fan_readback_matches_target(pct, got, g_app.fanTargetPercent[fan])) ok = false;
+        if (!manual_fan_readback_matches_target(pct, got,
+                g_app.fanTargetPercent[fan], g_app.readback.fan.target[fan])) ok = false;
     }
     if (!ok) {
         set_message(detail, detailSize, "Fan readback did not confirm %d%%", pct);
@@ -578,7 +580,8 @@ static bool fan_setting_matches_current(int wantMode, int wantPct, const FanCurv
     if (g_app.fanIsAuto || g_app.fanCount == 0) return false;
     for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
         int gotPct = (int)g_app.fanPercent[fan];
-        if (!manual_fan_readback_matches_target(wantPct, gotPct, g_app.fanTargetPercent[fan])) return false;
+        if (!manual_fan_readback_matches_target(wantPct, gotPct,
+                g_app.fanTargetPercent[fan], g_app.readback.fan.target[fan])) return false;
     }
     return true;
 }

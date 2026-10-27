@@ -1,5 +1,15 @@
 # Testing
 
+Validation of the 2026-10-27 fan/recovery follow-ups: full native Windows
+regressions and Linux cross-link checks pass. The three new standalone
+fixtures also execute under Linux and compile with warnings treated as
+errors. Negative controls reject the old worker ordering, non-authoritative
+fan target, omitted ownership resolution and skipped uncertain-memory reset.
+Static analysis reports no new findings. The plain deliverable build passes;
+all six archives, four installers and two Linux packages have fresh timestamps
+and changed hashes, and their payload binaries match the new build outputs.
+Physical GPU failure injection remains unverified.
+
 ## Windows memory recovery (2026-10-27)
 
 Source anchors: `tests/memory_recovery_tests.cpp`,
@@ -36,11 +46,12 @@ and truncated records. No GPU APIs are loaded by that probe.
 Source anchors: `tests/fan_runtime_followup_tests.cpp`,
 `source/linux_fan_runtime.h`, `source/fan_runtime_policy.h`, `build.py`.
 
-Cases 7520-7527 execute the production worker with explicit scheduling
+Cases 7520-7529 execute the production worker with explicit scheduling
 boundaries: inactive-to-active Apply before wait, curve replacement before
 an already-due poll, idle and ordinary polling, lock order, authoritative
-target mismatches and missing-target fallback. The fixture runs on either
-host and has no timing assumptions or GPU writes. Its standalone entry point
+target mismatches, known zero and stale-cache fallback. Windows call sites
+carry per-fan validity independently of value and are source-gated. The fixture
+runs on either host and has no timing assumptions or GPU writes. Its standalone entry point
 is `GC_FAN_RUNTIME_FIXTURE_MAIN`. Live hardware scheduling is not exercised.
 
 ## Apply, directory and identity boundaries (2026-10-27)

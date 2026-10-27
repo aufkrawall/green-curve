@@ -146,6 +146,8 @@ static int run() {
     if (fan_manual_write_confirmed(0, 0, 30, true)) return 7525;
     if (!fan_manual_write_confirmed(80, 0, 80, true)) return 7526;
     if (!fan_manual_write_confirmed(80, 80, 0, false)) return 7527;
+    if (fan_manual_write_confirmed(80, 80, 0, true)) return 7528;
+    if (!fan_manual_write_confirmed(80, 80, 30, false)) return 7529;
     return 0;
 }
 } // namespace fan_runtime_fixture

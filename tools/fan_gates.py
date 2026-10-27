@@ -36,6 +36,11 @@ def check_manual_write_verification(ctx, require_text, forbid_text, backend_surf
     linux_backend_mutation_cpp = _p(ctx, "linux_backend_mutation.cpp")
     fan_runtime_policy_h = _p(ctx, "fan_runtime_policy.h")
     main_gpu_front_cpp = _p(ctx, "main_gpu_front.cpp")
+    require_text(_p(ctx, "main_runtime_nvml.cpp"),
+                 "g_app.fanTargetPercent[fan], g_app.readback.fan.target[fan]",
+                 "Windows fan verification carries explicit target validity")
+    forbid_text(main_gpu_front_cpp, "requestedPct > 0",
+                "fan target validity cannot be inferred from a nonzero value")
 
     require_text(fan_runtime_policy_h, "fan_manual_write_confirmed",
                  "the manual fan write verifier is one shared pure reducer")

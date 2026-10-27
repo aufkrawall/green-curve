@@ -35,6 +35,8 @@ curve cannot inherit the previous curve's hysteresis on an already-due poll.
 Each rejected snapshot emits one generation-labelled diagnostic.
 
 A known intended fan duty is authoritative, including a mismatch and zero.
+Windows passes the per-fan target validity bit independently of the numeric
+value: zero may be valid, and a nonzero cached value may be stale.
 Measured-duty fallback is used only when intent is unavailable. The executing
 worker fixture covers both Apply interleavings, idle and normal operation,
 lock order, contradictory intent and legacy fallback without sleeps.
