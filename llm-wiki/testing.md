@@ -32,6 +32,17 @@ reader and failed, then passed after correction. The standalone fixture
 compiles with warnings treated as errors. Physical Pascal execution remains
 unverified.
 
+Verification: the full native Windows regression suite, Linux cross-links and
+source gates pass (`python build.py --test`); `--tidy` reports no new findings.
+Plain `python build.py` produced build 361: six archives, four installers and
+two Arch packages have fresh timestamps, changed content and matching SHA-256
+sidecars. All 20 packaged application/service images match the rebuilt outputs.
+The rebuilt Windows x64 release binary's read-only self-test on an RTX 5070
+reads 128 curve points and the control table, with verdict FULL. Both Linux
+executables contain the corrected probe telemetry commands. The previous
+report command fails the installed CLI parser with exit 2; all three current
+report commands return exit 0. These checks make no GPU writes.
+
 ## Linux uncertain-state fan return (2026-10-27)
 
 Source anchors: `tests/linux_fan_ownership_tests.cpp`,

@@ -202,7 +202,8 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
     if (linux_command_available("modinfo")) append_code_block(&report, "modinfo nvidia", capture_command_output("modinfo nvidia", 16384));
     if (linux_command_available("nvidia-smi")) {
         append_code_block(&report, "nvidia-smi -L", capture_command_output("nvidia-smi -L", 8192));
-        append_code_block(&report, "nvidia-smi -q -d POWER,CLOCK,FAN,PERFORMANCE", capture_command_output("nvidia-smi -q -d POWER,CLOCK,FAN,PERFORMANCE", 32768));
+        append_code_block(&report, "nvidia-smi -q -d POWER,CLOCK,PERFORMANCE", capture_command_output("nvidia-smi -q -d POWER,CLOCK,PERFORMANCE", 32768));
+        append_code_block(&report, "nvidia-smi --query-gpu=name,fan.speed --format=csv", capture_command_output("nvidia-smi --query-gpu=name,fan.speed --format=csv", 8192));
     }
 
     std::string procVersion;

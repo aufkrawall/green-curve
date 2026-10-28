@@ -324,6 +324,14 @@ once, stamped by `[meta] linux_mem_migrated`:
 
 ## NvAPI Linux specifics (handled)
 
+- **Probe telemetry commands (2026-10-28).** `linux_main.cpp` requests
+  `POWER,CLOCK,PERFORMANCE` from `nvidia-smi -q -d` and obtains fan speed
+  separately with `--query-gpu=name,fan.speed --format=csv`. `FAN` is not an
+  accepted display category. The prior command reproduces a parser failure;
+  both corrected read-only commands were checked with the installed CLI.
+  This command correction needs no duplicate unit test: verification invokes
+  the real parser, while VF read behavior has an executing regression fixture.
+
 - **Driver-pinned placeholder entries (2026-09-23).** The Linux VF writer
   (`apply_curve_offsets_verified()` in `linux_backend.cpp`) now shares the
   Windows rule `vf_offset_zero_readback_is_benign()`: a point below

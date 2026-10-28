@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-28: Valid probe telemetry queries
+
+- The probe uses supported `nvidia-smi` display categories for power and
+  clocks, and a separate fan-speed property query. The old `FAN` display
+  category reproduces exit 2; both corrected commands return exit 0 with the
+  installed CLI. The diagnostic captures retain their existing size bounds.
+- Full regressions, source gates and static analysis pass. Plain build 361
+  refreshed all 12 current packages; checksums and 20 embedded application or
+  service images were independently compared with the fresh outputs. The
+  Windows x64 read-only self-test on an RTX 5070 reports FULL with 128 VF
+  points and a readable control table. Pascal hardware verification remains
+  pending; these checks perform no GPU writes.
+
 ## 2026-10-28: VF point-mask validation on Pascal
 
 - VF-info `0x14` is part of the point mask, not a clock count. Valid Pascal
