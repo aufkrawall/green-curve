@@ -149,6 +149,26 @@ static int run_gpu_selection_evidence_tests() {
     g_app.readback.memOffset = true;
     reset_selected_gpu_write_evidence(&g_app);
     if (nvapi_set_mem_offset(1500000, false) || writes != 1) return 7663;
+
+    // The Apply planner decides before the setter runs. After a switch whose
+    // memory reads failed, a target equal to the previous GPU's cached offset
+    // must still be written, whether or not the previous write was verified.
+    for (int uncertain = 0; uncertain < 2; ++uncertain) {
+        initialize(false);
+        g_app.memClockOffsetkHz = 1500000;
+        g_app.memOffsetWriteUncertain = uncertain != 0;
+        reset_selected_gpu_write_evidence(&g_app);
+        if (!apply_plan_mem_offset_write(g_app, 1500000)) return 7676;
+    }
+    // The production plan skips once this GPU's fresh reading matches.
+    initialize(true);
+    g_app.memClockOffsetkHz = 1500000;
+    if (apply_plan_mem_offset_write(g_app, 1500000)) return 7678;
+    // Fresh evidence of this GPU still lets an identical target skip, and a
+    // different or uncertain target is written.
+    if (mem_offset_write_required(false, true, 1500000, 1500000) ||
+        !mem_offset_write_required(false, true, 1500000, 0) ||
+        !mem_offset_write_required(true, true, 1500000, 1500000)) return 7677;
     return 0;
 }
 

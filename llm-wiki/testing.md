@@ -148,7 +148,9 @@ production memory-clock calculation; no physical GPU writes are performed.
 Cases 7660-7663 execute `reset_selected_gpu_write_evidence()`: memory and power
 uncertainty, surface proof and scalar readbacks are cleared, rollback no longer
 attempts the previous GPU's memory reset, and a target the previous GPU had
-verified is written instead of skipped. Cases 7664-7669 execute the combined
+verified is written instead of skipped. Cases 7676-7678 execute the Apply
+planner (`apply_plan_mem_offset_write()`) after that reset, with and without
+inherited uncertainty, plus the fresh-evidence skip. Cases 7664-7669 execute the combined
 unverified-write precheck for memory-only, power-only, both, and owning
 requests, including the domain named in each refusal.
 

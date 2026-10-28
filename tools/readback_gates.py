@@ -28,9 +28,9 @@ def check_all(ctx, require_text, forbid_text):
     gpu_state_cpp = _p(ctx, "main_gpu_state.cpp")
     gpu_backend_cpp_path = _p(ctx, "gpu_backend.cpp")
     readback_policy_h = _p(ctx, "control_readback_policy.h")
-    require_text(_p(ctx, "gpu_backend_apply.cpp"),
-                 "shouldApplyMemOffset = g_app.memOffsetWriteUncertain ||",
-                 "an uncertain memory write cannot be skipped by cached equality")
+    require_text(readback_policy_h,
+                 "return writeUncertain || !readbackValid || cachedkHz != targetkHz;",
+                 "an uncertain memory write or stale cache cannot be skipped by cached equality")
     require_text(_p(ctx, "main_service_apply_runtime.cpp"),
                  "g_app.memClockOffsetkHz != 0 || g_app.memOffsetWriteUncertain",
                  "explicit Reset accounts for uncertain memory writes")
@@ -160,6 +160,13 @@ def check_all(ctx, require_text, forbid_text):
     require_text(_p(ctx, "gpu_backend_apply.cpp"),
                  "if (!apply_write_uncertainty_precheck(desired, result, resultSize)) return false;",
                  "the service Apply runs the unverified-write precheck before writes")
+    require_text(_p(ctx, "gpu_backend_apply.cpp"),
+                 "shouldApplyMemOffset = apply_plan_mem_offset_write(g_app, targetMemkHz);",
+                 "the memory Apply plan goes through the evidence-aware helper")
+    require_text(_p(ctx, "gpu_backend_apply_failure.h"),
+                 "mem_offset_write_required(app.memOffsetWriteUncertain,\n"
+                 "        app.readback.memOffset, app.memClockOffsetkHz, targetMemkHz)",
+                 "the memory Apply plan skips only on fresh readback of this GPU")
     require_text(_p(ctx, "gpu_backend.cpp"),
                  "reset_selected_gpu_write_evidence(&g_app);",
                  "a GPU selection change discards the previous GPU's write evidence")

@@ -81,6 +81,15 @@ a stale valid memory readback would otherwise let the setter skip a write on
 the new one. The reset logs the discarded flags. Cases 7660-7663 cover the
 selection reset, 7664-7669 the combined precheck.
 
+The Apply planner decides before the setter runs, so it applies the same rule:
+`mem_offset_write_required()` (`source/control_readback_policy.h`) skips an
+owned memory target only when a fresh reading of this GPU produced the equal
+cached value. The reset deliberately keeps `memClockOffsetkHz` for display;
+without the readback term a switch whose memory reads failed skipped a target
+equal to the previous GPU's offset and reported success. The plan is logged
+with target, cache, readback and uncertainty by `apply_plan_mem_offset_write()`
+(`source/gpu_backend_apply_failure.h`). Cases 7676-7678.
+
 Last verified: 2026-10-27.
 
 ## Summary

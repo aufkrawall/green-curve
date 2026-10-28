@@ -109,6 +109,16 @@ static inline bool all_fans_known(const bool* known, unsigned int fanCount) {
 // failing the entire Apply, VF curve included, on hardware whose curve was
 // perfectly writable.  Reported 2026-09-07 against 0.25.0 on an RTX 3060 Laptop
 // GPU, whose driver answers the power *constraints* but not the limit itself.
+// Whether an Apply that owns the memory offset must call the setter. Cached
+// equality may skip the write only when a fresh reading of THIS GPU produced
+// the cached value; after a GPU switch or a failed read the cache can still
+// hold another GPU's offset, and skipping would report a setting nobody made.
+static inline bool mem_offset_write_required(bool writeUncertain,
+                                             bool readbackValid,
+                                             int cachedkHz, int targetkHz) {
+    return writeUncertain || !readbackValid || cachedkHz != targetkHz;
+}
+
 static inline bool power_limit_surface_available(bool powerReadbackValid,
                                                  int powerDefaultmW,
                                                  int powerCurrentmW) {

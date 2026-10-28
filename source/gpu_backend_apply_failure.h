@@ -35,6 +35,20 @@ static bool apply_write_uncertainty_precheck(const DesiredSettings* desired,
     return false;
 }
 
+// The memory half of the Apply plan: cached equality skips the setter only on
+// fresh evidence of this GPU (mem_offset_write_required()). A template so
+// fixtures whose app stand-in has no memory state never instantiate it.
+template <class AppState>
+static bool apply_plan_mem_offset_write(const AppState& app, int targetMemkHz) {
+    const bool write = mem_offset_write_required(app.memOffsetWriteUncertain,
+        app.readback.memOffset, app.memClockOffsetkHz, targetMemkHz);
+    debug_log("apply mem offset plan: target=%d kHz cached=%d kHz readback=%d"
+              " uncertain=%d write=%d\n", targetMemkHz, app.memClockOffsetkHz,
+        app.readback.memOffset ? 1 : 0, app.memOffsetWriteUncertain ? 1 : 0,
+        write ? 1 : 0);
+    return write;
+}
+
 // All prerequisite failures leave normal finalization immediately. Recovery
 // owns the only permitted release; scope destruction cannot release again.
 static bool apply_recover_clock_failure(ApplyClockCeilingGuard& ceiling,
