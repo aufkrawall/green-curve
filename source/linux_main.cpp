@@ -249,6 +249,8 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
     appendf(&report, "- Detail: `%s`\n",
             backend.health.detail[0] ? backend.health.detail :
             (backendError[0] ? backendError : "none"));
+    appendf(&report, "- VF layout: `%s`\n",
+            linux_vf_layout_text(&backend.vfLayout).text);
     if (backend.nvmlLib || backend.nvapiLib)
         linux_backend_shutdown(&backend);
 

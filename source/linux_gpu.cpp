@@ -24,6 +24,7 @@
 // F-02-001/F-04-001: the VF-info and GPU-enumeration rules this file shares
 // with the live backend, so the probe cannot validate them differently.
 #include "linux_vf_validation.h"
+#include "linux_vf_layout_summary.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -334,15 +335,19 @@ void probe_nvapi(FILE* out, LinuxNvapiProbe* result) {
             int populated = curve ? read_vf_curve(qi, handles[i], spec, curve) : -1;
             if (populated > 0) {
                 if (i == 0) result->vfPointsPopulated = populated;
-                // Report the highest populated point (peak of the curve).
-                int hi = -1;
-                for (int p = VF_NUM_POINTS - 1; p >= 0; p--) {
-                    if (curve[p].freq_kHz > 0) { hi = p; break; }
-                }
-                fprintf(out, "      VF curve    : %d points; peak point %d = %u MHz @ %u mV\n",
-                        populated, hi,
-                        hi >= 0 ? curve[hi].freq_kHz / 1000u : 0u,
-                        hi >= 0 ? curve[hi].volt_uV / 1000u : 0u);
+                // Report the peak of the graphics run the backend keeps, not
+                // the last point of whichever clock domain fills the window.
+                LinuxVfLayoutSummary layout;
+                linux_vf_layout_reset(&layout);
+                linux_vf_layout_note_status(&layout, curve, VF_NUM_POINTS,
+                                            nullptr, 0);
+                fprintf(out, "      VF curve    : %d points; graphics run %d "
+                             "points, peak point %d = %u MHz @ %u mV; %d "
+                             "trailing points from other clock domains\n",
+                        populated, layout.graphicsPopulated, layout.lastIndex,
+                        layout.last.freq_kHz / 1000u,
+                        layout.last.volt_uV / 1000u,
+                        layout.droppedPopulated);
             } else {
                 fprintf(out, "      VF curve    : read returned no points "
                              "(getStatus unsupported on this driver/family?)\n");

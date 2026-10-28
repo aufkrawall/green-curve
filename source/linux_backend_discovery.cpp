@@ -26,6 +26,9 @@ static void linux_backend_publish_health(LinuxGpuState* g,
             g->vfSnapshotFresh ? 1 : 0,
             g->health.availableMutationDomains,
             g->health.detail[0] ? g->health.detail : "none");
+        if (!g->vfSnapshotFresh)
+            lb_log("linux_backend: vf layout %s\n",
+                   linux_vf_layout_text(&g->vfLayout).text);
         g->lastLoggedHealth = g->health;
         g->healthLogged = true;
     }

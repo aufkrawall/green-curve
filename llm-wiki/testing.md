@@ -16,6 +16,21 @@ with the corresponding freshly built binary. No physical
 GPU write or driver-failure injection was performed; Linux daemon orchestration
 remains cross-linked and source-gated on this Windows host.
 
+## Linux VF layout diagnostics (2026-10-28)
+
+Source anchors: `tests/linux_vf_read_tests.cpp` (`run_vf_layout_cases()`),
+`source/linux_vf_layout_summary.h`, `source/linux_backend_vf_read.h`.
+
+Cases 7698-7709 run the same fake-driver reader and assert the exact layout
+line: a clean 80-point table; a lower-voltage foreign domain dropped and
+reported; a zero-voltage foreign point that is refused while its layout
+survives; a populated point outside the mask; refusals at info, at status and
+on a changed status mask (`status=not-read`); a reset on every read; and the
+fixed line bound for extreme values. Mutation checks: skipping the per-read
+reset fails 7708 and skipping the status capture fails 7698. The standalone
+fixture compiles with `-Wall -Wextra -Werror`. `python build.py --test` passes;
+plain build 362 refreshed all 12 current packages. No GPU was accessed.
+
 ## Linux VF point-mask layout (2026-10-28)
 
 Source anchors: `tests/linux_vf_read_tests.cpp`,

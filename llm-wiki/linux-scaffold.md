@@ -299,7 +299,7 @@ once, stamped by `[meta] linux_mem_migrated`:
 | `source/vf_backends.{h,cpp}` | The six per-family `VfBackendSpec` tables + `vf_backend_for_architecture()`. Shared with Windows (one copy). |
 | `source/platform.{h}` / `platform_posix.cpp` | OS shim: `pl_lib_open/sym/close`, `pl_open_driver_library` (NvAPI/NVML sonames), `pl_sleep_ms`, atomics, mutex, threads, `gc_*` bounded strings, `pl_run_capture` (POSIX-only since 2026-09-23; Windows has no subprocess capture). |
 | `source/win32_compat.h` | Linux opaque stand-ins for the Win32 types in shared headers (so `app_shared.h`/`AppData` compile on Linux). |
-| `source/linux_backend.{h,cpp}`, `source/linux_backend_nvml_write.cpp`, `source/linux_backend_discovery.cpp`, `source/linux_backend_mutation.cpp`, `source/linux_gpu_binding_policy.h`, `source/linux_architecture_policy.h`, `source/linux_vf_validation.h`, `source/linux_curve_targets.h` | Stable NVML/NvAPI PCI discovery and same-PCI recovery, architecture retention/fallback, atomic VF validation/publication, pure curve-target composition, and transactional mutation. |
+| `source/linux_backend.{h,cpp}`, `source/linux_backend_nvml_write.cpp`, `source/linux_backend_discovery.cpp`, `source/linux_backend_mutation.cpp`, `source/linux_gpu_binding_policy.h`, `source/linux_architecture_policy.h`, `source/linux_vf_validation.h`, `source/linux_backend_vf_read.h`, `source/linux_vf_layout_summary.h`, `source/linux_curve_targets.h` | Stable NVML/NvAPI PCI discovery and same-PCI recovery, architecture retention/fallback, atomic VF validation/publication with a per-read layout summary, pure curve-target composition, and transactional mutation. |
 | `source/linux_daemon.{h,cpp}`, `source/linux_daemon_transport.cpp`, `source/linux_daemon_identity.cpp`, `source/linux_daemon_snapshot_runtime.cpp`, `source/linux_mutation_authority.h`, `source/linux_operation_runtime.h`, `source/linux_fan_runtime.h`, `source/linux_socket_permissions.h`, `source/linux_socket_path_permissions.h` | Root daemon socket/dispatch/header-first transport, coherent health/state publication, domain-scoped mutation authority, bounded operation deduplication/query, interruptible fan runtime, and fail-closed filesystem-socket permission configuration/verification. |
 | `source/linux_auto_restore_policy.h`, `source/linux_auto_restore_runtime.h` | The pure crash-loop/lockout rule and the single unattended-write path (guard, backend re-preparation, shared reset-to-stock request builder, resume handler). Both boot-apply modes and the resume restore go through the runtime; nothing else may call `linux_backend_apply()` for an automatic write. |
 | `source/linux_daemon_client.h` | The client half's shared machinery — which adapter a response is authoritative about, and how a request is built, sent, and its outcome recovered after a transport failure. Split out of `linux_daemon.cpp` for the source-size ratchet. |
@@ -373,6 +373,22 @@ once, stamped by `[meta] linux_mem_migrated`:
   `tests/linux_vf_read_tests.cpp` (7680-7697); invalid versions, masks, points,
   offsets and incomplete reads still refuse publication. Physical Pascal
   verification is pending. See [GPU backend](gpu-backend.md#vf-info-point-mask-layout-verified-2026-10-28).
+
+- **VF layout diagnostics (2026-10-28).** A refused snapshot publishes zero
+  points and one reason, which cannot show how a new family's table is shaped.
+  Every atomic read now records `LinuxVfLayoutSummary`
+  (`linux_vf_layout_summary.h`): mask bit count and extent, raw populated
+  points before the graphics-run trim, the kept run's first/last point,
+  populated points outside the mask, and the first dropped point. It is reset
+  per read and kept when validation refuses. The probe report (`- VF layout:`),
+  `--self-test` (`VF layout`) and the health-transition debug log print one
+  line such as `mask=83[0..82] status=83 graphics=80[0..79]
+  600MHz@650mV..1785MHz@1045mV unmasked=0 dropped=3[first 80=405MHz@540mV]`;
+  `status=not-read` marks a refusal before the status table. The console probe
+  reports the peak of the graphics run instead of the last point in the window.
+  Open question: a populated foreign point with zero voltage does not end the
+  run (cases 7701-7702), so such a table is refused; behavior is unchanged
+  until a real table shows it.
 
 - **Error codes are negative** on Linux (`-1` generic, `-9`
   INCOMPATIBLE_STRUCT_VERSION) vs Windows `0x8000xxxx`. Success is `0` both;

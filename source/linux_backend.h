@@ -24,6 +24,7 @@
 #include "linux_gpu_binding_policy.h"
 #include "linux_gpu_uuid.h"
 #include "linux_transaction.h"
+#include "linux_vf_layout_summary.h"
 #include "fan_fixed_maintenance_policy.h"
 #include "platform.h"
 
@@ -78,6 +79,8 @@ struct LinuxGpuState {
     int vfInfoStatus;
     int vfStatusStatus;
     int vfControlStatus;
+    // Shape of the last VF read, also when it was refused (diagnostics only).
+    LinuxVfLayoutSummary vfLayout;
     ServiceGpuHealth health;
     ServiceGpuHealth lastLoggedHealth;
     bool healthLogged;

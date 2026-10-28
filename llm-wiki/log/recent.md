@@ -5,6 +5,23 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-28: VF layout in Linux probe and self-test
+
+- Review of the Pascal VF-info fix: it removes the cause of the reported
+  refusal, but status/control on Pascal, the graphics-run split and Pascal
+  writes remain unverified on hardware. A refused snapshot published only
+  `0 points` and one reason, too little to diagnose a new family's table.
+- Each Linux VF read now records a layout summary, kept when validation
+  refuses; the probe report, `--self-test` and the health-transition debug log
+  print it as one line. The console probe names the graphics-run peak instead
+  of the last point in the read window. `linux_vf_validation.h` now includes
+  `platform.h` itself instead of relying on include order.
+- Cases 7698-7709; mutation checks fail 7708 and 7698. Full regressions pass.
+  Plain build 362 refreshed all 12 current packages with matching SHA-256
+  sidecars; both Linux binaries contain the new layout output and the x64
+  archive binary matches the build output. No GPU was read or written; the
+  layout line on real Pascal hardware awaits a user report.
+
 ## 2026-10-28: Valid probe telemetry queries
 
 - The probe uses supported `nvidia-smi` display categories for power and

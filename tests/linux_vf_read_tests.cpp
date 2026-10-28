@@ -24,6 +24,8 @@ struct VfDriver {
     int refusedCall;
     int malformedVersionCall;
     int changedMaskCall;
+    int foreignPoints;       // another clock domain right after the curve
+    bool foreignZeroVoltage;
     bool malformedPoint;
     bool malformedOffset;
     bool requestValid;
@@ -68,6 +70,14 @@ static int read_table(void* handle, void* buffer, int call) {
             put_word(bytes, offset, driver->malformedPoint && i == 2
                 ? 7000000u : 600000u + (unsigned int)i * 15000u);
             put_word(bytes, offset + 4u, 650000u + (unsigned int)i * 5000u);
+            if (i + 1 == driver->points) {
+                for (int f = 0; f < driver->foreignPoints; ++f) {
+                    offset += b->statusEntryStride;
+                    put_word(bytes, offset, 405000u + (unsigned int)f * 1000u);
+                    put_word(bytes, offset + 4u, driver->foreignZeroVoltage
+                        ? 0u : 540000u + (unsigned int)f * 5000u);
+                }
+            }
         } else if (call == 2) {
             unsigned int offset = b->controlEntryBaseOffset +
                 (unsigned int)i * b->controlEntryStride + b->controlEntryDeltaOffset;
@@ -103,6 +113,101 @@ static void initialize(VfDriver* driver, LinuxGpuState* gpu, int points = 80) {
     gpu->backend = driver->backend;
     gpu->gpuHandle = driver;
     gpu->nvapiQi = query_interface;
+}
+
+static void add_foreign_domain(VfDriver* driver, int count, bool zeroVoltage) {
+    driver->foreignPoints = count;
+    driver->foreignZeroVoltage = zeroVoltage;
+    for (int i = driver->points; i < driver->points + count; ++i)
+        driver->mask[i / 8] |= (unsigned char)(1u << (i % 8));
+}
+
+static bool layout_text_is(const LinuxGpuState& gpu, const char* expected) {
+    return strcmp(linux_vf_layout_text(&gpu.vfLayout).text, expected) == 0;
+}
+
+// The probe/self-test VF layout line: what the driver returned, also when the
+// snapshot is refused, so one report shows why a new family did not validate.
+static int run_vf_layout_cases() {
+    VfDriver driver = {};
+    LinuxGpuState gpu = {};
+    char why[160] = {};
+    initialize(&driver, &gpu);
+    if (!nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) ||
+        !layout_text_is(gpu, "mask=80[0..79] status=80 graphics=80[0..79] "
+            "600MHz@650mV..1785MHz@1045mV unmasked=0 dropped=0") ||
+        gpu.vfLayout.firstDroppedIndex != -1) return 7698;
+
+    // A lower-voltage domain after the curve is dropped and still reported.
+    initialize(&driver, &gpu);
+    add_foreign_domain(&driver, 3, false);
+    if (!nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) ||
+        gpu.numPopulated != 80 || gpu.curve[80].freq_kHz != 0) return 7699;
+    if (!layout_text_is(gpu, "mask=83[0..82] status=83 graphics=80[0..79] "
+            "600MHz@650mV..1785MHz@1045mV unmasked=0 "
+            "dropped=3[first 80=405MHz@540mV]")) return 7700;
+
+    // A zero-voltage foreign point does not end the run, so the snapshot is
+    // refused; the layout keeps the evidence the published state cannot.
+    initialize(&driver, &gpu);
+    add_foreign_domain(&driver, 1, true);
+    if (nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) ||
+        gpu.vfSnapshotFresh || gpu.numPopulated ||
+        strstr(why, "point 80 out of range") == nullptr) return 7701;
+    if (!layout_text_is(gpu, "mask=81[0..80] status=81 graphics=81[0..80] "
+            "600MHz@650mV..405MHz@0mV unmasked=0 dropped=0")) return 7702;
+
+    // A populated point outside the returned mask is counted.
+    initialize(&driver, &gpu);
+    driver.mask[0] &= (unsigned char)~(1u << 5);
+    if (!nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) ||
+        gpu.vfLayout.graphicsUnmasked != 1 || gpu.vfLayout.maskBits != 79)
+        return 7703;
+
+    // Refusals before the status table name the stage that was reached.
+    initialize(&driver, &gpu);
+    memset(driver.mask, 0, sizeof(driver.mask));
+    if (nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) ||
+        !layout_text_is(gpu, "mask=0 status=not-read")) return 7704;
+    initialize(&driver, &gpu);
+    driver.refusedCall = 0;
+    if (nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) ||
+        !layout_text_is(gpu, "mask=none status=not-read")) return 7705;
+    initialize(&driver, &gpu);
+    driver.refusedCall = 1;
+    if (nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) ||
+        !layout_text_is(gpu, "mask=80[0..79] status=not-read")) return 7706;
+    initialize(&driver, &gpu);
+    driver.changedMaskCall = 1;
+    if (nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) ||
+        !layout_text_is(gpu, "mask=80[0..79] status=not-read")) return 7707;
+
+    // Every read starts from an empty layout: no stale status shape.
+    initialize(&driver, &gpu);
+    if (!nvapi_read_vf_snapshot(&gpu, why, sizeof(why))) return 7708;
+    driver.refusedCall = 0;
+    if (nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) ||
+        gpu.vfLayout.maskValid || gpu.vfLayout.statusValid ||
+        !layout_text_is(gpu, "mask=none status=not-read")) return 7708;
+
+    // Extreme values still fit the fixed line, suffix included.
+    LinuxVfLayoutSummary wide;
+    linux_vf_layout_reset(&wide);
+    unsigned char full[32];
+    memset(full, 0xFF, sizeof(full));
+    linux_vf_layout_note_mask(&wide, full, sizeof(full));
+    VFCurvePoint raw[VF_NUM_POINTS] = {};
+    for (int i = 0; i < VF_NUM_POINTS; ++i)
+        raw[i] = {0xFFFFFFFFu, i == 64 ? 1u : 0xFFFFFFFFu};
+    linux_vf_layout_note_status(&wide, raw, VF_NUM_POINTS, nullptr, 0);
+    const LinuxVfLayoutText text = linux_vf_layout_text(&wide);
+    const size_t length = strnlen(text.text, sizeof(text.text));
+    if (wide.maskBits != 256 || wide.droppedPopulated != 64 ||
+        length == 0 || length >= sizeof(text.text) ||
+        text.text[length - 1] != ']' ||
+        strstr(text.text, "dropped=64[first 64=4294967MHz@0mV]") == nullptr)
+        return 7709;
+    return 0;
 }
 } // namespace
 
@@ -169,7 +274,7 @@ int run_linux_vf_read_tests() {
     if (nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) || gpu.vfSnapshotFresh ||
         gpu.vfStructureValid || gpu.curve[79].freq_kHz != 1785000u ||
         gpu.freqOffsets[79] != 15000 || !why[0]) return 7697;
-    return 0;
+    return run_vf_layout_cases();
 }
 
 #ifdef GC_VF_READ_TEST_MAIN

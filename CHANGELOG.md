@@ -39,7 +39,7 @@ GPU selection, fan control and recovery improve across hardware changes and fail
 ### Fixed
 
 - **Linux Pascal curves:** GTX 10-series voltage/frequency curves no longer fail validation.
-- **Linux probe:** power, clock and fan queries work.
+- **Linux probe:** power, clock and fan queries work; probe and self-test show the voltage/frequency table layout.
 - **Windows multi-GPU systems:** fan, power and clock changes stay on the selected GPU; the power-limit fallback no longer changes other GPUs.
 - **Windows failed Apply:** memory, power and fan changes are recovered and reported; unverified ones require Reset before unrelated settings apply.
 - **Windows power limit:** a change counts only once the driver reports the requested limit.

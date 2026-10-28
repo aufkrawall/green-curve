@@ -370,6 +370,8 @@ bool linux_backend_self_test(LinuxGpuState* g, FILE* out) {
             ctrlOk ? "ok" : "FAILED", g->vfControlStatus);
     fprintf(out, "Structural validation  : %s%s%s\n", plausible ? "ok" : "FAILED",
             (!plausible && why[0]) ? " — " : "", (!plausible && why[0]) ? why : "");
+    fprintf(out, "VF layout              : %s\n",
+            linux_vf_layout_text(&g->vfLayout).text);
     fprintf(out, "Snapshot freshness     : %s (recovery attempted=%s succeeded=%s)\n",
             refresh.vfFresh ? "fresh" : "STALE",
             refresh.health.recoveryAttempted ? "yes" : "no",

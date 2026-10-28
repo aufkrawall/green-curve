@@ -64,6 +64,7 @@ static bool nvapi_get_vf_info(LinuxGpuState* g) {
     unsigned char mask[sizeof(g->vfMask)] = {};
     memcpy(mask, ibuf + b->infoMaskOffset, sizeof(mask));
     free(ibuf);
+    linux_vf_layout_note_mask(&g->vfLayout, mask, (unsigned int)sizeof(mask));
     if (!linux_vf_info_data_usable(mask, (unsigned int)sizeof(mask))) {
         g->vfInfoStatus = LB_NVAPI_INVALID_DATA;
         return false;
@@ -155,6 +156,9 @@ static bool nvapi_read_curve_candidate(LinuxGpuState* g,
             candidate->curve[i].freq_kHz = freq;
             candidate->curve[i].volt_uV = volt;
         }
+        linux_vf_layout_note_status(&g->vfLayout, candidate->curve,
+                                    VF_NUM_POINTS, g->vfMask,
+                                    (unsigned int)sizeof(g->vfMask));
         int domainEnd = linux_vf_graphics_domain_length(candidate->curve,
                                                         VF_NUM_POINTS);
         candidate->populated = 0;
@@ -288,6 +292,7 @@ static bool nvapi_read_vf_snapshot(LinuxGpuState* g, char* why,
     g->vfInfoStatus = LB_NVAPI_FUNCTION_MISSING;
     g->vfStatusStatus = LB_NVAPI_NOT_ATTEMPTED;
     g->vfControlStatus = LB_NVAPI_NOT_ATTEMPTED;
+    linux_vf_layout_reset(&g->vfLayout);
     LinuxVfReadCandidate candidate = {};
     if (!nvapi_get_vf_info(g)) {
         if (why) gc_snprintf(why, whySize, "getInfo status=%d (%s)",

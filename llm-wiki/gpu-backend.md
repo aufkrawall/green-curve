@@ -889,6 +889,11 @@ Assertions 5315-5330 cover shared layout/mask validation. Cases 7680-7697
 execute the production atomic reader with a fake driver; 7680 fails under the
 previous implementation. Physical Pascal read/write verification is pending.
 
+Linux probe reports and `--self-test` also print the last read's VF layout
+(mask extent, raw and kept points, first dropped point), including for a
+refused snapshot; cases 7698-7709. See
+[Linux backend](linux-scaffold.md#nvapi-linux-specifics-handled).
+
 **F-04-001, found alongside it.** `NvAPI_EnumPhysicalGPUs` writes at most
 `NVAPI_MAX_PHYSICAL_GPUS` (64) handles and both call sites pass a 64-entry stack
 array, but only `linux_backend_discovery.cpp` clamped the returned count —
