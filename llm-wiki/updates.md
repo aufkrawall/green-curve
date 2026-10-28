@@ -1236,7 +1236,7 @@ Two things this must get right or it proves nothing:
   4. `publish-hop2`: Builds and publishes follow-up patch to test repo. The newly upgraded client detects and applies the update, verifying that the new updater code has not regressed.
   5. `teardown`: Deletes simulation releases/tags and reverts test repo visibility to private.
   Runbook anchored in `update-procedure.md` Section 10; unit tests in `tools/simulate_release_tests.py`.
-  Guards (`tools/simulate_release_guards.py`, verified 2026-10-17): simulated
+  Guards (`tools/simulate_release_guards.py`, verified 2026-10-28): simulated
   builds trust ONLY a separate simulation key, patched into both key slots of
   the worktree's `update_verify_keys.h`, and manifests are signed with it;
   signing refuses the release key's path and any key a release build trusts, so
@@ -1275,7 +1275,10 @@ Two things this must get right or it proves nothing:
   after the simulation then kept the hop-2 version (`0.29.1`) as its mark and
   reported the public `0.29.0` as "the update channel is offering an older
   release" on every check. Do not reuse a simulated version number for a real
-  release.
+  release. The complete 2-hop simulation was run live again on 2026-10-28 for
+  candidate 0.31.0 (0.30.0 baseline -> 0.31.0 candidate hop 1 -> 0.31.1 hop 2 ->
+  normal client restored), with all 334 settings fields matching across all
+  stages and teardown restoring the client watermark cleanly.
 
   The seen-version editor preserves unrelated bytes, original CR/LF endings
   and an unterminated final line. `init` records the original `[updates]` layout

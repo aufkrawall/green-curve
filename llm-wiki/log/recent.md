@@ -5,6 +5,27 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-28: Isolated two-hop updater release simulation for 0.31.0
+
+- Autonomously executed the prescribed isolated two-hop updater simulation
+  (`update-procedure.md` Section 10, `tools/simulate_release.py`) for candidate
+  0.31.0 against throwaway test repository `aufkrawall/green-curve-update-test`
+  using an offline simulation key.
+- Baseline 0.30.0 was built from git tag `0.30.0` repointed to the test repo,
+  installed silently, and seeded with the client's active settings.
+- Hop 1 published candidate 0.31.0 to the test channel; baseline 0.30.0
+  discovered, verified, staged, and installed 0.31.0, preserving all 334
+  settings fields through `pending-update-restore.ini` handoff replay.
+- Hop 2 published follow-up patch 0.31.1 to the test channel; the newly
+  installed 0.31.0 client verified and applied the update cleanly, confirming
+  updater non-regression.
+- Reinstalled production 0.31.0 client with active profile 1 restored.
+  Teardown deleted test releases and tags from the clone repository, reverted
+  repo visibility to private, and restored the machine's `highest_seen_version`
+  watermark back to 0.30.0. The production repository remains untouched at 0.30.0.
+- Machine-readable evidence and report recorded in
+  `dist/test-simulation/20261028-b65935e/`.
+
 ## 2026-10-28: Review follow-up: memory plan evidence and recipe digest drift
 
 - An external review of `f9c23ba..6f2bd10` found that the selection reset
@@ -30,8 +51,8 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   7670-7675 (`tests/update_release_031_tests.cpp`) cover manifest
   eligibility from every public release, including both 0.30 spellings.
 - The maintainer reported normal behaviour in hardware smoke tests on Windows
-  and Linux before the bump. The two-hop updater simulation was not repeated
-  for this release.
+  and Linux before the bump. The two-hop updater simulation was subsequently
+  performed and verified before publication (see entry above).
 
 ## 2026-10-28: Review follow-up: per-GPU write evidence and memory gating
 
