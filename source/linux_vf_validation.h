@@ -6,6 +6,7 @@
 #define GREEN_CURVE_LINUX_VF_VALIDATION_H
 
 #include "gpu_core.h"
+#include "platform.h"
 
 static inline bool linux_vf_returned_version_valid(
     unsigned int returnedVersion, unsigned int expectedStructVersion,
