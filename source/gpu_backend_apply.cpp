@@ -34,7 +34,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         set_message(result, resultSize, "No desired settings");
         return false;
     }
-    if (!apply_power_uncertainty_precheck(desired, result, resultSize)) return false;
+    if (!apply_write_uncertainty_precheck(desired, result, resultSize)) return false;
     // Every VF write below measures itself against this, so the apply cannot
     // outrun the budget its client deadline is derived from.
     const ULONGLONG applyStartTickMs = GetTickCount64();

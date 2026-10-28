@@ -152,8 +152,17 @@ def check_all(ctx, require_text, forbid_text):
                  "!forcePowerWrite && !power_limit_surface_available(",
                  "an uncertain power repair is not blocked by missing fresh readback")
     require_text(_p(ctx, "gpu_backend_apply_failure.h"),
-                 "if (!desired || !g_app.powerLimitWriteUncertain || desired->hasPowerLimit)",
+                 "g_app.powerLimitWriteUncertain && !desired->hasPowerLimit",
                  "a sparse Apply cannot ignore an unverified power write")
+    require_text(_p(ctx, "gpu_backend_apply_failure.h"),
+                 "g_app.memOffsetWriteUncertain && !desired->hasMemOffset",
+                 "a sparse Apply cannot ignore an unverified memory write")
+    require_text(_p(ctx, "gpu_backend_apply.cpp"),
+                 "if (!apply_write_uncertainty_precheck(desired, result, resultSize)) return false;",
+                 "the service Apply runs the unverified-write precheck before writes")
+    require_text(_p(ctx, "gpu_backend.cpp"),
+                 "reset_selected_gpu_write_evidence(&g_app);",
+                 "a GPU selection change discards the previous GPU's write evidence")
     require_text(_p(ctx, "main_service_apply_runtime.cpp"),
                  "g_app.powerLimitPct != 100 || g_app.powerLimitWriteUncertain",
                  "explicit Reset also repairs uncertain power state")

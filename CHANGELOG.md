@@ -37,7 +37,7 @@ Settings, GPU selection, fan control and recovery are more reliable across hardw
 
 ### Fixed
 
-- **Windows memory recovery:** missing memory-clock readings no longer make an unverified reset appear successful.
+- **Windows memory recovery:** an unverified memory reset is no longer reported as successful, and Reset is required before unrelated settings apply.
 - **Windows fan recovery:** a failed first fan-setting write now triggers the normal recovery path instead of leaving the fan change unaccounted for.
 - **Windows power-limit recovery:** unverified writes remain repairable; an unavailable writer no longer blocks unrelated settings when nothing was written.
 - **Linux delayed recovery:** an explicit Refresh can rediscover a late GPU, deferred fan handback runs outside state reads, and automatic restore rechecks recovery authority before writing.

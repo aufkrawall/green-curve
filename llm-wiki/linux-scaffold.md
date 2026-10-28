@@ -939,6 +939,15 @@ authority, perform deferred fan handback, or write the ownership marker. It
 replaces the unavailable backend state, bumps the GPU generation when the
 identity changes, publishes the result, and wakes the fan worker.
 
+Design limit (2026-10-28): this discovery runs inside the state-read deadline,
+the same way a targeted read that switches GPU already re-initializes through
+`linux_backend_select_target()`. The read budget does not reserve time for a
+backend init, so a slow driver start can make that one read time out; the
+next read finds the backend ready. The retry logs `initMs` and a separate line
+when discovery exceeds `GC_DAEMON_STATE_REFRESH_BUDGET_MS`, so a client
+timeout can be matched to a slow init rather than guessed. Moving discovery
+off the request path would change GPU switching as well and is not planned.
+
 Deferred fan handback now belongs to the worker, which runs it under `g_lock`
 before normal maintenance and records an adapter change. Automatic restore
 may also run it during backend preparation, because that caller is already a

@@ -5,14 +5,33 @@
 
 #include "apply_recovery_text.h"
 
-static bool apply_power_uncertainty_precheck(const DesiredSettings* desired,
+// An unverified memory or power write is repaired only by a request that owns
+// that domain (or Reset). Any other Apply would succeed while the GPU keeps a
+// value nobody proved, which recovery already told the user to Reset first.
+static bool apply_write_uncertainty_precheck(const DesiredSettings* desired,
     char* result, size_t resultSize) {
-    if (!desired || !g_app.powerLimitWriteUncertain || desired->hasPowerLimit)
-        return true;
-    set_message(result, resultSize,
-        "A previous power-limit write is still unverified. Run Reset before"
-        " applying settings that do not repair the power limit.");
-    set_last_apply_phase("apply: refused (unverified power limit)");
+    if (!desired) return true;
+    const bool power = g_app.powerLimitWriteUncertain && !desired->hasPowerLimit;
+    const bool memory = g_app.memOffsetWriteUncertain && !desired->hasMemOffset;
+    if (!power && !memory) return true;
+    set_message(result, resultSize, "%s",
+        power && memory
+            ? "Previous memory-offset and power-limit writes are still unverified."
+              " Run Reset before applying settings that do not repair them."
+            : memory
+                ? "A previous memory-offset write is still unverified. Run Reset"
+                  " before applying settings that do not repair the memory offset."
+                : "A previous power-limit write is still unverified. Run Reset before"
+                  " applying settings that do not repair the power limit.");
+    set_last_apply_phase(power && memory
+        ? "apply: refused (unverified memory offset and power limit)"
+        : memory ? "apply: refused (unverified memory offset)"
+                 : "apply: refused (unverified power limit)");
+    debug_log("apply: refused before writes; unverified memory=%d power=%d"
+              " (request owns memory=%d power=%d)\n",
+        g_app.memOffsetWriteUncertain ? 1 : 0,
+        g_app.powerLimitWriteUncertain ? 1 : 0,
+        desired->hasMemOffset ? 1 : 0, desired->hasPowerLimit ? 1 : 0);
     return false;
 }
 

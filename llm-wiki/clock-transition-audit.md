@@ -69,6 +69,18 @@ unverified stock recovery, matching and contradictory fresh memory clocks,
 and a missing stock denominator. Case 7640 rejects the prior predicate.
 Live driver-failure recovery remains hardware-unverified.
 
+Since 2026-10-28 an unverified memory write gates Apply the same way power
+does: `apply_write_uncertainty_precheck()` refuses, before any write, a
+request that does not own every unverified domain (memory offset, power
+limit), naming the domains it found. Recovery messages already tell the user
+to Reset first; the precheck enforces it. Changing the selected GPU discards
+write evidence through `reset_selected_gpu_write_evidence()`
+(`source/gpu_selection_write_evidence.h`): both uncertainty flags, the power
+surface proof and the fresh scalar readbacks belong to the previous GPU, and
+a stale valid memory readback would otherwise let the setter skip a write on
+the new one. The reset logs the discarded flags. Cases 7660-7663 cover the
+selection reset, 7664-7669 the combined precheck.
+
 Last verified: 2026-10-27.
 
 ## Summary

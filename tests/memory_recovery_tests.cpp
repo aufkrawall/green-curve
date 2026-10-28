@@ -70,6 +70,7 @@ static void StringCchCopyA(char* out, size_t size, const char* value) {
 }
 static void refresh_global_state(char*, size_t) {}
 #include "gpu_backend_apply_failure.h"
+#include "gpu_selection_write_evidence.h"
 
 static void initialize(bool canVerifyReset) {
     g_app = {};
@@ -121,7 +122,69 @@ static int run_pstate_evidence_tests() {
         g_app.readback.memOffset) return 7645;
     return 0;
 }
+// A GPU switch must not carry the previous GPU's evidence. An uncertain flag
+// would force a write on the new GPU; a stale valid readback would let the
+// setter skip a write it never verified there.
+static int run_gpu_selection_evidence_tests() {
+    initialize(false);
+    nvapi_set_mem_offset(1500000, false);
+    g_app.powerLimitWriteUncertain = true;
+    g_app.powerLimitSurfaceProven = true;
+    g_app.powerLimitRecoveryDefaultmW = 250000;
+    g_app.readback.powerLimit = true;
+    if (!g_app.memOffsetWriteUncertain) return 7660;
+    reset_selected_gpu_write_evidence(&g_app);
+    if (g_app.memOffsetWriteUncertain || g_app.powerLimitWriteUncertain ||
+        g_app.powerLimitSurfaceProven || g_app.powerLimitRecoveryDefaultmW ||
+        g_app.readback.memOffset || g_app.readback.powerLimit ||
+        g_app.readback.gpuOffset || g_app.readback.pstate ||
+        g_app.powerLimitPct != POWER_LIMIT_DEFAULT_PCT) return 7661;
+    const auto recovery = rollback_to_safe_defaults();
+    if (recovery.memory.attempted) return 7662;
+
+    // The previous GPU read 1500 MHz with fresh evidence; the new GPU has not
+    // been read, so the same target is written rather than skipped.
+    initialize(true);
+    g_app.memClockOffsetkHz = 1500000;
+    g_app.readback.memOffset = true;
+    reset_selected_gpu_write_evidence(&g_app);
+    if (nvapi_set_mem_offset(1500000, false) || writes != 1) return 7663;
+    return 0;
+}
+
+// An Apply that does not own an unverified domain cannot repair it, so it is
+// refused before any write; one that owns every unverified domain proceeds.
+static int run_uncertainty_precheck_tests() {
+    char detail[256] = {};
+    DesiredSettings fan = {};
+    fan.hasFan = true;
+    DesiredSettings memory = {};
+    memory.hasMemOffset = true;
+    DesiredSettings both = memory;
+    both.hasPowerLimit = true;
+    initialize(false);
+    if (!apply_write_uncertainty_precheck(&fan, detail, sizeof(detail))) return 7664;
+    nvapi_set_mem_offset(1500000, false);
+    if (!g_app.memOffsetWriteUncertain ||
+        apply_write_uncertainty_precheck(&fan, detail, sizeof(detail)) ||
+        !std::strstr(detail, "memory-offset") || std::strstr(detail, "power"))
+        return 7665;
+    if (!apply_write_uncertainty_precheck(&memory, detail, sizeof(detail))) return 7666;
+    g_app.powerLimitWriteUncertain = true;
+    detail[0] = 0;
+    if (apply_write_uncertainty_precheck(&memory, detail, sizeof(detail)) ||
+        !std::strstr(detail, "power-limit") || std::strstr(detail, "memory"))
+        return 7667;
+    detail[0] = 0;
+    if (apply_write_uncertainty_precheck(&fan, detail, sizeof(detail)) ||
+        !std::strstr(detail, "memory-offset and power-limit")) return 7668;
+    if (!apply_write_uncertainty_precheck(&both, detail, sizeof(detail))) return 7669;
+    return 0;
+}
+
 static int run() {
+    if (int r = run_gpu_selection_evidence_tests()) return r;
+    if (int r = run_uncertainty_precheck_tests()) return r;
     initialize(true);
     if (nvapi_set_mem_offset(1500000, false) || !g_app.memOffsetWriteUncertain ||
         g_app.memClockOffsetkHz || hardwareMHz != 3000) return 7550;

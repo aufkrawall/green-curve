@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-28: Review follow-up: per-GPU write evidence and memory gating
+
+- A review of the 2026-10-27 commits found that a GPU selection change cleared
+  power write evidence but kept the memory uncertainty flag and the fresh
+  scalar readbacks. `reset_selected_gpu_write_evidence()` now clears all of
+  them in one place and logs what it discarded.
+- An unverified memory write now refuses an Apply that does not set memory,
+  like power already did; one precheck names every unverified domain.
+- The Linux output-directory error names the requested path again.
+- Linux read-time backend discovery logs its duration and warns when it
+  exceeds the state refresh budget; the in-request design is recorded as a
+  limit (it matches targeted GPU switching).
+- Cases 7660-7669. Sources: [clock recovery](../clock-transition-audit.md),
+  [Linux](../linux-scaffold.md), [tests](../testing.md).
+
 ## 2026-10-27: Power uncertainty follows actual write attempts
 
 - Missing power writers, unresolved fallback targets and failed process

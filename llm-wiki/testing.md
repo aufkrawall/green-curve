@@ -145,6 +145,13 @@ unverified even when cached zero matches the requested reset. Case 7640 fails
 under the prior predicate. The fake driver's P-state projection follows the
 production memory-clock calculation; no physical GPU writes are performed.
 
+Cases 7660-7663 execute `reset_selected_gpu_write_evidence()`: memory and power
+uncertainty, surface proof and scalar readbacks are cleared, rollback no longer
+attempts the previous GPU's memory reset, and a target the previous GPU had
+verified is written instead of skipped. Cases 7664-7669 execute the combined
+unverified-write precheck for memory-only, power-only, both, and owning
+requests, including the domain named in each refusal.
+
 ## Linux fan ownership target (2026-10-27)
 
 Source anchors: `tests/linux_fan_ownership_tests.cpp`,

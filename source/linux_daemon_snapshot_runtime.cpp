@@ -264,10 +264,19 @@ static bool daemon_retry_backend_for_read(bool explicitRefresh) {
     g_backendReadInitAttempted = true;
     LinuxGpuState replacement = {};
     char err[256] = {};
-    if (!linux_backend_init(&replacement, nullptr, err, sizeof(err))) {
+    // Discovery runs inside this read's deadline, like a targeted GPU switch.
+    // The timing makes a slow driver start visible against that budget.
+    const unsigned long long initStartMs = monotonic_ms();
+    const bool initOk = linux_backend_init(&replacement, nullptr, err, sizeof(err));
+    const unsigned long long initMs = monotonic_ms() - initStartMs;
+    if (initMs > GC_DAEMON_STATE_REFRESH_BUDGET_MS)
+        dlog("daemon backend retry: discovery took %llu ms, over the %u ms state"
+             " refresh budget; the client may time out this read\n",
+             initMs, (unsigned int)GC_DAEMON_STATE_REFRESH_BUDGET_MS);
+    if (!initOk) {
         linux_backend_shutdown(&replacement);
-        dlog("daemon backend retry: untargeted discovery failed: %s\n",
-             err[0] ? err : "unknown error");
+        dlog("daemon backend retry: untargeted discovery failed after %llu ms: %s\n",
+             initMs, err[0] ? err : "unknown error");
         return false;
     }
     const GpuAdapterInfo previous = g_gpu.selectedGpu;
@@ -278,9 +287,9 @@ static bool daemon_retry_backend_for_read(bool explicitRefresh) {
         !linux_gpu_identity_matches(&previous, &g_gpu.selectedGpu))
         ++g_daemonGpuGeneration;
     dlog("daemon backend retry: untargeted discovery online adapters=%u"
-         " writeIdentityResolved=%d explicit=%d\n",
+         " writeIdentityResolved=%d explicit=%d initMs=%llu\n",
          g_gpu.adapterCount, g_gpu.writeIdentityResolved ? 1 : 0,
-         explicitRefresh ? 1 : 0);
+         explicitRefresh ? 1 : 0, initMs);
     // The worker performs any deferred fan handback outside this read request.
     wake_fan_runtime();
     return true;

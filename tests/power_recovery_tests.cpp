@@ -153,7 +153,7 @@ static int run_write_boundary_tests() {
     g_nvml_api.setPowerLimit = nullptr;
     if (nvapi_set_power_limit(80, false) || powerWrites || fallbackLaunches ||
         g_app.powerLimitWriteUncertain || !g_app.readback.powerLimit ||
-        !apply_power_uncertainty_precheck(&fan, detail, sizeof(detail))) return 7650;
+        !apply_write_uncertainty_precheck(&fan, detail, sizeof(detail))) return 7650;
     if (rollback_to_safe_defaults().power.attempted) return 7651;
 
     // A fallback that cannot identify its GPU has no authority to write.
@@ -173,7 +173,7 @@ static int run_write_boundary_tests() {
     g_app.readback.powerLimit = false;
     if (nvapi_set_power_limit(100, true) || fallbackLaunches != 2 ||
         !g_app.powerLimitWriteUncertain || g_app.readback.powerLimit ||
-        apply_power_uncertainty_precheck(&fan, detail, sizeof(detail))) return 7654;
+        apply_write_uncertainty_precheck(&fan, detail, sizeof(detail))) return 7654;
     smiAvailable = false;
     if (nvapi_set_power_limit(100, true) || !g_app.powerLimitWriteUncertain ||
         g_app.readback.powerLimit) return 7655;

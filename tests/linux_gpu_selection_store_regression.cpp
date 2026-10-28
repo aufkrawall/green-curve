@@ -271,6 +271,12 @@ void test_output_directory_walk() {
     expect(fd < 0 && read_file(regular) == "unchanged",
            "a regular-file ancestor is refused without modifying it");
     if (fd >= 0) close(fd);
+    char directoryError[512] = {};
+    const std::string blocked = regular + "/child";
+    expect(!ensure_directory_recursive(blocked.c_str(), directoryError,
+                                       sizeof(directoryError)) &&
+               strstr(directoryError, blocked.c_str()) != nullptr,
+           "a refused output directory names the requested path");
     // A link root placed in a directory only root can change is a distribution
     // layout (/home -> var/home): root follows it.  The same link owned by
     // anyone else stays refused, so an unprivileged run expects refusal.

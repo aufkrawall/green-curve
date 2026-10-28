@@ -113,7 +113,7 @@ std::string path_join(const std::string& left, const std::string& right) {
 bool ensure_directory_recursive(const char* path, char* err, size_t errSize) {
     int directory = linux_open_output_directory(path, geteuid() == 0);
     if (directory < 0) {
-        set_message(err, errSize, "Cannot create output directory (%s)", strerror(errno));
+        set_message(err, errSize, "Cannot create output directory %s (%s)", path, strerror(errno));
         return false;
     }
     close(directory);

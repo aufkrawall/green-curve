@@ -168,9 +168,15 @@ static void format_gpu_adapter_label(const GpuAdapterInfo* adapter, char* out, s
 }
 
 #include "gpu_selection_config.cpp"
+#include "gpu_selection_write_evidence.h"
 
 static void reset_gpu_runtime_selection() {
     g_applyScalarShiftEvidence.clear();
+    debug_log("gpu selection reset: discarding previous GPU write evidence"
+              " memUncertain=%d powerUncertain=%d memReadback=%d powerReadback=%d\n",
+        g_app.memOffsetWriteUncertain ? 1 : 0,
+        g_app.powerLimitWriteUncertain ? 1 : 0,
+        g_app.readback.memOffset ? 1 : 0, g_app.readback.powerLimit ? 1 : 0);
     g_app.transitionClockCapActive = false;
     g_app.transitionClockCapMHz = 0;
     g_app.gpuHandle = nullptr;
@@ -182,16 +188,7 @@ static void reset_gpu_runtime_selection() {
     g_app.adapterCount = 0;
     memset(g_app.adapters, 0, sizeof(g_app.adapters));
     memset(&g_app.selectedGpu, 0, sizeof(g_app.selectedGpu));
-    g_app.powerLimitPct = POWER_LIMIT_DEFAULT_PCT;
-    g_app.powerLimitDefaultmW = 0;
-    g_app.powerLimitCurrentmW = 0;
-    g_app.powerLimitMinmW = 0;
-    g_app.powerLimitMaxmW = 0;
-    g_app.powerLimitSurfaceProven = false;
-    g_app.powerLimitWriteUncertain = false;
-    g_app.powerLimitRecoveryDefaultmW = 0;
-    g_app.powerLimitRecoveryMinmW = 0;
-    g_app.powerLimitRecoveryMaxmW = 0;
+    reset_selected_gpu_write_evidence(&g_app);
 }
 
 static bool nvapi_enum_gpu() {
