@@ -2949,6 +2949,15 @@ static int run_all_tests(int argc, char** argv) {
             GC_UPDATE_RESTORE_DISCARD) return 5942;
         if (gc_update_restore_decide("0.29.0", "0.30", 30) !=
             GC_UPDATE_RESTORE_DISCARD) return 5943;
+
+        // 0.31.0 release verification: exact apply, and a handoff from either
+        // 0.30 spelling is discarded rather than replayed on the new version.
+        if (gc_update_restore_decide("0.31.0", "0.31.0", 30) !=
+            GC_UPDATE_RESTORE_APPLY) return 5944;
+        if (gc_update_restore_decide("0.31.0", "0.30.0", 30) !=
+            GC_UPDATE_RESTORE_DISCARD) return 5945;
+        if (gc_update_restore_decide("0.31.0", "0.30", 30) !=
+            GC_UPDATE_RESTORE_DISCARD) return 5946;
     }
 
     // F-08-001: IPC object size and field layout sanity

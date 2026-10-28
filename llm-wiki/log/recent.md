@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-28: Prepare the 0.31.0 release
+
+- `VERSION`, README install examples, both Arch recipes and the wiki index
+  name 0.31.0. The recipes keep the 0.30.0 archive digests until the release
+  publishes its inputs; pin them from the published bytes afterwards, as for
+  0.30.0.
+- The changelog section became `## 0.31.0` (387 words, related bullets
+  merged) and `tools/release_prep.py` accepts it against `VERSION`.
+- Cases 5944-5946 cover exact-version restore handoff for 0.31.0; cases
+  7670-7675 (`tests/update_release_031_tests.cpp`) cover manifest
+  eligibility from every public release, including both 0.30 spellings.
+- The maintainer reported normal behaviour in hardware smoke tests on Windows
+  and Linux before the bump. The two-hop updater simulation was not repeated
+  for this release.
+
 ## 2026-10-28: Review follow-up: per-GPU write evidence and memory gating
 
 - A review of the 2026-10-27 commits found that a GPU selection change cleared

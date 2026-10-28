@@ -27,36 +27,31 @@
 
 # Changelog
 
-## Unreleased
+## 0.31.0
 
-Settings, GPU selection, fan control and recovery are more reliable across hardware changes and failed operations.
+Settings, GPU selection, fan control and recovery are more reliable across hardware changes, multiple GPUs and failed operations.
 
 ### Improved
 
 - **Linux GPU identity:** saved settings follow the same physical GPU across PCI bus changes, including among identical cards.
+- **Profiles across GPUs:** advanced clock settings a GPU does not offer are skipped instead of failing the whole profile.
 
 ### Fixed
 
-- **Windows memory recovery:** an unverified memory reset is no longer reported as successful, and Reset is required before unrelated settings apply.
-- **Windows fan recovery:** a failed first fan-setting write now triggers the normal recovery path instead of leaving the fan change unaccounted for.
-- **Windows power-limit recovery:** unverified writes remain repairable; an unavailable writer no longer blocks unrelated settings when nothing was written.
-- **Linux delayed recovery:** an explicit Refresh can rediscover a late GPU, deferred fan handback runs outside state reads, and automatic restore rechecks recovery authority before writing.
-- **Windows profile recovery:** unavailable advanced clocks are skipped; failed Apply reports core and memory recovery.
+- **Windows multi-GPU systems:** fan, power and clock changes stay on the selected GPU; the power-limit fallback no longer changes other GPUs.
+- **Windows failed Apply:** memory, power and fan changes are recovered and reported; unverified ones require Reset before unrelated settings apply.
+- **Windows power limit:** a change counts only once the driver reports the requested limit.
 - **Clock safety:** unsafe curve raises are refused before any write, with recovery attempted on failure.
 - **Voltage/frequency grid:** curve points remain visible as GPU temperature changes.
-- **Linux backend startup:** clients can reconnect after the driver becomes available.
-- **Linux output folders:** privileged saves accept trusted redirected system directories.
-- **Linux fan maintenance:** failed handbacks stay recoverable; successful ones clear stale ownership.
-- **Windows GPU selection:** failed saved-location updates retry automatically.
-- **Linux crash recovery:** the previously controlled GPU's fan is restored, including on multi-GPU systems.
-- **Linux GPU selector:** cycling reaches GPUs that first require Reset.
-- **Linux fan curves:** curve tracking starts reliably and cannot be overwritten by a stale poll.
+- **GPU selection:** adding or disabling unrelated devices no longer hides the GPU, and failed saved-location updates retry automatically.
 - **Fan control verification:** a conflicting driver target still fails a fan-speed write.
-- **GPU selection:** adding or disabling unrelated devices no longer hides the GPU.
+- **Linux late driver start:** clients can reconnect, and Refresh finds a GPU whose driver loaded after the service.
+- **Linux fan recovery:** after a crash, failed operation or failed handback, a manual fan is returned to the driver on the GPU that had it.
+- **Linux failed operations:** unconfirmed settings stay uncertain instead of being replayed, and automatic restore rechecks before writing.
+- **Linux fan curves:** curve tracking starts reliably and cannot be overwritten by a stale poll.
 - **Linux GPU replacement:** another model no longer receives the previous card's boot settings.
-- **Linux failed operations:** manual fans are returned, and unconfirmed settings stay uncertain instead of being replayed.
-- **Windows power limit on several GPUs:** fallback writes only the selected GPU and verifies the reported limit.
-- **Windows multi-GPU binding:** fan, power and clock I/O stay on the selected NVIDIA GPU.
+- **Linux GPU selector:** cycling reaches GPUs that first require Reset.
+- **Linux output folders:** privileged saves accept trusted redirected system directories.
 
 ### Compatibility notes
 
@@ -64,9 +59,11 @@ Existing configuration and profiles remain compatible. Identical GPUs without a 
 
 ### Downloads and verification
 
-These changes are in development; no new public release has been published. Current downloads and verification information remain in the latest release section below.
+- **Windows:** use the setup installer to install or upgrade, or `.7z` for a portable copy.
+- **Linux:** install the Arch package, or extract `.tar.xz` and run `greencurve-setup.sh`.
+- **Verification:** packages include SHA-256 files and [GitHub build attestations](https://github.com/aufkrawall/green-curve/attestations); verify with `gh attestation verify <artifact> --repo aufkrawall/green-curve`.
 
-**Full changelog:** [0.30.0...HEAD](https://github.com/aufkrawall/green-curve/compare/0.30.0...HEAD)
+**Full changelog:** [0.30.0...0.31.0](https://github.com/aufkrawall/green-curve/compare/0.30.0...0.31.0)
 
 ## 0.30.0
 
