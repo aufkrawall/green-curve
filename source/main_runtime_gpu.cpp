@@ -9,7 +9,7 @@ static bool nvapi_read_control_table(unsigned char* buf, size_t bufSize) {
     if (!getFunc) return false;
 
     unsigned char mask[32] = {};
-    if (!nvapi_get_vf_info_cached(mask, nullptr)) return false;
+    if (!nvapi_get_vf_info_cached(mask)) return false;
 
     memset(buf, 0, backend->controlBufferSize);
     const unsigned int version = (backend->controlVersion << 16) | backend->controlBufferSize;

@@ -74,9 +74,7 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
                               ProbeKind kind,
                               const VfBackendSpec* layout,
                               const unsigned char* maskSeed,
-                              size_t maskSeedLen,
-                              bool hasNumClocksSeed,
-                              unsigned int numClocksSeed) -> ProbeCallResult {
+                              size_t maskSeedLen) -> ProbeCallResult {
         ProbeCallResult result = {};
         result.ret = -9999;
         result.size = size;
@@ -102,12 +100,6 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
             }
         }
 
-        if (layout && kind == PROBE_KIND_STATUS && hasNumClocksSeed) {
-            if (layout->statusNumClocksOffset + sizeof(numClocksSeed) <= size) {
-                memcpy(&result.buf[layout->statusNumClocksOffset], &numClocksSeed, sizeof(numClocksSeed));
-            }
-        }
-
         result.ret = func(g_app.gpuHandle, result.buf);
         if (result.ret != 0) {
             nvapi_get_error_message(result.ret, result.errorText, sizeof(result.errorText));
@@ -122,19 +114,13 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
         PROBE_KIND_INFO,
         selected,
         ffMask,
-        sizeof(ffMask),
-        false,
-        0);
+        sizeof(ffMask));
 
     unsigned char cachedMask[32] = {};
-    unsigned int cachedNumClocks = selected->defaultNumClocks;
     bool cachedSeedAvailable = false;
     if (seedInfo.ret == 0 &&
-        selected->infoMaskOffset + sizeof(cachedMask) <= seedInfo.size &&
-        selected->infoNumClocksOffset + sizeof(cachedNumClocks) <= seedInfo.size) {
+        selected->infoMaskOffset + sizeof(cachedMask) <= seedInfo.size) {
         memcpy(cachedMask, &seedInfo.buf[selected->infoMaskOffset], sizeof(cachedMask));
-        memcpy(&cachedNumClocks, &seedInfo.buf[selected->infoNumClocksOffset], sizeof(cachedNumClocks));
-        if (cachedNumClocks == 0) cachedNumClocks = selected->defaultNumClocks;
         cachedSeedAvailable = true;
     }
 
@@ -147,10 +133,8 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
                                    const char* seedSource,
                                    const unsigned char* maskSeed,
                                    size_t maskSeedLen,
-                                   bool hasNumClocksSeed,
-                                   unsigned int numClocksSeed,
                                    bool includeFullBytes) {
-        ProbeCallResult result = run_probe_call(id, size, version, kind, layout, maskSeed, maskSeedLen, hasNumClocksSeed, numClocksSeed);
+        ProbeCallResult result = run_probe_call(id, size, version, kind, layout, maskSeed, maskSeedLen);
 
         append("      {\n");
         append("        \"label\": ");
@@ -168,9 +152,6 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
             append_hex_bytes(maskSeed, (unsigned int)maskSeedLen);
             append("\",");
             append("\n");
-        }
-        if (hasNumClocksSeed) {
-            append("        \"seed_num_clocks\": %u,\n", numClocksSeed);
         }
 
         if (!result.found) {
@@ -206,14 +187,11 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
 
         if (result.ret == 0 && layout) {
             if (kind == PROBE_KIND_INFO) {
-                if (layout->infoMaskOffset + 32 <= result.size && layout->infoNumClocksOffset + 4 <= result.size) {
-                    unsigned int assumedNumClocks = 0;
-                    memcpy(&assumedNumClocks, &result.buf[layout->infoNumClocksOffset], sizeof(assumedNumClocks));
+                if (layout->infoMaskOffset + 32 <= result.size) {
                     append(",\n        \"assumed_info\": {\n");
                     append("          \"mask_hex\": \"");
                     append_hex_bytes(&result.buf[layout->infoMaskOffset], 32);
-                    append("\",\n");
-                    append("          \"num_clocks\": %u\n", assumedNumClocks);
+                    append("\"\n");
                     append("        }");
                 }
             } else if (kind == PROBE_KIND_STATUS) {
@@ -264,7 +242,7 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
     };
     auto run_public_summary = [&](unsigned int id, unsigned int size, unsigned int version) -> PublicCallSummary {
         PublicCallSummary summary = {};
-        ProbeCallResult result = run_probe_call(id, size, version, PROBE_KIND_GENERIC, nullptr, nullptr, 0, false, 0);
+        ProbeCallResult result = run_probe_call(id, size, version, PROBE_KIND_GENERIC, nullptr, nullptr, 0);
         summary.found = result.found;
         summary.callable = result.callable;
         summary.ret = result.ret;
@@ -285,7 +263,7 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
 
     int psOffsetsV2[13] = {};
     bool psOffsetsV2Valid = false;
-    ProbeCallResult psScanV2 = run_probe_call(0x6FF81213u, 0x1CF8, 2, PROBE_KIND_GENERIC, nullptr, nullptr, 0, false, 0);
+    ProbeCallResult psScanV2 = run_probe_call(0x6FF81213u, 0x1CF8, 2, PROBE_KIND_GENERIC, nullptr, nullptr, 0);
     if (psScanV2.found && psScanV2.callable && psScanV2.ret == 0) {
         psOffsetsV2Valid = true;
         for (int i = 0; i < 13; i++) {
@@ -295,7 +273,7 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
 
     int psOffsetsV3[13] = {};
     bool psOffsetsV3Valid = false;
-    ProbeCallResult psScanV3 = run_probe_call(0x6FF81213u, 0x1CF8, 3, PROBE_KIND_GENERIC, nullptr, nullptr, 0, false, 0);
+    ProbeCallResult psScanV3 = run_probe_call(0x6FF81213u, 0x1CF8, 3, PROBE_KIND_GENERIC, nullptr, nullptr, 0);
     if (psScanV3.found && psScanV3.callable && psScanV3.ret == 0) {
         psOffsetsV3Valid = true;
         for (int i = 0; i < 13; i++) {
@@ -388,15 +366,13 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
     append("      \"id\": \"0x%08X\",\n", selected->getInfoId);
     append("      \"buffer_size\": %u,\n", selected->infoBufferSize);
     append("      \"version\": %u,\n", selected->infoVersion);
-    append("      \"mask_offset\": %u,\n", selected->infoMaskOffset);
-    append("      \"num_clocks_offset\": %u\n", selected->infoNumClocksOffset);
+    append("      \"mask_offset\": %u\n", selected->infoMaskOffset);
     append("    },\n");
     append("    \"get_status\": {\n");
     append("      \"id\": \"0x%08X\",\n", selected->getStatusId);
     append("      \"buffer_size\": %u,\n", selected->statusBufferSize);
     append("      \"version\": %u,\n", selected->statusVersion);
     append("      \"mask_offset\": %u,\n", selected->statusMaskOffset);
-    append("      \"num_clocks_offset\": %u,\n", selected->statusNumClocksOffset);
     append("      \"entries_offset\": %u,\n", selected->statusEntriesOffset);
     append("      \"entry_stride\": %u\n", selected->statusEntryStride);
     append("    },\n");
@@ -411,8 +387,7 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
     append("    },\n");
     append("    \"set_control\": {\n");
     append("      \"id\": \"0x%08X\"\n", selected->setControlId);
-    append("    },\n");
-    append("    \"default_num_clocks\": %u\n", selected->defaultNumClocks);
+    append("    }\n");
     append("  },\n");
     append("  \"nvapi\": {\n");
     append("    \"version_string\": "); append_json_string(nvapiVersion); append("\n");
@@ -420,7 +395,6 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
     append("  \"vf_seed\": {\n");
     append("    \"selected_info_probe_ok\": %s,\n", seedInfo.ret == 0 ? "true" : "false");
     append("    \"assumed_mask_available\": %s,\n", cachedSeedAvailable ? "true" : "false");
-    append("    \"assumed_num_clocks\": %u,\n", cachedNumClocks);
     append("    \"assumed_mask_hex\": \"");
     append_hex_bytes(cachedSeedAvailable ? cachedMask : ffMask, 32);
     append("\"\n");
@@ -517,11 +491,10 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
     append("  },\n");
     const unsigned char* selectedMaskSeed = cachedSeedAvailable ? cachedMask : ffMask;
     const char* selectedMaskSeedSource = cachedSeedAvailable ? "cached_get_info_mask" : "ff_mask_fallback";
-    unsigned int selectedNumClocksSeed = cachedSeedAvailable ? cachedNumClocks : selected->defaultNumClocks;
 
     append("  \"control_layout_probe\": {\n");
     ProbeCallResult controlSeed = run_probe_call(selected->getControlId, selected->controlBufferSize, selected->controlVersion,
-        PROBE_KIND_CONTROL, selected, selectedMaskSeed, sizeof(cachedMask), false, 0);
+        PROBE_KIND_CONTROL, selected, selectedMaskSeed, sizeof(cachedMask));
     if (controlSeed.ret == 0) {
         int controlPreviewCount = 16;
         append("    \"current_assumption\": {\n");
@@ -583,43 +556,43 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
     append("  \"vf_probe\": [\n");
 
     append_probe_result("selected_get_info", selected->getInfoId, selected->infoBufferSize, selected->infoVersion,
-        PROBE_KIND_INFO, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false, 0, true);
+        PROBE_KIND_INFO, selected, "ff_mask_seed", ffMask, sizeof(ffMask), true);
     append(",\n");
     append_probe_result("selected_get_info_v2", selected->getInfoId, selected->infoBufferSize, 2,
-        PROBE_KIND_INFO, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false, 0, false);
+        PROBE_KIND_INFO, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false);
     append(",\n");
     append_probe_result("selected_get_info_alt_size_minus_4", selected->getInfoId, selected->infoBufferSize >= 4 ? (selected->infoBufferSize - 4) : selected->infoBufferSize, selected->infoVersion,
-        PROBE_KIND_INFO, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false, 0, false);
+        PROBE_KIND_INFO, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false);
     append(",\n");
     append_probe_result("selected_get_info_alt_size_plus_4", selected->getInfoId, selected->infoBufferSize + 4, selected->infoVersion,
-        PROBE_KIND_INFO, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false, 0, false);
+        PROBE_KIND_INFO, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false);
     append(",\n");
     append_probe_result("selected_get_status_ff_seed", selected->getStatusId, selected->statusBufferSize, selected->statusVersion,
-        PROBE_KIND_STATUS, selected, "ff_mask_seed", ffMask, sizeof(ffMask), true, selected->defaultNumClocks, false);
+        PROBE_KIND_STATUS, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false);
     append(",\n");
     append_probe_result("selected_get_status_cached_seed", selected->getStatusId, selected->statusBufferSize, selected->statusVersion,
-        PROBE_KIND_STATUS, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), true, selectedNumClocksSeed, true);
+        PROBE_KIND_STATUS, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), true);
     append(",\n");
     append_probe_result("selected_get_control_ff_seed", selected->getControlId, selected->controlBufferSize, selected->controlVersion,
-        PROBE_KIND_CONTROL, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false, 0, false);
+        PROBE_KIND_CONTROL, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false);
     append(",\n");
     append_probe_result("selected_get_control_cached_seed", selected->getControlId, selected->controlBufferSize, selected->controlVersion,
-        PROBE_KIND_CONTROL, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), false, 0, true);
+        PROBE_KIND_CONTROL, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), true);
     append(",\n");
     append_probe_result("selected_get_status_cached_seed_v2", selected->getStatusId, selected->statusBufferSize, 2,
-        PROBE_KIND_STATUS, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), true, selectedNumClocksSeed, false);
+        PROBE_KIND_STATUS, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), false);
     append(",\n");
     append_probe_result("selected_get_control_cached_seed_v2", selected->getControlId, selected->controlBufferSize, 2,
-        PROBE_KIND_CONTROL, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), false, 0, false);
+        PROBE_KIND_CONTROL, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), false);
     append(",\n");
     append_probe_result("selected_get_status_cached_seed_alt_size_minus_4", selected->getStatusId, selected->statusBufferSize >= 4 ? (selected->statusBufferSize - 4) : selected->statusBufferSize, selected->statusVersion,
-        PROBE_KIND_STATUS, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), true, selectedNumClocksSeed, false);
+        PROBE_KIND_STATUS, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), false);
     append(",\n");
     append_probe_result("selected_get_status_cached_seed_alt_size_plus_4", selected->getStatusId, selected->statusBufferSize + 4, selected->statusVersion,
-        PROBE_KIND_STATUS, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), true, selectedNumClocksSeed, false);
+        PROBE_KIND_STATUS, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), false);
     append(",\n");
     append_probe_result("blackwell_get_status_cached_seed", g_vfBackendBlackwell.getStatusId, g_vfBackendBlackwell.statusBufferSize, g_vfBackendBlackwell.statusVersion,
-        PROBE_KIND_STATUS, &g_vfBackendBlackwell, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), true, selectedNumClocksSeed, false);
+        PROBE_KIND_STATUS, &g_vfBackendBlackwell, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), false);
     append("\n  ]\n");
     append("}\n");
 

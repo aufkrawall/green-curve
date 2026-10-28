@@ -856,34 +856,38 @@ Every failure path in this domain now names itself:
 - `populate_global_controls: power edit enabled=… (readbackValid=… current=… mW
   default=… mW)`
 
-### One VF-info rule for the Linux probe and the Linux backend (F-02-001, 2026-09-15)
+### VF-info point-mask layout (verified 2026-10-28)
 
-The private-NvAPI `getInfo` read — "give me the per-point editable mask and the
-active clock count" — was implemented **twice**, and the two copies disagreed
-about what a valid answer is:
+Source anchors: `source/vf_backends.cpp`, `source/linux_vf_validation.h`,
+`source/linux_backend_vf_read.h`, `source/linux_gpu.cpp`,
+`source/main_runtime_nvml.cpp`, `source/gpu_backend.cpp`,
+`source/main_probe_config.cpp`, `tests/linux_vf_read_tests.cpp`.
 
-| | `linux_backend.cpp` (live control) | `linux_gpu.cpp` (`--probe`) |
-|---|---|---|
-| all-zero mask | `LB_NVAPI_INVALID_DATA` | pre-seeded `0xFF`, treated as 128 editable points |
-| `numClocks == 0` | `LB_NVAPI_INVALID_DATA` | substituted `defaultNumClocks` |
-| `numClocks > 64` | rejected | not checked |
-| bounds checks | once, up front | re-checked inline per `memcpy` |
+The V1 VF-info response has a point mask at `0x04`; `0x14` is within the
+32-byte mask window. It is not a clock-domain count. Pascal can return zero
+there with valid lower mask words and readable curve/control tables. The old
+zero/over-64 count requirement rejected that answer before status/control
+could run. The former value 15 on newer hardware represents mask bits
+128..131. VF-status has no corresponding count input at `0x24`.
 
-On a GPU where `getInfo` succeeds but returns zeros — **exactly the
-unrecognized-future-family case `--probe` exists to qualify** — `--probe`
-reported a readable VF curve while the TUI/daemon refused the identical answer.
-The diagnostic could not predict the control path, which is its only job, and
-`README.md` tells users to run `--probe` before trusting write behaviour on a
-new architecture.
+The shared backend tables and Windows/Linux readers no longer describe, read,
+seed or validate those fictional counts. Windows probe JSON likewise omits
+the count assumptions. Linux probe and runtime still share layout bounds and
+nonempty-mask checks, with an explicit undersized-buffer check before
+subtraction. The atomic reader remains strict about all three read versions,
+unchanged masks, plausible populated points and offsets, and ordered graphics
+voltages. Only a complete validated candidate replaces the published curve.
+Unsupported-family read/write defaults are unchanged.
 
-Both now share `linux_vf_info_layout_fits()` and `linux_vf_info_data_usable()`
-in `linux_vf_validation.h`, and the probe **refuses** the same answers the
-backend refuses rather than papering over them: a probe that cannot predict the
-control path is worse than no probe. Assertions 5315-5330.
+Diagnostics log `vf_info: validated point mask` on first success and mask
+changes. Self-test describes the active mask. Local status `-100003` means
+`NOT_ATTEMPTED` after an earlier read failed; `-100001` means an unavailable
+function and `-100002` means rejected VF data. These are application statuses,
+not NVIDIA driver errors.
 
-This is the same shape as the fan-curve duplication recorded in
-[testing.md](testing.md), where two copies silently diverged into a real shipped
-defect. Same remedy: one rule, one place, asserted on both hosts.
+Assertions 5315-5330 cover shared layout/mask validation. Cases 7680-7697
+execute the production atomic reader with a fake driver; 7680 fails under the
+previous implementation. Physical Pascal read/write verification is pending.
 
 **F-04-001, found alongside it.** `NvAPI_EnumPhysicalGPUs` writes at most
 `NVAPI_MAX_PHYSICAL_GPUS` (64) handles and both call sites pass a 64-entry stack

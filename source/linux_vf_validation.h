@@ -14,69 +14,24 @@ static inline bool linux_vf_returned_version_valid(
         (returnedVersion >> 16) == expectedStructVersion;
 }
 
-// ---------------------------------------------------------------------------
-// The shared VF-info rule (F-02-001)
-// ---------------------------------------------------------------------------
-//
-// THE DEFECT THIS EXISTS FOR (audit 2026-09-15, 0.25.2):
-//
-//   The private-NvAPI getInfo read -- "give me the per-point editable mask and
-//   the active clock count" -- was implemented TWICE, and the two copies
-//   disagreed about what a valid answer is:
-//
-//     linux_backend.cpp (the live control path) rejected an all-zero mask or a
-//     zero/over-64 clock count as LB_NVAPI_INVALID_DATA.
-//     linux_gpu.cpp (the --probe diagnostic) pre-seeded the mask to 0xFF and
-//     substituted defaultNumClocks for a zero count, so the same driver answer
-//     silently became "128 editable points".
-//
-//   On a GPU where getInfo succeeds but returns zeros -- exactly the
-//   unrecognized-future-family case --probe exists to qualify -- `--probe`
-//   reported a readable VF curve while the TUI/daemon refused. The diagnostic
-//   could not predict the control path, which is its only job.
-//
-//   This is the same shape as the fan-curve duplication recorded in
-//   llm-wiki/testing.md, where two copies had silently diverged into a real
-//   shipped defect. One rule, one place, asserted on both hosts.
-
-enum LinuxVfInfoStatus {
-    LINUX_VF_INFO_OK = 0,
-    // The spec's own offsets do not fit the buffer it asks for. A compiled-in
-    // table bug, not a driver answer.
-    LINUX_VF_INFO_LAYOUT_INVALID,
-    // The driver answered, but with a mask or clock count that cannot describe
-    // a real curve.
-    LINUX_VF_INFO_DATA_INVALID,
-};
-
-// Does the spec's declared layout fit the buffer it declares?
-//
-// Checked ONCE, up front, rather than re-checked at each memcpy: the live
-// backend already did it this way, the probe copy re-checked inline and each
-// check could drift on its own, and a single answer is what lets the extract
-// below be an unconditional read.
+// VF-info V1 returns a 256-bit point mask at +0x04. The word at +0x14
+// is mask bits 128..159, NOT a clock-domain count. Pascal can legitimately
+// return zero there; other GPUs can return any bit pattern. Neither info nor
+// status has a numClocks field. Leave status reserved words zero.
+// The probe and the live reader use the same mask and layout validation.
 static inline bool linux_vf_info_layout_fits(
     unsigned int infoBufferSize, unsigned int infoMaskOffset,
-    unsigned int infoNumClocksOffset, unsigned int maskBytes,
-    unsigned int infoSize) {
-    if (infoSize == 0 || infoSize > 0x4000u) return false;
-    if (infoBufferSize > infoSize) return false;
-    if (infoMaskOffset > infoSize - maskBytes) return false;
-    if (infoNumClocksOffset > infoSize - (unsigned int)sizeof(unsigned int))
+    unsigned int maskBytes, unsigned int infoSize) {
+    if (infoSize < sizeof(unsigned int) || infoSize > 0x4000u) return false;
+    if (infoBufferSize > infoSize || maskBytes == 0 || maskBytes > infoSize)
         return false;
-    return true;
+    return infoMaskOffset >= sizeof(unsigned int) &&
+        infoMaskOffset <= infoSize - maskBytes;
 }
 
-// Is the answer the driver put in the buffer usable?
-//
-// The live backend's rule, now the only rule: a mask with no editable bit at
-// all, or a clock count of zero or above 64, describes no curve this code can
-// write, and treating it as "128 editable points" is what made the probe lie.
 static inline bool linux_vf_info_data_usable(const unsigned char* mask,
-                                             unsigned int maskBytes,
-                                             unsigned int numClocks) {
+                                             unsigned int maskBytes) {
     if (!mask || maskBytes == 0) return false;
-    if (numClocks == 0 || numClocks > 64) return false;
     for (unsigned int index = 0; index < maskBytes; ++index) {
         if (mask[index] != 0) return true;
     }
@@ -97,7 +52,7 @@ static inline bool linux_nvapi_enum_count_is_usable(int count, int capacity) {
 }
 
 // The NvAPI status table concatenates the VF points of EVERY clock domain
-// (`numClocks` of them) without padding domains to a fixed stride, so a fixed
+// without padding domains to a fixed stride, so a fixed
 // VF_NUM_POINTS read window can run past the graphics curve into another
 // domain.  Observed on an RTX 5070 (driver 610.43.03): the graphics domain is
 // 127 points (180 MHz @ 450 mV .. 3157 MHz @ 1240 mV), index 127 belongs to a
@@ -134,7 +89,7 @@ static inline bool linux_vf_snapshot_authoritative(
 static inline bool linux_vf_snapshot_structurally_valid(
     bool infoFresh, bool statusFresh, bool controlFresh,
     const unsigned char* editableMask, size_t editableMaskSize,
-    unsigned int numClocks, const VFCurvePoint* curve,
+    const VFCurvePoint* curve,
     const int* offsets, int reportedPopulated,
     char* why, size_t whySize) {
     if (why && whySize) why[0] = 0;
@@ -142,11 +97,6 @@ static inline bool linux_vf_snapshot_structurally_valid(
         editableMaskSize < (VF_NUM_POINTS + 7u) / 8u || !curve || !offsets) {
         if (why) gc_strlcpy(why, whySize,
             "VF info/status/control snapshot is incomplete");
-        return false;
-    }
-    if (numClocks == 0 || numClocks > 64) {
-        if (why) gc_snprintf(why, whySize,
-            "VF info clock count is invalid (%u)", numClocks);
         return false;
     }
     if (reportedPopulated < 8 || reportedPopulated > VF_NUM_POINTS) {

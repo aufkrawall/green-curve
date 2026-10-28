@@ -351,10 +351,20 @@ once, stamped by `[meta] linux_mem_migrated`:
   | 128 | third domain | 810 MHz @ 560 mV |
   | 129..131 | memory | 7001 / 13801 / 14001 MHz (GDDR7 28 Gbps) |
 
-  `numClocks` (15 here) is the clock-domain count, not a point count. The
-  128-bit editable mask was all-ones and did **not** discriminate the boundary,
+  VF-info and VF-status V1 have no clock-count field. The info word at `0x14`
+  belongs to the active-point mask; the observed value 15 selects points
+  128..131 rather than counting domains. Lower mask bits were all-ones and
+  did **not** discriminate the boundary,
   and the trailing per-entry dword is not a domain terminator either (it is set
   on entries 126/127/128 but clear on 131, the last memory point).
+
+- **Pascal VF-info validation (2026-10-28).** A valid point mask can have
+  zero at `0x14`. `linux_backend_vf_read.h` and the probe validate the mask
+  without inventing a clock count, and status requests leave reserved header
+  words zero. The full atomic reader runs against a fake Pascal driver in
+  `tests/linux_vf_read_tests.cpp` (7680-7697); invalid versions, masks, points,
+  offsets and incomplete reads still refuse publication. Physical Pascal
+  verification is pending. See [GPU backend](gpu-backend.md#vf-info-point-mask-layout-verified-2026-10-28).
 
 - **Error codes are negative** on Linux (`-1` generic, `-9`
   INCOMPATIBLE_STRUCT_VERSION) vs Windows `0x8000xxxx`. Success is `0` both;

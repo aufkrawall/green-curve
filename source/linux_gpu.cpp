@@ -199,30 +199,21 @@ typedef int (*nvapi_get_arch_t)(GPU_HANDLE, nvapiGpuArchInfo_t*);
 typedef int (*nvapi_buf_t)(void*, void*);  // get/set status/info/control
 
 // Read the 128-point VF curve via the family backend layout — the SAME private
-// NVAPI getInfo (mask/numClocks) + getStatus (freq/voltage entries) sequence the
+// NVAPI getInfo (active point mask) + getStatus (freq/voltage entries) sequence the
 // Windows backend uses (nvapi_get_vf_info_cached + nvapi_read_curve), driven by
 // the shared VfBackendSpec.  Read-only.  Returns the populated point count.
 int read_vf_curve(nvapi_QueryInterface_t qi, GPU_HANDLE handle,
                   const VfBackendSpec* b, VFCurvePoint* curveOut) {
     if (!qi || !b || !b->readSupported) return -1;
 
-    // --- VF info: per-point editable mask + active clock count ---
-    //
-    // F-02-001: this used to be a second, more permissive implementation of the
-    // rule in linux_backend.cpp -- it pre-seeded the mask to 0xFF and swapped a
-    // zero clock count for defaultNumClocks, so a driver answer the live
-    // backend refuses as INVALID_DATA was reported here as a readable curve.
-    // Both paths now share linux_vf_info_layout_fits()/_data_usable(), and this
-    // one REFUSES the same answers rather than papering over them: a probe that
-    // cannot predict the control path is worse than no probe.
+    // Use the same active-mask rule as the live backend.
     unsigned char mask[32];
     memset(mask, 0, sizeof(mask));
-    unsigned int numClocks = 0;
     auto getInfo = (nvapi_buf_t)qi(b->getInfoId);
     if (!getInfo) return -1;
     unsigned int infoSize = b->infoBufferSize ? b->infoBufferSize : 0x4000;
     if (!linux_vf_info_layout_fits(b->infoBufferSize, b->infoMaskOffset,
-            b->infoNumClocksOffset, (unsigned int)sizeof(mask), infoSize)) {
+            (unsigned int)sizeof(mask), infoSize)) {
         return -1;
     }
     unsigned char* ibuf = (unsigned char*)calloc(1, infoSize);
@@ -231,13 +222,16 @@ int read_vf_curve(nvapi_QueryInterface_t qi, GPU_HANDLE handle,
     memcpy(ibuf, &infoVer, sizeof(infoVer));
     memset(ibuf + b->infoMaskOffset, 0xFF, sizeof(mask));
     bool infoOk = getInfo(handle, ibuf) == 0;
+    unsigned int returnedVersion = 0;
+    memcpy(&returnedVersion, ibuf, sizeof(returnedVersion));
+    infoOk = infoOk && linux_vf_returned_version_valid(
+        returnedVersion, b->infoVersion, infoSize);
     if (infoOk) {
         memcpy(mask, ibuf + b->infoMaskOffset, sizeof(mask));
-        memcpy(&numClocks, ibuf + b->infoNumClocksOffset, sizeof(numClocks));
     }
     free(ibuf);
     if (!infoOk ||
-        !linux_vf_info_data_usable(mask, (unsigned int)sizeof(mask), numClocks)) {
+        !linux_vf_info_data_usable(mask, (unsigned int)sizeof(mask))) {
         return -1;
     }
 
@@ -250,8 +244,6 @@ int read_vf_curve(nvapi_QueryInterface_t qi, GPU_HANDLE handle,
     memcpy(buf, &ver, sizeof(ver));
     if (b->statusMaskOffset + sizeof(mask) <= b->statusBufferSize)
         memcpy(buf + b->statusMaskOffset, mask, sizeof(mask));
-    if (b->statusNumClocksOffset + sizeof(numClocks) <= b->statusBufferSize)
-        memcpy(buf + b->statusNumClocksOffset, &numClocks, sizeof(numClocks));
     int populated = -1;
     if (getStatus(handle, buf) == 0) {
         populated = 0;

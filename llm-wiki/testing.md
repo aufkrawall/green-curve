@@ -16,6 +16,22 @@ with the corresponding freshly built binary. No physical
 GPU write or driver-failure injection was performed; Linux daemon orchestration
 remains cross-linked and source-gated on this Windows host.
 
+## Linux VF point-mask layout (2026-10-28)
+
+Source anchors: `tests/linux_vf_read_tests.cpp`,
+`source/linux_backend_vf_read.h`, `source/linux_vf_validation.h`,
+`tools/regression_sources.py`.
+
+Cases 7680-7697 execute the production atomic VF reader with a fake driver.
+A Pascal-style 80-point mask with zero at info `0x14` succeeds; a higher
+mask word above 64 also succeeds. Requests preserve the mask and leave reserved
+status words zero. Empty masks, refused reads, mismatched versions or masks,
+implausible points/offsets and short curves still fail. A failed refresh keeps
+previous values explicitly stale. Case 7680 was executed against the prior
+reader and failed, then passed after correction. The standalone fixture
+compiles with warnings treated as errors. Physical Pascal execution remains
+unverified.
+
 ## Linux uncertain-state fan return (2026-10-27)
 
 Source anchors: `tests/linux_fan_ownership_tests.cpp`,

@@ -1018,6 +1018,7 @@ int run_linux_restore_role_tests();
 // Editor VF point visibility independent of temperature drift
 // (tests/vf_point_visibility_tests.cpp, 7380-7399).
 int run_vf_point_visibility_tests();
+int run_linux_vf_read_tests();
 // The Linux TUI writes only to the selected GPU once it is shown, and a hold
 // on another GPU stays recoverable from the TUI
 // (tests/linux_tui_gpu_target_tests.cpp, 7400-7409 and 7430-7439).
@@ -2657,6 +2658,7 @@ static int run_all_tests(int argc, char** argv) {
         fprintf(stderr, "regression assertion failed: code %d\n", linuxLocationFailure);
         return linuxLocationFailure;
     }
+    if (int vfFailure = run_linux_vf_read_tests()) return vfFailure;
     if (int visibilityFailure = run_vf_point_visibility_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", visibilityFailure);
         return visibilityFailure;
@@ -5125,7 +5127,7 @@ static int run_all_tests(int argc, char** argv) {
             mask[index / 8] |= (unsigned char)(1u << (index % 8));
         char domainWhy[160] = {};
         if (linux_vf_snapshot_structurally_valid(
-                true, true, true, mask, sizeof(mask), 15,
+                true, true, true, mask, sizeof(mask),
                 table, offsets, 128, domainWhy, sizeof(domainWhy)))
             return 1681;
         VFCurvePoint truncated[VF_NUM_POINTS] = {};
@@ -5133,7 +5135,7 @@ static int run_all_tests(int argc, char** argv) {
         truncated[127].freq_kHz = 0;
         truncated[127].volt_uV = 0;
         if (!linux_vf_snapshot_structurally_valid(
-                true, true, true, mask, sizeof(mask), 15,
+                true, true, true, mask, sizeof(mask),
                 truncated, offsets, 127, domainWhy, sizeof(domainWhy)))
             return 1682;
         // A curve that fills the window with no foreign domain keeps all 128.
@@ -5168,28 +5170,28 @@ static int run_all_tests(int argc, char** argv) {
         curve[9].freq_kHz = curve[8].freq_kHz - 25000u;
         char why[160] = {};
         if (!linux_vf_snapshot_structurally_valid(
-                true, true, true, mask, sizeof(mask), 15,
+                true, true, true, mask, sizeof(mask),
                 curve, offsets, 16, why, sizeof(why))) return 1234;
         VFCurvePoint malformed[VF_NUM_POINTS] = {};
         memcpy(malformed, curve, sizeof(curve));
         malformed[10].volt_uV = malformed[9].volt_uV - 1000u;
         if (linux_vf_snapshot_structurally_valid(
-                true, true, true, mask, sizeof(mask), 15,
+                true, true, true, mask, sizeof(mask),
                 malformed, offsets, 16, why, sizeof(why))) return 1235;
         memcpy(malformed, curve, sizeof(curve));
         malformed[4].freq_kHz = 7000000u;
         if (linux_vf_snapshot_structurally_valid(
-                true, true, true, mask, sizeof(mask), 15,
+                true, true, true, mask, sizeof(mask),
                 malformed, offsets, 16, why, sizeof(why))) return 1236;
         if (linux_vf_snapshot_structurally_valid(
-                true, true, false, mask, sizeof(mask), 15,
+                true, true, false, mask, sizeof(mask),
                 curve, offsets, 16, why, sizeof(why))) return 1237;
         if (!linux_vf_snapshot_authoritative(true, true, true, true, true) ||
             linux_vf_snapshot_authoritative(true, true, false, true, true) ||
             linux_vf_snapshot_authoritative(true, true, true, true, false))
             return 1253;
         if (linux_vf_snapshot_structurally_valid(
-                true, true, true, mask, sizeof(mask), 15,
+                true, true, true, mask, sizeof(mask),
                 curve, offsets, 15, why, sizeof(why))) return 1238;
         if (!linux_vf_returned_version_valid((1u << 16) | 0x182Cu,
                 1, 0x182C) ||
@@ -17693,47 +17695,40 @@ static int run_all_tests_final() {
         const unsigned int kMaskBytes = 32;
         const unsigned int kInfoSize = 0x4000;
         // A spec whose declared offsets fit its buffer is usable.
-        if (!linux_vf_info_layout_fits(kInfoSize, 0x100, 0x200, kMaskBytes, kInfoSize))
+        if (!linux_vf_info_layout_fits(kInfoSize, 0x100, kMaskBytes, kInfoSize))
             return 5315;
-        // A mask that runs off the end is not, and neither is a clock-count
-        // offset that does -- each was checked separately in one copy and
-        // together in the other.
-        if (linux_vf_info_layout_fits(kInfoSize, kInfoSize - 4, 0x200, kMaskBytes, kInfoSize))
+        // A mask that runs off the end or exceeds its buffer is invalid.
+        if (linux_vf_info_layout_fits(kInfoSize, kInfoSize - 4, kMaskBytes, kInfoSize))
             return 5316;
-        if (linux_vf_info_layout_fits(kInfoSize, 0x100, kInfoSize - 2, kMaskBytes, kInfoSize))
+        if (linux_vf_info_layout_fits(kInfoSize, 0, kMaskBytes, kMaskBytes - 1))
             return 5317;
         // Exactly flush is fine; one past is not.
-        if (!linux_vf_info_layout_fits(kInfoSize, kInfoSize - kMaskBytes, 0x200,
+        if (!linux_vf_info_layout_fits(kInfoSize, kInfoSize - kMaskBytes,
                                        kMaskBytes, kInfoSize)) return 5318;
-        if (linux_vf_info_layout_fits(kInfoSize, kInfoSize - kMaskBytes + 1, 0x200,
+        if (linux_vf_info_layout_fits(kInfoSize, kInfoSize - kMaskBytes + 1,
                                       kMaskBytes, kInfoSize)) return 5319;
         // An over-large or zero buffer is refused outright.
-        if (linux_vf_info_layout_fits(0x8000, 0x100, 0x200, kMaskBytes, 0x8000))
+        if (linux_vf_info_layout_fits(0x8000, 0x100, kMaskBytes, 0x8000))
             return 5320;
-        if (linux_vf_info_layout_fits(0, 0, 0, kMaskBytes, 0)) return 5321;
+        if (linux_vf_info_layout_fits(0, 0, kMaskBytes, 0)) return 5321;
         // A spec asking for more than the read buffer is refused.
-        if (linux_vf_info_layout_fits(kInfoSize + 1, 0x100, 0x200, kMaskBytes, kInfoSize))
+        if (linux_vf_info_layout_fits(kInfoSize + 1, 0x100, kMaskBytes, kInfoSize))
             return 5322;
 
-        // THE DIVERGENCE. An all-zero mask, or a zero/over-64 clock count, is
-        // unusable. The probe copy used to substitute an all-0xFF mask and
-        // defaultNumClocks here and report a readable 128-point curve, while
-        // the live backend refused the identical answer -- so `--probe` could
-        // green-light a GPU the TUI then refused to drive.
+        // An empty mask stays invalid. Higher mask words are bitfields,
+        // including zero and values above 64, not a required clock count.
         unsigned char zeroMask[32] = {};
         unsigned char goodMask[32] = {};
         goodMask[0] = 0x01;
-        if (linux_vf_info_data_usable(zeroMask, kMaskBytes, 32)) return 5323;
-        if (linux_vf_info_data_usable(goodMask, kMaskBytes, 0)) return 5324;
-        if (linux_vf_info_data_usable(goodMask, kMaskBytes, 65)) return 5325;
-        if (!linux_vf_info_data_usable(goodMask, kMaskBytes, 1)) return 5326;
-        if (!linux_vf_info_data_usable(goodMask, kMaskBytes, 64)) return 5327;
-        if (linux_vf_info_data_usable(nullptr, kMaskBytes, 32)) return 5328;
-        if (linux_vf_info_data_usable(goodMask, 0, 32)) return 5329;
-        // A bit anywhere in the mask counts, not just the first byte.
+        if (linux_vf_info_data_usable(zeroMask, kMaskBytes)) return 5323;
+        if (!linux_vf_info_data_usable(goodMask, kMaskBytes)) return 5324;
+        goodMask[16] = 0xa5;
+        if (!linux_vf_info_data_usable(goodMask, kMaskBytes)) return 5325;
+        if (linux_vf_info_data_usable(nullptr, kMaskBytes)) return 5328;
+        if (linux_vf_info_data_usable(goodMask, 0)) return 5329;
         unsigned char lateMask[32] = {};
         lateMask[31] = 0x80;
-        if (!linux_vf_info_data_usable(lateMask, kMaskBytes, 32)) return 5330;
+        if (!linux_vf_info_data_usable(lateMask, kMaskBytes)) return 5330;
 
         // F-04-001: the driver-supplied handle count is a loop bound over a
         // fixed 64-entry stack array. linux_backend_discovery.cpp clamped it;

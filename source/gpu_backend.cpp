@@ -307,8 +307,7 @@ static bool nvapi_read_curve() {
     auto getStatus = (NvApiFunc)nvapi_qi(backend->getStatusId);
     if (!getStatus) return false;
     unsigned char mask[32] = {};
-    unsigned int numClocks = backend->defaultNumClocks;
-    if (!nvapi_get_vf_info_cached(mask, &numClocks)) return false;
+    if (!nvapi_get_vf_info_cached(mask)) return false;
     HeapBuffer buf(backend->statusBufferSize > 0 ? backend->statusBufferSize : 0x4000);
     if (!buf) return false;
     memset(buf, 0, backend->statusBufferSize);
@@ -318,9 +317,6 @@ static bool nvapi_read_curve() {
     }
     if (backend->statusMaskOffset + sizeof(mask) > backend->statusBufferSize) return false;
     buf.write_at(backend->statusMaskOffset, mask, sizeof(mask));
-    if (backend->statusNumClocksOffset + sizeof(numClocks) <= backend->statusBufferSize) {
-        buf.write_at(backend->statusNumClocksOffset, &numClocks, sizeof(numClocks));
-    }
     int ret = getStatus(g_app.gpuHandle, buf);
     if (ret != 0) return false;
     g_app.numPopulated = 0;

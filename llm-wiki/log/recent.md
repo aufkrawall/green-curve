@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-28: VF point-mask validation on Pascal
+
+- VF-info `0x14` is part of the point mask, not a clock count. Valid Pascal
+  responses can have zero there. Removed the count assumption from shared
+  tables, Windows/Linux readers and probe diagnostics; status reserved words
+  remain zero. Existing snapshot structure checks still apply.
+- The production atomic read helpers now have an executing fake-driver
+  fixture, cases 7680-7697. The Pascal case fails with the previous reader and
+  passes after correction. Diagnostics distinguish skipped reads from missing
+  functions and report mask acceptance on transitions. Hardware confirmation
+  on Pascal remains pending.
+
 ## 2026-10-28: Isolated two-hop updater release simulation for 0.31.0
 
 - Autonomously executed the prescribed isolated two-hop updater simulation

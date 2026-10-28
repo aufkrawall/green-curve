@@ -578,7 +578,6 @@ struct AppData {
     unsigned int nvmlMemMaxMHz;
 
     bool vfInfoCached;
-    unsigned int vfNumClocks;
     unsigned char vfMask[32];
 
     bool fanSupported;

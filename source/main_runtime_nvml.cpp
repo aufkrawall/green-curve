@@ -842,14 +842,13 @@ static bool refresh_global_state(char* detail, size_t detailSize) {
     return ok1 || ok2 || ok3 || ok4 || okXbar;
 }
 
-static bool nvapi_get_vf_info_cached(unsigned char* maskOut, unsigned int* numClocksOut) {
+static bool nvapi_get_vf_info_cached(unsigned char* maskOut) {
     const VfBackendSpec* backend = g_app.vfBackend;
     if (!backend) return false;
 
     if (!g_app.vfInfoCached) {
         memset(g_app.vfMask, 0, sizeof(g_app.vfMask));
         memset(g_app.vfMask, 0xFF, 16);
-        g_app.vfNumClocks = backend->defaultNumClocks;
 
         auto getInfo = (NvApiFunc)nvapi_qi(backend->getInfoId);
         if (getInfo) {
@@ -868,17 +867,12 @@ static bool nvapi_get_vf_info_cached(unsigned char* maskOut, unsigned int* numCl
                 if (backend->infoMaskOffset + sizeof(g_app.vfMask) <= (unsigned int)infoSize) {
                     memcpy(g_app.vfMask, &ibuf[backend->infoMaskOffset], sizeof(g_app.vfMask));
                 }
-                if (backend->infoNumClocksOffset + sizeof(g_app.vfNumClocks) <= (unsigned int)infoSize) {
-                    memcpy(&g_app.vfNumClocks, &ibuf[backend->infoNumClocksOffset], sizeof(g_app.vfNumClocks));
-                }
-                if (g_app.vfNumClocks == 0) g_app.vfNumClocks = backend->defaultNumClocks;
             }
         }
         g_app.vfInfoCached = true;
     }
 
     if (maskOut) memcpy(maskOut, g_app.vfMask, sizeof(g_app.vfMask));
-    if (numClocksOut) *numClocksOut = g_app.vfNumClocks ? g_app.vfNumClocks : backend->defaultNumClocks;
     return true;
 }
 

@@ -384,20 +384,17 @@ typedef struct {
     unsigned int statusBufferSize;
     unsigned int statusVersion;
     unsigned int statusMaskOffset;
-    unsigned int statusNumClocksOffset;
     unsigned int statusEntriesOffset;
     unsigned int statusEntryStride;
     unsigned int infoBufferSize;
     unsigned int infoVersion;
     unsigned int infoMaskOffset;
-    unsigned int infoNumClocksOffset;
     unsigned int controlBufferSize;
     unsigned int controlVersion;
     unsigned int controlMaskOffset;
     unsigned int controlEntryBaseOffset;
     unsigned int controlEntryStride;
     unsigned int controlEntryDeltaOffset;
-    unsigned int defaultNumClocks;
 } VfBackendSpec;
 
 struct VFCurvePoint {

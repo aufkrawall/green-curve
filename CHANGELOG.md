@@ -29,7 +29,7 @@
 
 ## 0.31.0
 
-Settings, GPU selection, fan control and recovery are more reliable across hardware changes, multiple GPUs and failed operations.
+Settings, GPU selection, fan control and recovery are more reliable across hardware changes and failed operations.
 
 ### Improved
 
@@ -38,6 +38,7 @@ Settings, GPU selection, fan control and recovery are more reliable across hardw
 
 ### Fixed
 
+- **Linux Pascal curves:** valid voltage/frequency curves no longer fail validation on GTX 10-series GPUs.
 - **Windows multi-GPU systems:** fan, power and clock changes stay on the selected GPU; the power-limit fallback no longer changes other GPUs.
 - **Windows failed Apply:** memory, power and fan changes are recovered and reported; unverified ones require Reset before unrelated settings apply.
 - **Windows power limit:** a change counts only once the driver reports the requested limit.

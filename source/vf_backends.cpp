@@ -44,21 +44,20 @@ static_assert(gpu_capability_available_domains(nullptr) == SERVICE_MUTATION_DOMA
 
 // Fields, in order: name, family, supported, readSupported, writeSupported,
 // bestGuessOnly, getStatusId, getInfoId, getControlId, setControlId,
-// statusBufferSize, statusVersion, statusMaskOffset, statusNumClocksOffset,
+// statusBufferSize, statusVersion, statusMaskOffset,
 // statusEntriesOffset, statusEntryStride, infoBufferSize, infoVersion,
-// infoMaskOffset, infoNumClocksOffset, controlBufferSize, controlVersion,
+// infoMaskOffset, controlBufferSize, controlVersion,
 // controlMaskOffset, controlEntryBaseOffset, controlEntryStride,
-// controlEntryDeltaOffset, defaultNumClocks.
+// controlEntryDeltaOffset.
 
 extern const VfBackendSpec g_vfBackendBlackwell = {
     "blackwell",
     GPU_FAMILY_BLACKWELL,
     true, true, true, false,
     0x21537AD4u, 0x507B4B59u, 0x23F1B133u, 0x0733E009u,
-    0x1C28, 1, 0x04, 0x24, 0x48, 0x1C,
-    0x182C, 1, 0x04, 0x14,
+    0x1C28, 1, 0x04, 0x48, 0x1C,
+    0x182C, 1, 0x04,
     0x2420, 1, 0x04, 0x44, 0x24, 0x14,
-    15,
 };
 
 extern const VfBackendSpec g_vfBackendLovelace = {
@@ -66,10 +65,9 @@ extern const VfBackendSpec g_vfBackendLovelace = {
     GPU_FAMILY_LOVELACE,
     true, true, true, false,
     0x21537AD4u, 0x507B4B59u, 0x23F1B133u, 0x0733E009u,
-    0x1C28, 1, 0x04, 0x24, 0x48, 0x1C,
-    0x182C, 1, 0x04, 0x14,
+    0x1C28, 1, 0x04, 0x48, 0x1C,
+    0x182C, 1, 0x04,
     0x2420, 1, 0x04, 0x44, 0x24, 0x14,
-    15,
 };
 
 extern const VfBackendSpec g_vfBackendAmpere = {
@@ -77,10 +75,9 @@ extern const VfBackendSpec g_vfBackendAmpere = {
     GPU_FAMILY_AMPERE,
     true, true, true, false,
     0x21537AD4u, 0x507B4B59u, 0x23F1B133u, 0x0733E009u,
-    0x1C28, 1, 0x04, 0x24, 0x48, 0x1C,
-    0x182C, 1, 0x04, 0x14,
+    0x1C28, 1, 0x04, 0x48, 0x1C,
+    0x182C, 1, 0x04,
     0x2420, 1, 0x04, 0x44, 0x24, 0x14,
-    15,
 };
 
 extern const VfBackendSpec g_vfBackendTuring = {
@@ -88,10 +85,9 @@ extern const VfBackendSpec g_vfBackendTuring = {
     GPU_FAMILY_TURING,
     true, true, true, false,
     0x21537AD4u, 0x507B4B59u, 0x23F1B133u, 0x0733E009u,
-    0x1C28, 1, 0x04, 0x24, 0x48, 0x1C,
-    0x182C, 1, 0x04, 0x14,
+    0x1C28, 1, 0x04, 0x48, 0x1C,
+    0x182C, 1, 0x04,
     0x2420, 1, 0x04, 0x44, 0x24, 0x14,
-    15,
 };
 
 extern const VfBackendSpec g_vfBackendPascal = {
@@ -99,10 +95,9 @@ extern const VfBackendSpec g_vfBackendPascal = {
     GPU_FAMILY_PASCAL,
     true, true, true, false,
     0x21537AD4u, 0x507B4B59u, 0x23F1B133u, 0x0733E009u,
-    0x1C28, 1, 0x04, 0x24, 0x48, 0x1C,
-    0x182C, 1, 0x04, 0x14,
+    0x1C28, 1, 0x04, 0x48, 0x1C,
+    0x182C, 1, 0x04,
     0x2420, 1, 0x04, 0x44, 0x24, 0x14,
-    15,
 };
 
 extern const VfBackendSpec g_vfBackendFuture = {
@@ -110,10 +105,9 @@ extern const VfBackendSpec g_vfBackendFuture = {
     GPU_FAMILY_UNKNOWN,
     true, true, true, true,
     0x21537AD4u, 0x507B4B59u, 0x23F1B133u, 0x0733E009u,
-    0x1C28, 1, 0x04, 0x24, 0x48, 0x1C,
-    0x182C, 1, 0x04, 0x14,
+    0x1C28, 1, 0x04, 0x48, 0x1C,
+    0x182C, 1, 0x04,
     0x2420, 1, 0x04, 0x44, 0x24, 0x14,
-    15,
 };
 
 static_assert(0x48u + (VF_NUM_POINTS - 1u) * 0x1Cu + 4u <= 0x1C28u, "VF status buffer overflow for shared backend layout");

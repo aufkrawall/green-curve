@@ -3431,11 +3431,10 @@ def run_source_regression_checks():
     linux_gpu_cpp = os.path.join(SOURCE_DIR, "linux_gpu.cpp")
     _linux_backend_surface = os.path.join(BUILD_WORK_DIR, "_linux_backend_surface.cpp")
     with open(_linux_backend_surface, "w", encoding="utf-8", errors="ignore") as _lf:
-        for _cpp in (os.path.join(SOURCE_DIR, "linux_backend.cpp"),
-                     os.path.join(SOURCE_DIR, "linux_backend_nvml_write.cpp"),
-                     os.path.join(SOURCE_DIR, "linux_backend_discovery.cpp"),
-                     os.path.join(SOURCE_DIR, "linux_backend_mutation.cpp")):
-            with open(_cpp, "r", encoding="utf-8", errors="ignore") as _source:
+        for _cpp in ("linux_backend.cpp", "linux_backend_vf_read.h",
+                     "linux_backend_nvml_write.cpp", "linux_backend_discovery.cpp",
+                     "linux_backend_mutation.cpp"):
+            with open(os.path.join(SOURCE_DIR, _cpp), "r", encoding="utf-8", errors="ignore") as _source:
                 _lf.write(_source.read())
                 _lf.write("\n")
     linux_backend_cpp = _linux_backend_surface

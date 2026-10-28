@@ -515,7 +515,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         offsets[i] = in.i32();
     }
 
-    const unsigned int numClocks = in.u32();
     const int reportedPopulated = in.i32();
 
     // A deliberately awkward buffer size: the callee must respect whySize.
@@ -530,7 +529,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     const bool valid = linux_vf_snapshot_structurally_valid(
         infoFresh, statusFresh, controlFresh,
         nullMask ? nullptr : editableMask, maskSize,
-        numClocks, nullCurve ? nullptr : curve,
+        nullCurve ? nullptr : curve,
         nullOffsets ? nullptr : offsets, reportedPopulated,
         whySize ? why : nullptr, whySize);
 
@@ -552,8 +551,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                       "accepted a snapshot with a stale domain");
         GC_FUZZ_CHECK(!nullMask && !nullCurve && !nullOffsets,
                       "accepted a snapshot with a null buffer");
-        GC_FUZZ_CHECK(numClocks >= 1u && numClocks <= 64u,
-                      "accepted an out-of-range clock count");
         GC_FUZZ_CHECK(reportedPopulated >= 8 && reportedPopulated <= VF_NUM_POINTS,
                       "accepted an out-of-range populated count");
 

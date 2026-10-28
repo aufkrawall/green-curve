@@ -68,7 +68,6 @@ struct LinuxGpuState {
     VFCurvePoint curve[VF_NUM_POINTS];
     int freqOffsets[VF_NUM_POINTS];
     unsigned char vfMask[32];
-    unsigned int vfNumClocks;
     bool vfInfoCached;
     int numPopulated;
     bool vfInfoFresh;
