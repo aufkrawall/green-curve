@@ -7,7 +7,29 @@ import re
 import shlex
 
 
+_DIGEST_RELEASE = re.compile(r"(?m)^# Remote digests verified for release: (\S+)$")
+_PKGVER = re.compile(r"(?m)^pkgver=(\S+)$")
+
+
+def remote_digest_drift(path, text):
+    """Remote digests can be pinned only from published release bytes, while
+    pkgver must already follow VERSION during release preparation. Every recipe
+    with remote inputs therefore names the release its digests were verified
+    against. Returns (verified, pkgver) when they differ, else None."""
+    marker = _DIGEST_RELEASE.search(text)
+    if not marker:
+        raise ValueError(f"{path.name}: remote sources need a "
+                         "'# Remote digests verified for release: <version>' line")
+    pkgver = _PKGVER.search(text)
+    if not pkgver:
+        raise ValueError(f"{path.name}: remote sources without a pkgver=")
+    if marker.group(1) != pkgver.group(1):
+        return marker.group(1), pkgver.group(1)
+    return None
+
+
 def check_recipe(path):
+    """Validates pins and returns remote_digest_drift() for the recipe."""
     path = Path(path)
     text = path.read_text(encoding="utf-8")
     arrays = {name: shlex.split(body, comments=True) for name, body in re.findall(
@@ -15,6 +37,8 @@ def check_recipe(path):
     sources = [name for name in arrays if name == "source" or name.startswith("source_")]
     if not sources:
         raise ValueError(f"{path.name}: no source arrays")
+    remote = any("$" in source or "://" in source
+                 for name in sources for source in arrays[name])
     for name in sources:
         checksum_name = "sha256sums" + name[len("source"):]
         inputs = arrays[name]
@@ -34,6 +58,7 @@ def check_recipe(path):
             if actual != expected:
                 raise ValueError(f"{path.name}: {source} checksum differs from its current bytes")
     check_source_dir(path, text)
+    return remote_digest_drift(path, text) if remote else None
 
 
 def check_source_dir(path, text):
@@ -60,5 +85,10 @@ def check_all(directory):
     import arch_recipe_checks_tests
     arch_recipe_checks_tests.run_tests()
     for name in ("PKGBUILD", "PKGBUILD.bin"):
-        check_recipe(Path(directory) / name)
+        drift = check_recipe(Path(directory) / name)
+        if drift:
+            # Expected between the version bump and publication; not a failure.
+            print(f"NOTICE: {name} remote digests are verified for {drift[0]} but "
+                  f"pkgver is {drift[1]}; makepkg will reject the {drift[1]} "
+                  "downloads until they are repinned from the published release")
     print("Arch recipe source pins and local asset checksums verified")

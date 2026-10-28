@@ -18,7 +18,9 @@ class ArchRecipeTests(unittest.TestCase):
         self.asset.write_bytes(b"[Service]\nNoNewPrivileges=true\n")
         digest = hashlib.sha256(self.asset.read_bytes()).hexdigest()
         self.recipe = self.root / "PKGBUILD"
-        self.text = (f'source=("$url/archive/$pkgver.tar.gz" "resume.service")\n'
+        self.text = ('pkgver=1.0.0\n'
+                     '# Remote digests verified for release: 1.0.0\n'
+                     f'source=("$url/archive/$pkgver.tar.gz" "resume.service")\n'
                      f"sha256sums=('{('a' * 64)}' '{digest}')\n"
                      'source_x86_64=("$url/payload.tar.xz")\n'
                      f"sha256sums_x86_64=('{('b' * 64)}')\n")
@@ -50,10 +52,33 @@ class ArchRecipeTests(unittest.TestCase):
     def _tag_archive_recipe(self, body):
         recipe = self.root / "PKGBUILD.tag"
         header = ('url="https://github.com/o/green-curve"\n'
+                  'pkgver=1.0.0\n'
+                  '# Remote digests verified for release: 1.0.0\n'
                   'source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/$pkgver.tar.gz")\n'
                   f"sha256sums=('{'c' * 64}')\n")
         recipe.write_text(header + body, encoding="utf-8")
         return recipe
+
+    def test_matching_remote_digest_release_has_no_drift(self):
+        self.assertIsNone(arch_recipe_checks.check_recipe(self.recipe))
+
+    def test_version_bump_before_repin_reports_drift(self):
+        self.recipe.write_text(self.text.replace("pkgver=1.0.0", "pkgver=1.1.0"),
+                               encoding="utf-8")
+        self.assertEqual(arch_recipe_checks.check_recipe(self.recipe),
+                         ("1.0.0", "1.1.0"))
+
+    def test_remote_sources_without_digest_release_are_rejected(self):
+        self.recipe.write_text(self.text.replace(
+            "# Remote digests verified for release: 1.0.0\n", ""), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Remote digests verified for release"):
+            arch_recipe_checks.check_recipe(self.recipe)
+
+    def test_local_only_recipe_needs_no_digest_release(self):
+        digest = hashlib.sha256(self.asset.read_bytes()).hexdigest()
+        self.recipe.write_text(f'source=("resume.service")\nsha256sums=(\'{digest}\')\n',
+                               encoding="utf-8")
+        self.assertIsNone(arch_recipe_checks.check_recipe(self.recipe))
 
     def test_tag_archive_dir_must_match_repository_name(self):
         recipe = self._tag_archive_recipe('build() {\n    cd "$pkgname-$pkgver"\n}\n')

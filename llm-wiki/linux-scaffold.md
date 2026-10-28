@@ -37,6 +37,16 @@ Remote-pin accuracy is verified by this native reproducible command rather
 than a network-dependent unit test; deterministic gates verify shape and local
 inputs. Packages were inspected for the exact resume-unit bytes/mode 0644.
 
+Release ordering (2026-10-28): `pkgver` must equal `VERSION` from the bump on
+(`tools/linux_gates.py`), but remote digests can only come from the published
+tag archive and release assets. A recipe with remote sources therefore carries
+`# Remote digests verified for release: <version>`. `check_recipe()` rejects a
+recipe without it and returns the drift when it differs from `pkgver`;
+`check_all()` prints a NOTICE for each drifting recipe on every build instead
+of failing, because the drift is expected between the bump and publication.
+The post-publication repin updates every remote digest and this line together.
+Fixtures cover matching, drifting, missing and local-only recipes.
+
 ## Admission, persistence, and trust follow-up (verified 2026-10-01)
 
 Source anchors: `source/linux_daemon_serve.h`, `source/linux_daemon_transport.cpp`,

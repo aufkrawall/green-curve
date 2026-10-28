@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-28: Review follow-up: memory plan evidence and recipe digest drift
+
+- An external review of `f9c23ba..6f2bd10` found that the selection reset
+  left the memory Apply planner comparing against the previous GPU's cached
+  offset: with failed memory reads on the new GPU, an equal target skipped the
+  setter and reported success. The planner now requires fresh readback
+  (`mem_offset_write_required()`), cases 7676-7678; the earlier setter-level
+  test could not see the planner.
+- The same review noted that both Arch recipes name 0.31.0 with 0.30.0 remote
+  digests. That is inherent until publication; recipes now name the release
+  their remote digests belong to, and every build prints a NOTICE while it
+  differs from `pkgver`.
+
 ## 2026-10-28: Prepare the 0.31.0 release
 
 - `VERSION`, README install examples, both Arch recipes and the wiki index

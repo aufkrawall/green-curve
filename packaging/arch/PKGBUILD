@@ -21,6 +21,9 @@ source=(
     "greencurve.desktop"
     "greencurve.png"
 )
+# Remote digests verified for release: 0.30.0
+# Repin every remote digest from the published release bytes, then set this
+# line to pkgver. Until then makepkg rejects the pkgver downloads.
 sha256sums=(
     '3bd16139ca11281232d2aba39ca2acb26040d6239950bc7b05885b0621e52911'
     'ab54902d53821b375a471990d515eb38a006971cc2b66352dba9a2d69793726e'
