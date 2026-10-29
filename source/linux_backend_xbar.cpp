@@ -73,7 +73,11 @@ static bool linux_xbar_refresh(LinuxGpuState* g) {
     XbarControlSnapshot* snap =
         (XbarControlSnapshot*)calloc(1, sizeof(XbarControlSnapshot));
     if (!snap) return false;
-    bool ok = xbar_read_control(api.getControl, g->gpuHandle, snap);
+    bool ok = xbar_read_control_quiet(api.getControl, g->gpuHandle, snap);
+    // Every daemon state read refreshes this domain. Linux has no per-tick
+    // verbose mode, so repeats are always summarized.
+    xbar_log_polled_read_outcome(&g->xbarReadLog, snap, ok, pl_monotonic_ms(),
+                                 false);
     g->xbarSchemaStatus = snap->schemaStatus;
     if (ok) {
         g->xbarProbeValid = true;

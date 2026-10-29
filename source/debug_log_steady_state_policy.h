@@ -22,7 +22,11 @@
 //     is the old per-tick behavior;
 //   - anomalies (failed reads, slow reads, errors) are never routed through a
 //     tracker: the caller logs them immediately and calls invalidate(), so the
-//     next healthy line is logged as a change and the recovery is visible.
+//     next healthy line is logged as a change and the recovery is visible;
+//   - the one exception is a deterministic refusal that a timer repeats
+//     verbatim (an unpinned ClkDomains layout, gpu_backend_xbar.h): its full
+//     detail is the key, so the first instance and every change still log at
+//     once, and the first clean read logs the suppressed count.
 //
 // The tracker holds no lock.  Every call site either runs on one thread or
 // already serializes the call under an existing lock.

@@ -102,6 +102,8 @@ static bool linux_backend_bind_nvapi(LinuxGpuState* g, bool recovery,
     }
     linux_backend_clear_vf_freshness(g, true);
     linux_xbar_clear_readback(g);
+    // A new binding's first ClkDomains refusal is new evidence: log it in full.
+    gc_log_steady::invalidate(&g->xbarReadLog);
     g->gpuHandle = nullptr;
     g->backend = nullptr;
     g->architecture = 0;

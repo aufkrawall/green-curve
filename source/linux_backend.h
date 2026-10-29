@@ -26,6 +26,7 @@
 #include "linux_transaction.h"
 #include "linux_vf_layout_summary.h"
 #include "fan_fixed_maintenance_policy.h"
+#include "debug_log_steady_state_policy.h"
 #include "platform.h"
 
 struct LinuxGpuState {
@@ -96,6 +97,8 @@ struct LinuxGpuState {
     bool graphicsDomainBoundaryLogged;
     bool xbarProbeValid;
     unsigned int xbarSchemaStatus;
+    // Repeat suppression for the per-refresh ClkDomains read; reset on rebind.
+    gc_log_steady::Tracker xbarReadLog;
     bool xbarFreqReadbackValid;
     bool xbarMsvddReadbackValid;
     int xbarFreqOffsetKhz;

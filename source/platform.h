@@ -129,6 +129,18 @@ static inline void pl_sleep_ms(unsigned int ms) {
 #endif
 }
 
+// Monotonic milliseconds for log-summary windows; never wall-clock time.
+static inline unsigned long long pl_monotonic_ms() {
+#if defined(_WIN32)
+    return (unsigned long long)GetTickCount64();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long)ts.tv_sec * 1000ull +
+           (unsigned long long)(ts.tv_nsec / 1000000L);
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // 32-bit atomics
 //

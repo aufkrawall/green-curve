@@ -23,7 +23,9 @@
 #define GREEN_CURVE_GPU_BACKEND_XBAR_H
 
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
+#include "debug_log_steady_state_policy.h"
 
 // These are NvAPI interface IDs, not Linux RM command IDs.  In
 // particular, PropRels controls the GPC->XBAR propagation ratio and uses a
@@ -146,6 +148,14 @@ static const unsigned int XBAR_SCHEMA_COUNT =
 #define XBAR_SCHEMA_STATUS_UNKNOWN_VERSION 1u
 #define XBAR_SCHEMA_STATUS_UNAVAILABLE     2u
 
+// Which check refused the last read.  xbar_read_control_quiet() records it
+// with the rejected GET_CONTROL statuses so the caller decides how often the
+// diagnostics are logged (xbar_log_read_outcome()).
+#define XBAR_READ_REFUSAL_NONE             0u
+#define XBAR_READ_REFUSAL_REQUEST_REJECTED 1u  // every request version failed
+#define XBAR_READ_REFUSAL_UNKNOWN_VERSION  2u  // response word has no schema row
+#define XBAR_READ_REFUSAL_LAYOUT_MISMATCH  3u  // pinned entry markers absent
+
 struct XbarControlSnapshot {
     unsigned char buf[XBAR_CONTROL_BUF_SIZE];
     bool valid;
@@ -160,6 +170,11 @@ struct XbarControlSnapshot {
     int freqOffsetKhz;
     int msvddOffsetUv;
     unsigned int measuredKhz;
+    unsigned int refusal;           // XBAR_READ_REFUSAL_*
+    unsigned int requestWord;       // request version the driver answered
+    unsigned int rejectedCount;     // GET_CONTROL failures before an answer
+    int rejectedStatus[XBAR_SCHEMA_COUNT];
+    bool versionRejected;
 };
 
 struct XbarBufferLayout {
@@ -312,55 +327,56 @@ static inline bool xbar_measure_voltage(NvApiFunc voltFunc, void* gpuHandle,
 // schema first) and validates the RESPONSE's version word against the schema
 // table before interpreting anything.  On any refusal the snapshot is left
 // marked invalid so stale values can never masquerade as fresh proof.
-static inline bool xbar_read_control(NvApiFunc getControl, void* gpuHandle,
-                                     XbarControlSnapshot* snap) {
-    if (!getControl || !gpuHandle || !snap) return false;
+// Logs nothing: the refusal is recorded in the snapshot for the caller.
+static inline bool xbar_read_control_quiet(NvApiFunc getControl,
+                                           void* gpuHandle,
+                                           XbarControlSnapshot* snap) {
+    if (!snap) return false;
+    snap->refusal = XBAR_READ_REFUSAL_NONE;
+    snap->requestWord = 0;
+    snap->rejectedCount = 0;
+    snap->versionRejected = false;
+    if (!getControl || !gpuHandle) return false;
     snap->valid = false;
     snap->schemaStatus = XBAR_SCHEMA_STATUS_UNAVAILABLE;
     const XbarClkDomainsSchema* matchedRequest = nullptr;
-    int getStatus = 0;
-    bool versionRejected = false;
     for (unsigned int i = 0; i < XBAR_SCHEMA_COUNT; ++i) {
         memset(snap->buf, 0, sizeof(snap->buf));
         xbar_put_u32(snap->buf, 0, g_xbarSchemas[i].versionWord);
         xbar_put_u32(snap->buf, XBAR_CONTROL_MASK_OFFSET,
                      g_xbarSchemas[i].requestMask);
-        getStatus = getControl(gpuHandle, snap->buf);
+        int getStatus = getControl(gpuHandle, snap->buf);
         if (getStatus == 0) {
             matchedRequest = &g_xbarSchemas[i];
             break;
         }
         if (getStatus == XBAR_NVAPI_STATUS_INCOMPATIBLE_STRUCT_VERSION)
-            versionRejected = true;
-        xbar_log_control_status("GET_CONTROL", getStatus);
+            snap->versionRejected = true;
+        snap->rejectedStatus[snap->rejectedCount++] = getStatus;
     }
     if (!matchedRequest) {
         // A driver rejecting every requested struct version is telling us our
         // request vocabulary is wrong for it — incomplete tooling knowledge,
         // not a refusal of the domain itself.
-        snap->schemaStatus = versionRejected
+        snap->schemaStatus = snap->versionRejected
             ? XBAR_SCHEMA_STATUS_UNKNOWN_VERSION
             : XBAR_SCHEMA_STATUS_UNAVAILABLE;
-        XBAR_LOG("xbar_read: every pinned ClkDomains request version was"
-                  " rejected (%u schemas%s)\n", XBAR_SCHEMA_COUNT,
-                  versionRejected ? ", incompatible struct version" : "");
+        snap->refusal = XBAR_READ_REFUSAL_REQUEST_REJECTED;
         return false;
     }
+    snap->requestWord = matchedRequest->versionWord;
     unsigned int responseWord = xbar_get_u32(snap->buf, 0);
     const XbarClkDomainsSchema* responseSchema =
         xbar_schema_for_version_word(responseWord);
     if (!responseSchema) {
         snap->schemaStatus = XBAR_SCHEMA_STATUS_UNKNOWN_VERSION;
-        xbar_log_unknown_response_version(snap->buf,
-                                          matchedRequest->versionWord,
-                                          responseWord);
+        snap->refusal = XBAR_READ_REFUSAL_UNKNOWN_VERSION;
         return false;
     }
     XbarBufferLayout layout{};
     if (!xbar_layout_for_buffer(snap->buf, responseSchema, &layout)) {
         snap->schemaStatus = XBAR_SCHEMA_STATUS_UNAVAILABLE;
-        XBAR_LOG("xbar_read: pinned schema for version word 0x%08X did not"
-                  " match the response\n", responseWord);
+        snap->refusal = XBAR_READ_REFUSAL_LAYOUT_MISMATCH;
         return false;
     }
     snap->versionWord = responseWord;
@@ -378,6 +394,95 @@ static inline bool xbar_read_control(NvApiFunc getControl, void* gpuHandle,
     // No per-read success log here: telemetry refreshes call this repeatedly.
     // The capability probe and the write path log the full schema details.
     return true;
+}
+
+// Every diagnostic line of the read recorded in `snap`, in ladder order.
+static inline void xbar_log_read_outcome(const XbarControlSnapshot* snap) {
+    if (!snap) return;
+    for (unsigned int i = 0; i < snap->rejectedCount; ++i)
+        xbar_log_control_status("GET_CONTROL", snap->rejectedStatus[i]);
+    const unsigned int responseWord = xbar_get_u32(snap->buf, 0);
+    if (snap->refusal == XBAR_READ_REFUSAL_REQUEST_REJECTED) {
+        XBAR_LOG("xbar_read: every pinned ClkDomains request version was"
+                  " rejected (%u schemas%s)\n", XBAR_SCHEMA_COUNT,
+                  snap->versionRejected ? ", incompatible struct version" : "");
+    } else if (snap->refusal == XBAR_READ_REFUSAL_UNKNOWN_VERSION) {
+        xbar_log_unknown_response_version(snap->buf, snap->requestWord,
+                                          responseWord);
+    } else if (snap->refusal == XBAR_READ_REFUSAL_LAYOUT_MISMATCH) {
+        XBAR_LOG("xbar_read: pinned schema for version word 0x%08X did not"
+                  " match the response\n", responseWord);
+    }
+}
+
+// One-shot reads (probes, write preimages, self-test) log every refusal.
+static inline bool xbar_read_control(NvApiFunc getControl, void* gpuHandle,
+                                     XbarControlSnapshot* snap) {
+    const bool ok = xbar_read_control_quiet(getControl, gpuHandle, snap);
+    xbar_log_read_outcome(snap);
+    return ok;
+}
+
+// The refusal identity a timer-driven reader compares between reads.  The
+// response head of an unknown version is not part of it.
+static inline void xbar_read_outcome_key(const XbarControlSnapshot* snap,
+                                         char* out, size_t outSize) {
+    if (!out || outSize == 0) return;
+    out[0] = '\0';
+    if (!snap) return;
+    const unsigned int responseWord =
+        snap->refusal == XBAR_READ_REFUSAL_UNKNOWN_VERSION ||
+        snap->refusal == XBAR_READ_REFUSAL_LAYOUT_MISMATCH
+            ? xbar_get_u32(snap->buf, 0) : 0u;
+    int used = snprintf(out, outSize, "refusal=%u request=0x%08X"
+        " response=0x%08X statuses=", snap->refusal, snap->requestWord,
+        responseWord);
+    for (unsigned int i = 0; i < snap->rejectedCount && used > 0 &&
+         (size_t)used < outSize; ++i) {
+        int n = snprintf(out + used, outSize - (size_t)used, "%s%d",
+                         i ? "," : "", snap->rejectedStatus[i]);
+        if (n < 0) break;
+        used += n;
+    }
+}
+
+// A timer-driven reader sees the same refusal on every tick: a GPU whose
+// ClkDomains layout this build has not pinned (Pascal answers the V2 request
+// without the pinned entry markers) answers identically until its binding
+// changes.  The first refusal and every change log in full, identical repeats
+// are counted and summarized per interval (debug_log_steady_state_policy.h),
+// and the first clean read after a refusal reports the unlogged count.  The
+// caller serializes `tracker` and resets it when the GPU binding changes.
+static inline void xbar_log_polled_read_outcome(gc_log_steady::Tracker* tracker,
+                                                const XbarControlSnapshot* snap,
+                                                bool ok,
+                                                unsigned long long nowMs,
+                                                bool verbose) {
+    if (!snap) return;
+    if (!tracker) {
+        xbar_log_read_outcome(snap);
+        return;
+    }
+    if (ok && snap->rejectedCount == 0) {
+        if (tracker->haveKey || tracker->window.count) {
+            XBAR_LOG("xbar_read: ClkDomains read accepted after a refusal"
+                      " (%llu identical repeats not logged)\n",
+                      tracker->window.count);
+            memset(tracker, 0, sizeof(*tracker));
+        }
+        return;
+    }
+    char key[gc_log_steady::kKeyBytes] = {};
+    xbar_read_outcome_key(snap, key, sizeof(key));
+    gc_log_steady::Decision d =
+        gc_log_steady::observe(tracker, key, nowMs, snap->refusal, verbose);
+    if (gc_log_steady::wants_summary(d)) {
+        XBAR_LOG("xbar_read: %s refusal repeated n=%llu windowS=%llu\n",
+                  d.action == gc_log_steady::LOG_CHANGE ? "previous"
+                                                        : "unchanged",
+                  d.pending.count, d.pending.elapsedMs / 1000ull);
+    }
+    if (gc_log_steady::wants_full_line(d)) xbar_log_read_outcome(snap);
 }
 
 static inline bool xbar_probe(NvApiFunc getControl, NvApiFunc measureFunc,

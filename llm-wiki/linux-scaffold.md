@@ -383,6 +383,17 @@ once, stamped by `[meta] linux_mem_migrated`:
   control block. See [GPU backend](gpu-backend.md#vf-graphics-frequency-units-verified-2026-10-29)
   for invariants and the remaining hardware verification limit.
 
+- **ClkDomains refusals logged once (2026-10-29).** Every daemon state read
+  refreshes XBAR/SYS/VIDEO through `linux_xbar_refresh()`. Pascal answers the
+  V2 ClkDomains request without the pinned entry markers, so the journal used
+  to repeat `xbar_read: pinned schema ... did not match` on every read. The
+  refresh now reads silently and logs through a per-GPU steady-state tracker
+  (`LinuxGpuState::xbarReadLog`, invalidated on rebind): first refusal and
+  every change in full, repeats as `unchanged refusal repeated n=...` per
+  10 minutes, and the first clean read reports the unlogged count. The read
+  and the capability outcome are unchanged. See
+  [debug tools](debug-tools.md#steady-state-summaries-and-verbose-mode-added-2026-10-17).
+
 - **VF layout diagnostics (2026-10-28).** A refused snapshot publishes zero
   points and one reason, which cannot show how a new family's table is shaped.
   Every atomic read now records `LinuxVfLayoutSummary`

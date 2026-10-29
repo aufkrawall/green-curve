@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-29: Log a repeated ClkDomains refusal once
+
+- The Pascal hardware report's journal repeated the ClkDomains layout-mismatch
+  line on every daemon state read. The shared reader now records the refusal
+  without logging; one-shot callers keep logging every refusal, while the Linux
+  per-refresh read uses a per-GPU steady-state tracker. The read cadence,
+  capability classification and the unknown-version latch are unchanged.
+- Cases 7730-7739 drive the production reader and logger with a fake driver
+  that answers like the reported Pascal card. Source anchors:
+  [debug tools](../debug-tools.md#steady-state-summaries-and-verbose-mode-added-2026-10-17),
+  [GPU backend](../gpu-backend.md), [Linux scaffold](../linux-scaffold.md),
+  [tests](../testing.md).
+- Open question: whether Pascal exposes an XBAR domain under another layout is
+  unverified; the domain stays refused there.
+
 ## 2026-10-29: Physical VF graphics units on Pascal
 
 - A hardware report confirms successful Pascal VF reads after the point-mask

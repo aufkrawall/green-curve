@@ -241,6 +241,16 @@ pinned. A tri-state snapshot status distinguishes `UNKNOWN_VERSION` (our table
 cannot talk to this driver yet → capability UNPROBED, no limited-surface
 warning) from `UNAVAILABLE`/refusals under a known schema (positive evidence →
 REFUSED). Failed reads always clear `valid`; stale proof cannot survive.
+`xbar_read_control_quiet()` records which check refused (`refusal`, the
+answered request word, rejected GET_CONTROL statuses) without logging;
+`xbar_read_control()` logs that outcome on every call, which probes, write
+preimages and self-tests keep. The Linux daemon's per-refresh read logs through
+`xbar_log_polled_read_outcome()` instead: Pascal answers the V2 request with
+the same version word but without the pinned entry markers, identically on
+every refresh, so only the first refusal, a changed refusal and the first clean
+read are logged (see [debug tools](debug-tools.md#steady-state-summaries-and-verbose-mode-added-2026-10-17)).
+The read itself still runs per refresh; only the
+`UNKNOWN_VERSION` latch skips it.
 It never synthesizes a full block: every write reads a fresh complete response,
 changes only the two owned fields (absolute offsets carried in the snapshot),
 submits that preimage, then requires exact readback of both fields. Reset writes

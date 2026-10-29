@@ -349,8 +349,11 @@ Source anchors: `source/debug_log_steady_state_policy.h`,
 `source/gui_service_io_log.h`, `source/main_service_state_envelope.cpp`,
 `source/xbar_telemetry.h`, `source/main_service_fan_worker.cpp`,
 `source/main_data_paths.cpp` (`refresh_debug_log_verbose`),
+`source/gpu_backend_xbar.h` (`xbar_log_polled_read_outcome`),
+`source/linux_backend_xbar.cpp`,
 `tools/log_gates.py` (`check_steady_state_lines`), tests 6700-6719 in
-`tests/diagnostics_followup_tests.cpp`.
+`tests/diagnostics_followup_tests.cpp`, 7730-7739 in
+`tests/xbar_read_log_tests.cpp`.
 
 The 0.28 field log measured eight per-tick lines (every 2-6 s) at about 97% of
 the file: about 550 KB/h, so the 32 MiB cap held about 2.5 days and older
@@ -364,7 +367,11 @@ in full; repeats are counted and one summary per 10 minutes reports
 `n=<count> windowS=<s> <value>=<min>..<max> last=<last>`. When a key changes
 after repeats, a `steady (previous state)` summary precedes the change line.
 Anomalies never go through a tracker: they log at once and invalidate it, so
-the recovery is logged as a change too.
+the recovery is logged as a change too. The one exception (2026-10-29) is a
+deterministic refusal that a timer repeats verbatim: the Linux daemon's
+per-refresh ClkDomains read on a GPU whose layout is not pinned (Pascal). Its
+refusal identity is the key, so the first refusal and every change still log in
+full; see the `xbar_read:` row.
 
 | Line | Key | Tracked value | Logged at once |
 |------|-----|---------------|----------------|
@@ -372,6 +379,7 @@ the recovery is logged as a change too.
 | `service envelope:` | instance, generation, phase, sections, topology, desired | revision | any key change |
 | `GUI service state:` (adoption) | phase, epoch, instance, generation, sections | revision | any key change |
 | `xbar refresh:` | XBAR/MSVDD/SYS/VIDEO offsets | measured XBAR kHz | offset change |
+| `xbar_read:` (Linux daemon refresh refusals) | refusal kind, request/response words, GET_CONTROL statuses | - | first refusal, refusal change, first clean read (`accepted after a refusal (N identical repeats not logged)`), rebind; summary `unchanged refusal repeated n=<N> windowS=<s>` |
 | `service_runtime_pulse_done:` | fan mode, duty, curve/fixed, failing | temperature | first failing tick, recovery |
 | `service_fan_runtime_thread: waiting` | interval, curve/fixed | waitMs | interval/mode change |
 | `ensure_service_fan_runtime_thread: already running` | constant | - | every other plan |

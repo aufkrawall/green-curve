@@ -16,6 +16,22 @@ performed. Corrected Pascal values and per-point writes await hardware
 confirmation; Linux daemon orchestration remains cross-linked and source-gated
 on this Windows host.
 
+## Polled ClkDomains refusal logging (2026-10-29)
+
+Source anchors: `tests/xbar_read_log_tests.cpp`, `source/gpu_backend_xbar.h`,
+`source/linux_backend_xbar.cpp`.
+
+A fake ClkDomains driver answers like the reported Pascal card: the V2 request
+is accepted and echoed without the pinned entry markers. Case 7730 keeps the
+one-shot contract (every refusal logged, refusal recorded in the snapshot);
+7731-7733 log the first polled refusal once, suppress identical repeats and
+close the interval with a single summary; 7734 flushes the previous count when
+the refusal changes; 7735-7736 report suppressed repeats once on recovery and
+stay silent afterwards; 7737 relogs after invalidation (rebind); 7738 keeps
+every line without a tracker; 7739 pins the comparison key. Log capture counts
+lines, and time is passed in, so no case sleeps. Forcing the polled logger back
+to log-every-refusal fails the suite at 7732.
+
 ## VF graphics frequency units (2026-10-29)
 
 Source anchors: `tests/linux_vf_read_tests.cpp`, `tests/linux_vf_write_tests.cpp`,
