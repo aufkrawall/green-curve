@@ -47,7 +47,7 @@ GPU selection, fan control and recovery improve across hardware changes and fail
 - **Voltage/frequency grid:** curve points remain visible as GPU temperature changes.
 - **GPU selection:** adding or disabling unrelated devices no longer hides the GPU, and failed saved-location updates retry automatically.
 - **Fan control verification:** a conflicting driver target still fails a fan-speed write.
-- **Linux late driver start:** clients can reconnect, and Refresh finds a GPU whose driver loaded after the service.
+- **Linux late driver start:** clients can reconnect, and explicit Refresh requests are accepted to find a GPU whose driver loaded after the service.
 - **Linux fan recovery:** after a crash, failed operation or failed handback, a manual fan is returned to the driver on the GPU that had it.
 - **Linux failed operations:** unconfirmed settings stay uncertain instead of being replayed, and automatic restore rechecks before writing.
 - **Linux fan curves:** curve tracking starts reliably and cannot be overwritten by a stale poll.

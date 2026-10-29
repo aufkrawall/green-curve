@@ -16,6 +16,20 @@ with the corresponding freshly built binary. No physical
 GPU write or driver-failure injection was performed; Linux daemon orchestration
 remains cross-linked and source-gated on this Windows host.
 
+## Explicit state-read requests (2026-10-29)
+
+Source anchors: `tests/linux_read_request_tests.cpp`, `source/service_protocol.h`,
+`source/service_protocol_validation.h`, `source/linux_daemon.cpp`.
+
+Cases 7710-7716 exercise the flag builder against the real request validator:
+explicit snapshot/telemetry reads accept only the interactive retry bit, ordinary
+reads remain flag-free, and mutation fields, shared-slot bits, unknown flags and
+that bit on other read verbs still refuse. The standalone fixture links the
+production fan normalizer and text helpers. It fails at 7710 with the previous
+protocol headers and passes with the correction. The existing TUI fixture 7630
+covers explicit versus automatic backend discovery; neither test writes a GPU.
+The daemon now includes the validator's fixed reason in its reply and debug log.
+
 ## Linux VF layout diagnostics (2026-10-28)
 
 Source anchors: `tests/linux_vf_read_tests.cpp` (`run_vf_layout_cases()`),

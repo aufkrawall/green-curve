@@ -705,19 +705,13 @@ static_assert(sizeof(ServiceRequest) == 1552,
 
 #include "service_protocol_wire_validation.h"
 
-// Flags a client may put on a request. RESET carries none by contract:
-// validate_service_request_for_ipc() rejects any flag on RESET, and the
-// interactive bit is only ever consumed on the APPLY path. Building the flag
-// word here keeps both clients on that contract -- the Linux client used to set
-// the interactive bit unconditionally, which made the daemon reject EVERY
-// Reset with "invalid protocol fields".
-// RESUME_RESTORE is on the same contract for the same reason: it is a
-// machine-generated edge with no payload, and the daemon rejects any flag on it.
+// Only Apply and explicit state reads consume the interactive bit. State reads
+// use it to retry unavailable-backend discovery. All other commands carry none.
 static inline gc_u32 service_request_flags_for_command(unsigned int command,
                                                        bool interactive) {
-    if (command == SERVICE_CMD_RESET ||
-        command == SERVICE_CMD_RESUME_RESTORE) return 0u;
-    return interactive ? (gc_u32)SERVICE_REQUEST_FLAG_INTERACTIVE : 0u;
+    return interactive && (command == SERVICE_CMD_APPLY ||
+        command == SERVICE_CMD_GET_SNAPSHOT || command == SERVICE_CMD_GET_TELEMETRY)
+        ? (gc_u32)SERVICE_REQUEST_FLAG_INTERACTIVE : 0u;
 }
 
 // service_request_reject_reason() and validate_service_request_for_ipc() live

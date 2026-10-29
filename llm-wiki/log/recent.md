@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-29: Accept explicit backend-retry state reads
+
+- Snapshot/telemetry reads now admit the interactive retry flag that their
+  client and handler already use. Other read verbs remain flag-free; mutation
+  fields and shared-slot bits still refuse. Malformed daemon requests report
+  the validator's fixed reason in the reply and debug log.
+- Cases 7710-7716 execute the flag builder and validator together. The
+  standalone fixture fails at 7710 with the previous protocol headers and
+  passes after correction. Source anchors: [Linux](../linux-scaffold.md),
+  [tests](../testing.md).
+
 ## 2026-10-28: VF layout in Linux probe and self-test
 
 - Review of the Pascal VF-info fix: it removes the cause of the reported

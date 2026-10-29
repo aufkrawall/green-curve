@@ -254,11 +254,12 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
              (unsigned int)SERVICE_PROTOCOL_VERSION);
     } else if (!requestValid) {
         resp->status = SERVICE_STATUS_ERROR;
-        gc_strlcpy(resp->message, sizeof(resp->message),
-            "invalid protocol fields");
+        const char* reason = service_request_reject_reason(req);
+        gc_snprintf(resp->message, sizeof(resp->message),
+            "invalid protocol fields: %s", reason);
         dlog("daemon: rejected malformed request pid=%u command=%u flags=0x%08x "
              "operationId=%llu applyOrigin=%u profileSlot=%u startupMode=%u "
-             "targetValid=%u preconditions=%llu/%llu/%llu\n",
+             "targetValid=%u preconditions=%llu/%llu/%llu reason=%s\n",
              (unsigned int)req->callerPid, (unsigned int)req->command,
              (unsigned int)req->flags,
              (unsigned long long)req->operationId,
@@ -266,7 +267,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
              (unsigned int)req->startupMode, (unsigned int)req->targetGpu.valid,
              (unsigned long long)req->expectedServiceInstanceId,
              (unsigned long long)req->expectedGpuGeneration,
-             (unsigned long long)req->expectedTopologySignature);
+             (unsigned long long)req->expectedTopologySignature, reason);
     } else if ((req->command == SERVICE_CMD_APPLY ||
                 req->command == SERVICE_CMD_RESET) &&
                !mutation_preconditions_match(req, resp)) {

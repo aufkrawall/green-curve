@@ -71,6 +71,12 @@ static inline const char* service_request_reject_reason(
         (SERVICE_REQUEST_SHARED_SLOT_MASK <<
             SERVICE_REQUEST_SHARED_SLOT_SHIFT);
     if ((r->flags & ~allowedFlags) != 0) return "unknown request flags";
+    // Explicit state reads may retry backend discovery. No other read-only
+    // verb consumes this flag, and no state read may carry shared-slot bits.
+    const gc_u32 allowedReadFlags =
+        r->command == SERVICE_CMD_GET_SNAPSHOT ||
+        r->command == SERVICE_CMD_GET_TELEMETRY
+            ? SERVICE_REQUEST_FLAG_INTERACTIVE : 0u;
     bool anyPrecondition = r->expectedServiceInstanceId ||
         r->expectedGpuGeneration || r->expectedTopologySignature;
     bool basePreconditions = r->expectedServiceInstanceId &&
@@ -203,7 +209,7 @@ static inline const char* service_request_reject_reason(
         } else if (r->updateAutoCheck || r->updateIntervalSeconds) {
             return "update command carries policy fields";
         }
-    } else if (r->operationId || r->flags || r->resetOcBeforeApply ||
+    } else if (r->operationId || (r->flags & ~allowedReadFlags) || r->resetOcBeforeApply ||
         r->applyOrigin || r->profileSource || r->profileSlot ||
         r->startupMode || r->updateAutoCheck || r->updateIntervalSeconds ||
         anyPrecondition) {

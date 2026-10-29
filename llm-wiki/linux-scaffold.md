@@ -532,6 +532,21 @@ once, stamped by `[meta] linux_mem_migrated`:
   daemon would otherwise never reach that branch and would be killed for doing
   its job.
 
+## Explicit state-read retry flag (verified 2026-10-29)
+
+Source anchors: `source/service_protocol.h`, `source/service_protocol_validation.h`,
+`source/linux_daemon_client_verbs.cpp`, `source/linux_daemon.cpp`,
+`tests/linux_read_request_tests.cpp`.
+
+The interactive bit on snapshot/telemetry requests permits an explicit
+unavailable-backend discovery retry. The shared validator accepts that bit only
+on those state reads and Apply; state reads still reject mutation fields and
+shared-slot flags. The client flag builder emits zero for all other verbs.
+Previously the generic read-only validation branch rejected the very flag that
+explicit Refresh sent. The daemon includes the validator's fixed rejection
+reason in the reply and debug log. Cases 7710-7716 cover this boundary together
+with the client builder; TUI case 7630 covers the explicit/automatic decision.
+
 ## Request deadlines (F-DAEMON-DEADLINE, 2026-09-12)
 
 `source/linux_daemon_deadline_policy.h` is canonical; this is the summary.
