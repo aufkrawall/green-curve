@@ -7,6 +7,12 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
 ## 2026-10-29: Separate advanced-domain INFO from client tuning ranges
 
+- Validation: native regressions, source/public-wiki gates and clang-tidy
+  (no new findings) passed. Plain build 367 refreshed all 12 packages; hashes,
+  sidecars and 20 embedded application/service images were verified. Both
+  native Windows x64 variants accepted all four added INFO reads and wrote
+  complete 602911-byte reports. Every test process exited. GP102/Linux format 2
+  remains hardware-unverified pending the reporter's next capture.
 - Parsed the complete stock GP102 capture: the normal CONTROL read succeeds
   with the known version and entry geometry but different wire types; IDs
   15–18 provide measurements while modern IDs 0–2 are refused. Stock zeros do

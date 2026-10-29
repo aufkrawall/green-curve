@@ -355,6 +355,14 @@ actuating probe. Keep tuning's strict wire-layout validation until the advanced
 descriptors, type-specific fields and units are verified. Raw captures and
 driver-analysis artifacts remain outside tracked files.
 
+Format-2 verification: plain build 367 refreshed all 12 packages, with changed
+hashes, SHA-256 sidecars and 20 embedded application/service images checked.
+Both native Windows x64 compiler builds accepted all four advanced INFO
+versions (status 0) and saved complete 602911-byte reports. Conflicting verbs
+still exited 1 without rewriting the report. Native regressions and source
+gates passed; clang-tidy had no new findings. The format-2 GP102/Linux report
+remains the next hardware check; write support is not inferred from INFO success.
+
 SET_CONTROL is a privileged operation: a non-elevated caller gets status
 **-137 `NVAPI_INVALID_USER_PRIVILEGE`** before the RM command is dispatched
 (GET_CONTROL works unprivileged — verified live). The status decoder names this
