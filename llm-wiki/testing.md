@@ -915,8 +915,9 @@ in a child the harness re-launches with CET shadow stacks forced on, via the
 `--veh-driver-fault-child` argument `main()` dispatches first, plus the
 declined-thread child and the portable poisoned-runtime exit plan; see
 [gpu-backend](gpu-backend.md)), `tests/crash_dump_notice_tests.cpp` (7140-7159:
-the service crash-dump notice text incl. the PowerShell-literal escaping and
-the all-or-nothing command, plus the real scan and atomic write in a
+the service crash-dump notice text incl. recovery context for service-only,
+WER-only and mixed inventories (7150, verified 2026-10-29), PowerShell-literal
+escaping and the all-or-nothing command, plus the real scan and atomic write in a
 `%TEMP%` scratch folder; see [windows-architecture](windows-architecture.md)),
 `tests/module_version_tests.cpp` (7180-7189: the mapped-image version reader
 against synthesised PE32/PE32+ images and their malformed mutations, and on

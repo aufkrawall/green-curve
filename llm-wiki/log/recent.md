@@ -5,6 +5,27 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-29: Explain service diagnostic dumps after recovery
+
+- The service captures a driver-fault dump before requesting recovery, so a
+  dump can remain after a successful driver restart or installation. The
+  notice now explains this before listing every dump kind. Filenames alone
+  do not establish recovery outcome and no dumps are filtered out.
+- Case 7150 covers the explanation for service-only, WER-only and mixed
+  inventories. Existing bounded-formatting, literal-command and native
+  scan/write tests remain relevant. Existing count/write/failure diagnostics
+  are sufficient because only presentation changed; no runtime logging added.
+- README corrects the dump location and recommends keeping the WER service
+  available and LocalDumps registration intact, while distinguishing local
+  capture from reporting to Microsoft. Disabling the WER service itself is
+  untested. Sources: [Windows architecture](../windows-architecture.md),
+  [tests](../testing.md).
+- Full native regressions, Linux cross-links and source/Python gates pass;
+  static analysis reports no new findings. Mutating the recovery explanation
+  fails case 7150. Plain build 365 refreshed all 12 current packages; timestamps,
+  changed content and SHA-256 sidecars were checked, and the four Windows
+  service variants carry the new wording in both archives and installers.
+
 ## 2026-10-29: Log a repeated ClkDomains refusal once
 
 - The Pascal hardware report's journal repeated the ClkDomains layout-mismatch

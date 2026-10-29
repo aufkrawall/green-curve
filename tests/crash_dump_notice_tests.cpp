@@ -51,7 +51,7 @@ static int crash_dump_notice_policy_tests() {
                                      "C:\\Me\\crash-dumps", text, sizeof(text))) return 7142;
     const char* newest = strstr(text, "pid164");
     const char* older = strstr(text, "pid5396");
-    if (!strstr(text, "crash dumps available") ||
+    if (!strstr(text, "diagnostic dumps are available") ||
         !strstr(text, "Service crash dumps (7 in C:\\Svc):") ||
         !newest || !older || newest > older ||
         !strstr(text, "2026-10-21 21:59:18         2 KB") ||
@@ -127,6 +127,25 @@ static int crash_dump_notice_policy_tests() {
                                      path, text, sizeof(text)) ||
         !strstr(text, "$dst = 'C:\\ppp") ||
         !strstr(text, "-Destination $dst -ErrorAction SilentlyContinue\r\n")) return 7149;
+
+    // 7150: every dump source gets the recovery context before the listings.
+    // A dump's existence cannot distinguish a recovered driver fault from a
+    // terminal service crash, so neither kind is hidden or called harmless.
+    for (unsigned kinds = 1; kinds <= 3; ++kinds) {
+        const size_t serviceCount = (kinds & 1u) ? 2u : 0u;
+        const size_t werCount = (kinds & 2u) ? 1u : 0u;
+        if (!gc_crash_dump_notice_format("C:\\Svc", "C:\\Svc\\WerDumps",
+                dumps, serviceCount, serviceCount, wer, werCount, werCount,
+                "C:\\Me\\crash-dumps", text, sizeof(text))) return 7150;
+        const char* recovery = strstr(text, "even when Green Curve recovers successfully");
+        const char* listing = strstr(text, " in C:\\Svc");
+        if (!strstr(text, "graphics driver restart or\r\ninstallation") ||
+            !recovery || !listing || recovery >= listing ||
+            !strstr(text, "alone does not mean Green Curve is malfunctioning or needs action") ||
+            !strstr(text, "notice repeated failures or settings that do not recover") ||
+            !strstr(text, "Only administrators can read them") ||
+            !strstr(text, "Get-ChildItem -LiteralPath $svc, $wer -Filter *.dmp -File")) return 7150;
+    }
     return 0;
 }
 

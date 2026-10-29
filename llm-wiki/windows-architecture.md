@@ -662,12 +662,17 @@ the regression harness asserts on either host.
   under that user's token, writes `greencurve_service_crash_dumps.txt` in the
   user's Green Curve folder (newest five of each kind, totals, and the
   elevated PowerShell copy command), or removes it when no dumps are left. A
-  failed scan leaves an existing notice alone. Sources:
+  failed scan leaves an existing notice alone. The opening describes diagnostic
+  dumps and explains that a driver restart or installation can leave a dump
+  even after successful recovery; existence alone does not prove a malfunction.
+  All dump kinds remain listed: the scan has no evidence of recovery outcome
+  and must not classify a dump as harmless from its name (2026-10-29).
+  Sources:
   `crash_dump_notice_policy.h` (selection/text), `crash_dump_notice_win32.h`
   (scan, atomic write), `main_service_crash_notice.cpp` (identity glue,
   called from `resolve_service_user_data_paths()`). Log line:
   `crash dump notice: written|none (notice removed) serviceDumps= werDumps= ok= error=`.
-  Tests 7140-7149 (`tests/crash_dump_notice_tests.cpp`, real scan/write in a
+  Tests 7140-7150 (`tests/crash_dump_notice_tests.cpp`, real scan/write in a
   `%TEMP%` scratch folder); gates in `tools/crash_artifacts.py` pin the
   scan-before-impersonation order and forbid copying dumps. The copy command
   goes to an ADMINISTRATOR but embeds folder names the user controls (profile,
@@ -679,8 +684,13 @@ the regression harness asserts on either host.
   (2026-10-22, tests 7148-7149; verified end to end in pwsh with `$()`,
   backtick, quote and bracket folder names). Field note: WER
   LocalDumps wrote a service dump even with WER reporting disabled
-  machine-wide (`...\Windows Error Reporting\Disabled=1`). Not yet observed
-  live: the notice after a real service crash.
+  machine-wide (`...\Windows Error Reporting\Disabled=1`). The README advises
+  keeping the WER service available at Manual startup and retaining the
+  per-image LocalDumps registration; enabling reporting to Microsoft is not
+  required. [Microsoft's LocalDumps documentation](https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps)
+  confirms local collection is independent of reporting. Disabling the WER
+  service itself has not been tested here. Not yet observed live: the notice
+  after a real service crash. Notice wording last verified 2026-10-29.
 - **The GUI no longer suppresses driver-DLL dumps.** It used to write only a
   breadcrumb for a crash inside `nvml`/`nvapi64`/`nvcuda`/`nvwgf2umx` to avoid
   filling the disk on every driver update. Rotation now bounds that

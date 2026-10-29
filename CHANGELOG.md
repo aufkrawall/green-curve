@@ -35,6 +35,7 @@ GPU selection, fan control and recovery improve across hardware changes and fail
 
 - **Linux GPU identity:** saved settings follow the same physical GPU across PCI bus changes, including among identical cards.
 - **Profiles across GPUs:** advanced clock settings a GPU does not offer are skipped instead of failing the whole profile.
+- **Windows dumps:** notices explain successful driver recovery; documentation clarifies local crash capture.
 
 ### Fixed
 

@@ -90,10 +90,15 @@ static inline bool gc_crash_dump_notice_format(
     if (dumpsTotal == 0 && werTotal == 0) return false;
     size_t used = 0;
     used = gc_crash_dump_notice_append(out, outSize, used,
-        "Green Curve: the background service has crash dumps available.\r\n"
+        "Green Curve: background service diagnostic dumps are available.\r\n"
         "\r\n"
-        "They help diagnose service crashes (for example during a graphics driver\r\n"
-        "update). Only administrators can read them, because a dump of a system\r\n"
+        "Dumps can also be captured during a graphics driver restart or\r\n"
+        "installation, even when Green Curve recovers successfully. Their presence\r\n"
+        "alone does not mean Green Curve is malfunctioning or needs action. If you\r\n"
+        "notice repeated failures or settings that do not recover, keep them for\r\n"
+        "troubleshooting.\r\n"
+        "\r\n"
+        "Only administrators can read them, because a dump of a system\r\n"
         "service can contain data of other accounts on this PC. This file only\r\n"
         "tells you where they are; Green Curve updates it whenever the service\r\n"
         "starts for your session and removes it when no dumps are left.\r\n"
