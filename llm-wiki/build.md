@@ -47,6 +47,35 @@ Parallel scheduling and build-state helpers live in `tools/build_scheduler.py`
 and `tools/build_state.py` (one-way dependencies, same pattern as the other
 `tools/` modules); `build.py` remains the single entry point.
 
+## Windows agent build execution (verified 2026-10-29)
+
+Source anchors: `build.py` (`_run_compiler()`, `_compile_arm64_objects()`,
+`ZIG_CACHE_ROOTS`), `tools/zig_cache.py`,
+[Windows agent sandbox execution](testing.md#windows-agent-sandbox-execution).
+
+For the full Windows-host build and packaging matrix from a restricted agent,
+use the approved execution route and workspace-local `TEMP`/`TMP` pattern in
+the linked testing procedure, invoking plain `python build.py`. Use the same
+route for `--gates` and native regression fixtures.
+The build already keeps both Zig caches under `build-tmp/`; moving temporary
+files or choosing fresh workspace-local caches does not necessarily remove
+restrictions imposed by the process token.
+
+The pinned Zig can report only `source:1:1: error: Unexpected` for valid code
+under that token. A single-source ARM64 compile reproduced this with fresh
+local caches and temporary files; the identical command passed through the
+approved route. The particular OS operation refused remains unverified, so
+the message alone does not establish a source defect or cache corruption.
+Keep the compiler output and compare a small failing invocation across the
+execution boundary before changing source, flags or cache-repair behavior.
+
+Packaging itself showed no separate failure: the approved plain build produced
+all 12 current packages. The full source gates also start native subprocesses:
+the Bash-backed Linux setup escaping fixture failed to initialize in the
+sandbox and passed through the approved route. Static analysis passed in the
+sandbox. A fully sandboxed matrix remains
+unverified; use the host's normal approval mechanism for the documented route.
+
 ## Windows toolchains (dual variants, `--toolchain {auto,clang-cl,llvm-mingw}`)
 
 A native Windows `python build.py` now produces both Windows variants for each

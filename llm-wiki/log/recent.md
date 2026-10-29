@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-29: Route restricted Windows deliverable builds explicitly
+
+- Extended [build guidance](../build.md#windows-agent-build-execution-verified-2026-10-29)
+  to reuse the approved native-test execution route for the complete plain
+  build and packaging matrix. Both Zig caches were already workspace-local.
+- A single-source ARM64 Zig compile failed with `error: Unexpected` under a
+  restricted token even with fresh local caches and temporary files, then
+  passed unchanged through the approved route. The exact refused OS operation
+  is unverified. No compiler flags, cache-repair rules or validation changed.
+- Plain build 365 passed through that route and refreshed all 12 packages;
+  packaging showed no separate fault. Static analysis passed in the sandbox.
+- The full `--gates` run also needs that route: the Bash-backed Linux setup
+  escaping fixture's child failed to initialize under the restricted token.
+  The approved rerun passed all source/Python gates.
+
 ## 2026-10-29: Explain service diagnostic dumps after recovery
 
 - The service captures a driver-fault dump before requesting recovery, so a
