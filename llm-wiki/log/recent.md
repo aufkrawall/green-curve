@@ -7,6 +7,15 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
 ## 2026-10-29: Preserve unknown clock-domain responses for diagnosis
 
+- Validation: native regressions and source/public-wiki gates passed;
+  clang-tidy had no new findings. Plain build 366 produced all 12 packages;
+  fresh timestamps, changed hashes, SHA-256 sidecars and 20 packaged
+  application/service images matched the build outputs. Both native Windows
+  x64 variants produced complete read-only reports; all test processes exited.
+- The live Blackwell run accepted the normal mask and refused the broad mask
+  with -1; the capture retained both and exited 0. A mixed diagnostic command
+  exited 1 without rewriting the report. Pascal/Linux hardware capture is the
+  next verification step, using one complete text file from the reporter.
 - Added the regular Linux `--clk-domain-dump` command using the shared
   collector, scoped GPU selection and unconditional backend release. A single
   redirected stdout report also carries NVML driver metadata.

@@ -310,8 +310,14 @@ Pascal VF curve reads and edits were reported working on GP102 with the
 580.196.07 Linux driver after the graphics-unit correction. This does not
 establish advanced-domain identities or apply that VF scale to them. The next
 evidence is the raw capture; do not request an actuating probe or add a guessed
-write layout. Last verified: 2026-10-29, source and regression fixtures; Pascal
-advanced-domain mapping remains unverified on hardware.
+write layout. Last verified: 2026-10-29, source, regression fixtures and a
+read-only Windows x64 Blackwell run of both native compiler builds. Each live
+report contained three GET_INFO attempts, two GET_CONTROL attempts, 32
+measurements and complete zero/tail words (442950 bytes). The normal mask was
+accepted; the all-domain mask returned -1, retained in the report without
+discarding the successful normal response. Mixed diagnostic verbs exited 1
+without changing the saved report. Linux and Windows ARM64 are build-verified;
+Pascal advanced-domain mapping and live Linux capture remain unverified.
 
 SET_CONTROL is a privileged operation: a non-elevated caller gets status
 **-137 `NVAPI_INVALID_USER_PRIVILEGE`** before the RM command is dispatched
