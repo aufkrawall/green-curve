@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-29: Separate advanced-domain INFO from client tuning ranges
+
+- Parsed the complete stock GP102 capture: the normal CONTROL read succeeds
+  with the known version and entry geometry but different wire types; IDs
+  15–18 provide measurements while modern IDs 0–2 are refused. Stock zeros do
+  not establish writable fields or independent controls.
+- Read-only NvAPI implementation inspection identified a separate advanced
+  INFO interface. The initial capture's client INFO only describes tuning
+  ranges. Format 2 captures both families explicitly, with four pinned inline
+  advanced INFO versions and a 1 MiB report cap, retaining every read status.
+- Regression fixtures cover the reported wire-type vector, distinct INFO
+  routing, zeroed retries, raw tails and untrusted returned version words.
+  Tuning validation and write behavior are unchanged. The next hardware request
+  is one format-2 report; [backend details](../gpu-backend.md#gp102-capture-findings-2026-10-29).
+
 ## 2026-10-29: Preserve unknown clock-domain responses for diagnosis
 
 - Validation: native regressions and source/public-wiki gates passed;

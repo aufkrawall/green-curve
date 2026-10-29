@@ -82,11 +82,12 @@ int run_linux_clk_domain_dump_tests() {
         std::string report = read_report(file);
         std::fclose(file);
         if (state.opens != 1 || state.closes != 1 || state.target != &target ||
-            state.versions != 1 || state.queries != 5) return 7762;
+            state.versions != 1 || state.queries != 6) return 7762;
         if (report.find("nvml-driver: status=0 version=580.00?") == std::string::npos) return 7763;
         if (mode == 0) {
             if (result != 0 || state.controls != 2 ||
                 report.find("status=0 layout=mismatch") == std::string::npos ||
+                report.find("get-domain-info: unavailable (entry point)") == std::string::npos ||
                 report.find("initialized=1 selection_resolved=1") == std::string::npos) return 7764;
         } else {
             if (result != 2 || state.controls ||

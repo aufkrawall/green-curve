@@ -9,7 +9,7 @@
 #include <stdlib.h>
 
 struct ClkDomainDumpReport {
-    static constexpr size_t capacity = 512u * 1024u;
+    static constexpr size_t capacity = 1024u * 1024u;
     char* text;
     size_t size;
     bool complete;
@@ -38,7 +38,8 @@ struct ClkDomainDumpReport {
 };
 
 struct ClkDomainDumpApi {
-    NvApiFunc getInfo;
+    NvApiFunc getClientInfo;
+    NvApiFunc getDomainInfo;
     NvApiFunc getControl;
     NvApiFunc getAllClocks;
     NvApiFunc measure;
@@ -50,7 +51,8 @@ struct ClkDomainDumpApi {
 static inline ClkDomainDumpApi clk_domain_dump_api(void* (*query)(unsigned int)) {
     ClkDomainDumpApi api = {};
     if (!query) return api;
-    api.getInfo = (NvApiFunc)query(0x64B43A6Au);
+    api.getClientInfo = (NvApiFunc)query(0x64B43A6Au);
+    api.getDomainInfo = (NvApiFunc)query(0x57B5A5DFu);
     api.getControl = (NvApiFunc)query(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
     api.getAllClocks = (NvApiFunc)query(0xDCB616C3u);
     api.measure = (NvApiFunc)query(XBAR_NVAPI_CLK_MEASURE);
@@ -105,7 +107,7 @@ static inline bool clk_domain_dump_collect(ClkDomainDumpReport* report, void* gp
             name[i] = c >= 32 && c < 127 ? (char)c : '?';
         }
     }
-    report->append("# Green Curve clock-domain capture format=1\n"
+    report->append("# Green Curve clock-domain capture format=2\n"
         "platform=%s version=%s build=%u\n"
         "gpu=%s architecture=0x%08X device=0x%08X subsystem=0x%08X\n"
         "Read-only; no GPU settings or service state are changed.\n"
@@ -128,23 +130,45 @@ static inline bool clk_domain_dump_collect(ClkDomainDumpReport* report, void* gp
         return false;
     }
     bool accepted = false;
-    unsigned int infoReads = 0, controlReads = 0;
-    if (api.getInfo && gpu) {
+    unsigned int infoReads = 0, domainInfoReads = 0, controlReads = 0;
+    if (api.getClientInfo && gpu) {
         static const unsigned int infoVersions[] = {0x00010928u, 0x00020928u, 0x00030928u};
         for (unsigned int request : infoVersions) {
             // A refused request may have changed memory: never carry that
             // response into the next version attempt.
             memset(buffer, 0, XBAR_CONTROL_BUF_SIZE);
             xbar_put_u32(buffer, 0, request);
-            int status = api.getInfo(gpu, buffer);
+            int status = api.getClientInfo(gpu, buffer);
             ++infoReads;
             accepted = accepted || status == 0;
-            report->append("\nget-info: request=0x%08X returned=0x%08X status=%d captured=0x0928\n",
+            report->append("\nget-client-info: request=0x%08X returned=0x%08X status=%d captured=0x0928\n",
                 request, xbar_get_u32(buffer, 0), status);
-            // GET_INFO's three known request versions share the declared size.
+            // Client tuning ranges do not describe the advanced domain graph.
             clk_domain_dump_raw(report, buffer, 0x928u);
         }
-    } else report->append("get-info: unavailable (%s)\n", gpu ? "entry point" : "GPU handle");
+    } else report->append("get-client-info: unavailable (%s)\n", gpu ? "entry point" : "GPU handle");
+    if (api.getDomainInfo && gpu) {
+        // Accepted fixed-size request words verified in the NvAPI GET handler.
+        // Keep the later compact interfaces out until their contracts are
+        // independently understood. These versions have inline responses.
+        static const unsigned int domainVersions[] = {
+            0x000109D8u, 0x00021624u, 0x00034128u, 0x000486ACu,
+        };
+        static_assert(0x86ACu <= XBAR_CONTROL_BUF_SIZE, "domain-info capacity");
+        for (unsigned int request : domainVersions) {
+            memset(buffer, 0, XBAR_CONTROL_BUF_SIZE);
+            xbar_put_u32(buffer, 0, request);
+            int status = api.getDomainInfo(gpu, buffer);
+            ++domainInfoReads;
+            accepted = accepted || status == 0;
+            // Size comes only from the pinned request, never the returned word.
+            unsigned int bytes = request & 0xffffu;
+            report->append("\nget-domain-info: interface=0x57B5A5DF request=0x%08X"
+                " returned=0x%08X status=%d captured=0x%05X\n",
+                request, xbar_get_u32(buffer, 0), status, bytes);
+            clk_domain_dump_raw(report, buffer, bytes);
+        }
+    } else report->append("get-domain-info: unavailable (%s)\n", gpu ? "entry point" : "GPU handle");
     if (api.getControl && gpu) {
         for (const XbarClkDomainsSchema& schema : g_xbarSchemas) {
             // Retain the normal mask and an all-domain read attempt: Pascal's
@@ -195,8 +219,9 @@ static inline bool clk_domain_dump_collect(ClkDomainDumpReport* report, void* gp
                 XBAR_NVAPI_CLK_MEASURE_VERSION, id, params[0], params[1], status, params[2]);
         }
     } else report->append("measure: unavailable\n");
-    report->append("\nclk_dump: info_reads=%u control_reads=%u domain_get_accepted=%u complete=yes\n",
-                   infoReads, controlReads, accepted ? 1u : 0u);
+    report->append("\nclk_dump: client_info_reads=%u domain_info_reads=%u control_reads=%u"
+                   " domain_get_accepted=%u complete=yes\n",
+                   infoReads, domainInfoReads, controlReads, accepted ? 1u : 0u);
     return accepted && report->complete;
 }
 

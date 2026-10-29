@@ -40,9 +40,11 @@ greencurve.exe --clk-domain-dump
 Linux writes the report to stdout; the command above saves it in one text file.
 Windows saves `clkdomains_dump.txt` in `%LOCALAPPDATA%\Green Curve` and reports
 the location in the CLI log. The capture needs no service installation or
-restart and does not change GPU settings. It includes raw driver responses,
+restart and does not change GPU settings. Format 2 includes advanced clock-domain
+descriptions separately from client tuning ranges, raw control responses,
 numeric read statuses and clock measurements, including responses normal tuning
-cannot interpret. Exit code 2 still leaves a useful partial report if the driver
+cannot interpret. Reports are bounded to 1 MiB. Exit code 2 still leaves a useful
+partial report if the driver
 interfaces are unavailable or all domain reads are refused. Use this command
 alone; `--config` and Linux `--gpu DDDD:BB:DD.F` may select its read inputs
 without saving a selection. Report metadata omits GPU UUIDs, host names,

@@ -279,8 +279,15 @@ sudo ./greencurve --clk-domain-dump > greencurve-clkdomains.txt 2>&1
 
 Attach the report even on exit 2. One idle capture is the first request; a
 loaded capture or a write test is a separate, evidence-dependent follow-up.
-GET_INFO attempts all three known
-0x928-byte request versions, zeroing the full allocation between requests;
+Format 2 separates the two INFO interfaces. `get-client-info` (`0x64B43A6A`)
+attempts three known 0x928-byte request versions; these describe client tuning
+ranges, not the advanced domain graph. `get-domain-info` (`0x57B5A5DF`) captures
+the fixed inline V1–V4 requests `0x000109D8`, `0x00021624`, `0x00034128` and
+`0x000486AC`. Those exact version/size checks and the INFO/control wire-type
+conversion were verified by read-only inspection of the NvAPI implementation.
+Later compact INFO interfaces are not requested without verifying their
+contracts. Every attempt zeroes the full allocation. INFO capture sizes come
+only from pinned request words; returned sizes never select bounds.
 GET_CONTROL walks the pinned request rows and saves the complete 0x13000-byte
 zero-initialized capacity for both the normal mask and an all-domain mask read
 attempt, including zero words, regardless of status or the
@@ -289,9 +296,9 @@ The report includes request/response versions and masks, numeric statuses,
 public current clocks, all 32 measurement IDs (including zero/refused values),
 and bounded GPU/build/driver metadata. Measurement values stay in raw driver
 units, without VF scaling or inferred Pascal domain names. The report builder
-has a 512 KiB cap and refuses an incomplete output.
+has a 1 MiB cap and refuses an incomplete output.
 
-The collector resolves five read-only interfaces; it does not resolve a setter,
+The collector resolves six read-only interfaces; it does not resolve a setter,
 install a service, reset or apply settings. A complete capture succeeds when
 any ClkDomains GET succeeds, including a layout mismatch. Missing or refused
 interfaces still produce a partial report and exit 2. Normal tuning continues
@@ -305,19 +312,48 @@ executed with fake initialization and libraries in
 `tests/linux_clk_domain_dump_tests.cpp` (7761–7769), proving cleanup after
 success, partial initialization and output failure, plus suppression of raw
 reads when selection is unresolved. No fixture loads a GPU driver.
+Cases 7770–7772 verify the distinct INFO families, clean retries, full inline
+response tails, untrusted returned sizes and advanced-INFO-only availability.
 
 Pascal VF curve reads and edits were reported working on GP102 with the
 580.196.07 Linux driver after the graphics-unit correction. This does not
 establish advanced-domain identities or apply that VF scale to them. The next
-evidence is the raw capture; do not request an actuating probe or add a guessed
-write layout. Last verified: 2026-10-29, source, regression fixtures and a
-read-only Windows x64 Blackwell run of both native compiler builds. Each live
-report contained three GET_INFO attempts, two GET_CONTROL attempts, 32
+evidence is the advanced-domain INFO capture; do not request an actuating probe
+or add a guessed write layout. Last verified: 2026-10-29, source, regression
+fixtures and a read-only format-1 Windows x64 Blackwell run of both native
+compiler builds. Each live report contained three client INFO attempts, two GET_CONTROL attempts, 32
 measurements and complete zero/tail words (442950 bytes). The normal mask was
 accepted; the all-domain mask returned -1, retained in the report without
 discarding the successful normal response. Mixed diagnostic verbs exited 1
 without changing the saved report. Linux and Windows ARM64 are build-verified;
-Pascal advanced-domain mapping and live Linux capture remain unverified.
+Pascal advanced-domain mapping and live format-2 Linux capture remain unverified.
+
+### GP102 capture findings (2026-10-29)
+
+[Issue 16's stock capture](https://github.com/aufkrawall/green-curve/issues/16#issuecomment-6505706150)
+on GP102/Linux 580.196.07 confirms that the Linux capture runs to completion:
+client INFO V1 and normal-mask CONTROL V2 succeed, while the broad CONTROL
+mask returns -1. The control response reuses `0x000261A4` with eight entries at
+`0x124 + index * 0x304`, whose leading wire types are
+`4, 5, 4, 5, 5, 2, 2, 4`. They are typed records, not eight instances of the
+modern pinned type `0xF`. Normal tuning therefore rejects this known-version
+response locally; that rejection does not establish driver refusal of writes.
+All other captured control words are zero at stock apart from the header.
+
+Measurements 15–18 succeed with raw values 2733750, 2632475, 2303525 and
+1296000; modern IDs 0–2 return -104. Half of measurement 15 closely matches the
+public graphics clock, and half of 17 closely matches the public video clock.
+These are correlations from sequential reads, not established mappings or
+permission to apply the VF scale to every advanced field. In particular, a
+stock all-zero offset cannot prove a setter or voltage-rail interpretation.
+
+The initial `get-info` capture was the client-range interface and cannot supply
+the missing advanced domain identities and relationships. Format 2 adds their
+separate INFO read so the next request stays one command and one complete text
+file. Do not request another unchanged stock format-1 capture or the existing
+actuating probe. Keep tuning's strict wire-layout validation until the advanced
+descriptors, type-specific fields and units are verified. Raw captures and
+driver-analysis artifacts remain outside tracked files.
 
 SET_CONTROL is a privileged operation: a non-elevated caller gets status
 **-137 `NVAPI_INVALID_USER_PRIVILEGE`** before the RM command is dispatched

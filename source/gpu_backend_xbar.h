@@ -4,7 +4,7 @@
 // XBAR clock and XBAR-domain MSVDD offsets through the private NvAPI
 // ClkDomains surface.  The interface is old (10+ years) and its .domains
 // sub-structure can differ by generation even with the same version word.
-// The returned word selects a candidate layout, whose repeated entry markers
+// The returned word selects a candidate layout, whose repeated entry wire types
 // must validate before any field is interpreted. Domain identities and units
 // also need hardware evidence; availability has no architecture whitelist.
 //
@@ -62,6 +62,7 @@ static_assert(XBAR_NVAPI_STATUS_INVALID_USER_PRIVILEGE == -137,
 static const unsigned int XBAR_CONTROL_BUF_SIZE = 0x13000;
 static const unsigned int XBAR_CONTROL_MASK_OFFSET = 8;
 static const unsigned int XBAR_CONTROL_DOMAIN_MASK = 0xff;
+// This is the pinned response's wire type, not a universal structure marker.
 static const unsigned int XBAR_DOMAIN_MARKER = 0x0f;
 
 // The only layout validated against the R572..R610 ClkDomains V2 response
@@ -114,7 +115,7 @@ struct XbarClkDomainsSchema {
     unsigned int domainCount;
     // XBAR frequency offset lives in entryIndex (entry 1 on Blackwell).
     unsigned int entryIndex;
-    unsigned int entryMarker;
+    unsigned int entryMarker; // Required wire type for this validated layout.
     unsigned int freqOffsetField;
     // MSVDD voltage offset lives in msvddEntryIndex (entry 0 on Blackwell),
     // which may differ from the XBAR-frequency entry.
