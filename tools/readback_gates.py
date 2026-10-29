@@ -21,6 +21,24 @@ def _p(ctx, name):
 
 
 def check_all(ctx, require_text, forbid_text):
+    # The executing Linux VF fixture covers the raw driver boundary. Pin its
+    # Windows/probe counterparts so a normalized cache cannot be copied back
+    # into a driver block without the inverse conversion.
+    for name in ("gpu_backend.cpp", "linux_backend_vf_read.h", "linux_gpu.cpp",
+                 "main_probe_config.cpp"):
+        require_text(_p(ctx, name), "vf_normalize_graphics_status(",
+                     "every VF status reader normalizes the graphics domain")
+    for name in ("gpu_backend.cpp", "main_runtime_gpu.cpp", "linux_backend_vf_write.h"):
+        require_text(_p(ctx, name), "vf_graphics_offset_driver_units(",
+                     "single and batch VF writes encode physical offsets")
+    for name in ("gpu_backend.cpp", "linux_backend_vf_read.h"):
+        require_text(_p(ctx, name), "vf_graphics_offset_khz(",
+                     "VF control readbacks normalize driver deltas")
+    for name, old_copy in (
+            ("main_runtime_gpu.cpp", "memcpy(&baseControl[deltaOffset], &g_app.freqOffsets[i]"),
+            ("linux_backend_vf_write.h", "memcpy(baseControl + off, &g->freqOffsets[i]")):
+        forbid_text(_p(ctx, name), old_copy,
+                    "a raw control preimage never receives a normalized cache")
     # The v14 readback-validity contract has a producer on BOTH platforms. The
     # Windows service publishing all-zero bits would silently report every
     # domain as unavailable while still substituting intent for failed reads.

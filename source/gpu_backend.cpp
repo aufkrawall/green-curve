@@ -332,8 +332,16 @@ static bool nvapi_read_curve() {
         buf.read_at(entryOffset + 4, &volt, sizeof(volt));
         g_app.curve[i].freq_kHz = freq;
         g_app.curve[i].volt_uV = volt;
-        if (freq > 0) g_app.numPopulated++;
     }
+    const int graphicsEnd = vf_normalize_graphics_status(backend, g_app.curve,
+                                                        VF_NUM_POINTS);
+    for (int i = 0; i < VF_NUM_POINTS; ++i) {
+        if (i >= graphicsEnd) g_app.curve[i] = {};
+        if (g_app.curve[i].freq_kHz) ++g_app.numPopulated;
+    }
+    debug_log_on_change("vf units: backend=%s graphicsScale=%u graphicsPoints=%d "
+                        "status and control use physical kHz internally\n",
+        backend->name, vf_graphics_frequency_scale(backend), graphicsEnd);
     g_app.loaded = true;
     return true;
 }
@@ -465,7 +473,7 @@ static bool nvapi_read_offsets() {
             g_app.freqOffsets[i] = 0;
             continue;
         }
-        g_app.freqOffsets[i] = delta;
+        g_app.freqOffsets[i] = vf_graphics_offset_khz(backend, delta);
     }
     return true;
 }
@@ -489,7 +497,13 @@ static bool nvapi_set_point(int pointIndex, int freqDelta_kHz) {
     memset(&buf[backend->controlMaskOffset], 0, 32);
     buf[backend->controlMaskOffset + pointIndex / 8] = (unsigned char)(1 << (pointIndex % 8));
     unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)pointIndex * backend->controlEntryStride + backend->controlEntryDeltaOffset;
-    if (deltaOffset + sizeof(freqDelta_kHz) > backend->controlBufferSize || !buf.write_at(deltaOffset, &freqDelta_kHz, sizeof(freqDelta_kHz))) {
+    int rawDelta = 0;
+    if (!vf_graphics_offset_driver_units(backend, freqDelta_kHz, &rawDelta)) {
+        debug_log("set_point: point %d offset %d kHz exceeds driver unit range\n",
+            pointIndex, freqDelta_kHz);
+        return false;
+    }
+    if (deltaOffset + sizeof(rawDelta) > backend->controlBufferSize || !buf.write_at(deltaOffset, &rawDelta, sizeof(rawDelta))) {
         return false;
     }
     char phase[128] = {};

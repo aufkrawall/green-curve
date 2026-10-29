@@ -83,11 +83,17 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
             unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)i * backend->controlEntryStride + backend->controlEntryDeltaOffset;
             if (deltaOffset + sizeof(currentDelta) > backend->controlBufferSize) return false;
             memcpy(&currentDelta, &buf[deltaOffset], sizeof(currentDelta));
-            if (currentDelta == desiredOffsets[i]) {
+            if (vf_graphics_offset_khz(backend, currentDelta) == desiredOffsets[i]) {
                 pendingMask[i] = false;
                 continue;
             }
-            memcpy(&buf[deltaOffset], &desiredOffsets[i], sizeof(desiredOffsets[i]));
+            int rawDelta = 0;
+            if (!vf_graphics_offset_driver_units(backend, desiredOffsets[i], &rawDelta)) {
+                debug_log("curve: point %d offset %d kHz exceeds driver unit range\n",
+                    i, desiredOffsets[i]);
+                return false;
+            }
+            memcpy(&buf[deltaOffset], &rawDelta, sizeof(rawDelta));
             writeMask[i / 8] |= (unsigned char)(1u << (i % 8));
             anyPendingWrite = true;
             pointsInPass++;
@@ -161,11 +167,12 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
                     pass + 1, i, desiredOffsets[i], g_app.freqOffsets[i],
                     g_app.freqOffsets[i] - desiredOffsets[i], g_app.curve[i].freq_kHz);
             }
-            unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)i * backend->controlEntryStride + backend->controlEntryDeltaOffset;
-            if (deltaOffset + sizeof(g_app.freqOffsets[i]) > backend->controlBufferSize) return false;
-            memcpy(&baseControl[deltaOffset], &g_app.freqOffsets[i], sizeof(g_app.freqOffsets[i]));
         }
         if (!anyPending) break;
+        if (!nvapi_read_control_table(baseControl, CONTROL_BUF_SIZE)) {
+            batchFailed = true;
+            break;
+        }
     }
 
     bool allOk = !batchFailed;

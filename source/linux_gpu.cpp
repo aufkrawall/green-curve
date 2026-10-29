@@ -260,6 +260,8 @@ int read_vf_curve(nvapi_QueryInterface_t qi, GPU_HANDLE handle,
         }
     }
     free(buf);
+    if (populated >= 0 && curveOut)
+        vf_normalize_graphics_status(b, curveOut, VF_NUM_POINTS);
     return populated;
 }
 
@@ -331,6 +333,9 @@ void probe_nvapi(FILE* out, LinuxNvapiProbe* result) {
         // Read the VF curve via the shared family backend layout to prove the
         // private-NVAPI curve surface is reachable on Linux (read-only).
         if (spec) {
+            fprintf(out, "      VF units    : %u driver units per physical kHz "
+                         "(graphics status and control)\n",
+                    vf_graphics_frequency_scale(spec));
             VFCurvePoint* curve = (VFCurvePoint*)calloc(VF_NUM_POINTS, sizeof(VFCurvePoint));
             int populated = curve ? read_vf_curve(qi, handles[i], spec, curve) : -1;
             if (populated > 0) {

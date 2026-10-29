@@ -199,6 +199,7 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
                 unsigned int firstFreq = 0;
                 unsigned int firstVolt = 0;
                 unsigned int maxFreq = 0;
+                VFCurvePoint parsed[VF_NUM_POINTS] = {};
                 if (layout->statusEntriesOffset + 8 <= result.size) {
                     for (int i = 0; i < VF_NUM_POINTS; i++) {
                         unsigned int entryOffset = layout->statusEntriesOffset + (unsigned int)i * layout->statusEntryStride;
@@ -207,6 +208,13 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
                         unsigned int volt = 0;
                         memcpy(&freq, &result.buf[entryOffset], sizeof(freq));
                         memcpy(&volt, &result.buf[entryOffset + 4], sizeof(volt));
+                        parsed[i] = {freq, volt};
+                    }
+                    const int graphicsEnd = vf_normalize_graphics_status(
+                        layout, parsed, VF_NUM_POINTS);
+                    for (int i = 0; i < graphicsEnd; ++i) {
+                        const unsigned int freq = parsed[i].freq_kHz;
+                        const unsigned int volt = parsed[i].volt_uV;
                         if (freq > 0) {
                             populated++;
                             if (firstFreq == 0) {
@@ -217,6 +225,8 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
                         }
                     }
                     append(",\n        \"assumed_status_parse\": {\n");
+                    append("          \"graphics_frequency_scale\": %u,\n",
+                        vf_graphics_frequency_scale(layout));
                     append("          \"populated_points\": %d,\n", populated);
                     append("          \"first_freq_khz\": %u,\n", firstFreq);
                     append("          \"first_volt_uv\": %u,\n", firstVolt);
@@ -362,6 +372,8 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
     append("    \"read_supported\": %s,\n", selected->readSupported ? "true" : "false");
     append("    \"write_supported\": %s,\n", selected->writeSupported ? "true" : "false");
     append("    \"best_guess_only\": %s,\n", selected->bestGuessOnly ? "true" : "false");
+    append("    \"graphics_frequency_scale\": %u,\n",
+        vf_graphics_frequency_scale(selected));
     append("    \"get_info\": {\n");
     append("      \"id\": \"0x%08X\",\n", selected->getInfoId);
     append("      \"buffer_size\": %u,\n", selected->infoBufferSize);
@@ -506,6 +518,7 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
             unsigned int deltaOffset = selected->controlEntryBaseOffset + (unsigned int)i * selected->controlEntryStride + selected->controlEntryDeltaOffset;
             int delta = 0;
             if (deltaOffset + sizeof(delta) <= controlSeed.size) memcpy(&delta, &controlSeed.buf[deltaOffset], sizeof(delta));
+            delta = vf_graphics_offset_khz(selected, delta);
             append("%s%d", i ? ", " : "", delta);
         }
         append("]\n");

@@ -5,6 +5,24 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-29: Physical VF graphics units on Pascal
+
+- A hardware report confirms successful Pascal VF reads after the point-mask
+  correction and shows double-rate graphics values. The shared backend now
+  records Pascal's scale 2; readers normalize only the leading graphics domain,
+  writers apply the inverse conversion, and partial batches preserve raw
+  control blocks. Other families and NVML scalar offsets keep their units.
+- Probe, self-test and binding/curve diagnostics identify the scale. Cases
+  7717-7728 execute raw reads, signed writes, partial passes, Reset and target
+  planning with fake driver dependencies. Corrected values and physical
+  per-point writes still require Pascal hardware confirmation. Source anchors:
+  [GPU backend](../gpu-backend.md), [tests](../testing.md).
+- Full regressions, Linux cross-links, source/Python gates and tidy pass.
+  Plain build 363 refreshed all 12 current packages; checksums and all 20
+  packaged application/service images match the fresh outputs. The Windows
+  read-only self-test on an RTX 5070 reports FULL with 127 graphics points.
+  Previous reader/writer fixtures fail at 7682/7718; corrected fixtures pass.
+
 ## 2026-10-29: Accept explicit backend-retry state reads
 
 - Snapshot/telemetry reads now admit the interactive retry flag that their

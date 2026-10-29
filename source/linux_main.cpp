@@ -251,6 +251,9 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
             (backendError[0] ? backendError : "none"));
     appendf(&report, "- VF layout: `%s`\n",
             linux_vf_layout_text(&backend.vfLayout).text);
+    appendf(&report, "- VF graphics units: `%u driver units per physical kHz` "
+                     "(status and control; NVML offsets already physical)\n",
+            vf_graphics_frequency_scale(backend.backend));
     if (backend.nvmlLib || backend.nvapiLib)
         linux_backend_shutdown(&backend);
 

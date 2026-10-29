@@ -502,8 +502,8 @@ checks, and full build 433; RTX 5080 hardware acceptance remains pending.
 
 ## VF curve data model
 
-- `VF_NUM_POINTS` = 128 points
-- Each point: `VFCurvePoint { freq_kHz, volt_uV }`
+- `VF_NUM_POINTS` = 128 slots; the leading graphics domain may be shorter.
+- Each point: `VFCurvePoint { freq_kHz, volt_uV }` in physical kHz and uV.
 - Visible points: populated and at least `MIN_VISIBLE_VOLT_mV` (700), by
   voltage ONLY (`vf_point_visible_in_editor()` in
   `source/vf_point_visibility_policy.h`, used by `rebuild_visible_map()` and
@@ -514,8 +514,9 @@ checks, and full build 433; RTX 5080 hardware acceptance remains pending.
   points at logon and 78 later, and the grid's columns shifted on Refresh
   (fixed 2026-10-24). The stock clock floor (~180 MHz, ci 40-44 on that card)
   is therefore visible and the graph's frequency axis floor follows the data
-  down to 0. The out-of-order idle placeholder at the table end (ci=127,
-  ~405 MHz at 540 mV) stays hidden by voltage. Diagnostic: `vf visibility:
+  down to 0. Trailing lower-voltage clock domains are omitted by both readers;
+  formerly the ci=127 entry (~405 MHz at 540 mV) was hidden by voltage.
+  Diagnostic: `vf visibility:
   visible=N first=ciA last=ciB populated=P (was ...)`, logged once per
   topology change in each process. `VF_PLACEHOLDER_MAX_FREQ_MHz` (500) is
   only the driver-refused placeholder bound, not a visibility rule.
@@ -856,6 +857,37 @@ Every failure path in this domain now names itself:
 - `populate_global_controls: power edit enabled=… (readbackValid=… current=… mW
   default=… mW)`
 
+### VF graphics frequency units (verified 2026-10-29)
+
+Source anchors: `source/vf_backends.cpp`, `source/vf_curve_units.h`,
+`source/gpu_backend.cpp`, `source/main_runtime_gpu.cpp`,
+`source/linux_backend_vf_read.h`, `source/linux_backend_vf_write.h`,
+`source/linux_gpu.cpp`, `source/main_probe_config.cpp`,
+`tests/linux_vf_read_tests.cpp`, `tests/linux_vf_write_tests.cpp`.
+
+Pascal's VF graphics status frequencies and signed control deltas use two
+driver units per physical kHz. The backend table records scale 2 for Pascal,
+1 for Turing through Blackwell and the write-enabled future fallback. This is
+specific to VF graphics data: NVML scalar offsets/clocks, memory units,
+voltage and the trailing foreign VF domains keep their own contracts.
+
+Readers normalize the leading graphics domain once at the driver boundary;
+all cached curve frequencies, deltas, target arithmetic, IPC and saved absolute
+MHz values remain physical. Both platforms omit the trailing domains from
+their published curve. Probe summaries use normalized graphics values and
+retain raw foreign-domain values. Single-point and batch writers encode the
+inverse conversion, reject integer overflow, compare raw preimages in physical
+units and re-read raw control blocks between partial passes. Normalized cache
+values must never be copied directly into such a block.
+
+Diagnostics name the scale in backend binding/curve logs, probe reports and
+self-test output. Case 7717 reproduces the reported 80-point Pascal shape with
+a 3948 MHz raw endpoint becoming 1974 MHz; 7718-7728 cover signed writes,
+no-ops, Reset, partial batches, untouched raw fields, rejected writes, overflow,
+other families and absolute-target planning through readback. The fixtures
+make no GPU calls. The report confirms Pascal VF reads; corrected physical
+values and per-point writes still require hardware confirmation.
+
 ### VF-info point-mask layout (verified 2026-10-28)
 
 Source anchors: `source/vf_backends.cpp`, `source/linux_vf_validation.h`,
@@ -887,7 +919,8 @@ not NVIDIA driver errors.
 
 Assertions 5315-5330 cover shared layout/mask validation. Cases 7680-7697
 execute the production atomic reader with a fake driver; 7680 fails under the
-previous implementation. Physical Pascal read/write verification is pending.
+previous implementation. A later Pascal report confirms successful info,
+status and control reads; physical per-point write verification remains pending.
 
 Linux probe reports and `--self-test` also print the last read's VF layout
 (mask extent, raw and kept points, first dropped point), including for a

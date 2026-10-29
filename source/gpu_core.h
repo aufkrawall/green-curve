@@ -395,6 +395,9 @@ typedef struct {
     unsigned int controlEntryBaseOffset;
     unsigned int controlEntryStride;
     unsigned int controlEntryDeltaOffset;
+    // Driver VF graphics frequency/delta units per physical kHz (Pascal: 2).
+    // NVML scalar clocks/offsets and non-graphics VF domains do not use this.
+    unsigned int graphicsFrequencyScale;
 } VfBackendSpec;
 
 struct VFCurvePoint {

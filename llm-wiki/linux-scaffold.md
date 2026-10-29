@@ -371,8 +371,17 @@ once, stamped by `[meta] linux_mem_migrated`:
   without inventing a clock count, and status requests leave reserved header
   words zero. The full atomic reader runs against a fake Pascal driver in
   `tests/linux_vf_read_tests.cpp` (7680-7697); invalid versions, masks, points,
-  offsets and incomplete reads still refuse publication. Physical Pascal
-  verification is pending. See [GPU backend](gpu-backend.md#vf-info-point-mask-layout-verified-2026-10-28).
+  offsets and incomplete reads still refuse publication. A later hardware
+  report confirms successful Pascal VF reads. See [GPU backend](gpu-backend.md#vf-info-point-mask-layout-verified-2026-10-28).
+
+- **Pascal VF units (2026-10-29).** Graphics status and control use scale 2
+  at the driver boundary; cached values and targets use physical kHz. Other
+  families retain scale 1, and foreign domains/NVML scalar offsets are not
+  rescaled. The console probe, report and self-test identify the scale.
+  `linux_backend_vf_write.h` executes with fake driver dependencies in
+  `tests/linux_vf_write_tests.cpp`; normalized readback never overwrites a raw
+  control block. See [GPU backend](gpu-backend.md#vf-graphics-frequency-units-verified-2026-10-29)
+  for invariants and the remaining hardware verification limit.
 
 - **VF layout diagnostics (2026-10-28).** A refused snapshot publishes zero
   points and one reason, which cannot show how a new family's table is shaped.

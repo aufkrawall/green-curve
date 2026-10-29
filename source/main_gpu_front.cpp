@@ -1,4 +1,5 @@
 #include "fan_runtime_policy.h"   // shared manual-fan write verification
+#include "vf_curve_units.h"
 static UINT fan_telemetry_interval_for_window_state() {
     if (!g_app.backgroundServiceAvailable) return 2000;
     return FAN_TELEMETRY_INTERVAL_MS;

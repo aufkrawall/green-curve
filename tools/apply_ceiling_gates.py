@@ -703,7 +703,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
 
     # Linux must accept the same driver-pinned placeholder VF entry as Windows,
     # or a selective offset spends its whole pass budget and rolls back.
-    require_text(_p(ctx, "linux_backend.cpp"),
+    require_text(_p(ctx, "linux_backend_vf_write.h"),
                  "vf_offset_zero_readback_is_benign(desiredOffsets[i],",
                  "the Linux VF writer shares the placeholder-refusal rule")
 

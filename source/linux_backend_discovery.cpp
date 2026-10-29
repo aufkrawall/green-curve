@@ -293,11 +293,11 @@ static bool linux_backend_bind_nvapi(LinuxGpuState* g, bool recovery,
         g->cachedArchitectureGpu = *selected;
         g->cachedArchitectureValid = true;
     }
-    lb_log("linux_backend: bound NvAPI handle=%u match=%s family=%d backend=%s arch=0x%08x source=%s recovery=%d\n",
+    lb_log("linux_backend: bound NvAPI handle=%u match=%s family=%d backend=%s arch=0x%08x source=%s recovery=%d vfGraphicsScale=%u\n",
         g->nvapiIndex, soleFallback ? "single-GPU-fallback" : "exact-BDF",
         (int)g->family, g->backend ? g->backend->name : "none",
         g->architecture, linux_gpu_architecture_source_name(g->architectureSource),
-        recovery ? 1 : 0);
+        recovery ? 1 : 0, vf_graphics_frequency_scale(g->backend));
     return true;
 }
 

@@ -7,6 +7,7 @@
 
 #include "gpu_core.h"
 #include "platform.h"
+#include "vf_curve_units.h"
 
 static inline bool linux_vf_returned_version_valid(
     unsigned int returnedVersion, unsigned int expectedStructVersion,
@@ -67,17 +68,7 @@ static inline bool linux_nvapi_enum_count_is_usable(int count, int capacity) {
 // only a populated point whose voltage falls below the previous one does.
 static inline int linux_vf_graphics_domain_length(
     const VFCurvePoint* curve, int count) {
-    if (!curve || count <= 0) return 0;
-    if (count > VF_NUM_POINTS) count = VF_NUM_POINTS;
-    unsigned int previousVoltage = 0;
-    for (int index = 0; index < count; ++index) {
-        if (curve[index].freq_kHz == 0) continue;
-        if (curve[index].volt_uV == 0) continue;
-        if (previousVoltage != 0 && curve[index].volt_uV < previousVoltage)
-            return index;
-        previousVoltage = curve[index].volt_uV;
-    }
-    return count;
+    return vf_graphics_domain_length(curve, count);
 }
 
 static inline bool linux_vf_snapshot_authoritative(

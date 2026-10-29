@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 
 static bool nvapi_ok(int status) { return status == 0; }
 static const char* nvapi_status_name(int) { return "fixture"; }
@@ -28,6 +29,7 @@ struct VfDriver {
     bool foreignZeroVoltage;
     bool malformedPoint;
     bool malformedOffset;
+    bool reportedPascalSample;
     bool requestValid;
 };
 
@@ -67,9 +69,23 @@ static int read_table(void* handle, void* buffer, int call) {
     for (int i = 0; i < driver->points; ++i) {
         if (call == 1) {
             unsigned int offset = b->statusEntriesOffset + (unsigned int)i * b->statusEntryStride;
-            put_word(bytes, offset, driver->malformedPoint && i == 2
-                ? 7000000u : 600000u + (unsigned int)i * 15000u);
+            const unsigned int physical = driver->malformedPoint && i == 2
+                ? 7000000u : 600000u + (unsigned int)i * 15000u;
+            put_word(bytes, offset, physical *
+                (b->family == GPU_FAMILY_PASCAL ? 2u : 1u));
             put_word(bytes, offset + 4u, 650000u + (unsigned int)i * 5000u);
+            if (driver->reportedPascalSample) {
+                put_word(bytes, offset + 4u, 450000u + (unsigned int)i * 10000u);
+                if (i == 0) put_word(bytes, offset, 531000u);
+                if (i == 47) {
+                    put_word(bytes, offset, 3467500u);
+                    put_word(bytes, offset + 4u, 925000u);
+                }
+                if (i == 79) {
+                    put_word(bytes, offset, 3948000u);
+                    put_word(bytes, offset + 4u, 1243000u);
+                }
+            }
             if (i + 1 == driver->points) {
                 for (int f = 0; f < driver->foreignPoints; ++f) {
                     offset += b->statusEntryStride;
@@ -81,8 +97,11 @@ static int read_table(void* handle, void* buffer, int call) {
         } else if (call == 2) {
             unsigned int offset = b->controlEntryBaseOffset +
                 (unsigned int)i * b->controlEntryStride + b->controlEntryDeltaOffset;
-            put_word(bytes, offset, driver->malformedOffset && i == 2
-                ? 6000000u : 15000u);
+            const unsigned int physical = driver->malformedOffset && i == 2
+                ? 6000000u : 15000u;
+            put_word(bytes, offset, physical *
+                (b->family == GPU_FAMILY_PASCAL ? 2u : 1u));
+            if (driver->reportedPascalSample) put_word(bytes, offset, 250000u);
         }
     }
     return 0;
@@ -155,7 +174,7 @@ static int run_vf_layout_cases() {
         gpu.vfSnapshotFresh || gpu.numPopulated ||
         strstr(why, "point 80 out of range") == nullptr) return 7701;
     if (!layout_text_is(gpu, "mask=81[0..80] status=81 graphics=81[0..80] "
-            "600MHz@650mV..405MHz@0mV unmasked=0 dropped=0")) return 7702;
+            "600MHz@650mV..202MHz@0mV unmasked=0 dropped=0")) return 7702;
 
     // A populated point outside the returned mask is counted.
     initialize(&driver, &gpu);
@@ -274,6 +293,26 @@ int run_linux_vf_read_tests() {
     if (nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) || gpu.vfSnapshotFresh ||
         gpu.vfStructureValid || gpu.curve[79].freq_kHz != 1785000u ||
         gpu.freqOffsets[79] != 15000 || !why[0]) return 7697;
+    // The reported Pascal table uses double-rate graphics clocks and deltas.
+    // Keep an exact half-MHz fraction until the UI's final MHz rounding.
+    initialize(&driver, &gpu);
+    driver.reportedPascalSample = true;
+    add_foreign_domain(&driver, 4, false);
+    if (!nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) ||
+        gpu.curve[0].freq_kHz != 265500u ||
+        gpu.curve[47].freq_kHz != 1733750u || gpu.curve[47].volt_uV != 925000u ||
+        gpu.curve[79].freq_kHz != 1974000u || gpu.freqOffsets[47] != 125000 ||
+        gpu.curve[47].freq_kHz - (unsigned int)gpu.freqOffsets[47] != 1608750u ||
+        gpu.vfLayout.firstDropped.freq_kHz != 405000u ||
+        gpu.numPopulated != 80 || gpu.curve[80].freq_kHz != 0) return 7717;
+    for (const VfBackendSpec* backend : {&g_vfBackendTuring, &g_vfBackendAmpere,
+            &g_vfBackendLovelace, &g_vfBackendBlackwell, &g_vfBackendFuture}) {
+        initialize(&driver, &gpu);
+        gpu.backend = driver.backend = backend;
+        if (!nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) ||
+            gpu.curve[79].freq_kHz != 1785000u || gpu.freqOffsets[79] != 15000)
+            return 7727;
+    }
     return run_vf_layout_cases();
 }
 

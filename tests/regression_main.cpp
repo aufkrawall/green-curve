@@ -1019,6 +1019,7 @@ int run_linux_restore_role_tests();
 // (tests/vf_point_visibility_tests.cpp, 7380-7399).
 int run_vf_point_visibility_tests();
 int run_linux_vf_read_tests();
+int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
 // The Linux TUI writes only to the selected GPU once it is shown, and a hold
 // on another GPU stays recoverable from the TUI
@@ -2660,6 +2661,7 @@ static int run_all_tests(int argc, char** argv) {
         return linuxLocationFailure;
     }
     if (int vfFailure = run_linux_vf_read_tests()) return vfFailure;
+    if (int vfFailure = run_linux_vf_write_tests()) return vfFailure;
     if (int readFailure = run_linux_read_request_tests()) return readFailure;
     if (int visibilityFailure = run_vf_point_visibility_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", visibilityFailure);

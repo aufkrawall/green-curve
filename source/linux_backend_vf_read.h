@@ -156,11 +156,11 @@ static bool nvapi_read_curve_candidate(LinuxGpuState* g,
             candidate->curve[i].freq_kHz = freq;
             candidate->curve[i].volt_uV = volt;
         }
+        int domainEnd = vf_normalize_graphics_status(b, candidate->curve,
+                                                    VF_NUM_POINTS);
         linux_vf_layout_note_status(&g->vfLayout, candidate->curve,
                                     VF_NUM_POINTS, g->vfMask,
                                     (unsigned int)sizeof(g->vfMask));
-        int domainEnd = linux_vf_graphics_domain_length(candidate->curve,
-                                                        VF_NUM_POINTS);
         candidate->populated = 0;
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (i >= domainEnd) {
@@ -174,8 +174,8 @@ static bool nvapi_read_curve_candidate(LinuxGpuState* g,
             g->lastLoggedGraphicsDomainEnd != domainEnd) {
             if (domainEnd != VF_NUM_POINTS) {
                 lb_log("curve: graphics domain ends at point %d "
-                       "(%d MHz @ %u mV); dropped %d trailing entries "
-                       "belonging to other clock domains\n",
+                       "(%d MHz @ %u mV); omitted %d trailing read-window "
+                       "slots beyond the graphics domain\n",
                        domainEnd - 1,
                        domainEnd > 0
                            ? (int)(candidate->curve[domainEnd - 1].freq_kHz /
@@ -264,7 +264,7 @@ static bool nvapi_read_offsets_candidate(LinuxGpuState* g,
             unsigned int off = b->controlEntryBaseOffset + (unsigned int)i * b->controlEntryStride + b->controlEntryDeltaOffset;
             if (off + sizeof(delta) <= b->controlBufferSize) memcpy(&delta, buf + off, sizeof(delta));
             else delta = 0;
-            candidate->offsets[i] = delta;
+            candidate->offsets[i] = vf_graphics_offset_khz(b, delta);
         }
     }
     free(buf);

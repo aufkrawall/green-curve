@@ -1,20 +1,39 @@
 # Testing
 
-Validation of the 2026-10-27 memory/power recovery follow-up: full native
-Windows regressions, Linux cross-link checks, source gates and `--tidy` pass.
-Cases 7640-7645 and 7650-7657 execute memory evidence and power write boundaries;
-both first regression cases fail under the previous respective implementations.
-The existing deferred worker handback, read-time backend discovery and
-post-preparation restore fixtures also pass. Earlier standalone fan/memory
-fixtures were executed under Linux with warnings treated as errors.
+Validation of the 2026-10-29 Pascal VF units and explicit Refresh corrections:
+full native Windows regressions, Linux cross-links, source/Python gates and
+`--tidy` pass (no new findings). The focused request fixture fails at 7710
+with the previous protocol headers; the VF fixtures fail at 7682 with the
+previous reader and 7718 with the previous writer, then pass after correction.
 
-The plain deliverable build completed as build 358. All six archives, four
-installers and two Linux packages have fresh timestamps and matching SHA-256
-sidecars; their contents differ from the pre-build artifacts. Independent
-extraction compared all 20 packaged application and Windows service images
-with the corresponding freshly built binary. No physical
-GPU write or driver-failure injection was performed; Linux daemon orchestration
-remains cross-linked and source-gated on this Windows host.
+Plain `python build.py` completed as build 363. All six archives, four
+installers and two Linux packages have fresh timestamps, changed contents and
+matching SHA-256 sidecars. Independent extraction compared all 20 packaged
+application and Windows service images with the fresh outputs. The Windows
+x64 release binary's read-only self-test on an RTX 5070 reports FULL, scale 1,
+127 graphics points and a readable control table. No physical GPU write was
+performed. Corrected Pascal values and per-point writes await hardware
+confirmation; Linux daemon orchestration remains cross-linked and source-gated
+on this Windows host.
+
+## VF graphics frequency units (2026-10-29)
+
+Source anchors: `tests/linux_vf_read_tests.cpp`, `tests/linux_vf_write_tests.cpp`,
+`source/vf_curve_units.h`, `source/linux_backend_vf_write.h`,
+`tools/readback_gates.py`.
+
+The fake Pascal driver returns double-rate raw graphics status/control data.
+Case 7717 captures the reported table's scale and foreign-domain boundary;
+7718-7728 execute the production writer, offset readback and atomic reader:
+positive/negative offsets, no-op comparisons, Reset, partial batches, untouched
+fractional raw deltas, an ignored write, every other backend, integer overflow
+and an absolute target planned from normalized data. The existing malformed
+and stale-snapshot cases still run. Source gates require normalization in
+Windows/Linux and probes, inverse conversion in both Windows write routes and
+the Linux writer, and forbid copying normalized caches into raw preimages.
+No physical GPU write or Pascal hardware replay is performed by these tests.
+The standalone VF fixtures compile with warnings treated as errors and fail
+under the previous reader/writer as described above.
 
 ## Explicit state-read requests (2026-10-29)
 

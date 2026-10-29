@@ -339,6 +339,9 @@ static int self_test_report(FILE* out) {
             g_app.vfBackend && g_app.vfBackend->bestGuessOnly
                 ? " (best-effort unrecognized family)" : "");
     fprintf(out, "GPU family             : %d\n", (int)g_app.gpuFamily);
+    fprintf(out, "VF graphics units      : %u driver units per physical kHz "
+                 "(status and control; NVML offsets already physical)\n",
+        vf_graphics_frequency_scale(g_app.vfBackend));
     fprintf(out, "expected struct sizes  : pstates20=%u arch=%u (compile-time pinned)\n",
             (unsigned)sizeof(nvapiPerfPstates20Info_t),
             (unsigned)sizeof(nvapiGpuArchInfo_t));
