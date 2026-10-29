@@ -5,6 +5,22 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-29: Decode GP102 legacy domain relationships and limits
+
+- The complete format-2 Linux report accepts all four advanced INFO requests.
+  Independent decoding agrees on nine domains, legacy clock model 3.0 and
+  the GPC master with XBAR/SYS children; both children advertise zero delta
+  bounds. Entry 4 is HUB rather than the modern VIDEO mapping; ID 31 reports
+  PCIe generation rather than a frequency. Fixed records need separate typing.
+- Successful metadata or target readback does not demonstrate independent
+  physical adjustment. The existing strict write validation stays unchanged;
+  another unchanged passive capture is not needed. Scope is this GP102/driver
+  sample, with other Pascal configurations and Windows hardware unverified.
+- Cross-version decoding and consistency checks passed, as did source,
+  security and public-wiki gates. Documentation only; the application and
+  capture protocol are unchanged. [Backend findings](../gpu-backend.md#gp102-capture-findings-2026-10-29)
+  record the field geometry, evidence and remaining verification limits.
+
 ## 2026-10-29: Separate advanced-domain INFO from client tuning ranges
 
 - Validation: native regressions, source/public-wiki gates and clang-tidy

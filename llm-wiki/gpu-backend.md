@@ -316,17 +316,21 @@ Cases 7770–7772 verify the distinct INFO families, clean retries, full inline
 response tails, untrusted returned sizes and advanced-INFO-only availability.
 
 Pascal VF curve reads and edits were reported working on GP102 with the
-580.196.07 Linux driver after the graphics-unit correction. This does not
-establish advanced-domain identities or apply that VF scale to them. The next
-evidence is the advanced-domain INFO capture; do not request an actuating probe
-or add a guessed write layout. Last verified: 2026-10-29, source, regression
-fixtures and a read-only format-1 Windows x64 Blackwell run of both native
-compiler builds. Each live report contained three client INFO attempts, two GET_CONTROL attempts, 32
-measurements and complete zero/tail words (442950 bytes). The normal mask was
-accepted; the all-domain mask returned -1, retained in the report without
-discarding the successful normal response. Mixed diagnostic verbs exited 1
-without changing the saved report. Linux and Windows ARM64 are build-verified;
-Pascal advanced-domain mapping and live format-2 Linux capture remain unverified.
+580.196.07 Linux driver after the graphics-unit correction. The reporter also
+completed the format-2 Linux capture; its legacy domain graph and advertised
+ranges are documented below. Neither VF scaling nor successful INFO reads
+establishes advanced write units or independent control support. Do not request
+the existing actuating probe or add a guessed write layout.
+
+Last verified: 2026-10-29, source, regression fixtures, complete GP102/Linux
+format-2 capture and read-only Windows x64 Blackwell runs of both native
+compiler builds. Each native format-2 report contained three client INFO
+attempts, four advanced INFO attempts, two GET_CONTROL attempts, 32 measurements
+and complete zero/tail words (602911 bytes). The normal mask was accepted; the
+all-domain mask returned -1, retained without discarding the successful normal
+response. Mixed diagnostic verbs exited 1 without changing the saved report.
+Linux and Windows ARM64 are build-verified. Windows Pascal, independent Pascal
+advanced writes and their physical effects remain unverified.
 
 ### GP102 capture findings (2026-10-29)
 
@@ -347,21 +351,62 @@ These are correlations from sequential reads, not established mappings or
 permission to apply the VF scale to every advanced field. In particular, a
 stock all-zero offset cannot prove a setter or voltage-rail interpretation.
 
-The initial `get-info` capture was the client-range interface and cannot supply
-the missing advanced domain identities and relationships. Format 2 adds their
-separate INFO read so the next request stays one command and one complete text
-file. Do not request another unchanged stock format-1 capture or the existing
-actuating probe. Keep tuning's strict wire-layout validation until the advanced
-descriptors, type-specific fields and units are verified. Raw captures and
-driver-analysis artifacts remain outside tracked files.
+The initial `get-info` capture was the client-range interface and could not
+supply the advanced domain identities and relationships. The subsequent
+[format-2 report](https://github.com/aufkrawall/green-curve/issues/16#issuecomment-6507368184)
+accepted all four advanced INFO requests. All four independently decode to the
+same nine-domain graph, clock model `0x30` (legacy 3.0) and mask `0x1FF`:
+
+| Entry | Wire type | API/measurement ID | Legacy relationship | Advertised signed delta bounds |
+|-------|-----------|--------------------|---------------------|--------------------------------|
+| 0 | 4 (master) | 15, GPC2 | Children 1 and 3 (`0xA`) | -400 to +2400, raw units |
+| 1 | 5 (slave) | 16, XBAR2 | Master entry 0 | 0 to 0 |
+| 2 | 4 (master) | 4, memory | Child 8 (`0x100`) | -1000 to +1000, raw units |
+| 3 | 5 (slave) | 17, SYS2 | Master entry 0 | 0 to 0 |
+| 4 | 5 (slave) | 18, HUB2 | Master entry 7 | 0 to 0 |
+| 5 | 2 (fixed) | 21 | Fixed clock | Not a programmable record |
+| 6 | 2 (fixed) | 20 | Fixed clock | Not a programmable record |
+| 7 | 4 (master) | 6 | Child 4 (`0x10`) | 0 to 0 |
+| 8 | 5 (slave) | 31, PCIe generation | Master entry 2 | 0 to 0 |
+
+For these exact responses, entry base/stride is `0x58/0x4C` in V1,
+`0xA4/0xAC` in V2, `0xA8/0x204` in V3 and `0xAC/0x430` in V4. The leading
+words carry wire type and API ID. V4's type-specific relationship is at entry
+`+0x54`: a master has a 32-bit slave mask; a slave has an 8-bit master index.
+V1 uses `+0x48`; V2/V3 use `+0x50`. Programmable records' signed 16-bit lower
+and upper delta fields are at `+0x3E/+0x40` in V4 and `+0x3A/+0x3C` in V1-V3.
+Fixed records have different field meanings; do not read their fixed frequency
+as an offset bound. The master-mask/slave-index model is also described in
+[NVIDIA's published clock-domain types](https://github.com/OE4T/linux-tegra-4.9/blob/30a11c940a505f333192ea19935e95a4d9f27e98/nvidia/nvgpu/drivers/gpu/nvgpu/clk/clk_domain.h).
+These observed layouts are evidence for this driver response, not a new
+production write schema selected only by version or GPU family.
+
+XBAR and SYS advertise no nonzero independent adjustment range and belong to
+the GPC master. This is strong evidence against exposing modern independent
+offset controls on this sample; it does not prove every possible Pascal driver
+path or firmware configuration lacks such a control. A getter returning status
+0 or an echoed target offset cannot prove a physical clock change. The graph
+has no separate VIDEO API ID 8; entry 4 is HUB, so reusing the modern VIDEO
+index would address a different domain. Public video telemetry still succeeds.
+Measurement 31 returns PCIe generation 3, not a 3 kHz clock. No MSVDD write
+support or voltage-rail identity is established by these reports.
+
+The requested passive evidence is complete. Another unchanged stock capture
+would not establish writability. Keep tuning's strict wire-layout validation;
+a future write path requires verified type-specific fields, units and physical
+effect. Do not use the existing generic actuating probe on these legacy typed
+records. This conclusion adds no family gate and does not change unsupported
+GPU read/write policy. Raw captures and driver-analysis artifacts remain
+outside tracked files.
 
 Format-2 verification: plain build 367 refreshed all 12 packages, with changed
 hashes, SHA-256 sidecars and 20 embedded application/service images checked.
 Both native Windows x64 compiler builds accepted all four advanced INFO
 versions (status 0) and saved complete 602911-byte reports. Conflicting verbs
 still exited 1 without rewriting the report. Native regressions and source
-gates passed; clang-tidy had no new findings. The format-2 GP102/Linux report
-remains the next hardware check; write support is not inferred from INFO success.
+gates passed; clang-tidy had no new findings. The subsequent GP102/Linux report
+accepted all four advanced INFO reads, confirming that the requested capture
+works on this legacy model. Write support is not inferred from INFO success.
 
 SET_CONTROL is a privileged operation: a non-elevated caller gets status
 **-137 `NVAPI_INVALID_USER_PRIVILEGE`** before the RM command is dispatched
