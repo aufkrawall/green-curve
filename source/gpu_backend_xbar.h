@@ -3,11 +3,10 @@
 //
 // XBAR clock and XBAR-domain MSVDD offsets through the private NvAPI
 // ClkDomains surface.  The interface is old (10+ years) and its .domains
-// sub-structure is versioned per generation: the driver reports which schema
-// it answered with in the response's version word, and that word — not the
-// GPU family — selects the layout used here.  XBAR exists as an independent
-// domain since Volta, so availability is decided by the reported version and
-// the pinned marker validation, never by an architecture whitelist.
+// sub-structure can differ by generation even with the same version word.
+// The returned word selects a candidate layout, whose repeated entry markers
+// must validate before any field is interpreted. Domain identities and units
+// also need hardware evidence; availability has no architecture whitelist.
 //
 // The complete control block is read as a template for every transaction; a
 // write changes only the two owned fields and is accepted only after an exact
@@ -67,9 +66,9 @@ static const unsigned int XBAR_DOMAIN_MARKER = 0x0f;
 
 // The only layout validated against the R572..R610 ClkDomains V2 response
 // (version word 0x000261A4 = version 2, struct size 0x61A4).  Older
-// generations report their own version word with a different .domains layout:
-// each becomes one additional table row below once a real response has been
-// validated on hardware.  Guessing an unpinned layout is unsafe because
+// generations can return that same word with a different .domains layout.
+// Further layouts need a distinct, verified discriminator before the table can
+// select their geometry. Guessing an unpinned layout is unsafe because
 // SET_CONTROL receives the complete block; an unknown version therefore leaves
 // the domain unavailable instead of selecting the "most plausible" words.
 static const unsigned int XBAR_PINNED_ENTRY_BASE = 0x124;

@@ -202,7 +202,7 @@ transaction proof. Do not blind-write non-offset dwords in the block.
 Every SYS/VIDEO reader resolves the entry field from the schema row of the
 driver's RESPONSE (`xbar_read_entry_freq()`): Windows apply, reset-before-
 apply, explicit Reset and the capability probe, matching the Linux backend and
-telemetry. The `--clk-domain-probe` and dump diagnostics take domain count,
+telemetry. The write-capable `--clk-domain-probe` takes domain count,
 field and XBAR entry from that row too, and the probe aborts if a later read
 answers with another schema. Before 2026-10-27 these Windows paths used the
 first table row, which only matched while the table held one schema; the probe
@@ -215,11 +215,12 @@ ClkDomains** surface, not Linux RM command IDs and not PropRels:
 - GET `0xF58938F5`, SET `0xD14B69CF`, physical clock measure `0x527FC458`
   (version/size `0x0001000C`; XBAR domain 1, SYS domain 2)
 - The interface is 10+ years old and its `.domains` sub-structure is
-  **versioned per generation**. The driver's REPORTED
+  **generation-dependent**, including responses that reuse a version word.
+  The driver's REPORTED
   version word — `(version << 16) | size`, read back at buffer offset 0 — must
-  select the layout; a GPU-family whitelist is wrong by design. XBAR has been
-  an independently controllable domain since Volta, so pre-Blackwell cards can
-  work once their schema row is pinned from real hardware evidence.
+  select a candidate layout, whose entry markers must also validate; a
+  GPU-family whitelist cannot replace that evidence. Pre-Volta domain
+  identities, units and independently controllable clocks remain unverified.
 - Exactly one schema row is validated today: version word `0x000261A4` (V2,
   R572..R610), eight repeated entries at base `0x124`, stride `0x304`. The two
   owned fields live in **different domain entries** (observed driver
@@ -230,8 +231,8 @@ ClkDomains** surface, not Linux RM command IDs and not PropRels:
   to the SYS domain's second voltage rail, unsupported on Blackwell. The
   schema therefore carries a separate `msvddEntryIndex` alongside
   `entryIndex`. Rows live in the pinned `g_xbarSchemas[]` table; new
-  generations slot in as additional rows keyed by their reported word, never
-  as guessed offsets.
+  layouts require verified discrimination as well as geometry, never guessed
+  offsets or reuse of modern domain names solely from a matching version.
 
 `source/gpu_backend_xbar.h` walks the table newest-first as a request ladder,
 then dispatches on the RESPONSE's version word. An unknown word refuses all
@@ -255,6 +256,38 @@ It never synthesizes a full block: every write reads a fresh complete response,
 changes only the two owned fields (absolute offsets carried in the snapshot),
 submits that preimage, then requires exact readback of both fields. Reset writes
 both owned fields to zero against another fresh read.
+
+### Raw clock-domain capture (2026-10-29)
+
+`source/clk_domain_dump.h` is the shared, bounded read-only collector. The
+Windows `--clk-domain-dump` writes `clkdomains_dump.txt` in the resolved user
+data folder with the existing atomic writer. It captures successful responses
+even when normal tuning rejects the layout. GET_INFO attempts all three known
+0x928-byte request versions, zeroing the full allocation between requests;
+GET_CONTROL walks the pinned request rows and saves the complete 0x13000-byte
+zero-initialized capacity, including zero words, regardless of status or the
+returned version/size. Returned sizes never control allocation or traversal.
+The report includes request/response versions and masks, numeric statuses,
+public current clocks, all 32 measurement IDs (including zero/refused values),
+and bounded GPU/build/driver metadata. Measurement values stay in raw driver
+units, without VF scaling or inferred Pascal domain names. The report builder
+has a 512 KiB cap and refuses an incomplete output.
+
+The collector resolves five read-only interfaces; it does not resolve a setter,
+install a service, reset or apply settings. A complete capture succeeds when
+any ClkDomains GET succeeds, including a layout mismatch. Missing or refused
+interfaces still produce a partial report and exit 2. Normal tuning continues
+to require its original schema validation. `tests/clk_domain_dump_tests.cpp`
+executes the production collector with fake drivers: successful mismatches,
+unknown versions, complete zero/tail capture, clean request retries, bounded
+output, missing interfaces/handles and refusal statuses (7740–7753).
+
+Pascal VF curve reads and edits were reported working on GP102 with the
+580.196.07 Linux driver after the graphics-unit correction. This does not
+establish advanced-domain identities or apply that VF scale to them. The next
+evidence is the raw capture; do not request an actuating probe or add a guessed
+write layout. Last verified: 2026-10-29, source and regression fixtures; Pascal
+advanced-domain mapping remains unverified on hardware.
 
 SET_CONTROL is a privileged operation: a non-elevated caller gets status
 **-137 `NVAPI_INVALID_USER_PRIVILEGE`** before the RM command is dispatched

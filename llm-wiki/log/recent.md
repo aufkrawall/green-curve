@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-29: Preserve unknown clock-domain responses for diagnosis
+
+- Added the shared bounded raw collector and wired the existing Windows
+  `--clk-domain-dump` through it, retaining successful layout mismatches and
+  failed reads with their exact statuses. Normal tuning validation is unchanged.
+- Fake-driver fixtures cover unknown and known responses, zero/tail retention,
+  request isolation, missing interfaces, bounded output and read-only resolution.
+- Updated [GPU backend guidance](../gpu-backend.md#raw-clock-domain-capture-2026-10-29):
+  Pascal may reuse the modern version word with different entry geometry;
+  advanced domain identities and units need raw evidence before any writes.
+
 ## 2026-10-29: Route restricted Windows deliverable builds explicitly
 
 - Extended [build guidance](../build.md#windows-agent-build-execution-verified-2026-10-29)
