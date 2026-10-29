@@ -777,8 +777,7 @@ struct CliOptions {
     // the Linux daemon's --self-test.  Never mutates GPU state and needs no
     // background service.
     bool selfTest;
-    // Read-only ClkDomains block dump (--clk-domain-dump) for differential
-    // identification against other tools.
+    // Read-only raw clock-domain capture, including unrecognized layouts.
     bool clkDomainDump;
     // Opt-in ClkDomains identification probe (--clk-domain-probe): writes a
     // small, immediately-restored offset into each candidate control-block

@@ -1025,6 +1025,7 @@ int run_linux_read_request_tests();
 // (tests/xbar_read_log_tests.cpp, 7730-7739).
 int run_xbar_read_log_tests();
 int run_clk_domain_dump_tests();
+int run_linux_clk_domain_dump_tests();
 // The Linux TUI writes only to the selected GPU once it is shown, and a hold
 // on another GPU stays recoverable from the TUI
 // (tests/linux_tui_gpu_target_tests.cpp, 7400-7409 and 7430-7439).
@@ -2669,6 +2670,7 @@ static int run_all_tests(int argc, char** argv) {
     if (int readFailure = run_linux_read_request_tests()) return readFailure;
     if (int xbarLogFailure = run_xbar_read_log_tests()) return xbarLogFailure;
     if (int domainDumpFailure = run_clk_domain_dump_tests()) return domainDumpFailure;
+    if (int linuxDumpFailure = run_linux_clk_domain_dump_tests()) return linuxDumpFailure;
     if (int visibilityFailure = run_vf_point_visibility_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", visibilityFailure);
         return visibilityFailure;

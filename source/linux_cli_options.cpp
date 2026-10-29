@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "linux_port_internal.h"
+#include "clk_domain_dump_cli_policy.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -15,6 +16,7 @@ void print_linux_help() {
     puts("  greencurve --dump-live | --json-live  Dump all live VF values from daemon");
     puts("  greencurve --probe [--probe-output path]   Probe driver + GPU control surfaces");
     puts("  greencurve --self-test           Read-only validation of the NvAPI/NVML apply path");
+    puts("  greencurve --clk-domain-dump     Read-only raw clock-domain capture to stdout (no service needed)");
     puts("  greencurve --apply-config [--profile N]    Apply a profile via the daemon");
     puts("  greencurve --reset --apply-config          Reset OC/UV to driver defaults");
     puts("  greencurve --save-config [--profile N] [overrides]");
@@ -105,6 +107,9 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         } else if (strcmp(arg, "--self-test") == 0) {
             opts->recognized = true;
             opts->selfTest = true;
+        } else if (strcmp(arg, "--clk-domain-dump") == 0) {
+            opts->recognized = true;
+            opts->clkDomainDump = true;
         } else if (strcmp(arg, "--from-desktop") == 0) {
             // Set by the terminal relaunch and by the generated .desktop
             // entries.  Deliberately does not set `recognized`: on its own it
@@ -471,6 +476,11 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         }
     }
 
+    if (opts->clkDomainDump && !gc_clk_dump::args_read_only(argc, argv, true)) {
+        set_message(opts->error, sizeof(opts->error),
+            "Use --clk-domain-dump alone, optionally with --config and --gpu.");
+        return false;
+    }
     return true;
 }
 

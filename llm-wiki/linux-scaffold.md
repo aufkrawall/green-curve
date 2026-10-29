@@ -381,7 +381,8 @@ once, stamped by `[meta] linux_mem_migrated`:
   `linux_backend_vf_write.h` executes with fake driver dependencies in
   `tests/linux_vf_write_tests.cpp`; normalized readback never overwrites a raw
   control block. See [GPU backend](gpu-backend.md#vf-graphics-frequency-units-verified-2026-10-29)
-  for invariants and the remaining hardware verification limit.
+  for invariants. Correct physical frequencies and VF edits are now reported
+  working on GP102 with driver 580.196.07; advanced domains remain unverified.
 
 - **ClkDomains refusals logged once (2026-10-29).** Every daemon state read
   refreshes XBAR/SYS/VIDEO through `linux_xbar_refresh()`. Pascal answers the
@@ -1468,6 +1469,7 @@ none of the retained directives block the driver.
 ```bash
 greencurve --probe                  # confirm NvAPI+NVML, GPU, family, OC range
 greencurve --self-test              # read-only validation of the apply path (arm64 pre-flight)
+greencurve --clk-domain-dump        # raw read-only clock-domain report to stdout
 sudo ./greencurve-setup.sh install  # install + verify + group enrollment + desktop entry
 sudo greencurve --service-install   # the privileged step on its own
 greencurve --tui                    # edit + apply via the daemon
@@ -1478,6 +1480,11 @@ greencurve --startup-profile 3      # ... make that saved profile 3
 greencurve --resume-restore         # re-apply after suspend (the resume unit does this)
 sudo greencurve --service-remove
 ```
+
+The standalone clock-domain capture needs no daemon and does not persist GPU
+selection or change settings. It retains raw responses that normal tuning
+cannot interpret. See [GPU backend capture](gpu-backend.md#raw-clock-domain-capture-2026-10-29)
+for the one-command reporter request, read-only argument contract and fixtures.
 
 `tools/greencurve-setup.sh` ships inside the Linux archive (a `.tar.xz`, see
 [build.md](build.md)) next to the binary, LF-terminated and mode `0755`. Both

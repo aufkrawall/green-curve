@@ -220,6 +220,10 @@ bool linux_backend_curve_plausible(const LinuxGpuState* g, char* why, size_t why
 // to `out` (stdout when null) and returns true when the apply path should work.
 bool linux_backend_self_test(LinuxGpuState* g, FILE* out);
 
+// Standalone read-only raw clock-domain capture; initializes and releases its
+// own backend. Unknown layouts are captured, never enabled for tuning.
+int linux_backend_clk_domain_dump(const GpuAdapterInfo* target, FILE* out);
+
 // Apply a desired settings request (validated by the caller).  Mirrors the
 // Windows apply_desired_settings_service() ordering: reset baseline (optional),
 // GPU clock offset, memory clock offset, power limit, VF curve, locked clocks,

@@ -26,6 +26,28 @@ greencurve --self-test
 
 It reports the loaded NVAPI image, whether the VF curve and control structs read back, the memory topology, and control domain availability.
 
+For an advanced clock-domain report, the regular binary also has a read-only
+capture that works when the driver response has an unrecognized layout:
+
+```bash
+# Linux, from the folder containing the executable
+sudo ./greencurve --clk-domain-dump > greencurve-clkdomains.txt 2>&1
+
+# Windows
+greencurve.exe --clk-domain-dump
+```
+
+Linux writes the report to stdout; the command above saves it in one text file.
+Windows saves `clkdomains_dump.txt` in `%LOCALAPPDATA%\Green Curve` and reports
+the location in the CLI log. The capture needs no service installation or
+restart and does not change GPU settings. It includes raw driver responses,
+numeric read statuses and clock measurements, including responses normal tuning
+cannot interpret. Exit code 2 still leaves a useful partial report if the driver
+interfaces are unavailable or all domain reads are refused. Use this command
+alone; `--config` and Linux `--gpu DDDD:BB:DD.F` may select its read inputs
+without saving a selection. Report metadata omits GPU UUIDs, host names,
+environment variables and local file paths.
+
 ## Support
 
 [![GitHub Sponsors](https://img.shields.io/badge/Sponsor%20on%20GitHub-%23EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/aufkrawall)
@@ -193,6 +215,7 @@ Linux writes are transactional: the daemon journals settings before applying, ve
 ```bash
 greencurve --probe                  # verify NVAPI/NVML, GPU architecture, and clock ranges
 greencurve --self-test              # read-only validation of apply paths
+greencurve --clk-domain-dump        # raw clock-domain capture to stdout, read-only
 greencurve --gpu 0000:01:00.0 --tui # select target PCI GPU on multi-GPU systems
 sudo ./greencurve --service-install # install and verify background daemon
 greencurve --tui                    # launch the terminal interface

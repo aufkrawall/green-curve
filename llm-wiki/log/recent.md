@@ -7,6 +7,16 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
 ## 2026-10-29: Preserve unknown clock-domain responses for diagnosis
 
+- Added the regular Linux `--clk-domain-dump` command using the shared
+  collector, scoped GPU selection and unconditional backend release. A single
+  redirected stdout report also carries NVML driver metadata.
+- Both parsers reject mixing the capture with another operational command;
+  narrow/wide argument fixtures cover the read-only command contract. User
+  instructions are in README and the GPU backend topic.
+- Captures try normal and all-domain read masks separately, so modern mask
+  assumptions cannot hide Pascal domain bits. A refused broad read preserves
+  the accepted normal response. Production Linux wrapper fixtures verify
+  initialization, unresolved selection, driver metadata and teardown on errors.
 - Added the shared bounded raw collector and wired the existing Windows
   `--clk-domain-dump` through it, retaining successful layout mismatches and
   failed reads with their exact statuses. Normal tuning validation is unchanged.

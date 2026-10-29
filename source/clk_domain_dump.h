@@ -147,20 +147,26 @@ static inline bool clk_domain_dump_collect(ClkDomainDumpReport* report, void* gp
     } else report->append("get-info: unavailable (%s)\n", gpu ? "entry point" : "GPU handle");
     if (api.getControl && gpu) {
         for (const XbarClkDomainsSchema& schema : g_xbarSchemas) {
-            memset(buffer, 0, XBAR_CONTROL_BUF_SIZE);
-            xbar_put_u32(buffer, 0, schema.versionWord);
-            xbar_put_u32(buffer, XBAR_CONTROL_MASK_OFFSET, schema.requestMask);
-            int status = api.getControl(gpu, buffer);
-            ++controlReads;
-            accepted = accepted || status == 0;
-            report->append("\nget-control: request=0x%08X mask=0x%08X returned=0x%08X"
-                " returned_mask=0x%08X status=%d layout=%s captured=0x%05X\n",
-                schema.versionWord, schema.requestMask, xbar_get_u32(buffer, 0),
-                xbar_get_u32(buffer, XBAR_CONTROL_MASK_OFFSET), status,
-                clk_domain_dump_layout(buffer, status), (unsigned int)XBAR_CONTROL_BUF_SIZE);
-            // Capture the entire zero-initialized capacity even if validation
-            // fails or the returned version is unknown. Never follow its size.
-            clk_domain_dump_raw(report, buffer, XBAR_CONTROL_BUF_SIZE);
+            // Retain the normal mask and an all-domain read attempt: Pascal's
+            // domain bit assignments need not fit the modern eight-bit mask.
+            const unsigned int masks[] = {schema.requestMask, 0xffffffffu};
+            unsigned int count = schema.requestMask == 0xffffffffu ? 1u : 2u;
+            for (unsigned int index = 0; index < count; ++index) {
+                memset(buffer, 0, XBAR_CONTROL_BUF_SIZE);
+                xbar_put_u32(buffer, 0, schema.versionWord);
+                xbar_put_u32(buffer, XBAR_CONTROL_MASK_OFFSET, masks[index]);
+                int status = api.getControl(gpu, buffer);
+                ++controlReads;
+                accepted = accepted || status == 0;
+                report->append("\nget-control: request=0x%08X mask=0x%08X returned=0x%08X"
+                    " returned_mask=0x%08X status=%d layout=%s captured=0x%05X\n",
+                    schema.versionWord, masks[index], xbar_get_u32(buffer, 0),
+                    xbar_get_u32(buffer, XBAR_CONTROL_MASK_OFFSET), status,
+                    clk_domain_dump_layout(buffer, status), (unsigned int)XBAR_CONTROL_BUF_SIZE);
+                // Capture the entire zero-initialized capacity even if validation
+                // fails or the returned version is unknown. Never follow its size.
+                clk_domain_dump_raw(report, buffer, XBAR_CONTROL_BUF_SIZE);
+            }
         }
     } else report->append("get-control: unavailable (%s)\n", gpu ? "entry point" : "GPU handle");
     free(buffer);

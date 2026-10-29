@@ -7,10 +7,11 @@
 #include "gpu_backend_xbar.h"
 #undef XBAR_LOG
 #include "clk_domain_dump.h"
+#include "clk_domain_dump_cli_policy.h"
 
 namespace {
 struct Driver {
-    enum Shape { MISMATCH, UNKNOWN, VALID, REFUSED } shape;
+    enum Shape { MISMATCH, UNKNOWN, VALID, REFUSED, WIDE_REFUSED } shape;
     unsigned int infoCalls, controlCalls, clockCalls, measureCalls;
     bool cleanRequests, refuseInfo;
 };
@@ -33,11 +34,14 @@ static int get_control(void* gpu, void* data) {
     auto* bytes = (unsigned char*)data;
     ++state->controlCalls;
     if (xbar_get_u32(bytes, 0) != XBAR_NVAPI_CLK_DOMAINS_VERSION ||
-        xbar_get_u32(bytes, XBAR_CONTROL_MASK_OFFSET) != XBAR_CONTROL_DOMAIN_MASK ||
+        (xbar_get_u32(bytes, XBAR_CONTROL_MASK_OFFSET) != XBAR_CONTROL_DOMAIN_MASK &&
+         xbar_get_u32(bytes, XBAR_CONTROL_MASK_OFFSET) != 0xffffffffu) ||
         xbar_get_u32(bytes, 32) || xbar_get_u32(bytes, XBAR_CONTROL_BUF_SIZE - 4))
         state->cleanRequests = false;
     xbar_put_u32(bytes, XBAR_CONTROL_BUF_SIZE - 4, 0xAABBCCDDu);
     if (state->shape == Driver::REFUSED) return -137;
+    if (state->shape == Driver::WIDE_REFUSED &&
+        xbar_get_u32(bytes, XBAR_CONTROL_MASK_OFFSET) == 0xffffffffu) return -5;
     if (state->shape == Driver::UNKNOWN) xbar_put_u32(bytes, 0, 0xFFFF0004u);
     if (state->shape == Driver::VALID) {
         const auto* schema = xbar_schema_for_version_word(XBAR_NVAPI_CLK_DOMAINS_VERSION);
@@ -81,7 +85,7 @@ static bool contains(const ClkDomainDumpReport& report, const char* text) {
 }
 
 int run_clk_domain_dump_tests() {
-    // 7740-7759: production capture on both OSes, without a GPU driver.
+    // 7740-7760: production capture on both OSes, without a GPU driver.
     queryCount = 0;
     onlyReadQueries = true;
     ClkDomainDumpApi api = clk_domain_dump_api(query);
@@ -99,15 +103,17 @@ int run_clk_domain_dump_tests() {
         if (!contains(report, "request=0x00010928 returned=0x00010928 status=-9") ||
             !contains(report, "request=0x00020928 returned=0x00020928 status=0") ||
             !contains(report, "request=0x00030928 returned=0x00030928 status=-9")) return 7743;
-        if (!state.cleanRequests || state.infoCalls != 3 || state.controlCalls != 1 ||
+        if (!state.cleanRequests || state.infoCalls != 3 || state.controlCalls != 2 ||
             state.clockCalls != 1 || state.measureCalls != 32) return 7744;
+        if (!contains(report, "mask=0x000000FF") ||
+            !contains(report, "mask=0xFFFFFFFF")) return 7759;
         if (!contains(report, "id=0 flags=0x00000001 frequency_khz=321000") ||
             !contains(report, "returned_id=0 status=0 value_raw=0") ||
             !contains(report, "returned_id=17 status=-1 value_raw=265017") ||
             !contains(report, "returned_id=31 status=0 value_raw=265031")) return 7745;
         if (!contains(report, "gpu=GPU?spoofed") || contains(report, "GPU\nspoofed") ||
             !contains(report, "driver: status=0 version_raw=98765") ||
-            !contains(report, "complete=yes") || report.size > 300000) return 7746;
+            !contains(report, "complete=yes") || report.size > 500000) return 7746;
     }
     {
         // Producing a diagnostic must not relax normal tuning validation.
@@ -137,6 +143,13 @@ int run_clk_domain_dump_tests() {
             !contains(report, "domain_get_accepted=0 complete=yes")) return 7750;
     }
     {
+        state = {Driver::WIDE_REFUSED, 0, 0, 0, 0, true, true};
+        ClkDomainDumpReport report;
+        if (!clk_domain_dump_collect(&report, &state, api, identity) ||
+            !contains(report, "status=0 layout=mismatch") ||
+            !contains(report, "status=-5 layout=request-refused")) return 7760;
+    }
+    {
         state = {Driver::MISMATCH, 0, 0, 0, 0, true, false};
         ClkDomainDumpReport report;
         if (clk_domain_dump_collect(&report, nullptr, api, identity) ||
@@ -154,6 +167,34 @@ int run_clk_domain_dump_tests() {
         report.size = ClkDomainDumpReport::capacity - 2;
         report.text[report.size] = 0;
         if (clk_domain_dump_collect(&report, &state, api, identity) || report.complete) return 7753;
+    }
+    {
+        const char* args[] = {"greencurve", "--clk-domain-dump", "--config", "settings.ini",
+                              "--gpu", "0000:01:00.0"};
+        if (!gc_clk_dump::args_read_only(6, args, true) ||
+            gc_clk_dump::args_read_only(6, args, false)) return 7754;
+        const wchar_t* wide[] = {L"greencurve", L"--config", L"settings.ini", L"--clk-domain-dump"};
+        if (!gc_clk_dump::args_read_only(4, wide, false)) return 7755;
+    }
+    {
+        // Reject operations even when they precede the diagnostic: service and
+        // startup dispatch normally happen before the Windows dump branch.
+        const char* operations[] = {"--service-install", "--service-remove", "--daemon",
+            "--apply-config", "--save-config", "--reset", "--resume-restore", "--startup-profile",
+            "--fan", "--point49", "--clk-domain-probe", "--self-test", "--probe", "--unknown"};
+        for (const char* operation : operations) {
+            const char* before[] = {"greencurve", operation, "--clk-domain-dump"};
+            const char* after[] = {"greencurve", "--clk-domain-dump", operation};
+            if (gc_clk_dump::args_read_only(3, before, true) ||
+                gc_clk_dump::args_read_only(3, after, true)) return 7756;
+        }
+    }
+    {
+        const char* missing[] = {"greencurve", "--clk-domain-dump", "--config"};
+        const char* empty[] = {"greencurve", "--clk-domain-dump", "--config", ""};
+        if (gc_clk_dump::args_read_only(3, missing, true) ||
+            gc_clk_dump::args_read_only(4, empty, true)) return 7757;
+        if (gc_clk_dump::args_read_only<char>(0, nullptr, true)) return 7758;
     }
     return 0;
 }

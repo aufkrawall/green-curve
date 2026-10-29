@@ -156,6 +156,7 @@ static void nvml_resolve(LinuxGpuState* g) {
 #include "linux_backend_xbar.cpp"
 
 #include "linux_backend_discovery.cpp"
+#include "linux_backend_clk_domain_dump.cpp"
 
 #include "linux_backend_mutation.cpp"
 // ===========================================================================

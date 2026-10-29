@@ -68,6 +68,7 @@ struct LinuxCliOptions {
     // so an administrator reading the unit can find out what it does.
     bool resumeRestore;
     bool selfTest;
+    bool clkDomainDump;
     bool hasConfigPath;
     bool hasProbeOutputPath;
     bool hasAssetsDir;

@@ -9,6 +9,8 @@
 // Included from main_runtime_nvml.cpp so the translation-unit order that the
 // rest of the amalgamated build depends on is unchanged.
 
+#include "clk_domain_dump_cli_policy.h"
+
 static LPWSTR gc_cli_take_next_arg(LPWSTR* argv, int argc, int* index) {
     if (!argv || !index || *index + 1 >= argc) return nullptr;
     ++*index;
@@ -269,6 +271,12 @@ static bool parse_cli_options(LPWSTR cmdLine, CliOptions* opts) {
         }
     }
 
+    if (opts->clkDomainDump && !gc_clk_dump::args_read_only(argc, argv, false)) {
+        set_message(opts->error, sizeof(opts->error),
+            "Use --clk-domain-dump alone, optionally with --config.");
+        gc_cli_free_argv(argv);
+        return false;
+    }
     gc_cli_free_argv(argv);
     return true;
 }

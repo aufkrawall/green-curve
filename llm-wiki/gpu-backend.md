@@ -235,10 +235,10 @@ ClkDomains** surface, not Linux RM command IDs and not PropRels:
   offsets or reuse of modern domain names solely from a matching version.
 
 `source/gpu_backend_xbar.h` walks the table newest-first as a request ladder,
-then dispatches on the RESPONSE's version word. An unknown word refuses all
-access and logs decoded version/size words plus a bounded response-head dump —
-that log line is the evidence a Volta..Ada owner can report to get their row
-pinned. A tri-state snapshot status distinguishes `UNKNOWN_VERSION` (our table
+then dispatches on the RESPONSE's version word. An unknown word refuses tuning
+access and logs decoded version/size words plus a bounded response-head dump.
+Request the raw capture below before pinning a new layout. A tri-state
+snapshot status distinguishes `UNKNOWN_VERSION` (our table
 cannot talk to this driver yet → capability UNPROBED, no limited-surface
 warning) from `UNAVAILABLE`/refusals under a known schema (positive evidence →
 REFUSED). Failed reads always clear `valid`; stale proof cannot survive.
@@ -262,10 +262,28 @@ both owned fields to zero against another fresh read.
 `source/clk_domain_dump.h` is the shared, bounded read-only collector. The
 Windows `--clk-domain-dump` writes `clkdomains_dump.txt` in the resolved user
 data folder with the existing atomic writer. It captures successful responses
-even when normal tuning rejects the layout. GET_INFO attempts all three known
+even when normal tuning rejects the layout. Linux exposes the same collector
+through `linux_backend_clk_domain_dump()` and the regular CLI, dispatching
+before any daemon, profile or GPU-selection persistence operation. It opens and
+releases its own backend even after partial initialization, refuses to collect
+another GPU's telemetry fallback for an unresolved target, and prints a bounded
+report to stdout. NVML supplies a driver-version fallback. Both CLI parsers
+enforce `source/clk_domain_dump_cli_policy.h`: only the diagnostic, help and
+read inputs (`--config`, plus Linux `--gpu`) may be combined. The shared tests
+also cover narrow/wide argv, missing values and conflicting operations in
+either order (7754–7758). Linux collection needs no daemon or config write:
+
+```sh
+sudo ./greencurve --clk-domain-dump > greencurve-clkdomains.txt 2>&1
+```
+
+Attach the report even on exit 2. One idle capture is the first request; a
+loaded capture or a write test is a separate, evidence-dependent follow-up.
+GET_INFO attempts all three known
 0x928-byte request versions, zeroing the full allocation between requests;
 GET_CONTROL walks the pinned request rows and saves the complete 0x13000-byte
-zero-initialized capacity, including zero words, regardless of status or the
+zero-initialized capacity for both the normal mask and an all-domain mask read
+attempt, including zero words, regardless of status or the
 returned version/size. Returned sizes never control allocation or traversal.
 The report includes request/response versions and masks, numeric statuses,
 public current clocks, all 32 measurement IDs (including zero/refused values),
@@ -280,7 +298,13 @@ interfaces still produce a partial report and exit 2. Normal tuning continues
 to require its original schema validation. `tests/clk_domain_dump_tests.cpp`
 executes the production collector with fake drivers: successful mismatches,
 unknown versions, complete zero/tail capture, clean request retries, bounded
-output, missing interfaces/handles and refusal statuses (7740–7753).
+output, missing interfaces/handles and refusal statuses (7740–7753), plus both
+read masks (7759). An all-domain refusal never discards an accepted normal read.
+The mixed-mask refusal fixture is 7760. The production Linux wrapper is also
+executed with fake initialization and libraries in
+`tests/linux_clk_domain_dump_tests.cpp` (7761–7769), proving cleanup after
+success, partial initialization and output failure, plus suppression of raw
+reads when selection is unresolved. No fixture loads a GPU driver.
 
 Pascal VF curve reads and edits were reported working on GP102 with the
 580.196.07 Linux driver after the graphics-unit correction. This does not
@@ -928,8 +952,9 @@ self-test output. Case 7717 reproduces the reported 80-point Pascal shape with
 a 3948 MHz raw endpoint becoming 1974 MHz; 7718-7728 cover signed writes,
 no-ops, Reset, partial batches, untouched raw fields, rejected writes, overflow,
 other families and absolute-target planning through readback. The fixtures
-make no GPU calls. The report confirms Pascal VF reads; corrected physical
-values and per-point writes still require hardware confirmation.
+make no GPU calls. A later GP102 Linux report confirms corrected physical
+frequencies and working VF edits on driver 580.196.07. Windows Pascal and
+advanced clock-domain mappings still require their own hardware confirmation.
 
 ### VF-info point-mask layout (verified 2026-10-28)
 

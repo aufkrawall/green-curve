@@ -482,6 +482,9 @@ static int linux_main_impl(int argc, char** argv) {
         opts.hasGpuTarget ? &opts.gpuTarget : nullptr, &gpuSelection);
     GpuAdapterInfo& gpuTarget = gpuSelection.target;
 
+    if (opts.clkDomainDump)
+        return linux_backend_clk_domain_dump(gpuTarget.valid ? &gpuTarget : nullptr, stdout);
+
     if (opts.dumpLive || opts.jsonLive) {
         ServiceResponse live = {};
         char liveErr[256] = {};
