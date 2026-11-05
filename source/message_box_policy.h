@@ -166,4 +166,78 @@ static inline MessageBoxLayoutPlan message_box_build_layout(
     return plan;
 }
 
+// Formats the message box content for the clipboard, reproducing the stock
+// Windows MessageBox Ctrl+C plain text format:
+// ---------------------------
+// [Caption]
+// ---------------------------
+// [Text with CRLF]
+// ---------------------------
+// [Button 1]   [Button 2]   
+// ---------------------------
+// Returns the number of characters in the formatted text (excluding null terminator).
+// If out is non-null and outSize > 0, writes as much as fits and null-terminates.
+static inline size_t message_box_format_clipboard_text(
+    const char* caption, const char* text,
+    const MessageBoxButtonSet* buttons,
+    char* out, size_t outSize) {
+    const char separator[] = "---------------------------\r\n";
+    const char* cap = (caption && caption[0]) ? caption : "Green Curve";
+    const char* body = text ? text : "";
+
+    size_t pos = 0;
+    auto append_char = [&](char c) {
+        if (out && pos + 1 < outSize) {
+            out[pos] = c;
+        }
+        pos++;
+    };
+    auto append_str = [&](const char* s) {
+        if (!s) return;
+        for (size_t i = 0; s[i]; ++i) {
+            append_char(s[i]);
+        }
+    };
+
+    append_str(separator);
+    append_str(cap);
+    append_str("\r\n");
+    append_str(separator);
+
+    size_t bodyLen = strlen(body);
+    for (size_t i = 0; i < bodyLen; ++i) {
+        if (body[i] == '\r') {
+            append_char('\r');
+        } else if (body[i] == '\n') {
+            if (i == 0 || body[i - 1] != '\r') {
+                append_char('\r');
+            }
+            append_char('\n');
+        } else {
+            append_char(body[i]);
+        }
+    }
+    if (bodyLen > 0 && body[bodyLen - 1] != '\n') {
+        append_str("\r\n");
+    }
+    append_str(separator);
+
+    if (buttons && buttons->count > 0) {
+        for (int i = 0; i < buttons->count; ++i) {
+            if (buttons->label[i]) {
+                append_str(buttons->label[i]);
+                append_str("   ");
+            }
+        }
+        append_str("\r\n");
+        append_str(separator);
+    }
+
+    if (out && outSize > 0) {
+        size_t nullPos = pos < outSize ? pos : outSize - 1;
+        out[nullPos] = '\0';
+    }
+    return pos;
+}
+
 #endif // GREEN_CURVE_MESSAGE_BOX_POLICY_H

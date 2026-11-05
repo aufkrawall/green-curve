@@ -640,7 +640,10 @@ as "nothing happened".
   light palette when it is not, matching what `apply_system_titlebar_theme()`
   already does for window chrome. Escape and the close button always resolve to
   the safest available answer -- `No` for a Yes/No prompt -- so dismissing a
-  confirmation can never be read as agreeing to it. Two `MessageBoxA` calls in
+  confirmation can never be read as agreeing to it. Pressing Ctrl+C (or
+  Ctrl+Insert / `WM_COPY`) formats and copies the entire dialog (title, body
+  with CRLF, and buttons) into the clipboard matching stock user32 MessageBox
+  format (`message_box_format_clipboard_text()`). Two `MessageBoxA` calls in
   `entry.cpp` are deliberately left alone: they report that the window class or
   the main window could not be created, which is exactly when a custom window
   cannot be trusted. `ui_message_box.cpp` keeps the same fallback internally.

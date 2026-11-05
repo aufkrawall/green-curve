@@ -260,6 +260,9 @@ static void apply_gpu_selection_from_ui() {
 static void set_edit_value(HWND hEdit, unsigned int value) {
     char buf[16];
     StringCchPrintfA(buf, ARRAY_COUNT(buf), "%u", value);
+    char current[32] = {};
+    get_window_text_safe(hEdit, current, sizeof(current));
+    if (strcmp(buf, current) == 0) return;
     begin_programmatic_edit_update();
     SetWindowTextA(hEdit, buf);
     end_programmatic_edit_update();
@@ -287,7 +290,8 @@ static void sync_vf_curve_field_values() {
             // tracks its anchor and the draft is mid-typing, and once the user
             // retypes it (absolute) its field IS the draft.
             if (vi == g_app.lockedVi && g_app.lockMode != LOCK_MODE_HARD &&
-                (!g_app.guiLockTracksAnchor ||
+                (GetFocus() == g_app.hEditsMhz[vi] ||
+                 !g_app.guiLockTracksAnchor ||
                  !g_app.guiDraft.curveValueValid[ci]))
                 continue;
             unsigned int lockTargetMHz = gui_pending_graph_lock_target_mhz();
@@ -302,7 +306,7 @@ static void sync_vf_curve_field_values() {
         if (ownedPoint &&
             !gui_pending_offset_mode_is_selective(&g_guiPendingChanges))
             continue;
-        if (ownedPoint && g_app.hEditsMhz[vi] &&
+        if (g_app.hEditsMhz[vi] &&
             GetFocus() == g_app.hEditsMhz[vi])
             continue;
         unsigned int pendingMHz = pending_curve_mhz_for_gui_point(ci);

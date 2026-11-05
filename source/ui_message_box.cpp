@@ -140,6 +140,48 @@ static void gc_message_box_paint(HWND hwnd, GcMessageBoxState* state) {
     EndPaint(hwnd, &ps);
 }
 
+static void gc_message_box_copy_to_clipboard(HWND hwnd, const GcMessageBoxState* state) {
+    if (!hwnd || !state) return;
+    char caption[256] = {};
+    if (GetWindowTextA(hwnd, caption, ARRAY_COUNT(caption)) <= 0) {
+        caption[0] = '\0';
+    }
+
+    size_t needed = message_box_format_clipboard_text(
+        caption, state->text, &state->buttons, nullptr, 0);
+    if (needed == 0) return;
+
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, needed + 1);
+    if (!hMem) return;
+
+    char* ptr = (char*)GlobalLock(hMem);
+    if (!ptr) {
+        GlobalFree(hMem);
+        return;
+    }
+    message_box_format_clipboard_text(
+        caption, state->text, &state->buttons, ptr, needed + 1);
+    GlobalUnlock(hMem);
+
+    bool opened = false;
+    for (int retry = 0; retry < 5; ++retry) {
+        if (OpenClipboard(hwnd)) {
+            opened = true;
+            break;
+        }
+        Sleep(5);
+    }
+    if (!opened) {
+        GlobalFree(hMem);
+        return;
+    }
+    EmptyClipboard();
+    if (!SetClipboardData(CF_TEXT, hMem)) {
+        GlobalFree(hMem);
+    }
+    CloseClipboard();
+}
+
 static LRESULT CALLBACK GcMessageBoxProc(HWND hwnd, UINT msg, WPARAM wParam,
                                          LPARAM lParam) {
     auto* state = (GcMessageBoxState*)GetWindowLongPtrA(hwnd, GWLP_USERDATA);
@@ -156,6 +198,19 @@ static LRESULT CALLBACK GcMessageBoxProc(HWND hwnd, UINT msg, WPARAM wParam,
             if (state) {
                 gc_message_box_draw_button((const DRAWITEMSTRUCT*)lParam, state);
                 return TRUE;
+            }
+            break;
+        case WM_COPY:
+            if (state) {
+                gc_message_box_copy_to_clipboard(hwnd, state);
+                return 0;
+            }
+            break;
+        case WM_KEYDOWN:
+            if (state && (GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000) &&
+                (wParam == 'C' || wParam == 'c' || wParam == VK_INSERT)) {
+                gc_message_box_copy_to_clipboard(hwnd, state);
+                return 0;
             }
             break;
         case DM_GETDEFID:
@@ -345,6 +400,13 @@ int gc_message_box(HWND owner, const char* text, const char* caption,
             break;
         }
         if (got == -1) break;
+        if (msg.message == WM_KEYDOWN &&
+            (GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000) &&
+            (msg.wParam == 'C' || msg.wParam == 'c' || msg.wParam == VK_INSERT) &&
+            (msg.hwnd == hwnd || IsChild(hwnd, msg.hwnd))) {
+            gc_message_box_copy_to_clipboard(hwnd, &state);
+            continue;
+        }
         if (!IsDialogMessageA(hwnd, &msg)) {
             TranslateMessage(&msg);
             DispatchMessageA(&msg);

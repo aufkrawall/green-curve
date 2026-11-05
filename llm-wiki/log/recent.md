@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-05: Themed message box clipboard copy and VF flatten field edit fix
+
+- Themed message boxes (`ui_message_box.cpp`, `message_box_policy.h`) now support
+  Ctrl+C, Ctrl+Insert, and `WM_COPY` to copy the complete dialog text to the
+  clipboard in standard user32 format (27-hyphen dividers, normalized CRLF endings,
+  and 3-space-separated button labels). Cases 1472-1475 verify exact layout and
+  sizing across single- and multi-button dialogs.
+- Fixed a caret reset regression in the VF curve editor: editing an active flatten
+  anchor's MHz field triggered draft re-evaluation and programmatic text updates
+  before anchor tracking was decoupled, which reset the caret to index 0 on each
+  character. `sync_vf_curve_field_values()` now preserves focused controls,
+  `set_edit_value()` elides identical writes, and `WndProc` clears
+  `guiLockTracksAnchor` immediately upon user input.
+
 ## 2026-10-29: Decode GP102 legacy domain relationships and limits
 
 - The complete format-2 Linux report accepts all four advanced INFO requests.

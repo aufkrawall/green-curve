@@ -390,6 +390,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                             g_app.guiHasUserModifiedValues = true;
                             set_gui_state_dirty(true);
                         }
+                        if (vi == g_app.lockedVi) {
+                            g_app.guiLockTracksAnchor = false;
+                        }
                         char pointBuf[32] = {};
                         get_window_text_safe(g_app.hEditsMhz[vi], pointBuf, sizeof(pointBuf));
                         if (!lockTailPreviewPoint)

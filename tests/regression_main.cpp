@@ -11724,6 +11724,43 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
         if (empty.clientWidth != 0 || empty.clientHeight != 0) return 1471;
     }
 
+    // Message box clipboard formatting: reproduces the stock Windows MessageBox
+    // Ctrl+C format with 27-hyphen dividers, normalized CRLF endings, and
+    // button labels separated by 3 spaces.
+    {
+        MessageBoxButtonSet set = message_box_button_set(GC_MB_OK);
+        const char* msg = "Lock tail verified at 1792 MHz @ 800 mV instead of requested 1800 MHz.\nRecovery verified core defaults";
+        char buf[512] = {};
+        size_t needed = message_box_format_clipboard_text("Green Curve", msg, &set, nullptr, 0);
+        if (needed == 0) return 1472;
+        size_t written = message_box_format_clipboard_text("Green Curve", msg, &set, buf, sizeof(buf));
+        if (written != needed) return 1473;
+        const char* expected =
+            "---------------------------\r\n"
+            "Green Curve\r\n"
+            "---------------------------\r\n"
+            "Lock tail verified at 1792 MHz @ 800 mV instead of requested 1800 MHz.\r\n"
+            "Recovery verified core defaults\r\n"
+            "---------------------------\r\n"
+            "OK   \r\n"
+            "---------------------------\r\n";
+        if (strcmp(buf, expected) != 0) return 1474;
+
+        // Multi-button set with trailing newline in message and default caption
+        MessageBoxButtonSet yesNo = message_box_button_set(GC_MB_YESNO);
+        char buf2[512] = {};
+        message_box_format_clipboard_text(nullptr, "Apply changes?\r\n", &yesNo, buf2, sizeof(buf2));
+        const char* expected2 =
+            "---------------------------\r\n"
+            "Green Curve\r\n"
+            "---------------------------\r\n"
+            "Apply changes?\r\n"
+            "---------------------------\r\n"
+            "Yes   No   \r\n"
+            "---------------------------\r\n";
+        if (strcmp(buf2, expected2) != 0) return 1475;
+    }
+
     // F-PENDING: one predicate colours the fields orange AND decides whether
     // Apply is reachable, so it has to be conservative in exactly one direction.
     // Scalars first (GPU offset, exclude-low, memory offset, power limit, fixed
