@@ -27,13 +27,31 @@
 
 # Changelog
 
-## 0.31.0
+## Unreleased
 
-GPU selection, fan control and recovery improve across hardware changes and failures.
+Dialog messages can be copied to the clipboard, and typing into active curve lock fields follows normal text input order.
 
 ### New
 
 - **Dialog text copying:** pressing Ctrl+C on any confirmation, warning, or error dialog copies the complete message box contents to the clipboard.
+
+### Fixed
+
+- **VF curve flatten editing:** retyping the target frequency in a ticked flatten point's edit box preserves normal left-to-right typing order without caret resets.
+
+### Compatibility notes
+
+Existing configuration and profiles remain compatible.
+
+### Downloads and verification
+
+These changes are in development; no new public release has been published. Current downloads and verification information remain in the latest release section below.
+
+**Full changelog:** [0.31.0...HEAD](https://github.com/aufkrawall/green-curve/compare/0.31.0...HEAD)
+
+## 0.31.0
+
+GPU selection, fan control and recovery improve across hardware changes and failures.
 
 ### Improved
 
@@ -44,7 +62,6 @@ GPU selection, fan control and recovery improve across hardware changes and fail
 
 ### Fixed
 
-- **VF curve flatten editing:** retyping the target frequency in a ticked flatten point's edit box preserves normal left-to-right typing order without caret resets.
 - **Pascal curves:** GTX 10-series curve frequencies and edits use the correct clock units; Linux curve reads no longer fail validation.
 - **Linux probe:** power, clock and fan queries work; probe and self-test show the voltage/frequency table layout.
 - **Windows multi-GPU systems:** fan, power and clock changes stay on the selected GPU; the power-limit fallback no longer changes other GPUs.
