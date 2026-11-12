@@ -4639,6 +4639,8 @@ static int run_all_tests(int argc, char** argv) {
             vfMerged.curvePointMHz[7] != 1700 ||
             !vfMerged.curvePointFromGpuOffset[7] ||
             !vfMerged.hasFan || vfMerged.fanPercent != 50) return 1260;
+        previous.hasMemOffset = true;
+        previous.memOffsetMHz = 321;
         DesiredSettings resetOnly = {};
         resetOnly.resetOcBeforeApply = true;
         DesiredSettings resetMerged = service_merge_desired_after_mutation(
@@ -4651,7 +4653,8 @@ static int run_all_tests(int argc, char** argv) {
             resetMerged.hasXbarMsvddOffsetUv ||
             resetMerged.hasSysClkOffsetKhz ||
             resetMerged.hasVideoClkOffsetKhz ||
-            resetMerged.resetOcBeforeApply) return 1720;
+            resetMerged.resetOcBeforeApply || !resetMerged.hasMemOffset ||
+            resetMerged.memOffsetMHz != 321) return 1720;
         DesiredSettings advancedOnly = {};
         advancedOnly.hasVideoClkOffsetKhz = true;
         advancedOnly.videoClkOffsetKhz = 75000;

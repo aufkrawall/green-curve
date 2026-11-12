@@ -90,8 +90,7 @@ static inline DesiredSettings service_merge_desired_after_mutation(
         merged.hasGpuOffset = false;
         merged.gpuOffsetMHz = 0;
         merged.gpuOffsetExcludeLowCount = 0;
-        merged.hasMemOffset = false;
-        merged.memOffsetMHz = 0;
+        // Baseline preparation leaves memory untouched, including ownership.
         for (int i = 0; i < VF_NUM_POINTS; ++i) {
             merged.hasCurvePoint[i] = false;
             merged.curvePointMHz[i] = 0;

@@ -178,8 +178,7 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
         if (snapshot->videoClkValid && xbarWritable)
             snapshot->availableMutationDomains |=
                 SERVICE_MUTATION_DOMAIN_VIDEO_CLK;
-        if (snapshot->gpuOffsetValid && snapshot->memOffsetValid &&
-            gpuOffsetWritable && memOffsetWritable &&
+        if (snapshot->gpuOffsetValid && gpuOffsetWritable &&
             g->nvml.resetGpuLockedClocks)
             snapshot->availableMutationDomains |=
                 SERVICE_MUTATION_DOMAIN_RESET_BASELINE;
@@ -376,6 +375,7 @@ static LinuxCurveTargetBuildResult build_curve_transition_targets(
 }
 
 #include "linux_backend_apply_context.h"
+#include "linux_apply_baseline.h"
 // Read-only feasibility of the built targets, before the first setter.
 #include "linux_backend_curve_plan.h"
 
@@ -386,24 +386,8 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
     switch (phase) {
         case LINUX_MUTATION_LOCK_CEILING:
             return linux_apply_arm_transition_ceiling(g, d, context->previousIntent);
-        case LINUX_MUTATION_RESET_BASELINE: {
-            if (!nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0) ||
-                !nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0) ||
-                (!g->nvml.resetGpuLockedClocks &&
-                 !linux_clock_control_proven_absent(g)))
-                return false;
-            if (!linux_apply_reset_baseline_locked_clocks(g, d)) return false;
-            if ((d->hasXbarOffsetKhz || d->hasXbarMsvddOffsetUv) &&
-                !linux_xbar_write_owned(g, 0, 0, d->hasXbarOffsetKhz,
-                                       d->hasXbarMsvddOffsetUv)) return false;
-            if (d->hasSysClkOffsetKhz &&
-                !linux_xbar_write_entry(g, XBAR_PINNED_SYS_ENTRY_INDEX, 0))
-                return false;
-            if (d->hasVideoClkOffsetKhz &&
-                !linux_xbar_write_entry(g, XBAR_PINNED_VIDEO_ENTRY_INDEX, 0))
-                return false;
-            return linux_apply_reset_baseline_vf_curve(g);
-        }
+        case LINUX_MUTATION_RESET_BASELINE:
+            return linux_apply_reset_baseline(g, d);
         case LINUX_MUTATION_GPU_OFFSET:
             return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS,
                 context->composedGpuOffset ? 0 : d->gpuOffsetMHz);

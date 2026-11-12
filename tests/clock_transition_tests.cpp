@@ -24,6 +24,7 @@ struct Point {unsigned int freq_kHz,volt_uV;};
 struct DesiredSettings {
  bool hasLock{},resetOcBeforeApply{},hasGpuOffset{},hasPowerLimit{},hasMemOffset{};
  LockMode lockMode{}; unsigned int lockMHz{}; int gpuOffsetMHz{},gpuOffsetExcludeLowCount{};
+ bool hasXbarOffsetKhz{},hasXbarMsvddOffsetUv{},hasSysClkOffsetKhz{},hasVideoClkOffsetKhz{};
  bool hasCurvePoint[VF_NUM_POINTS]{};
  unsigned int curvePointMHz[VF_NUM_POINTS]{};
  bool curvePointFromGpuOffset[VF_NUM_POINTS]{};
@@ -109,8 +110,10 @@ struct LinuxHardwareSnapshot {
 #include "apply_clock_ceiling_policy.h"
 #include "linux_transaction.h"
 #include "linux_apply_ceiling.h"
-static int clockOffsetWrites=0, curveOffsetWrites=0;
-static bool nvml_set_clock_offset(LinuxGpuState*,unsigned int,int){++clockOffsetWrites;return true;}
+static int clockOffsetWrites=0, curveOffsetWrites=0, memoryOffsetWrites=0;
+static bool nvml_set_clock_offset(LinuxGpuState*,unsigned int domain,int){
+ ++clockOffsetWrites;if(domain==NVML_CLOCK_MEM)++memoryOffsetWrites;return true;
+}
 static int nvml_mem_effective_mhz_from_display_mhz(int x){return x*2;}
 template<class... A> static bool linux_xbar_write_owned(A...){return true;}
 template<class... A> static bool linux_xbar_write_entry(A...){return true;}
@@ -122,6 +125,8 @@ static void gc_strlcpy(char* dst,size_t n,const char* s){if(dst&&n)std::snprintf
 static void linux_backend_refresh(LinuxGpuState*){}
 static bool apply_curve_offsets_verified(LinuxGpuState*,const int*,const bool*,int){++curveOffsetWrites;return true;}
 #include "linux_backend_rollback.h"
+static bool linux_apply_reset_baseline_vf_curve(LinuxGpuState*) {++curveOffsetWrites;return true;}
+#include "linux_apply_baseline.h"
 struct ProbeContext {LinuxGpuState* gpu; DesiredSettings* d; LinuxHardwareSnapshot* s;};
 static bool probeStep(void* raw,unsigned int phase){
  auto* p=(ProbeContext*)raw;
@@ -351,7 +356,22 @@ static int run(){
    char pascalErr[128]{};
    CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
      LINUX_MUTATION_RESET_BASELINE|LINUX_MUTATION_CURVE,pascalErr,sizeof(pascalErr)));
-   CHECK(clockOffsetWrites==oldOffsetWrites+2&&curveOffsetWrites==oldCurveWrites+1);
+   CHECK(clockOffsetWrites==oldOffsetWrites+1&&curveOffsetWrites==oldCurveWrites+1);
+   int oldMemoryWrites=memoryOffsetWrites;
+   oldCurveWrites=curveOffsetWrites;
+   CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
+     LINUX_MUTATION_RESET_BASELINE,pascalErr,sizeof(pascalErr)));
+   CHECK(curveOffsetWrites==oldCurveWrites+1&&memoryOffsetWrites==oldMemoryWrites);
+   // Execute the production Apply baseline with and without a memory request.
+   // Both preserve memory until its own phase; failed baselines do too.
+   for(bool includeMemory:{false,true}) {
+     DesiredSettings request{};request.hasMemOffset=includeMemory;
+     CHECK(linux_apply_reset_baseline(&g,&request));
+     CHECK(memoryOffsetWrites==oldMemoryWrites);
+   }
+   CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
+     LINUX_MUTATION_MEM_OFFSET,pascalErr,sizeof(pascalErr)));
+   CHECK(memoryOffsetWrites==oldMemoryWrites+1);
    CHECK(resets==0);
    g.retainedTransitionCeilingMHz=2300;
    CHECK(!linux_apply_reset_baseline_locked_clocks(&g,&flat));

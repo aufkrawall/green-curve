@@ -56,7 +56,7 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
     bool baseline = (phaseMask & LINUX_MUTATION_RESET_BASELINE) != 0;
     if ((baseline || (phaseMask & LINUX_MUTATION_GPU_OFFSET)) && snapshot->gpuOffsetValid)
         ok &= nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, snapshot->gpuOffsetMHz);
-    if ((baseline || (phaseMask & LINUX_MUTATION_MEM_OFFSET)) && snapshot->memOffsetValid) {
+    if ((phaseMask & LINUX_MUTATION_MEM_OFFSET) && snapshot->memOffsetValid) {
         // Snapshot is display MHz; the NVML wire unit is effective MHz.
         int restoreEffectiveMHz =
             nvml_mem_effective_mhz_from_display_mhz(snapshot->memOffsetMHz);
@@ -99,7 +99,9 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
         }
         ok &= powerOk;
     }
-    if ((phaseMask & LINUX_MUTATION_CURVE) && snapshot->curveValid)
+    // Baseline preparation itself writes the VF table, even when failure
+    // prevents the later CURVE phase from starting.
+    if ((baseline || (phaseMask & LINUX_MUTATION_CURVE)) && snapshot->curveValid)
         ok &= apply_curve_offsets_verified(g, snapshot->curveOffsets, snapshot->curveMask, 25);
     if ((phaseMask & LINUX_MUTATION_FAN) && snapshot->fanValid) {
         for (unsigned int i = 0; i < snapshot->fanCount; ++i) {

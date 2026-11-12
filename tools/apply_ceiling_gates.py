@@ -232,10 +232,14 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "static bool linux_apply_reset_baseline_locked_clocks(",
                  "the Linux reset baseline does not release a clamp it is "
                  "supposed to be running under")
-    require_text(linux_mutation_cpp,
+    require_text(_p(ctx, "linux_apply_baseline.h"),
                  "if (!linux_apply_reset_baseline_locked_clocks(g, d)) return false;",
                  "the Linux reset baseline routes locked clocks through the "
                  "ceiling-aware rule")
+    forbid_text(_p(ctx, "linux_apply_baseline.h"), "NVML_CLOCK_MEM",
+                "Apply baseline preparation never resets unrelated memory")
+    require_text(linux_mutation_cpp, "return linux_apply_reset_baseline(g, d);",
+                 "the real Apply phase uses the tested graphics-only baseline")
     # CT-01 on Linux: the phase body used to `return true` on every path,
     # including the one where both clamp forms were refused.
     require_text(linux_ceiling_h,

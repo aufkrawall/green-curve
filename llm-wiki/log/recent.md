@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-12: Linux baseline preparation preserves memory tuning
+
+- Removed the transient memory reset and its baseline-only rollback write;
+  retained memory ownership during baseline intent merging. Baseline capability
+  no longer depends on memory controls. Explicit memory Apply/Reset stays in
+  its own phase. See [linux-scaffold.md](../linux-scaffold.md).
+- A failed baseline can already have zeroed VF offsets before the curve phase
+  begins; rollback now restores that captured curve as well.
+- Production-helper fixtures pass with counted driver functions. Restoring each
+  old baseline-memory, rollback-memory or skipped-curve-restore behavior makes
+  the fixture fail. Full native Windows regressions, source/security gates and
+  Linux cross-links pass; physical Linux execution remains unverified.
+
 ## 2026-11-12: Captured-offset schema capacity and historical record migration
 
 - Appended independent signed-Hz VF offset presence/payload arrays without

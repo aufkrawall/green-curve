@@ -1,5 +1,31 @@
 # Linux Backend
 
+## Apply baseline memory ownership (2026-11-12)
+
+Source anchors: `source/linux_apply_baseline.h`,
+`source/linux_backend_mutation.cpp`, `source/linux_backend_rollback.h`,
+`source/service_desired_mutation_policy.h`, `tests/clock_transition_tests.cpp`.
+
+Apply baseline preparation resets graphics/VF and explicitly included auxiliary
+controls. It never writes memory; a requested memory change goes directly to
+its final target in the memory phase, matching Windows. Baseline availability
+therefore no longer requires memory readback or a memory setter. Baseline-only
+durable intent merging retains memory ownership/value. Explicit Reset still
+requests its separate memory phase and retains full reset behavior.
+
+Rollback restores memory only when the memory phase was attempted. A baseline
+phase itself can zero VF offsets, so rollback restores the captured curve even
+when failure prevented the later curve phase from starting. Existing clock
+protection and write-attempt accounting remain in force.
+
+The transition fixture executes the production baseline and rollback helpers
+with counted driver functions: memory is untouched with or without an included
+memory request during baseline preparation, a baseline-only failure restores
+the curve, and an explicit memory rollback still writes memory. Source gates
+pin the phase/helper connection. This is the baseline correction from step 6;
+explicit update/replacement scopes are still pending. No physical Linux load
+test has been run on this Windows host.
+
 Desktop-entry removal in `tools/greencurve-setup.sh` uses the target account's
 `runuser` context, matching desktop-entry installation. A missing or failed
 user switch reports a warning and has no root deletion fallback. Machine
