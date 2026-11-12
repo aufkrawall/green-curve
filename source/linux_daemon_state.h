@@ -234,7 +234,7 @@ static inline bool linux_daemon_record_valid_except_version(
            record->state <= LINUX_DAEMON_RECORD_UNCERTAIN &&
            record->operationState <= SERVICE_OPERATION_OUTCOME_UNKNOWN &&
            desired_curve_intent_valid(&record->desired) &&
-           record->desired.applicationScope <= DESIRED_SCOPE_EXPLICIT_RELEASE &&
+           desired_application_scope_valid(record->desired.applicationScope) &&
            record->targetLocationRole <= GPU_LOCATION_ROLE_REQUIRED &&
            record->checksum == linux_daemon_record_checksum(record);
 }
@@ -503,7 +503,7 @@ static inline bool linux_daemon_startup_valid_except_version(
         record->targetLocationRole > GPU_LOCATION_ROLE_REQUIRED ||
         record->checksum != linux_daemon_startup_checksum(record) ||
         !desired_curve_intent_valid(&record->desired) ||
-        record->desired.applicationScope > DESIRED_SCOPE_EXPLICIT_RELEASE) return false;
+        !desired_application_scope_valid(record->desired.applicationScope)) return false;
     if (!service_wire_string_is_terminated(
             record->profileName, (unsigned int)sizeof(record->profileName)))
         return false;

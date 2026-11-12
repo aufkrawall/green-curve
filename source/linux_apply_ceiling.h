@@ -61,6 +61,8 @@ static bool linux_outgoing_state_holds_clocks_down(const LinuxGpuState* g,
     return false;
 }
 
+static bool g_linuxScopedCurveCeilingTransition = false;
+
 static ApplyClockCeilingPlan linux_apply_clock_ceiling_plan(
     LinuxGpuState* g, const DesiredSettings* d,
     const DesiredSettings* committed = nullptr) {
@@ -70,7 +72,7 @@ static ApplyClockCeilingPlan linux_apply_clock_ceiling_plan(
         (int)d->lockMode, d->lockMHz,
         g->nvml.setGpuLockedClocks != nullptr &&
             g->nvml.resetGpuLockedClocks != nullptr,
-        d->resetOcBeforeApply != 0,
+        d->resetOcBeforeApply != 0 || g_linuxScopedCurveCeilingTransition,
         linux_outgoing_state_holds_clocks_down(g, committed),
         linux_outgoing_ceiling_mhz(g, committed));
 }
@@ -105,6 +107,7 @@ static bool g_linuxOutgoingHadHardPin = false;
 static unsigned int g_linuxOutgoingCeilingMHz = 0;
 
 static void linux_apply_ceiling_reset_state() {
+    g_linuxScopedCurveCeilingTransition = false;
     g_linuxCeilingArmResult = APPLY_CEILING_ARM_NOT_NEEDED;
     g_linuxCeilingArmed = false;
     g_linuxCeilingWriteAttempted = false;

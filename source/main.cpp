@@ -641,7 +641,7 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
     char* result, size_t resultSize);
 static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool interactive, char* result, size_t resultSize,
-    bool* hardwareWriteAttemptedOut = nullptr, gc_u32* outcomeSeverityOut = nullptr);
+    bool* hardwareWriteAttemptedOut = nullptr, gc_u32* outcomeSeverityOut = nullptr, bool releasesCurveCeiling = false);
 static LRESULT CALLBACK LicenseDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void layout_license_dialog(HWND hwnd);
 

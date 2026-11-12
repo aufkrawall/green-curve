@@ -28,6 +28,7 @@ struct LinuxApplyTransactionContext {
     // curve targets from a fresh readback in the CURVE phase.
     bool rebuildCurveTargets;
     bool transitionBuild;
+    int graphicsRouteOverride; // 0=legacy inference, 1=independent scalar, 2=VF component
     // The build the phase plan was made from; a rebuild must keep its shape.
     LinuxCurveTargetBuildResult plannedBuild;
 };
@@ -42,7 +43,7 @@ static LinuxCurveTargetBuildResult linux_apply_build_curve(
             context->committedIntent, context->curveTargets, context->curveMask,
             cleanupPointCountOut);
     return build_curve_targets(context->gpu, context->desired,
-        context->curveTargets, context->curveMask);
+        context->curveTargets, context->curveMask, context->graphicsRouteOverride);
 }
 
 // Curve targets are built before any phase runs.  When an earlier phase
@@ -128,6 +129,17 @@ static bool linux_apply_verify_curve_write(LinuxApplyTransactionContext* context
             context->plannedBuild, detail, sizeof(detail), g->vfOffsetsHzValid);
     if (!ok) lb_log("curve verify: %s\n", detail);
     return ok;
+}
+
+static bool linux_apply_resolve_scope(LinuxGpuState* g, const DesiredSettings* d,
+    const DesiredSettings* previous, ServiceScopedApplyPlan* plan, char* why, size_t whySize) {
+    vf_floor_binding_update(&g->vfFloor, g->curve, g->freqOffsets, VF_NUM_POINTS, 0);
+    if (!service_build_scoped_apply_plan(previous, *d, g->curve, g->vfFloor.floor,
+            false, plan, why, whySize, true)) return false;
+    lb_log("apply-scope: scope=%u cleanupPoints=%d retainedLock=%d releasesCurveCeiling=%d domains=0x%X\n",
+        (unsigned)d->applicationScope, plan->cleanupPoints, plan->retainedLock ? 1 : 0,
+        plan->releasesCurveCeiling ? 1 : 0, (unsigned)service_desired_mutation_domains(&plan->hardware));
+    return true;
 }
 
 #endif

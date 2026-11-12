@@ -91,8 +91,8 @@ equality compares authority, including ignoring projected preview drift for
 applied-profile matching; structural runtime equality stays separate.
 
 Schema migration can preserve this intent, but IPC captured replay remains
-explicitly disabled until operation scopes and document/editor persistence are
-connected. The Windows write interface requires exact physical kHz; the Linux
+explicitly disabled until document/editor persistence is connected. Explicit
+runtime scopes now use the transition compiler below. The Windows write interface requires exact physical kHz; the Linux
 raw control surface now supports its exact integer-Hz grid as described below.
 Precise scalar/power runtime intent remains later work.
 
@@ -100,6 +100,45 @@ Fixtures 8040-8060 and the production Windows target/verify fixture cover zero,
 negative offsets, preview/global-offset independence, strict readback, merge,
 restore, unavailable-domain projection and malformed intent. No hardware write
 or native Linux execution is claimed by these host-neutral fixtures.
+
+## Runtime application scopes (2026-11-12)
+
+Source anchors: `source/service_scoped_apply_policy.h`,
+`source/main_service_apply_runtime.cpp`, `source/linux_daemon_scoped_apply.h`,
+`source/linux_backend_mutation.cpp`, `source/service_lifecycle_policy.h`,
+`tests/scoped_apply_tests.cpp`, `tests/linux_scope_preflight_tests.cpp`.
+
+The shared compiler returns separate hardware-transition and durable-ownership
+requests. UPDATE_INCLUDED merges only supplied fields and points, retaining an
+omitted lock. REPLACE_PROFILE releases previously owned omissions. The optional
+VF point-set replacement bit replaces points while preserving omitted scalar
+and lock intent. EXPLICIT_RELEASE clears the selected ownership and writes
+defaults; its resulting ownership replays as an update, never another release.
+Releasing the final field retires active ownership. Legacy requests keep their
+historical behavior.
+
+Cleanup includes owned zero, uses exact raw-zero controls and excludes foreign,
+missing and fixed-floor entries. A directly owned point whose identity is no
+longer writable refuses instead of being silently dropped. Retained graphics
+dependencies are replayed together, and a conflicting captured point cannot
+silently remove a retained pin. Independent scalar domains stay omitted.
+Each intent selects its graphics route separately: leaving a selective VF
+component for a uniform scalar releases the old raw ownership. Compiled
+cleanup points do not promote that scalar back into a VF component. Linux
+preflight checks the independently selected scalar surface as well as VF.
+Compiled locks use their intended frequency rather than a drifted live anchor.
+Removing an owned flatten carries a transition-ceiling requirement even without
+a global baseline reset. Partial scopes cannot request that reset. Automatic
+replay retains the resolved scope; release operations cannot be assigned as
+startup profiles. Numeric requests that legacy normalization would change are
+refused for explicit scopes.
+
+Linux baseline preflight no longer requires a memory getter/setter when memory
+is not requested. The production preflight fixture covers absent/read-only
+memory surfaces with counted zero setters; the production raw writer fixture
+covers scoped update and replacement while preserving an unowned fractional
+control. Full native Linux orchestration and physical transitions remain
+unverified. Client document/editor scope presentation remains pending.
 
 ## Exact VF controls and recovery (2026-11-12)
 

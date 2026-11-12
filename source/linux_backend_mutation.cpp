@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "control_readback_policy.h"
+#include "service_scoped_apply_policy.h"
 // F-APPLY-CEILING: the transition clock ceiling this transaction arms
 // before anything that can raise a clock.
 #include "linux_apply_ceiling.h"
@@ -280,77 +281,7 @@ static bool linux_power_request_is_inert(const DesiredSettings* d,
     return !surfaceAvailable && d->powerLimitPct == POWER_LIMIT_DEFAULT_PCT;
 }
 
-static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
-                                    const LinuxHardwareSnapshot* snapshot,
-                                    char* err, size_t errSize) {
-    if (!g || !d || !g->nvmlReady || !g->writeIdentityResolved) {
-        gc_strlcpy(err, errSize, "GPU write target is unavailable or not uniquely resolved");
-        return false;
-    }
-    gc_u32 requestedDomains = service_desired_mutation_domains(d);
-    gc_u32 unavailableDomains = service_unavailable_mutation_domains(
-        SERVICE_CMD_APPLY, d, snapshot->availableMutationDomains);
-    bool powerInert = linux_power_request_is_inert(d, snapshot, g);
-    if (powerInert && (unavailableDomains & SERVICE_MUTATION_DOMAIN_POWER)) {
-        unavailableDomains &= ~(gc_u32)SERVICE_MUTATION_DOMAIN_POWER;
-        lb_log("power: request is the board default (%d%%) and this board exposes no "
-               "power control surface; not treating it as an unavailable domain\n",
-               d->powerLimitPct);
-    }
-    if (unavailableDomains != 0) {
-        gc_snprintf(err, errSize,
-            "requested GPU domains are unavailable (requested=0x%02x available=0x%02x missing=0x%02x)",
-            requestedDomains, snapshot->availableMutationDomains,
-            unavailableDomains);
-        return false;
-    }
-    bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
-    if (d->resetOcBeforeApply && !g->nvml.resetGpuLockedClocks &&
-        !linux_clock_control_proven_absent(g)) {
-        gc_strlcpy(err, errSize, "OC baseline reset cannot release locked clocks safely"); return false;
-    }
-    if (((d->hasGpuOffset && !desired_gpu_offset_uses_curve(d)) ||
-         d->resetOcBeforeApply) &&
-        (!snapshot->gpuOffsetValid || (!g->nvml.setGpcClkVfOffset && !g->nvml.setClockOffsets))) {
-        gc_strlcpy(err, errSize, "GPU offset cannot be snapshotted and written safely"); return false;
-    }
-    if ((d->hasMemOffset || d->resetOcBeforeApply) &&
-        (!snapshot->memOffsetValid || (!g->nvml.setMemClkVfOffset && !g->nvml.setClockOffsets))) {
-        gc_strlcpy(err, errSize, "memory offset cannot be snapshotted and written safely"); return false;
-    }
-    if (d->hasPowerLimit && !powerInert &&
-        (!snapshot->powerValid || !g->nvml.setPowerLimit)) {
-        gc_strlcpy(err, errSize, "power limit cannot be snapshotted and written safely"); return false;
-    }
-    if (desired_has_curve_write(d)) {
-        char why[160] = {};
-        if (!snapshot->curveValid || !g->backend || !g->backend->writeSupported ||
-            !linux_backend_curve_plausible(g, why, sizeof(why))) {
-            gc_snprintf(err, errSize, "VF curve write preflight failed: %s", why[0] ? why : "unsupported");
-            return false;
-        }
-    }
-    if (hardLock && !g->nvml.setGpuLockedClocks) {
-        gc_strlcpy(err, errSize, "hard clock locking is unavailable"); return false;
-    }
-    if (d->hasFan && !snapshot->fanValid) {
-        gc_strlcpy(err, errSize, "fan state cannot be snapshotted safely"); return false;
-    }
-    if ((d->hasXbarOffsetKhz || d->hasXbarMsvddOffsetUv) &&
-        !snapshot->xbarValid) {
-        gc_strlcpy(err, errSize,
-            "XBAR state cannot be snapshotted safely"); return false;
-    }
-    if (d->hasSysClkOffsetKhz && !snapshot->sysClkValid) {
-        gc_strlcpy(err, errSize,
-            "SYS clock state cannot be snapshotted safely"); return false;
-    }
-    if (d->hasVideoClkOffsetKhz && !snapshot->videoClkValid) {
-        gc_strlcpy(err, errSize,
-            "video clock state cannot be snapshotted safely"); return false;
-    }
-    return true;
-}
+#include "linux_backend_preflight.h"
 
 // Build per-point absolute-target curve offsets from a DesiredSettings request.
 // offset_kHz = targetMHz*1000 - stockFreq_kHz  (mirrors the Windows correction
@@ -358,12 +289,12 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
 // uniform floor offset (range minimum) to tail points beyond the lock index
 // (the Build-109 uniform-tail-floor approach).
 static LinuxCurveTargetBuildResult build_curve_targets(LinuxGpuState* g,
-    const DesiredSettings* d, int* targetOffsets, bool* pointMask) {
+    const DesiredSettings* d, int* targetOffsets, bool* pointMask, int graphicsRouteOverride = 0) {
     int mn = 0, mx = 0;
     curve_offset_range_khz(g, &mn, &mx);
     (void)mx;
     return linux_build_curve_targets(g->curve, g->freqOffsets, d, mn,
-        targetOffsets, pointMask);
+        targetOffsets, pointMask, graphicsRouteOverride);
 }
 
 static LinuxCurveTargetBuildResult build_curve_transition_targets(
@@ -475,8 +406,25 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     linux_apply_ceiling_reset_state();
     linux_apply_ceiling_note_outgoing(previousIntent);
     linux_backend_refresh(g);
-    if (!linux_backend_capture_snapshot(g, &snapshot, preflight, sizeof(preflight)) ||
-        !linux_backend_preflight(g, d, &snapshot, preflight, sizeof(preflight))) {
+    if (!linux_backend_capture_snapshot(g, &snapshot, preflight, sizeof(preflight))) {
+        LinuxMutationResult mutation = {};
+        if (result) gc_strlcpy(result, resultSize, preflight);
+        return mutation;
+    }
+    ServiceScopedApplyPlan scopedPlan{};
+    if (d && d->applicationScope != DESIRED_SCOPE_LEGACY) {
+        if (!linux_apply_resolve_scope(g, d, previousIntent, &scopedPlan, preflight, sizeof(preflight))) {
+            LinuxMutationResult mutation{};
+            if (result) gc_strlcpy(result, resultSize, preflight);
+            return mutation;
+        }
+        d = &scopedPlan.hardware;
+        committedIntent = &scopedPlan.owned;
+        g_linuxScopedCurveCeilingTransition = scopedPlan.releasesCurveCeiling;
+    }
+    const int graphicsRouteOverride = d && d->applicationScope != DESIRED_SCOPE_LEGACY
+        ? (scopedPlan.graphicsOffsetViaVf ? 2 : 1) : 0;
+    if (!linux_backend_preflight(g, d, &snapshot, preflight, sizeof(preflight), graphicsRouteOverride)) {
         LinuxMutationResult mutation = {};
         if (result) gc_strlcpy(result, resultSize, preflight[0] ? preflight : "Apply preflight failed");
         return mutation;
@@ -484,10 +432,11 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
     g_linuxOutgoingCeilingMHz = linux_outgoing_ceiling_mhz(g, previousIntent);
     LinuxApplyTransactionContext context = {g, d, &snapshot, committedIntent,
-        previousIntent, {}, {}, d->fanPercent, false, false, false, false, {}};
+        previousIntent, {}, {}, d->fanPercent, false, false, false, false, graphicsRouteOverride, {}};
     gc_u32 requestedDomains = service_desired_mutation_domains(d);
     int cleanupPointCount = 0;
     context.transitionBuild =
+        d->applicationScope == DESIRED_SCOPE_LEGACY &&
         (requestedDomains & SERVICE_MUTATION_DOMAIN_VF_CURVE) != 0 && committedIntent;
     LinuxCurveTargetBuildResult curveBuild =
         linux_apply_build_curve(&context, &cleanupPointCount);

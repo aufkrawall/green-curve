@@ -77,7 +77,7 @@ struct ApplyClockCeilingGuard {
     bool writeAttempted = false;
     ApplyClockCeilingArmResult armResult = APPLY_CEILING_ARM_NOT_NEEDED;
 
-    explicit ApplyClockCeilingGuard(const DesiredSettings* desired) {
+    explicit ApplyClockCeilingGuard(const DesiredSettings* desired, bool releasesCurveCeiling = false) {
         if (!desired) return;
         // Resolve lazy NVML initialisation BEFORE reading the entry points.
         // A null pointer that only means "NVML has not been loaded yet" used
@@ -85,7 +85,7 @@ struct ApplyClockCeilingGuard {
         // which is exactly when a profile switch is most likely (logon
         // restore, resume, tray pick right after start).
         (void)nvml_ensure_ready();
-        const bool resetsToStock = desired->resetOcBeforeApply != 0;
+        const bool resetsToStock = desired->resetOcBeforeApply != 0 || releasesCurveCeiling;
         const bool outgoingHoldsDown = apply_outgoing_state_holds_clocks_down();
         const unsigned int outgoingCeiling = apply_outgoing_ceiling_mhz();
         plan = apply_clock_ceiling_plan(

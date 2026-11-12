@@ -71,8 +71,17 @@ static inline const char* service_request_reject_reason(
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
         if (r->desired.curvePointCaptured[ci])
             return "captured offset replay is not available";
-    if (r->desired.applicationScope != DESIRED_SCOPE_LEGACY)
-        return "explicit application scope is not available";
+    if (r->desired.applicationScope != DESIRED_SCOPE_LEGACY) {
+        if (r->command != SERVICE_CMD_APPLY && r->command != SERVICE_CMD_SET_STARTUP_POLICY &&
+            r->command != SERVICE_CMD_REFRESH_STARTUP_PROFILE)
+            return "application scope is only valid for profile intent operations";
+        if (r->desired.resetOcBeforeApply || r->resetOcBeforeApply)
+            return "explicit application scope cannot request a global baseline reset";
+        if (!service_scoped_values_valid(r->desired)) return "scoped intent requires numeric conversion or correction";
+        if (r->command != SERVICE_CMD_APPLY &&
+            desired_application_scope_kind(r->desired.applicationScope) == DESIRED_SCOPE_EXPLICIT_RELEASE)
+            return "release operations cannot be assigned for automatic replay";
+    }
     const gc_u32 allowedFlags = SERVICE_REQUEST_FLAG_INTERACTIVE |
         SERVICE_REQUEST_FLAG_SHARED_SLOT |
         (SERVICE_REQUEST_SHARED_SLOT_MASK <<
@@ -104,6 +113,10 @@ static inline const char* service_request_reject_reason(
         if (service_mutation_domains_require_vf(mutationDomains) &&
             !r->expectedTopologySignature)
             return "VF apply without a curve topology signature";
+        if ((desired_application_scope_kind(r->desired.applicationScope) == DESIRED_SCOPE_REPLACE_PROFILE ||
+             (r->desired.applicationScope & DESIRED_SCOPE_REPLACE_VF_POINTS)) &&
+            !r->expectedTopologySignature)
+            return "scoped replacement without a curve topology signature";
         if (!service_apply_origin_is_client_apply(
                 (ServiceApplyOrigin)r->applyOrigin))
             return "apply origin is not a client apply";

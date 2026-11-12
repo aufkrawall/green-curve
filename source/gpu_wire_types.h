@@ -31,7 +31,19 @@ enum DesiredApplicationScope : gc_u32 {
     DESIRED_SCOPE_UPDATE_INCLUDED = 1,
     DESIRED_SCOPE_REPLACE_PROFILE = 2,
     DESIRED_SCOPE_EXPLICIT_RELEASE = 3,
+    // Orthogonal VF point-set policy for UPDATE_INCLUDED. Omitted scalars
+    // and an omitted lock still retain their ownership.
+    DESIRED_SCOPE_REPLACE_VF_POINTS = 1u << 8,
 };
+
+static inline gc_u32 desired_application_scope_kind(gc_u32 scope) {
+    return scope & ~DESIRED_SCOPE_REPLACE_VF_POINTS;
+}
+
+static inline bool desired_application_scope_valid(gc_u32 scope) {
+    return scope <= DESIRED_SCOPE_EXPLICIT_RELEASE ||
+        scope == (DESIRED_SCOPE_UPDATE_INCLUDED | DESIRED_SCOPE_REPLACE_VF_POINTS);
+}
 
 static inline gc_bool8 gc_bool8_from_bool(bool value) {
     return value ? (gc_bool8)1u : (gc_bool8)0u;

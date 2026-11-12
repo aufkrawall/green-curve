@@ -54,7 +54,7 @@ static inline bool service_wire_string_is_log_safe(
 static inline bool service_desired_bool_fields_valid(
     const DesiredSettings* desired) {
     if (!desired || !desired_curve_intent_valid(desired)) return false;
-    if (desired->applicationScope > DESIRED_SCOPE_EXPLICIT_RELEASE) return false;
+    if (!desired_application_scope_valid(desired->applicationScope)) return false;
     for (int i = 0; i < VF_NUM_POINTS; ++i) {
         if (desired->hasCurvePoint[i] > 1) return false;
         // Provenance decides whether a point is written as an offset or held to
@@ -90,6 +90,38 @@ static inline bool service_gpu_bool_fields_valid(const GpuAdapterInfo* gpu) {
     return gpu && gpu->valid <= 1 && gpu->pciInfoValid <= 1 &&
         gpu->vfReadSupported <= 1 && gpu->vfWriteSupported <= 1 &&
         gpu->vfBestGuess <= 1;
+}
+
+// New scoped intent must be refused rather than silently changed by the
+// historical legacy IPC normalizer. Inactive payloads remain non-authoritative.
+// Declared here to avoid the fan GUI header's app_shared.h dependency.
+bool fan_curve_validate(const FanCurveConfig* config, char* err, size_t errSize);
+static inline bool service_scoped_values_valid(const DesiredSettings& d) {
+    if (desired_application_scope_kind(d.applicationScope) == DESIRED_SCOPE_EXPLICIT_RELEASE)
+        return true; // values select releases; the scoped compiler writes defaults
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        if (!d.hasCurvePoint[ci]) continue;
+        if (d.curvePointMHz[ci] > 5000 ||
+            (!d.curvePointFromGpuOffset[ci] && !d.curvePointMHz[ci])) return false;
+    }
+    if (d.hasGpuOffset && (d.gpuOffsetMHz < -1000 || d.gpuOffsetMHz > 1000 ||
+        d.gpuOffsetExcludeLowCount < 0 || d.gpuOffsetExcludeLowCount > VF_NUM_POINTS)) return false;
+    if (d.hasMemOffset && (d.memOffsetMHz < -3000 || d.memOffsetMHz > 3000)) return false;
+    if (d.hasPowerLimit && (d.powerLimitPct < POWER_LIMIT_MIN_PCT || d.powerLimitPct > POWER_LIMIT_MAX_PCT)) return false;
+    if (d.hasLock && (d.lockMode < LOCK_MODE_NONE || d.lockMode > LOCK_MODE_HARD ||
+        d.lockMHz > 5000 || (d.lockMode != LOCK_MODE_NONE &&
+        (d.lockCi < 0 || d.lockCi >= VF_NUM_POINTS || !d.lockMHz)))) return false;
+    if ((d.hasXbarOffsetKhz && (d.xbarOffsetKhz < -1000000 || d.xbarOffsetKhz > 1000000)) ||
+        (d.hasXbarMsvddOffsetUv && (d.xbarMsvddOffsetUv < -100000 || d.xbarMsvddOffsetUv > 100000)) ||
+        (d.hasSysClkOffsetKhz && (d.sysClkOffsetKhz < -1000000 || d.sysClkOffsetKhz > 1000000)) ||
+        (d.hasVideoClkOffsetKhz && (d.videoClkOffsetKhz < -1000000 || d.videoClkOffsetKhz > 1000000))) return false;
+    if (d.hasFan) {
+        if (d.fanMode < FAN_MODE_AUTO || d.fanMode > FAN_MODE_CURVE ||
+            d.fanPercent < 0 || d.fanPercent > 100) return false;
+        char why[128]{};
+        if (d.fanMode == FAN_MODE_CURVE && !fan_curve_validate(&d.fanCurve, why, sizeof(why))) return false;
+    }
+    return true;
 }
 
 #endif

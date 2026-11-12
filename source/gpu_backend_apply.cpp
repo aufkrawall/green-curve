@@ -24,7 +24,7 @@
 
 static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool interactive, char* result, size_t resultSize,
-    bool* hardwareWriteAttemptedOut, gc_u32* outcomeSeverityOut) {
+    bool* hardwareWriteAttemptedOut, gc_u32* outcomeSeverityOut, bool releasesCurveCeiling) {
     if (hardwareWriteAttemptedOut) *hardwareWriteAttemptedOut = false;
     // Any early return below is a refusal or a failure, so ERROR is the correct
     // starting value: a caller that forgets to look at the bool still cannot
@@ -107,7 +107,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         set_message(result, resultSize, "This driver's VF offset range cannot flatten the curve");
         return false;
     }
-    ApplyClockCeilingGuard clockCeiling(desired);
+    ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling);
     // Records the measured clock and the live load across the whole apply, and
     // ends with the one line the next under-load test needs: did the clamp hold.
     // Destroyed after the guard is declared, so the verdict is emitted before

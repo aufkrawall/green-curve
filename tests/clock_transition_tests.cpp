@@ -801,6 +801,19 @@ static int run(){
  CHECK(!apply_recovery_permits_release(ApplyRecoveryResult{}));
  CHECK(!apply_clock_witness_counts_toward_verdict(true,false,true));
  CHECK(apply_clock_witness_counts_toward_verdict(true,false,false));
+ // Scoped cleanup can remove an owned flatten without a global reset.
+ {
+   DesiredSettings cleanup{},previousFlat{};
+   cleanup.hasLock=true;previousFlat.hasLock=true;previousFlat.lockMode=LOCK_MODE_FLATTEN;
+   previousFlat.lockMHz=1500;g_app.lockMode=LOCK_MODE_FLATTEN;g_app.transitionClockCapActive=false;
+   CHECK(!ApplyClockCeilingGuard(&cleanup).plan.required);
+   CHECK(ApplyClockCeilingGuard(&cleanup,true).plan.required);
+   linux_apply_ceiling_reset_state();
+   CHECK(!linux_apply_clock_ceiling_plan(&g,&cleanup,&previousFlat).required);
+   g_linuxScopedCurveCeilingTransition=true;
+   CHECK(linux_apply_clock_ceiling_plan(&g,&cleanup,&previousFlat).required);
+   linux_apply_ceiling_reset_state();CHECK(!g_linuxScopedCurveCeilingTransition);
+ }
  g_nvml_api=g.nvml;g_app.lockMode=LOCK_MODE_HARD;g_app.appliedLockFreq=2500;
  // A guard's destructor never releases an abandoned/partly written state.
  cap=2500;resets=0;

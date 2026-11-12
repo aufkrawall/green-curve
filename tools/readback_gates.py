@@ -226,10 +226,10 @@ def check_all(ctx, require_text, forbid_text):
     require_text(linux_mutation_cpp,
                  "surfaceAvailable = power_limit_surface_available(",
                  "Linux inertness uses the shared complete power-surface rule")
-    require_text(linux_mutation_cpp,
+    require_text(_p(ctx, "linux_backend_preflight.h"),
                  "unavailableDomains &= ~(gc_u32)SERVICE_MUTATION_DOMAIN_POWER;",
                  "an inert power request is not an unavailable Linux domain")
-    require_text(linux_mutation_cpp,
+    require_text(_p(ctx, "linux_backend_preflight.h"),
                  "if (d->hasPowerLimit && !powerInert &&",
                  "the Linux power preflight exempts an inert power request")
     require_text(linux_mutation_cpp,

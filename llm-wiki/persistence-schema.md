@@ -37,10 +37,12 @@ DesiredSettings schema 3 (2120 bytes) appends independent presence and signed
 physical-Hz arrays for captured VF offsets, plus an explicit application scope
 in new-layout padding. Captured zero is owned; absence is separate. Schema 2
 stays frozen at 964 bytes and widens with empty new arrays and legacy scope.
-Protocol 30 has 2712-byte requests and 9872-byte responses. Sizes are checked
+Protocol 31 has 2712-byte requests and 9872-byte responses. Sizes are checked
 with the real compiler, including enclosing-record alignment. No capture
-producer is connected yet; IPC explicitly refuses captured replay and explicit
-scope until runtime consumers support them, preventing silent no-op behavior.
+producer is connected yet; IPC explicitly refuses captured replay until the
+document/editor pipeline is connected. Protocol 31 accepts explicit scopes and
+the orthogonal VF point-set replacement flag, with strict numeric refusal
+instead of legacy clamping. Scope does not authorize a global baseline reset.
 
 The outgoing UUID-bearing daemon layouts are frozen as schema 4. Loaders
 validate the original checksum before widening and retain UUID, location role

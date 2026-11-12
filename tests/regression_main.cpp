@@ -1029,6 +1029,8 @@ int run_curve_prefix_repair_tests();
 int run_profile_document_fixture_tests();
 int run_captured_schema_tests();
 int run_captured_intent_runtime_tests();
+int run_scoped_apply_tests();
+int run_linux_scope_preflight_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2679,6 +2681,11 @@ static int run_all_tests(int argc, char** argv) {
     if (int vfFailure = run_linux_vf_read_tests()) return vfFailure;
     if (int vfFailure = run_linux_vf_write_tests()) return vfFailure;
     if (int schemaFailure = run_captured_schema_tests()) return schemaFailure;
+    if (int preflightFailure = run_linux_scope_preflight_tests()) return preflightFailure;
+    if (int scopeFailure = run_scoped_apply_tests()) {
+        fprintf(stderr, "scoped Apply regression failed: %d\n", scopeFailure);
+        return scopeFailure;
+    }
     if (int capturedFailure = run_captured_intent_runtime_tests()) {
         fprintf(stderr, "captured intent regression failed: %d\n", capturedFailure);
         return capturedFailure;
@@ -4455,7 +4462,7 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 30) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 31) return 81;
         // These are release gates, not incidental layout observations. A field
         // addition that changes a fixed-size IPC structure must bump the wire
         // version; otherwise mixed old/new peers pass the header handshake and

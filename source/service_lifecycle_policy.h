@@ -21,6 +21,8 @@ static inline bool service_intent_owns_vf_cleanup(
 static inline bool service_request_replaces_lock_domain(
     const DesiredSettings* request) {
     if (!request) return false;
+    if (request->applicationScope != DESIRED_SCOPE_LEGACY)
+        return request->hasLock != 0;
     if (request->resetOcBeforeApply || request->hasGpuOffset ||
         request->hasLock) return true;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
@@ -35,6 +37,10 @@ static inline bool service_build_full_restore_request(
 {
     if (!activeIntent || !requestOut) return false;
     *requestOut = *activeIntent;
+    if (activeIntent->applicationScope != DESIRED_SCOPE_LEGACY) {
+        requestOut->resetOcBeforeApply = false;
+        return true;
+    }
     // Reset-to-stock is part of replaying Green Curve-owned VF/GPU-offset
     // policy, because those writes are derived from a clean curve baseline.
     // Never reset unrelated OC state for a sparse memory-, power-, or fan-only
@@ -62,6 +68,10 @@ static inline bool service_build_profile_transition_request(
     DesiredSettings* requestOut) {
     if (!nextIntent || !requestOut) return false;
     *requestOut = *nextIntent;
+    if (nextIntent->applicationScope != DESIRED_SCOPE_LEGACY) {
+        requestOut->resetOcBeforeApply = false;
+        return true; // the shared scoped planner resolves ownership and cleanup
+    }
     // Same ownership predicate on both sides of the transition: a lock-only
     // profile writes a VF anchor/tail just as a curve does, so arriving at one
     // needs the clean baseline that leaving one already forced.

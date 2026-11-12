@@ -84,7 +84,8 @@ enum {
     // cause of the automatic write that latched AUTOMATIC_APPLY_FAILED, so the
     // GUI can tell the user instead of leaving a silent lockout.
     // v30 preserves independent signed-Hz captured VF offsets, including zero.
-    SERVICE_PROTOCOL_VERSION = 30,
+    // v31 defines explicit update/replacement/release and VF point-set semantics.
+    SERVICE_PROTOCOL_VERSION = 31,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply; on a state read it
@@ -430,6 +431,7 @@ static inline gc_u32 service_desired_mutation_domains(
         (desired->gpuOffsetExcludeLowCount > 0 || desired->hasLock ||
          hasCurvePoint);
     bool hasCurveWrite = hasCurvePoint ||
+        (desired->applicationScope != DESIRED_SCOPE_LEGACY && desired->hasLock) ||
         (desired->hasLock &&
          (desired->lockMode == LOCK_MODE_FLATTEN ||
           desired->lockMode == LOCK_MODE_HARD)) ||

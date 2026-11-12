@@ -6,6 +6,7 @@
 #include "linux_vf_validation.h"
 #include "vf_backends.h"
 #include "linux_curve_targets.h"
+#include "service_scoped_apply_policy.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -303,6 +304,47 @@ int run_linux_vf_write_tests() {
     if (vf_graphics_offset_readback_matches(0, true, 500, 0) ||
         !vf_graphics_offset_readback_matches(0, true, 0, 0) ||
         !vf_graphics_offset_readback_matches(0, false, 500, 0)) return 8098;
+
+    // Execute scoped update/replacement through production target compilation
+    // and the driver writer. Unowned raw controls survive both transitions.
+    initialize(&d, &g, &g_vfBackendPascal);
+    d.raw[2] = 30001; d.raw[4] = 7777;
+    DesiredSettings previous{};
+    previous.curvePointCaptured[2] = 1; previous.curvePointCapturedOffsetHz[2] = 15000500;
+    DesiredSettings incoming{};
+    incoming.applicationScope = DESIRED_SCOPE_UPDATE_INCLUDED;
+    incoming.curvePointCaptured[3] = 1; incoming.curvePointCapturedOffsetHz[3] = -500;
+    const VfFloorTopology topology = vf_floor_topology_compute(g.curve, g.freqOffsets, VF_NUM_POINTS);
+    ServiceScopedApplyPlan scoped{};
+    if (!service_build_scoped_apply_plan(&previous, incoming, g.curve, topology, false,
+            &scoped, detail, sizeof(detail))) return 8127;
+    r = linux_build_curve_targets(g.curve, g.freqOffsets, &scoped.hardware, -1000000, targets, mask);
+    if (!apply_curve_offsets_verified(&g, targets, mask, 2, r.pointCapturedOffsetHz, r.pointCapturedIntent) ||
+        d.raw[2] != 30001 || d.raw[3] != -1 || d.raw[4] != 7777 || d.setCalls != 1 ||
+        !d.bufferValid || scoped.hardware.hasMemOffset || scoped.hardware.hasFan) return 8128;
+    previous = scoped.owned;
+    incoming.applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+    if (!service_build_scoped_apply_plan(&previous, incoming, g.curve, topology, false,
+            &scoped, detail, sizeof(detail))) return 8129;
+    r = linux_build_curve_targets(g.curve, g.freqOffsets, &scoped.hardware, -1000000, targets, mask);
+    if (!apply_curve_offsets_verified(&g, targets, mask, 2, r.pointCapturedOffsetHz, r.pointCapturedIntent) ||
+        d.raw[2] || d.raw[3] != -1 || d.raw[4] != 7777 || d.setCalls != 2 ||
+        !d.bufferValid || scoped.owned.curvePointCaptured[2] || !scoped.owned.curvePointCaptured[3]) return 8130;
+    initialize(&d, &g, &g_vfBackendPascal);
+    d.raw[0] = 7777; d.raw[2] = 8889; d.raw[1] = 400000;
+    for (int ci = 3; ci < 8; ++ci) d.raw[ci] = 400001;
+    previous = {}; previous.hasGpuOffset = 1; previous.gpuOffsetMHz = 200;
+    previous.gpuOffsetExcludeLowCount = 3;
+    previous.hasCurvePoint[1] = 1; previous.curvePointMHz[1] = 1700;
+    incoming = {}; incoming.applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+    incoming.hasGpuOffset = 1; incoming.gpuOffsetMHz = 100;
+    if (!service_build_scoped_apply_plan(&previous, incoming, g.curve, topology, false,
+            &scoped, detail, sizeof(detail), true) || scoped.graphicsOffsetViaVf) return 8145;
+    r = linux_build_curve_targets(g.curve, g.freqOffsets, &scoped.hardware, -1000000, targets, mask, 1);
+    if (r.composedGpuOffset || r.pointCount != 6 ||
+        !apply_curve_offsets_verified(&g, targets, mask, 2, r.pointCapturedOffsetHz, r.pointCapturedIntent) ||
+        d.raw[1] || d.raw[3] || d.raw[7] || d.raw[0] != 7777 || d.raw[2] != 8889 ||
+        !d.bufferValid) return 8146;
     return 0;
 }
 

@@ -65,7 +65,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # hardware write, and must be adopted by the final lock step in both modes.
     require_text(guard_h, "struct ApplyClockCeilingGuard",
                  "the Windows apply owns a scope-bound transition clamp")
-    require_text(apply_cpp, "ApplyClockCeilingGuard clockCeiling(desired);",
+    require_text(apply_cpp, "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling);",
                  "the Windows apply declares the clamp before its first write")
     require_order_in_operation(
         apply_cpp,
@@ -127,7 +127,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         apply_cpp,
         "static bool apply_desired_settings_service(const DesiredSettings* desired",
         "if (!apply_curve_plan_anchor_is_writable(desired, result, resultSize)) return false;",
-        "ApplyClockCeilingGuard clockCeiling(desired);",
+        "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling);",
         "the writable-anchor refusal precedes the transition clamp")
     # The Linux daemon refuses a proven curve-plan failure before its
     # transaction can run any phase.
@@ -896,7 +896,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         apply_cpp,
         "static bool apply_desired_settings_service(const DesiredSettings* desired,",
         "if (!apply_curve_plan_precheck_before_writes(desired, result, resultSize)) {",
-        "ApplyClockCeilingGuard clockCeiling(desired);",
+        "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling);",
         "the curve-plan refusal runs before the first clock write")
     require_order_in_operation(
         apply_cpp,

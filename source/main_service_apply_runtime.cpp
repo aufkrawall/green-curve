@@ -5,6 +5,7 @@
 
 #include "gpu_backend_xbar.h"
 #include "desired_advanced_domains_policy.h"
+#include "service_scoped_apply_policy.h"
 
 // Ownership marker + once-per-crash handback, defined later in
 // main_service_ownership_handback.cpp (ownership_handback_policy.h).
@@ -37,7 +38,8 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         set_message(result, resultSize, "No desired settings provided");
         return false;
     }
-    if (!service_desired_has_owned_intent(desired)) {
+    if (desired->applicationScope == DESIRED_SCOPE_LEGACY &&
+        !service_desired_has_owned_intent(desired)) {
         set_message(result, resultSize,
             "No Green Curve-owned settings were requested");
         return false;
@@ -58,6 +60,10 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         &sanitizedRequest, g_app.xbarProbeValid, g_app.sysClkProbeValid,
         g_app.videoClkProbeValid);
     if (strippedAdvanced) {
+        if (desired->applicationScope != DESIRED_SCOPE_LEGACY) {
+            set_message(result, resultSize, "Requested advanced controls are unavailable; review the profile before Apply");
+            return false;
+        }
         debug_log("service apply: ignored portable advanced fields; surface unavailable"
                   " stripped=0x%X xbarFreq=%d xbarMsvdd=%d sys=%d video=%d"
                   " probes xbar=%d sys=%d video=%d\n",
@@ -71,6 +77,31 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
                 "The requested advanced clock controls are unavailable on this GPU."
                 " Nothing was changed.");
             set_last_apply_phase("service apply: only unavailable advanced fields");
+            return false;
+        }
+    }
+    ServiceScopedApplyPlan scopedPlan{};
+    if (desired->applicationScope != DESIRED_SCOPE_LEGACY) {
+        const bool curveWork = service_scoped_graphics_work(
+            g_serviceHasActiveDesired ? &g_serviceActiveDesired : nullptr,
+            *desired, vf_curve_global_gpu_offset_supported());
+        if (curveWork && (!nvapi_read_curve() || !nvapi_read_offsets())) {
+            set_message(result, resultSize, "Fresh VF controls are required for scoped Apply");
+            return false;
+        }
+        if (curveWork) vf_floor_binding_update(&g_app.vfFloorBinding,
+            g_app.curve, g_app.freqOffsets, VF_NUM_POINTS, 0);
+        if (!service_build_scoped_apply_plan(g_serviceHasActiveDesired ? &g_serviceActiveDesired : nullptr,
+                *desired, g_app.curve, g_app.vfFloorBinding.floor,
+                vf_curve_global_gpu_offset_supported(), &scopedPlan, result, resultSize)) return false;
+        debug_log("apply-scope: scope=%lu cleanupPoints=%d retainedLock=%d domains=0x%lX\n",
+            desired->applicationScope, scopedPlan.cleanupPoints, scopedPlan.retainedLock ? 1 : 0,
+            service_desired_mutation_domains(&scopedPlan.hardware));
+        desired = &scopedPlan.hardware;
+        replaceActiveIntent = true;
+        replacementIntent = &scopedPlan.owned;
+        if (!service_desired_has_owned_intent(desired)) {
+            set_message(result, resultSize, "The scoped operation has no settings to change");
             return false;
         }
     }
@@ -103,7 +134,7 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
     bool hardwareWriteAttempted = false;
     gc_u32 backendSeverity = (gc_u32)SERVICE_OUTCOME_SEVERITY_ERROR;
     bool ok = apply_desired_settings_service(desired, interactive,
-        result, resultSize, &hardwareWriteAttempted, &backendSeverity);
+        result, resultSize, &hardwareWriteAttempted, &backendSeverity, scopedPlan.releasesCurveCeiling);
     if (writeAttemptedOut) *writeAttemptedOut = hardwareWriteAttempted;
     if (outcomeSeverityOut) *outcomeSeverityOut = backendSeverity;
     if (ok) {
@@ -188,7 +219,12 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         // Missing fields remain missing. Never adopt live settings as Green
         // Curve intent: another tuning tool may own them, and standby/driver
         // restoration must replay only settings we actually wrote.
-        g_serviceHasActiveDesired = true;
+        g_serviceHasActiveDesired = service_scoped_has_owned_intent(g_serviceActiveDesired);
+        if (!g_serviceHasActiveDesired && !service_ownership_marker_clear("scoped intent fully released")) {
+            set_message(result, resultSize, "Settings were released, but the ownership record could not be retired");
+            if (outcomeSeverityOut) *outcomeSeverityOut = SERVICE_OUTCOME_SEVERITY_ERROR;
+            return false;
+        }
         InterlockedExchange(&g_serviceReapplyInProgress, 0);
         service_clear_restart_reapply_snapshot();
         populate_control_state(&g_serviceControlState);

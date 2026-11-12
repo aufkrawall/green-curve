@@ -125,6 +125,6 @@ int run_captured_schema_tests() {
     if (strcmp(service_request_reject_reason(&request), "captured offset replay is not available")) return 8029;
     request.desired = {};
     request.desired.applicationScope = DESIRED_SCOPE_UPDATE_INCLUDED;
-    if (strcmp(service_request_reject_reason(&request), "explicit application scope is not available")) return 8030;
+    if (strcmp(service_request_reject_reason(&request), "application scope is only valid for profile intent operations")) return 8030;
     return 0;
 }

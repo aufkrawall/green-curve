@@ -29,6 +29,7 @@
 // what decides that a replay resets the OC baseline first, and that decision
 // must not be reimplemented per platform.
 #include "service_lifecycle_policy.h"
+#include "service_scoped_apply_policy.h"
 #include "startup_snapshot_policy.h"
 #include "platform.h"
 #include "fan_curve.h"
@@ -224,7 +225,7 @@ static bool capture_uncertain_record(bool uncertain, LinuxDaemonStateRecord* rec
 // handlers, the startup write, and the once-per-start record load.  Needs
 // store_daemon_record() and populate_snapshot() above it.
 #include "linux_startup_policy.h"
-
+#include "linux_daemon_scoped_apply.h"
 
 static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp) {
     memset(resp, 0, sizeof(*resp));
@@ -348,7 +349,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             }
             DesiredSettings d = req->desired;
             validate_desired_settings_for_ipc(&d);
-            if (d.hasLock && d.lockMode == LOCK_MODE_NONE) {
+            if (d.applicationScope == DESIRED_SCOPE_LEGACY && d.hasLock && d.lockMode == LOCK_MODE_NONE) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_strlcpy(resp->message, sizeof(resp->message),
                     "lock mode is required when a VF lock is enabled");
@@ -373,17 +374,13 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             GpuAdapterInfo previousTarget = g_activeTarget;
             const GpuLocationRole committedRole = linux_gpu_location_role_for_selection(
                 &g_gpu.selectedGpu, g_gpu.adapters, g_gpu.adapterCount);
-            DesiredSettings committedDesired = service_merge_desired_after_mutation(
-                hadPrevious ? &previousDesired : nullptr, &d);
-            if (d.resetOcBeforeApply)
-                dlog("daemon apply: reset baseline intent merge previousCurvePoints=%d requestedCurvePoints=%d "
-                     "committedCurvePoints=%d preservedPower=%d preservedFan=%d\n",
-                     service_desired_curve_point_count(
-                         hadPrevious ? &previousDesired : nullptr),
-                     service_desired_curve_point_count(&d),
-                     service_desired_curve_point_count(&committedDesired),
-                     committedDesired.hasPowerLimit ? 1 : 0,
-                     committedDesired.hasFan ? 1 : 0);
+            DesiredSettings committedDesired{};
+            if (!daemon_prepare_apply_ownership(hadPrevious ? &previousDesired : nullptr,
+                    d, &committedDesired, targetErr, sizeof(targetErr))) {
+                resp->status = SERVICE_STATUS_ERROR;
+                gc_strlcpy(resp->message, sizeof(resp->message), targetErr);
+                break;
+            }
             LinuxHardwareSnapshot before = {};
             char stateErr[256] = {};
             LinuxDaemonStateRecord uncertainRecord = {};
@@ -407,10 +404,12 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 resp->message, sizeof(resp->message));
             bool committed = false;
             if (mutation.success) {
-                committed = store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE,
+                committed = service_scoped_has_owned_intent(committedDesired)
+                    ? store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE,
                     &g_gpu.selectedGpu, &committedDesired,
                     stateErr, sizeof(stateErr),
-                    req->operationId, SERVICE_OPERATION_SUCCEEDED, committedRole);
+                    req->operationId, SERVICE_OPERATION_SUCCEEDED, committedRole)
+                    : linux_daemon_state_remove(GC_DAEMON_STATE_FILE, stateErr, sizeof(stateErr));
                 if (!committed) {
                     char rollbackErr[256] = {};
                     bool rollbackOk = linux_backend_restore_snapshot(&g_gpu, &before,
@@ -446,11 +445,16 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 g_activeTargetRole = committedRole;
                 g_activeTarget = g_gpu.selectedGpu;
                 g_activeTargetUuid = linux_gpu_uuid_retain(linux_backend_selected_uuid(&g_gpu), nullptr);
-                g_hasActiveDesired = true;
+                g_hasActiveDesired = service_scoped_has_owned_intent(committedDesired);
+                if (!g_hasActiveDesired) {
+                    g_activeTarget = {}; g_activeTargetUuid = {};
+                    g_activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
+                }
                 g_stateUncertain = false;
                 g_fanFailureCount = 0;
                 if (g_fanOwnershipMarkerCommitted &&
-                    d.hasFan && d.fanMode == FAN_MODE_AUTO)
+                    ((d.hasFan && d.fanMode == FAN_MODE_AUTO) ||
+                     (d.applicationScope != DESIRED_SCOPE_LEGACY && !committedDesired.hasFan)))
                     daemon_fan_ownership_retire("committed intent leaves the fan to the driver");
                 char guardErr[256] = {};
                 if (!auto_restore_note_explicit_success("apply", guardErr,

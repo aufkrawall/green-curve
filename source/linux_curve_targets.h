@@ -40,7 +40,7 @@ struct LinuxCurveTargetBuildResult {
 static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
     const VFCurvePoint* curve, const int* currentOffsets,
     const DesiredSettings* desired, int minimumOffsetKHz,
-    int* targetOffsets, bool* pointMask) {
+    int* targetOffsets, bool* pointMask, int graphicsRouteOverride = 0) {
     LinuxCurveTargetBuildResult result = {};
     if (!curve || !currentOffsets || !desired || !targetOffsets || !pointMask)
         return result;
@@ -59,7 +59,8 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
         }
     }
     result.composedGpuOffset = desired->hasGpuOffset &&
-        (desired->gpuOffsetExcludeLowCount > 0 || hasExplicit || hardLock || flatten);
+        (graphicsRouteOverride == 2 || (graphicsRouteOverride == 0 &&
+         (desired->gpuOffsetExcludeLowCount > 0 || hasExplicit || hardLock || flatten)));
     result.lockTail = hardLock || flatten;
     int exclude = desired->gpuOffsetExcludeLowCount;
     if (exclude < 0) exclude = 0;

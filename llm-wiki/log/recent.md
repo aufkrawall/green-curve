@@ -5,6 +5,23 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-12: Explicit runtime scopes and ownership compilation
+
+- Added the shared scoped transition compiler and Windows/Linux call sites.
+  Partial updates preserve omitted domains and locks; replacement/release
+  cleanup is separate from durable ownership, including owned zero and a VF
+  point-set replacement policy. Final release retires ownership.
+- Per-intent graphics routing preserves omitted independent scalars and keeps
+  selective-to-uniform cleanup from changing the new scalar's write route.
+- Preserved the transition ceiling when cleanup removes an owned flatten
+  without a global reset. Scoped values refuse numeric changes that legacy
+  IPC normalization would make. Protocol 31 separates the new semantics.
+- Extracted Linux read-only preflight and removed a leftover memory-surface
+  requirement for curve-only baseline work. Fixtures execute that production
+  preflight and the scoped target/compiler/raw-writer path without hardware.
+- See [profile-document.md](../profile-document.md). Document/editor/capture
+  integration and native Linux hardware execution remain pending.
+
 ## 2026-11-12: Exact VF readback, raw replay and recovery
 
 - Retained physical-Hz control values alongside legacy kHz caches. Linux raw
