@@ -71,11 +71,13 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
     NvmlClockOffsetReadback memOffset =
         nvml_read_clock_offset(g, NVML_CLOCK_MEM);
     if (memOffset.offsetValid) {
-        // NVML reports effective MHz; the snapshot canonical unit is display
-        // MHz (matches Windows). No log here: capture runs on the telemetry
-        // poll and must stay quiet.
+        // Keep the exact programmable effective-MHz value for rollback; the
+        // integer display-MHz field is a legacy projection. Snapshot polling
+        // stays quiet.
         snapshot->memOffsetMHz =
             nvml_mem_display_mhz_from_effective_mhz(memOffset.offsetMHz);
+        snapshot->memOffsetEffectiveMHz = memOffset.offsetMHz;
+        snapshot->memOffsetExact = true;
         snapshot->memOffsetValid = true;
     }
     // An unknown response schema cannot become safe without a rebind/driver

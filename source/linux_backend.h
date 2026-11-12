@@ -168,6 +168,9 @@ struct LinuxHardwareSnapshot {
     int gpuOffsetMHz;
     // Display/actual MHz (NVML effective MHz halved at capture, as on Windows).
     int memOffsetMHz;
+    // The exact control preserves odd effective values across rollback.
+    bool memOffsetExact;
+    int memOffsetEffectiveMHz;
     unsigned int powerLimitmW;
     int xbarOffsetKhz;
     int xbarMsvddOffsetUv;

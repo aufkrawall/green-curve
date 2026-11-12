@@ -63,6 +63,23 @@ static int run_profile_unit_tests() {
 
     if (tuning_khz_to_hz(1700) != 1700000) return 7976;
     if (tuning_mhz_to_hz(1700) != 1700000000LL) return 7977;
+    const TuningHzToKHzResult minimum = tuning_hz_to_khz(LLONG_MIN);
+    if (minimum.kHz != LLONG_MIN / 1000 || !minimum.hadRemainder) return 8070;
+    long long scaled = 0;
+    if (tuning_scale_i64(LLONG_MAX, 1000, &scaled)) return 8071;
+    if (tuning_scale_i64(LLONG_MIN, 1000, &scaled)) return 8072;
+    if (!tuning_scale_i64(LLONG_MIN, 1, &scaled) || scaled != LLONG_MIN) return 8073;
+    if (tuning_gcd_i64(LLONG_MIN, 1) != 0) return 8074;
+    const auto cancelled = tuning_power_ratio_resolve({LLONG_MAX, LLONG_MAX}, 250000);
+    if (!cancelled.exact || cancelled.overflowed || cancelled.resolvedMw != 250000) return 8075;
+    const auto fractional = tuning_power_ratio_resolve({LLONG_MAX, LLONG_MAX - 1}, 250000);
+    if (fractional.exact || fractional.overflowed || fractional.requestedMw != 250000) return 8076;
+    const auto overflow = tuning_power_ratio_resolve({LLONG_MAX, 1}, 2);
+    if (!overflow.overflowed) return 8077;
+    if (!tuning_scale_i64(0, 1000, &scaled) || scaled != 0 ||
+        tuning_scale_i64(1, 0, &scaled)) return 8078;
+    auto impossible = profile_point_intent_type_absolute_mhz({}, LLONG_MAX);
+    if (profile_point_intent_structurally_valid(impossible)) return 8079;
     return 0;
 }
 

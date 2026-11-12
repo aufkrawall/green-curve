@@ -57,10 +57,10 @@ later piece of work; see "Open questions / stale-risk" below.
   exact reduced ratio of board default (`tuning_power_ratio_from_mw()`,
   `..._from_percent()`), never raw mW, so a captured 249000/250000 mW limit
   stays 249/250 instead of rounding to 100%. `tuning_power_ratio_resolve()`
-  does checked 64-bit multiplication against a caller-supplied FRESH
+  uses checked 64-bit quotient/remainder arithmetic against a caller-supplied FRESH
   destination default and reports `exact=false` (never a silent round) when
   the division does not come out even, and `overflowed=true` (never a wrapped
-  value) when the checked multiply would overflow or the inputs are
+  value) when the result would overflow or the inputs are
   invalid -- it performs no destination-granularity/write-surface check
   itself, since that is platform-specific and belongs where the destination
   is actually known. `tuning_hz_to_khz()` reports `hadRemainder` so the
@@ -99,6 +99,27 @@ Fixtures 8040-8060 and the production Windows target/verify fixture cover zero,
 negative offsets, preview/global-offset independence, strict readback, merge,
 restore, unavailable-domain projection and malformed intent. No hardware write
 or native Linux execution is claimed by these host-neutral fixtures.
+
+## Precise memory and bounded arithmetic (2026-11-12)
+
+Source anchors: `source/memory_offset_units.h`,
+`source/gpu_backend_memory_offset.h`, `source/main_runtime_nvml.cpp`,
+`source/linux_backend_rollback.h`, `source/tuning_units.h`,
+`tests/memory_recovery_tests.cpp`, `tests/profile_document_tests.cpp`.
+
+Memory conversion retains the NVML effective-MHz control exactly (one effective
+MHz is 500000 physical Hz). The strict setter checks the API unit grid, requires
+a fresh programmable-control getter before mutation and verifies that control
+directly afterwards. A quantized-match hint or a P-state frequency cannot prove
+an exact captured offset. Legacy integer-MHz writes retain their established
+verification. Linux recovery snapshots preserve the effective control separately
+from their legacy integer display-MHz projection.
+
+Signed unit conversion avoids negating the signed minimum and checks scaling
+before multiplication. Power-ratio resolution computes quotient/remainder
+without constructing an overflowing product, so an exactly representable ratio
+is not refused merely because its intermediate product exceeds 64 bits. Unit
+cases 8070-8086 and the production Linux rollback fixture cover these contracts.
 
 ## Invariants
 

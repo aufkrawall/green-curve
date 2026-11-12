@@ -5,6 +5,7 @@
 #include "apply_clock_ceiling_policy.h"
 #include "clock_reset_policy.h"
 #include "control_readback_policy.h"
+#include "memory_offset_units.h"
 #include <cstdio>
 #include <cstring>
 
@@ -15,6 +16,8 @@ static void* g_serviceFanThread;
 static int hardwareMHz, writes, releases;
 static bool verifyReset, setterFails, coreFails;
 static bool pstateReadSucceeds, pstateMemoryPresent, setterLeavesUnchanged;
+static bool preciseReadback;
+static bool setterClaimsMatch;
 static void debug_log(const char*, ...) {}
 static void set_last_apply_phase(const char*) {}
 static void Sleep(unsigned long) {}
@@ -27,10 +30,15 @@ static bool apply_curve_offsets_verified(const int*, const bool*, int) { return 
 static bool nvml_set_clock_offset_domain(unsigned int, int value, bool* exact, char*, size_t) {
     ++writes;
     if (!setterLeavesUnchanged) hardwareMHz = value;
-    *exact = verifyReset && value == 0;
+    *exact = setterClaimsMatch || (verifyReset && value == 0);
     return !setterFails;
 }
 static bool nvml_read_clock_offsets(char*, size_t) {
+    if (preciseReadback) {
+        g_app.readback.memOffset = memory_offset_khz_from_effective_mhz(
+            hardwareMHz, &g_app.memClockOffsetkHz);
+        return g_app.readback.memOffset;
+    }
     if (!verifyReset || hardwareMHz != 0) return false;
     g_app.memClockOffsetkHz = 0;
     g_app.readback.memOffset = true;
@@ -85,6 +93,35 @@ static void initialize(bool canVerifyReset) {
     verifyReset = canVerifyReset;
     setterFails = coreFails = false;
     pstateReadSucceeds = pstateMemoryPresent = setterLeavesUnchanged = false;
+    preciseReadback = false;
+    setterClaimsMatch = false;
+}
+
+static int run_precise_memory_tests() {
+    initialize(false);
+    preciseReadback = true;
+    if (!nvapi_set_mem_offset_precise(500, false) || hardwareMHz != 1 ||
+        g_app.memClockOffsetkHz != 500 || writes != 1) return 8080;
+    if (!nvapi_set_mem_offset_precise(-500, false) || hardwareMHz != -1 ||
+        g_app.memClockOffsetkHz != -500 || writes != 2) return 8081;
+    if (nvapi_set_mem_offset_precise(501, false) || writes != 2) return 8082;
+    initialize(false);
+    if (nvapi_set_mem_offset_precise(500, false) || writes) return 8083;
+    initialize(false);
+    preciseReadback = setterLeavesUnchanged = setterClaimsMatch = true;
+    if (nvapi_set_mem_offset_precise(500, false) || writes != 1 ||
+        !g_app.memOffsetWriteUncertain) return 8084;
+    initialize(false);
+    preciseReadback = setterLeavesUnchanged = setterClaimsMatch = true;
+    hardwareMHz = 2999;
+    if (nvapi_set_mem_offset_precise(1500000, false) || writes != 1 ||
+        hardwareMHz != 2999) return 8085;
+    int value = 0;
+    if (!memory_offset_effective_mhz_from_hz(123500000, &value) || value != 247 ||
+        memory_offset_hz_from_effective_mhz(value) != 123500000 ||
+        memory_offset_effective_mhz_from_hz(LLONG_MIN, &value) ||
+        memory_offset_khz_from_effective_mhz(INT_MAX, &value)) return 8086;
+    return 0;
 }
 static int run_pstate_evidence_tests() {
     // A graphics-only Pstates response cannot certify cached stock memory.
@@ -248,7 +285,8 @@ static int run() {
 } // namespace memory_recovery_fixture
 
 int run_memory_recovery_tests() {
-    int result = memory_recovery_fixture::run();
+    int result = memory_recovery_fixture::run_precise_memory_tests();
+    if (!result) result = memory_recovery_fixture::run();
     if (result) std::fprintf(stderr, "regression assertion failed: %d\n", result);
     return result;
 }

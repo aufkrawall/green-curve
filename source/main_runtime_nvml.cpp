@@ -2,6 +2,7 @@
 // the amalgamated translation unit is exactly what it was before the split.
 #include "main_cli_options.cpp"
 #include "xbar_telemetry.h"
+#include "memory_offset_units.h"
 
 static bool nvml_resolve(void** out, const char* name) {
     if (!g_nvml) return false;
@@ -154,13 +155,16 @@ static bool nvml_read_clock_offsets(char* detail, size_t detailSize) {
     }
 
     bool memOk = nvml_get_offset_range(NVML_CLOCK_MEM, &mn, &mx, &cur, detail, detailSize);
-    if (memOk) {
+    int physicalMemKHz = 0;
+    if (memOk && memory_offset_khz_from_effective_mhz(cur, &physicalMemKHz)) {
         g_app.memClockOffsetMinMHz = mem_display_mhz_from_driver_mhz(mn);
         g_app.memClockOffsetMaxMHz = mem_display_mhz_from_driver_mhz(mx);
-        g_app.memClockOffsetkHz = (cur * 1000) / 2;
+        g_app.memClockOffsetkHz = physicalMemKHz;
         g_app.memOffsetRangeKnown = g_app.readback.memOffset = true;
     } else {
         g_app.memOffsetRangeKnown = g_app.readback.memOffset = false;
+        if (memOk) set_message(detail, detailSize, "Memory offset exceeds the physical cache range");
+        memOk = false;
     }
 
     return gpuOk || memOk;

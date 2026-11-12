@@ -57,9 +57,10 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
     if ((baseline || (phaseMask & LINUX_MUTATION_GPU_OFFSET)) && snapshot->gpuOffsetValid)
         ok &= nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, snapshot->gpuOffsetMHz);
     if ((phaseMask & LINUX_MUTATION_MEM_OFFSET) && snapshot->memOffsetValid) {
-        // Snapshot is display MHz; the NVML wire unit is effective MHz.
+        // Prefer the exact effective control over its legacy display projection.
         int restoreEffectiveMHz =
-            nvml_mem_effective_mhz_from_display_mhz(snapshot->memOffsetMHz);
+            snapshot->memOffsetExact ? snapshot->memOffsetEffectiveMHz :
+                nvml_mem_effective_mhz_from_display_mhz(snapshot->memOffsetMHz);
         lb_log("offset: rollback domain=%u display=%d effective=%d\n",
                (unsigned int)NVML_CLOCK_MEM, snapshot->memOffsetMHz,
                restoreEffectiveMHz);

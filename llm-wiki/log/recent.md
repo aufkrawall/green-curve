@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-12: Exact memory recovery and checked ratio arithmetic
+
+- Added physical-Hz/effective-MHz conversion helpers and a strict programmed
+  memory-control setter. The legacy setter also preserves half-MHz requests;
+  unrepresentable requests or an unavailable exact getter issue no write.
+- Linux rollback snapshots keep odd effective-MHz controls instead of rebuilding
+  them from truncated display MHz. Added production setter/rollback fixtures.
+- Signed minimum, checked scaling and ratio arithmetic are bounded without an
+  overflowing intermediate product. Units 8070-8086 pass; 11,210 edge/random
+  arithmetic cases also matched an independent arbitrary-precision calculation.
+- Full native regressions/source gates and the Windows/Linux check matrix pass.
+  No physical GPU replay claimed. See [profile-document.md](../profile-document.md).
+
 ## 2026-11-12: Shared captured-point runtime interpretation
 
 - Added a shared point adapter used by Windows/Linux planning, target builds,

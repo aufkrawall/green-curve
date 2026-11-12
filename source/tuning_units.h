@@ -39,14 +39,28 @@ struct TuningHzToKHzResult {
 };
 static inline TuningHzToKHzResult tuning_hz_to_khz(long long hz) {
     TuningHzToKHzResult r{};
-    long long magnitude = hz < 0 ? -hz : hz;
     r.kHz = hz / 1000;
-    r.hadRemainder = (magnitude % 1000) != 0;
+    r.hadRemainder = (hz % 1000) != 0;
     return r;
 }
 
-static inline long long tuning_khz_to_hz(long long kHz) { return kHz * 1000LL; }
-static inline long long tuning_mhz_to_hz(long long mHz) { return mHz * 1000000LL; }
+// Signed scaling includes LLONG_MIN; the factor must be positive.
+static inline bool tuning_scale_i64(long long value, long long scale, long long* out) {
+    if (!out || scale <= 0 || value > LLONG_MAX / scale || value < LLONG_MIN / scale)
+        return false;
+    *out = value * scale;
+    return true;
+}
+// Zero is the invalid absolute-frequency sentinel for the legacy convenience
+// callers. Adapters for signed offsets use the checked function directly.
+static inline long long tuning_khz_to_hz(long long khz) {
+    long long out = 0;
+    return tuning_scale_i64(khz, 1000, &out) ? out : 0;
+}
+static inline long long tuning_mhz_to_hz(long long mhz) {
+    long long out = 0;
+    return tuning_scale_i64(mhz, 1000000, &out) ? out : 0;
+}
 
 // An exact reduced ratio of board default power, denominator always
 // positive. {0, 0} is the explicit invalid sentinel (never a valid 0/0
@@ -58,8 +72,7 @@ struct TuningPowerRatio {
 };
 
 static inline long long tuning_gcd_i64(long long a, long long b) {
-    if (a < 0) a = -a;
-    if (b < 0) b = -b;
+    if (a < 0 || b < 0) return 0;
     while (b != 0) {
         long long t = a % b;
         a = b;
@@ -102,6 +115,36 @@ struct TuningPowerRatioResolution {
     bool overflowed;         // checked arithmetic could not represent it at all
 };
 
+// Floor(a*b/denominator) and its exactness without an overflowing product or
+// compiler-specific wide integer. Each partial value is a quotient/remainder
+// pair; remainder addition and doubling use subtraction before addition.
+static inline bool tuning_mul_div_nonnegative(long long a, long long b,
+    long long denominator, long long* quotient, bool* exact) {
+    if (a < 0 || b < 0 || denominator <= 0 || !quotient || !exact) return false;
+    long long q = a / denominator, r = a % denominator;
+    long long totalQ = 0, totalR = 0;
+    while (b) {
+        if (b & 1) {
+            if (q > LLONG_MAX - totalQ) return false;
+            totalQ += q;
+            if (totalR >= denominator - r) {
+                totalR -= denominator - r;
+                if (totalQ == LLONG_MAX) return false;
+                ++totalQ;
+            } else totalR += r;
+        }
+        b /= 2;
+        if (!b) break;
+        const long long carry = r >= denominator - r ? 1 : 0;
+        if (q > (LLONG_MAX - carry) / 2) return false;
+        q = q * 2 + carry;
+        r = carry ? r - (denominator - r) : r + r;
+    }
+    *quotient = totalQ;
+    *exact = totalR == 0;
+    return true;
+}
+
 // Resolve a ratio against a FRESH destination default, with checked 64-bit
 // arithmetic (contract: reject overflow before narrowing). Exact only when
 // numerator*destDefaultMw is evenly divisible by denominator; otherwise the
@@ -116,14 +159,12 @@ static inline TuningPowerRatioResolution tuning_power_ratio_resolve(
         out.overflowed = true;
         return out;
     }
-    if (tuning_mul_overflows_i64(ratio.numerator, destDefaultMw)) {
+    if (!tuning_mul_div_nonnegative(ratio.numerator, destDefaultMw,
+            ratio.denominator, &out.requestedMw, &out.exact)) {
         out.overflowed = true;
         return out;
     }
-    long long product = ratio.numerator * destDefaultMw;
-    out.requestedMw = product / ratio.denominator; // truncated ideal, for messages
-    out.exact = (product % ratio.denominator) == 0;
-    out.resolvedMw = out.exact ? (product / ratio.denominator) : 0;
+    out.resolvedMw = out.exact ? out.requestedMw : 0;
     return out;
 }
 

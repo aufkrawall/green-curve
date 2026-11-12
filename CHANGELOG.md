@@ -47,6 +47,7 @@ Curves are checked before anything is written, low-voltage curve points become e
 
 ### Fixed
 
+- **Linux memory recovery:** failed tuning changes restore half-MHz memory offsets without rounding them to whole MHz.
 - **VF curve flatten editing:** retyping the target frequency in a ticked flatten point's edit box preserves normal left-to-right typing order without caret resets.
 - **Externally flattened curves:** a flatten set by another tool is detected at its real starting point, so saving, resetting and loading it no longer fails on a hidden low-voltage point.
 

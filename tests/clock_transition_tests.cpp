@@ -93,6 +93,8 @@ struct LinuxHardwareSnapshot {
     int gpuOffsetMHz;
     // Display/actual MHz (NVML effective MHz halved at capture, as on Windows).
     int memOffsetMHz;
+    bool memOffsetExact;
+    int memOffsetEffectiveMHz;
     unsigned int powerLimitmW;
     int xbarOffsetKhz;
     int xbarMsvddOffsetUv;
@@ -113,8 +115,9 @@ struct LinuxHardwareSnapshot {
 #include "linux_transaction.h"
 #include "linux_apply_ceiling.h"
 static int clockOffsetWrites=0, curveOffsetWrites=0, memoryOffsetWrites=0;
-static bool nvml_set_clock_offset(LinuxGpuState*,unsigned int domain,int){
- ++clockOffsetWrites;if(domain==NVML_CLOCK_MEM)++memoryOffsetWrites;return true;
+static int lastMemoryOffsetMHz=0;
+static bool nvml_set_clock_offset(LinuxGpuState*,unsigned int domain,int value){
+ ++clockOffsetWrites;if(domain==NVML_CLOCK_MEM){++memoryOffsetWrites;lastMemoryOffsetMHz=value;}return true;
 }
 static int nvml_mem_effective_mhz_from_display_mhz(int x){return x*2;}
 template<class... A> static bool linux_xbar_write_owned(A...){return true;}
@@ -374,6 +377,11 @@ static int run(){
    CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
      LINUX_MUTATION_MEM_OFFSET,pascalErr,sizeof(pascalErr)));
    CHECK(memoryOffsetWrites==oldMemoryWrites+1);
+   pascalSnapshot.memOffsetExact=true;pascalSnapshot.memOffsetEffectiveMHz=247;
+   pascalSnapshot.memOffsetMHz=123;
+   CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
+     LINUX_MUTATION_MEM_OFFSET,pascalErr,sizeof(pascalErr)));
+   CHECK(lastMemoryOffsetMHz==247);
    CHECK(resets==0);
    g.retainedTransitionCeilingMHz=2300;
    CHECK(!linux_apply_reset_baseline_locked_clocks(&g,&flat));
