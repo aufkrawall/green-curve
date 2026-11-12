@@ -47,6 +47,7 @@ Curves are checked before anything is written, low-voltage curve points become e
 
 ### Fixed
 
+- **Linux power limits:** requests outside the board's bounds are refused before tuning changes, instead of being silently adjusted to another limit.
 - **Linux memory recovery:** fractional offsets retain their precision, and recovery reports a mismatch if the driver rounds or cannot verify the restored value.
 - **Precise curve recovery:** Linux restores fractional curve offsets exactly, and Reset checks the programmed value before treating a curve point as zero.
 - **VF curve flatten editing:** retyping the target frequency in a ticked flatten point's edit box preserves normal left-to-right typing order without caret resets.

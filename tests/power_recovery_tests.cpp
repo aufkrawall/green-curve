@@ -192,6 +192,28 @@ static int run_write_boundary_tests() {
     return 0;
 }
 
+static int run_precise_ratio_tests() {
+    initialize();
+    if (!nvapi_set_power_limit_ratio({249, 250}) || hardwareCurrentmW != 249000 ||
+        powerWrites != 1 || g_app.powerLimitWriteUncertain || !g_app.readback.powerLimit) return 8190;
+    if (!nvapi_set_power_limit_ratio({249, 250}) || powerWrites != 1) return 8191;
+    if (nvapi_set_power_limit_ratio({1, 3}) || powerWrites != 1) return 8192;
+    initialize();
+    g_nvml_api.setPowerLimit = nullptr;
+    smiAvailable = true;
+    if (nvapi_set_power_limit_ratio({249001, 250000}) || fallbackLaunches ||
+        g_app.powerLimitWriteUncertain) return 8193;
+    if (nvapi_set_power_limit_ratio({249, 250}) || fallbackLaunches != 1 ||
+        !launchSawUncertainty || g_app.powerLimitWriteUncertain) return 8194;
+    initialize();
+    failAfterWrite = 1;
+    if (nvapi_set_power_limit_ratio({249, 250}) || powerWrites != 1 ||
+        !g_app.powerLimitWriteUncertain || g_app.readback.powerLimit) return 8195;
+    initialize();
+    if (nvapi_set_power_limit_ratio({249, 250}, false, 260000) || powerWrites) return 8196;
+    return 0;
+}
+
 static int run() {
     initialize();
     if (!nvml_read_power_limit() || !g_app.powerLimitSurfaceProven ||
@@ -237,7 +259,8 @@ static int run() {
     g_app.powerLimitWriteUncertain = true;
     if (nvapi_set_power_limit(150, true) || powerWrites != 0)
         return 7626;
-    return run_write_boundary_tests();
+    int boundary = run_write_boundary_tests();
+    return boundary ? boundary : run_precise_ratio_tests();
 }
 } // namespace power_recovery_fixture
 

@@ -94,12 +94,40 @@ Schema migration can preserve this intent, but IPC captured replay remains
 explicitly disabled until document/editor persistence is connected. Explicit
 runtime scopes now use the transition compiler below. The Windows write interface requires exact physical kHz; the Linux
 raw control surface now supports its exact integer-Hz grid as described below.
-Precise scalar/power runtime intent remains later work.
+Precise scalar/power runtime intent remains later work; the exact power backend
+below establishes its destination contract first.
 
 Fixtures 8040-8060 and the production Windows target/verify fixture cover zero,
 negative offsets, preview/global-offset independence, strict readback, merge,
 restore, unavailable-domain projection and malformed intent. No hardware write
 or native Linux execution is claimed by these host-neutral fixtures.
+
+## Exact power destination controls (2026-11-13)
+
+Source anchors: `source/power_ratio_control.h`, `source/gpu_backend_power.cpp`,
+`source/linux_backend_nvml_write.cpp`, `source/linux_backend_preflight.h`,
+`tests/power_ratio_control_tests.cpp`, `tests/power_recovery_tests.cpp`,
+`tests/linux_scope_preflight_tests.cpp`.
+
+The shared planner resolves a positive rational intent against fresh NVML
+current/default controls. Known board bounds are authoritative; unavailable
+constraints use the documented percentage fallback bounds. Fractions of mW,
+whole-watt CLI limitations and arithmetic overflow cause explicit refusals,
+never rounding or clamping. An unavailable default-only surface is inert only
+for 1/1 without a forced repair. Two immediate reads must agree before mutation;
+post-write verification requires the exact target and unchanged denominator,
+bounds and write grid. No timing assumptions or additional retries are used.
+
+Windows precise and legacy setters share the selected-GPU writer and its
+uncertainty tracking. The precise entry point does not round for the trusted
+CLI fallback; legacy percentage recovery retains its established behavior.
+Linux percentage requests now use the exact engine and preflight board bounds
+before any transaction writes. Ratio IPC/editor producers remain pending.
+
+Fixtures 8170-8199 cover exact 249/250, partial reads, changing defaults/bounds,
+failed or rounded writes, unavailable surfaces, CLI grid refusal, forced repair,
+stale denominators and production Windows/Linux preflight call sites. These
+are fake-driver checks, with no physical GPU mutation.
 
 ## Runtime application scopes (2026-11-12)
 

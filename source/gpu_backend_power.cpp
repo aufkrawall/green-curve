@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
+#include "power_ratio_control.h"
+
 // The board power-target (TGP) read and write pair, split out of
 // gpu_backend.cpp when it passed its size ratchet, and included from the
 // position it occupied so the amalgamated ordering is unchanged.
@@ -141,6 +143,120 @@ static bool power_limit_verify_write(const char* route, unsigned int targetmW) {
     return true;
 }
 
+// Both entry points share target selection, launch authority and uncertainty.
+static bool power_limit_write_target_mw(unsigned int targetmW,
+    bool allowWholeWattRounding, bool* attempted = nullptr) {
+    if (attempted) *attempted = false;
+    if (nvml_ensure_ready() && g_nvml_api.setPowerLimit) {
+        set_last_apply_phase("Power limit NVML write");
+        // An invoked setter may mutate before reporting failure. An absent
+        // setter leaves the previous evidence intact while fallback is checked.
+        g_app.powerLimitWriteUncertain = true;
+        g_app.readback.powerLimit = false;
+        if (attempted) *attempted = true;
+        nvmlReturn_t r = g_nvml_api.setPowerLimit(g_app.nvmlDevice, targetmW);
+        if (r == NVML_SUCCESS) return power_limit_verify_write("NVML", targetmW);
+        debug_log("Power limit via NVML failed: %s\n", nvml_err_name(r));
+    }
+    WCHAR exePath[MAX_PATH] = {};
+    if (!find_trusted_nvidia_smi_path_w(exePath, ARRAY_COUNT(exePath))) {
+        debug_log("Power limit via nvidia-smi skipped: trusted executable not found\n");
+        return false;
+    }
+    // Without -i, nvidia-smi sets this wattage on every GPU in the machine.
+    char busId[32] = {};
+    if (!power_limit_selected_bus_id(busId, sizeof(busId))) {
+        debug_log("Power limit via nvidia-smi skipped: the selected GPU's PCI bus ID is unknown\n");
+        return false;
+    }
+    if (!allowWholeWattRounding && targetmW % 1000) {
+        debug_log("power: exact CLI target requires a whole-watt conversion target=%u mW\n", targetmW);
+        return false;
+    }
+    int watts = (int)(((unsigned long long)targetmW + 500) / 1000);
+    WCHAR cmdLine[MAX_PATH + 96] = {};
+    StringCchPrintfW(cmdLine, ARRAY_COUNT(cmdLine), L"\"%ls\" -i %hs -pl %d", exePath, busId, watts);
+    debug_log("Power limit via nvidia-smi: gpu=%s watts=%d\n", busId, watts);
+    set_last_apply_phase("Power limit nvidia-smi write");
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi = {};
+    ScopedProcess proc;
+    const bool previousUncertainty = g_app.powerLimitWriteUncertain;
+    const bool previousReadback = g_app.readback.powerLimit;
+    g_app.powerLimitWriteUncertain = true;
+    g_app.readback.powerLimit = false;
+    if (!CreateProcessW(exePath, cmdLine, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        // No child started, so this fallback cannot have changed the board.
+        // Preserve uncertainty from an earlier NVML attempt or failed repair.
+        g_app.powerLimitWriteUncertain = previousUncertainty;
+        g_app.readback.powerLimit = previousReadback;
+        debug_log("Power limit via nvidia-smi failed to launch (error %lu);"
+                  " no fallback write started uncertain=%d readback=%d\n",
+            GetLastError(), previousUncertainty ? 1 : 0, previousReadback ? 1 : 0);
+        return false;
+    }
+    if (attempted) *attempted = true;
+    proc.assign(pi.hProcess, pi.hThread);
+    DWORD waitResult = proc.wait(5000);
+    if (waitResult == WAIT_TIMEOUT) {
+        proc.terminate(1);
+        proc.wait(1000);
+        debug_log("Power limit via nvidia-smi timed out and was terminated\n");
+        return false;
+    }
+    DWORD exitCode = proc.exit_code();
+    if (exitCode != 0) {
+        debug_log("Power limit via nvidia-smi failed with exit code %lu\n", exitCode);
+        return false;
+    }
+    return power_limit_verify_write("nvidia-smi", targetmW);
+}
+
+// Exact intent never rounds to a percentage or to the CLI's whole watts.
+static bool nvapi_set_power_limit_ratio(TuningPowerRatio ratio, bool forceWrite = false,
+    unsigned int expectedDefaultMw = 0) {
+    const auto read = [&] {
+        PowerRatioSurface s{};
+        if (!nvml_ensure_ready()) return s;
+        s = power_ratio_read_nvml(g_nvml_api, g_app.nvmlDevice);
+        if (!s.writable) {
+            WCHAR path[MAX_PATH]{};
+            char busId[32]{};
+            s.writable = find_trusted_nvidia_smi_path_w(path, ARRAY_COUNT(path)) &&
+                power_limit_selected_bus_id(busId, sizeof(busId));
+            s.gridMw = s.writable ? 1000u : 0u;
+        }
+        return s;
+    };
+    const PowerRatioControlResult r = power_ratio_control_apply(ratio, read,
+        [&](unsigned int target) {
+            bool attempted = false;
+            const bool accepted = power_limit_write_target_mw(target, false, &attempted);
+            return PowerRatioControlWrite{attempted, accepted};
+        }, forceWrite || g_app.powerLimitWriteUncertain, expectedDefaultMw);
+    if (r.success && r.plan.status != POWER_RATIO_INERT &&
+        r.after.currentMw <= INT_MAX && r.after.defaultMw <= INT_MAX) {
+        g_app.powerLimitCurrentmW = (int)r.after.currentMw;
+        g_app.powerLimitDefaultmW = (int)r.after.defaultMw;
+        g_app.powerLimitRecoveryDefaultmW = (int)r.after.defaultMw;
+        g_app.powerLimitSurfaceProven = true;
+        g_app.powerLimitPct = power_limit_pct_from_mw((int)r.after.currentMw, (int)r.after.defaultMw);
+        g_app.readback.powerLimit = true;
+        g_app.powerLimitWriteUncertain = false;
+    }
+    if (!r.success && r.writeAttempted) {
+        g_app.powerLimitWriteUncertain = true;
+        g_app.readback.powerLimit = false;
+    }
+    debug_log("power: ratio=%lld/%lld status=%s target=%u default=%u attempted=%d\n",
+        ratio.numerator, ratio.denominator, power_ratio_control_status_text(r.plan.status),
+        r.plan.targetMw, r.plan.defaultMw, r.writeAttempted ? 1 : 0);
+    return r.success;
+}
+
 // Every refusal below is logged. These are the only silent failures the apply
 // and reset paths can hit in this domain, and a silent `false` here surfaced as
 // nothing but a generic "Power target did not reset" three layers up.
@@ -204,64 +320,5 @@ static bool nvapi_set_power_limit(int pct, bool forceWrite) {
     }
     debug_log("set_power_limit: pct=%d defaultmW=%d targetmW=%u force=%d fresh=%d\n",
         pct, defaultmW, targetmW, forceWrite ? 1 : 0, freshSurface ? 1 : 0);
-    if (nvml_ensure_ready() && g_nvml_api.setPowerLimit) {
-        set_last_apply_phase("Power limit NVML write");
-        // An invoked setter may mutate before reporting failure. An absent
-        // setter leaves the previous evidence intact while fallback is checked.
-        g_app.powerLimitWriteUncertain = true;
-        g_app.readback.powerLimit = false;
-        nvmlReturn_t r = g_nvml_api.setPowerLimit(g_app.nvmlDevice, targetmW);
-        if (r == NVML_SUCCESS) return power_limit_verify_write("NVML", targetmW);
-        debug_log("Power limit via NVML failed: %s\n", nvml_err_name(r));
-    }
-    WCHAR exePath[MAX_PATH] = {};
-    if (!find_trusted_nvidia_smi_path_w(exePath, ARRAY_COUNT(exePath))) {
-        debug_log("Power limit via nvidia-smi skipped: trusted executable not found\n");
-        return false;
-    }
-    // Without -i, nvidia-smi sets this wattage on every GPU in the machine.
-    char busId[32] = {};
-    if (!power_limit_selected_bus_id(busId, sizeof(busId))) {
-        debug_log("Power limit via nvidia-smi skipped: the selected GPU's PCI bus ID is unknown\n");
-        return false;
-    }
-    int watts = (int)((targetmW + 500) / 1000);
-    WCHAR cmdLine[MAX_PATH + 96] = {};
-    StringCchPrintfW(cmdLine, ARRAY_COUNT(cmdLine), L"\"%ls\" -i %hs -pl %d", exePath, busId, watts);
-    debug_log("Power limit via nvidia-smi: gpu=%s watts=%d\n", busId, watts);
-    set_last_apply_phase("Power limit nvidia-smi write");
-    STARTUPINFOW si = {};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION pi = {};
-    ScopedProcess proc;
-    const bool previousUncertainty = g_app.powerLimitWriteUncertain;
-    const bool previousReadback = g_app.readback.powerLimit;
-    g_app.powerLimitWriteUncertain = true;
-    g_app.readback.powerLimit = false;
-    if (!CreateProcessW(exePath, cmdLine, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        // No child started, so this fallback cannot have changed the board.
-        // Preserve uncertainty from an earlier NVML attempt or failed repair.
-        g_app.powerLimitWriteUncertain = previousUncertainty;
-        g_app.readback.powerLimit = previousReadback;
-        debug_log("Power limit via nvidia-smi failed to launch (error %lu);"
-                  " no fallback write started uncertain=%d readback=%d\n",
-            GetLastError(), previousUncertainty ? 1 : 0, previousReadback ? 1 : 0);
-        return false;
-    }
-    proc.assign(pi.hProcess, pi.hThread);
-    DWORD waitResult = proc.wait(5000);
-    if (waitResult == WAIT_TIMEOUT) {
-        proc.terminate(1);
-        proc.wait(1000);
-        debug_log("Power limit via nvidia-smi timed out and was terminated\n");
-        return false;
-    }
-    DWORD exitCode = proc.exit_code();
-    if (exitCode != 0) {
-        debug_log("Power limit via nvidia-smi failed with exit code %lu\n", exitCode);
-        return false;
-    }
-    return power_limit_verify_write("nvidia-smi", targetmW);
+    return power_limit_write_target_mw(targetmW, true);
 }

@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Exact power planning and backend verification
+
+- Added shared rational-power resolution against fresh destination controls,
+  with explicit conversion/range refusals and stable-default verification.
+  Linux percentage writes use it and preflight bounds before transaction writes;
+  Windows precise writes share existing selected-GPU and uncertainty handling.
+- Regression fixtures 8170-8199 cover fractional targets, unavailable controls,
+  changing defaults/bounds, failed or rounded writes and actual backend helpers.
+  Native regressions and all declared Windows/Linux compiler targets pass.
+- Ratio IPC/editor producers remain pending. No hardware write performed.
+  See [profile-document.md](../profile-document.md).
+
 ## 2026-11-13: Exact memory recovery binds its control surface
 
 - Linux snapshots retain the API surface that supplied memory control.

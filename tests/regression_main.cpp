@@ -1032,6 +1032,7 @@ int run_captured_intent_runtime_tests();
 int run_scoped_apply_tests();
 int run_linux_scope_preflight_tests();
 int run_linux_clock_offset_tests();
+int run_power_ratio_control_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2684,6 +2685,7 @@ static int run_all_tests(int argc, char** argv) {
     if (int schemaFailure = run_captured_schema_tests()) return schemaFailure;
     if (int preflightFailure = run_linux_scope_preflight_tests()) return preflightFailure;
     if (int offsetFailure = run_linux_clock_offset_tests()) return offsetFailure;
+    if (int ratioFailure = run_power_ratio_control_tests()) return ratioFailure;
     if (int scopeFailure = run_scoped_apply_tests()) {
         fprintf(stderr, "scoped Apply regression failed: %d\n", scopeFailure);
         return scopeFailure;

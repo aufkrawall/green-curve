@@ -44,6 +44,7 @@ REGRESSION_SOURCES = (
     'scoped_apply_tests.cpp',
     'linux_scope_preflight_tests.cpp',
     'linux_clock_offset_tests.cpp',
+    'power_ratio_control_tests.cpp',
     'linux_vf_read_tests.cpp',
     'linux_vf_write_tests.cpp',
     'linux_read_request_tests.cpp',

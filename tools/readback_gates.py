@@ -126,16 +126,24 @@ def check_all(ctx, require_text, forbid_text):
         "an accepted power write is verified against the reported limit")
     for route in ('"NVML"', '"nvidia-smi"'):
         ctx.require_text_in_operation(
-            gpu_backend_power_cpp, "static bool nvapi_set_power_limit(",
+            gpu_backend_power_cpp, "static bool power_limit_write_target_mw(",
             f"power_limit_verify_write({route}, targetmW)",
             f"the {route} power route verifies the reported limit")
+    ctx.require_text_in_operation(
+        gpu_backend_power_cpp, "static bool nvapi_set_power_limit(",
+        "power_limit_write_target_mw(targetmW, true)",
+        "legacy power requests use the checked selected-GPU writer")
+    ctx.require_text_in_operation(
+        gpu_backend_power_cpp, "static bool nvapi_set_power_limit_ratio(",
+        "power_limit_write_target_mw(target, false, &attempted)",
+        "precise power requests use the same writer without CLI rounding")
     # Without -i, nvidia-smi applies the limit to every GPU in the machine.
     require_text(gpu_backend_power_cpp, '-i %hs -pl %d',
                  "the nvidia-smi power fallback names the selected GPU")
     forbid_text(gpu_backend_power_cpp, '\\"%ls\\" -pl %d',
                 "the nvidia-smi power fallback never runs without a GPU selector")
     ctx.require_order_in_operation(
-        gpu_backend_power_cpp, "static bool nvapi_set_power_limit(",
+        gpu_backend_power_cpp, "static bool power_limit_write_target_mw(",
         "if (!power_limit_selected_bus_id(busId, sizeof(busId)))", "CreateProcessW(",
         "the nvidia-smi fallback refuses before launch without the selected bus ID")
 

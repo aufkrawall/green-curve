@@ -4,6 +4,8 @@
 #ifndef GREEN_CURVE_LINUX_BACKEND_PREFLIGHT_H
 #define GREEN_CURVE_LINUX_BACKEND_PREFLIGHT_H
 
+#include "power_ratio_control.h"
+
 static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
                                     const LinuxHardwareSnapshot* snapshot,
                                     char* err, size_t errSize, int graphicsRouteOverride = 0) {
@@ -27,8 +29,8 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
     if (unavailableDomains != 0) {
         gc_snprintf(err, errSize,
             "requested GPU domains are unavailable (requested=0x%02x available=0x%02x missing=0x%02x)",
-            requestedDomains, snapshot->availableMutationDomains,
-            unavailableDomains);
+            (unsigned)requestedDomains, (unsigned)snapshot->availableMutationDomains,
+            (unsigned)unavailableDomains);
         return false;
     }
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
@@ -49,6 +51,15 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
     if (d->hasPowerLimit && !powerInert &&
         (!snapshot->powerValid || !g->nvml.setPowerLimit)) {
         gc_strlcpy(err, errSize, "power limit cannot be snapshotted and written safely"); return false;
+    }
+    if (d->hasPowerLimit && !powerInert) {
+        const PowerRatioControlPlan power = power_ratio_control_plan(
+            tuning_power_ratio_from_percent(d->powerLimitPct),
+            power_ratio_read_nvml(g->nvml, g->nvmlDevice));
+        if (power.status != POWER_RATIO_READY) {
+            gc_snprintf(err, errSize, "power limit preflight: %s", power_ratio_control_status_text(power.status));
+            return false;
+        }
     }
     if (desired_has_curve_write(d)) {
         char why[160] = {};

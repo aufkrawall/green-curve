@@ -14,24 +14,24 @@
 
 #include "linux_backend_clock_offsets.h"
 
+#include "power_ratio_control.h"
+
+static bool nvml_set_power_limit_ratio(LinuxGpuState* g, TuningPowerRatio ratio,
+    unsigned int expectedDefaultMw = 0) {
+    const PowerRatioControlResult r = power_ratio_control_apply(ratio,
+        [&] { return power_ratio_read_nvml(g->nvml, g->nvmlDevice); },
+        [&](unsigned int target) {
+            return PowerRatioControlWrite{true,
+                g->nvml.setPowerLimit(g->nvmlDevice, target) == NVML_SUCCESS};
+        }, false, expectedDefaultMw);
+    lb_log("power: ratio=%lld/%lld status=%s target=%u default=%u attempted=%d\n",
+        ratio.numerator, ratio.denominator, power_ratio_control_status_text(r.plan.status),
+        r.plan.targetMw, r.plan.defaultMw, r.writeAttempted ? 1 : 0);
+    return r.success;
+}
+
 static bool nvml_set_power_limit_pct(LinuxGpuState* g, int pct) {
-    NvmlApi* a = &g->nvml;
-    if (!a->setPowerLimit) return false;
-    int defmW = g->powerLimitDefaultmW;
-    if (defmW <= 0 && a->getPowerDefaultLimit) {
-        unsigned int d = 0;
-        if (a->getPowerDefaultLimit(g->nvmlDevice, &d) == NVML_SUCCESS) defmW = (int)d;
-    }
-    if (defmW <= 0) return false;
-    long target = (long)defmW * pct / 100;
-    if (g->powerLimitMinmW > 0 && target < g->powerLimitMinmW) target = g->powerLimitMinmW;
-    if (g->powerLimitMaxmW > 0 && target > g->powerLimitMaxmW) target = g->powerLimitMaxmW;
-    nvmlReturn_t r = a->setPowerLimit(g->nvmlDevice, (unsigned int)target);
-    lb_log("power: set %d%% -> %ld mW ret=%d\n", pct, target, (int)r);
-    if (r != NVML_SUCCESS) return false;
-    unsigned int verify = 0;
-    return !a->getPowerLimit ||
-           (a->getPowerLimit(g->nvmlDevice, &verify) == NVML_SUCCESS && verify == (unsigned int)target);
+    return nvml_set_power_limit_ratio(g, tuning_power_ratio_from_percent(pct));
 }
 
 // Read the duty the driver says it intends to hold for `fan`.  Returns false

@@ -19,6 +19,13 @@ static bool scope_fixture_curve_plausible(const LinuxGpuState*, char*, size_t) {
 static int writes;
 static nvmlReturn_t counted_reset(nvmlDevice_t) { ++writes; return NVML_SUCCESS; }
 static nvmlReturn_t counted_offset(nvmlDevice_t, int) { ++writes; return NVML_SUCCESS; }
+static unsigned int powerDefault = 250000, powerMaximum = 190000;
+static nvmlReturn_t power_current(nvmlDevice_t, unsigned int* v) { *v = 250000; return NVML_SUCCESS; }
+static nvmlReturn_t power_default(nvmlDevice_t, unsigned int* v) { *v = powerDefault; return NVML_SUCCESS; }
+static nvmlReturn_t power_range(nvmlDevice_t, unsigned int* lo, unsigned int* hi) {
+    *lo = 100000; *hi = powerMaximum; return NVML_SUCCESS;
+}
+static nvmlReturn_t power_set(nvmlDevice_t, unsigned int) { ++writes; return NVML_SUCCESS; }
 
 int run_linux_scope_preflight_tests() {
     LinuxGpuState g{};
@@ -54,5 +61,16 @@ int run_linux_scope_preflight_tests() {
     if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why), 1) || writes) return 8143;
     snapshot.availableMutationDomains |= SERVICE_MUTATION_DOMAIN_GPU_OFFSET;
     if (!linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why), 1) || writes) return 8144;
+    request = {}; request.hasPowerLimit = true; request.powerLimitPct = 80;
+    snapshot.powerValid = true;
+    snapshot.availableMutationDomains |= SERVICE_MUTATION_DOMAIN_POWER;
+    g.nvml.getPowerLimit = power_current; g.nvml.getPowerDefaultLimit = power_default;
+    g.nvml.getPowerConstraints = power_range; g.nvml.setPowerLimit = power_set;
+    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8197;
+    powerMaximum = 300000;
+    if (!linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8198;
+    powerDefault = 250001;
+    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8199;
+    powerDefault = 250000; powerMaximum = 190000;
     return 0;
 }
