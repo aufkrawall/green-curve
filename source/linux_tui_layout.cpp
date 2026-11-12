@@ -3,6 +3,7 @@
 
 #include "linux_tui_layout_internal.h"
 #include "linux_tui_authority.h"
+#include "vf_writable_point_policy.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -234,31 +235,16 @@ int tui_vf_first_listed_point(const TuiViewModel& vm) {
     // 0..44 are all 180 MHz at rising voltage. They are 45 identical rows that
     // cannot be meaningfully edited -- any target written there is clamped back
     // to the floor -- so the table does not list them and the curve starts
-    // where it actually starts rising.
-    int firstPopulated = -1;
-    int floorBaseMHz = 0;
-    int runLength = 0;
-    int bound = -1;
-    for (int i = 0; i < VF_NUM_POINTS; ++i) {
-        TuiPointValues values = tui_point_values(vm, i);
-        if (!values.populated) continue;
-        if (firstPopulated < 0) {
-            firstPopulated = i;
-            floorBaseMHz = values.baseMHz;
-            runLength = 1;
-            continue;
-        }
-        if (values.baseMHz != floorBaseMHz) { bound = i; break; }
-        ++runLength;
-    }
-    if (firstPopulated < 0) return 0;
-    // A curve with no flat run at all (or a single value throughout) must not
-    // end up with an empty table.
-    if (bound < 0) bound = firstPopulated;
-    // Only a genuine run is a floor. A curve whose very first point merely
-    // differs from the second is an ordinary rising curve, and dropping its
-    // first point would be data loss dressed up as tidiness.
-    if (runLength < TUI_VF_MIN_FLAT_FLOOR_RUN) bound = firstPopulated;
+    // where it actually starts rising.  The floor rule itself is the shared
+    // one the daemon validates lock anchors and explicit targets with
+    // (vf_writable_point_policy.h): a run shorter than VF_MIN_FLAT_FLOOR_RUN,
+    // or a curve with a single value throughout, is no floor.
+    if (!vm.service) return 0;
+    const ServiceSnapshot& snapshot = vm.service->snapshot;
+    const VfFloorTopology floor = vf_floor_topology_compute(
+        snapshot.curve, snapshot.freqOffsets, VF_NUM_POINTS);
+    if (!floor.valid) return 0;
+    int bound = floor.floorEnd;
     // Never hide the point the user is pointing at: a profile lock or a graph
     // click can legitimately land inside the floor, and an invisible selection
     // would be worse than the duplicate rows.

@@ -195,7 +195,7 @@ Both sides are supposed to be records. But `load_profile_from_config()`
 
 | Projection | Live input |
 |---|---|
-| lock-anchor re-derivation (`lockTracksAnchor`) | `is_curve_point_visible_in_gui()`; until 2026-10-24 it read `curve_base_khz_for_point()` = `g_app.curve[i].freq_kHz - g_app.freqOffsets[i]`, now voltage only (`vf_point_visibility_policy.h`) |
+| lock-anchor re-derivation (`lockTracksAnchor`) | `is_curve_point_visible_in_gui()`; until 2026-10-24 it read `curve_base_khz_for_point()` = `g_app.curve[i].freq_kHz - g_app.freqOffsets[i]`, then voltage only (`vf_point_visibility_policy.h`), since 2026-11-12 the listed-point rule over the frozen floor binding (`vf_writable_point_policy.h`), which still has no frequency term that drifts |
 | curve-ownership visibility strip | `g_app.curve[i].volt_uV`, gated on `g_app.loaded` |
 | `profile_point_saved_visible()` fallback | same, for profiles predating `pointN_visible` |
 
@@ -863,13 +863,45 @@ same card was the only one present. Adding or removing any upstream device
 ## Editor profile visibility (2026-10-24)
 
 Source anchors: `source/config_profiles.cpp`,
-`source/vf_point_visibility_policy.h`, `tests/vf_point_visibility_tests.cpp`.
-Profile editor projection calls `vf_filter_hidden_editor_curve_points()`:
-it uses the grid's shared voltage/population rule, removes hidden points'
-mask, MHz and provenance together, and keeps populated floor points from
-700 mV upward. A zero-frequency entry is unpopulated even if its voltage is
-above the threshold. The projection runs only for an editor read with a
-loaded live curve; ownership reads retain the saved claim. `profile load:
-editor projection dropped` reports the count only when something was removed.
-Fixtures 7390-7392 verify the projection; existing 7380-7389 cover the point
-predicate. Real-window profile loading is not part of these pure units.
+`source/vf_writable_point_policy.h`, `source/config_profile_repair.cpp`,
+`tests/vf_point_visibility_tests.cpp`.
+Profile editor projection calls `vf_filter_unlisted_editor_curve_points()`
+(2026-11-12; formerly `vf_filter_hidden_editor_curve_points()`): it uses the
+grid's listed-point rule over the bound floor topology, removes unlisted
+points' mask, MHz and provenance together, keeps writable points below
+700 mV, and keeps populated floor points from 700 mV upward. A zero-frequency
+entry is unpopulated even if its voltage is above the threshold. The
+projection runs only for an editor read with a loaded live curve; ownership
+reads retain the saved claim. `profile load: editor projection dropped`
+reports the count only when something was removed. A stored `pointN_visible`
+flag is read as written; without the key, `profile_point_saved_visible()`
+answers with the 700 mV voltage rule its writer used. Fixtures 7390-7392
+verify the projection; 7380-7389 cover the voltage predicate. Real-window
+profile loading is not part of these pure units.
+
+## Save names what it leaves out (2026-11-12)
+
+Source anchors: `source/profile_save_policy.h`,
+`source/ui_profile_save_notice.cpp`, `source/ui_main_window.cpp`
+(PROFILE_SAVE), `source/linux_tui_actions.cpp` (ACTION_SAVE),
+`tests/curve_plan_tests.cpp` (7880-7884).
+
+- A Save with no curve or lock edit stays a partial live save of the scalar
+  domains (unchanged contract), but now counts populated graphics points whose
+  programmed offset is neither zero nor the saved GPU-offset component
+  (`profile_save_count_unsaved_programmed_points()`) and says so: the Windows
+  GUI shows a warning naming the count and the first point
+  (OMITTED_EXTERNAL_CURVE), the TUI sets a status line. A curve another
+  writer programmed is never silently dropped from the user's view.
+- A lock Green Curve did not apply and the user did not edit (an
+  auto-detected flatten), saved together with inferred pre-anchor points, is
+  reported as an approximation (DETECTED_APPROXIMATION). Lock ownership is
+  "no background service" or "the service's active intent has this lock".
+- Diagnostics: one `profile-save: slot=... source=... notice=...
+  omittedProgrammedPoints=... firstOmitted=ci... inferredPreAnchor=...` line
+  per Save (Windows); the TUI logs `profile-save: slot=...
+  source=staged-draft draftCurve=... omittedProgrammedPoints=...`.
+- With the detector fix (gpu-backend.md, "Curve feasibility planner"), a
+  plain external flatten is saved at its true anchor, below 700 mV if that is
+  where it starts; Save -> Reset -> Load -> Apply then plans as representable
+  (ROUND-01, 7885-7889).

@@ -104,4 +104,19 @@ static inline GuiGraphVoltageRange gui_graph_voltage_axis(
     return out;
 }
 
+// The lowest voltage the axis may start at.  The default floor (700 mV) is
+// where the editor's voltage rule begins; writable points below it are listed
+// too, so the floor follows the first listed point down instead of plotting
+// an editable point off the left edge.  `firstListedMv` <= 0 means nothing is
+// listed.
+static inline int gui_graph_voltage_axis_floor_mv(int firstListedMv,
+                                                  int defaultFloorMv,
+                                                  int gridStepMv,
+                                                  int headroomMv) {
+    if (firstListedMv <= 0 || gridStepMv <= 0) return defaultFloorMv;
+    if (firstListedMv - headroomMv >= defaultFloorMv) return defaultFloorMv;
+    const int floor = gui_grid_floor(firstListedMv - headroomMv, gridStepMv);
+    return floor < 0 ? 0 : floor;
+}
+
 #endif // GREEN_CURVE_GUI_GRAPH_AXIS_POLICY_H

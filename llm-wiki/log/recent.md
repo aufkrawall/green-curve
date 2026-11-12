@@ -5,6 +5,32 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-12: Shared curve planner, listed sub-700 mV points, flatten anchor fix
+
+- Issue 17 (Pascal): an externally flattened 1000 MHz curve, saved and
+  reloaded after a reset, was refused at hidden point 22 (662 mV, stock
+  1050 MHz). Two causes addressed here: the live detector's exact-first pass
+  anchored the flatten at point 67 (1125 mV) because the plateau carried
+  sub-MHz bin jitter and only the top run was exact; and the editor could not
+  list or save points below 700 mV. The detector now walks ascending
+  candidates over listed non-floor points (`vf_flat_tail_recognition.h`), and
+  the editor lists every writable graphics point (`vf_writable_point_policy.h`,
+  floor frozen per topology binding). The implicit adoption of external
+  pre-anchor offsets is unchanged and waits for a reviewed Capture.
+- One pure planner (`curve_feasibility_plan.h`) now judges every curve request
+  before any write on Windows and Linux, with evidence classes, a one-bin
+  quantization gate and bounded structured issues. Behaviour change: unowned
+  prefix points over a shaped outgoing curve are conditional instead of
+  refused; the post-reset backstop decides.
+- Save names an omitted external curve (GUI warning, TUI status line).
+- An evidence request for the Pascal reporter (`--json` and `--probe`,
+  applied and after Reset) was drafted for the maintainer and not posted.
+  Pascal behaviour remains unverified on hardware; fixtures are synthetic.
+- Verified: `python build.py --test` (new suite 7800-7899; mutation check
+  fails 7821 as expected), `python build.py --check` (Windows MSVC and clang,
+  Linux x64/arm64). Not covered: a fake-driver apply harness, a real window
+  at 80 listed points, Blackwell writes between the floor and 700 mV.
+
 ## 2026-11-05: Themed message box clipboard copy and VF flatten field edit fix
 
 - Themed message boxes (`ui_message_box.cpp`, `message_box_policy.h`) now support

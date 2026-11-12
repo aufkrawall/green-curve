@@ -55,6 +55,17 @@ struct VfOffsetRange {
     bool known;
 };
 
+// Which surface reported the range.  Neither platform has a dedicated
+// per-point VF range getter: Windows prefers NVML's graphics offset range over
+// the narrower NvAPI P-state window (CT-03), Linux copies NVML's graphics
+// bounds.  A fallback is a range the application writes against, not a
+// measured hardware limit.
+enum VfOffsetRangeSource {
+    VF_OFFSET_RANGE_SOURCE_FALLBACK = 0,
+    VF_OFFSET_RANGE_SOURCE_NVML_GRAPHICS = 1,
+    VF_OFFSET_RANGE_SOURCE_PSTATE = 2,
+};
+
 // The fallback when the driver will not say.  1000 MHz is the GPU offset range
 // NVIDIA's own control panel exposes and the value the driver has been observed
 // to accept for VF offsets; it is also what get_curve_offset_range_khz() has

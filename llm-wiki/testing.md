@@ -498,10 +498,54 @@ up is visible, floor included; 7385 the 540 mV table-end placeholder stays
 hidden; 7386 unpopulated entries never show; 7387-7388 the inclusive 700 mV
 edge; 7389 frequency never changes the answer. Not covered automatically: the
 GUI rebuild itself (the grid layout on a real window). 7390-7392 exercise
-profile editor projection: hidden/unpopulated points lose mask, MHz and
-provenance together, while a populated 180 MHz floor remains visible. The
-source gate requires the real loader to use this helper behind the existing
+profile editor projection under the listed-point rule (2026-11-12): unlisted
+and unpopulated points lose mask, MHz and provenance together, writable
+points just below 700 mV are kept, and a flat floor below 700 mV is dropped.
+The source gate requires the real loader to use
+`vf_filter_unlisted_editor_curve_points()` behind the existing
 editor-only/live-curve guard; ownership reads keep their saved intent.
+
+## Curve planner, writable points, detection, Save and round trips (2026-11-12)
+
+Source anchors: `tests/curve_plan_tests.cpp`, `tests/curve_plan_fixtures.h`,
+`source/curve_feasibility_plan.h`, `source/vf_writable_point_policy.h`,
+`source/vf_flat_tail_recognition.h`, `source/profile_save_policy.h`,
+`tools/apply_ceiling_gates.py`, `tools/ui_gates.py`.
+Synthetic fixtures keep only the numeric relationships of the reported cases:
+an 80-point Pascal table (point 22 at 662.5 mV with a 1050 MHz stock base,
+point 67 at 1125 mV) and its external 1000 MHz flatten from point 21 with
+sub-MHz jitter and an exact-kHz run over 67..79; Blackwell-shaped linear
+tables for the 2400 MHz anchor and 1425 MHz tail cases; the RTX 5070 floor.
+
+- 7800-7816 writable points: floor binding frozen per topology (cold/warm),
+  listed counts (RTX 87, Pascal 80), target status for floor, foreign,
+  unpopulated and invalid indices, the profile projection, topology keys.
+- 7820-7827 DETECT-01: the old exact-first detector anchors the Pascal
+  flatten at 67, the new one at 21 (tolerant, plateau 1000, 58 tail points);
+  Green Curve's own flatten is still found at its own anchor; floor points are
+  never candidates. Mutation check: restricting candidates to >= 700 mV fails
+  7821.
+- 7840-7872 PLAN-01..08: anchor above range with the anchor-only estimate;
+  tail unreachable with first, worst, count and lower bound; prefix refusal at
+  hidden point 22 with the below-700 sentence; a typed prefix point proven
+  over a shaped curve; a shaped outgoing curve conditional, accepted after the
+  reset; range source in the message; asymmetric, zero-width and inverted
+  ranges; sub-700 mV anchors accepted where writable and floor, foreign and
+  missing points refused; evidence classes; issue capacity (8 plus omitted
+  count).
+- 7880-7884 SAVE-01: unsaved programmed points counted (58, first 22), the
+  notice choice, the inferred pre-anchor count.
+- 7885-7889 ROUND-01: detected anchor -> slot -> stock -> plan is
+  representable before and after the reset; the old anchor is refused at
+  point 22.
+- 7890-7893 UI-01: the layout plan at 55, 80 and 128 points for every DPI at
+  the minimum viewport, the graph axis floor, legacy flags read by the 700 mV
+  rule.
+
+Not covered: no fake-driver harness drives the real Windows or Linux apply,
+so zero-setter refusal rests on these pure tests plus the order gates
+(planner before `ApplyClockCeilingGuard`, before reset-to-stock, and before
+`linux_execute_transaction()`); no Pascal hardware capture yet.
 
 ## Linux GPU selection across PCI bus renumbering (2026-10-22)
 

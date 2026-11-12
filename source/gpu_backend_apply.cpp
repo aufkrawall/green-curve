@@ -84,32 +84,15 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     // Only an EXPLICIT request is validated: `hasLock` can also be inherited
     // from the stored interactive lock further down, and dropping an inherited
     // lock the current GPU cannot express is not a failure of this request.
-    // The visible map is topology, not live state, so it is as valid here as
-    // it is after the reset.
-    if (desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0) {
-        bool lockPointVisible = false;
-        for (int vi = 0; vi < g_app.numVisible; vi++) {
-            if (g_app.visibleMap[vi] == desired->lockCi) { lockPointVisible = true; break; }
-        }
-        if (!lockPointVisible) {
-            set_message(result, resultSize,
-                "The requested %s lock point (curve index %d) is not available on this"
-                " GPU, so the profile cannot be applied as requested. Nothing was"
-                " changed. Re-pick the lock point on the curve.",
-                lock_mode_name(desired->lockMode), desired->lockCi);
-            debug_log("apply_desired_settings: REFUSED before any write -- requested"
-                      " lock ci=%d mode=%s lockMHz=%u is not in the visible map"
-                      " (numVisible=%d); refusing instead of silently applying an"
-                      " unlocked profile\n",
-                desired->lockCi, lock_mode_name(desired->lockMode),
-                desired->lockMHz, g_app.numVisible);
-            return false;
-        }
-    }
-    // A lock below a pre-tail point is refused HERE, before the clamp or the
-    // reset-to-stock below write anything (apply_lock_pretail_policy.h).
-    if (!apply_lock_pretail_precheck_before_reset(desired, result, resultSize)) {
-        set_last_apply_phase("apply: refused (lock below a pre-tail point)");
+    // The writable set is topology, not live state, so it is as valid here as
+    // it is after the reset (vf_writable_point_policy.h).
+    if (!apply_curve_plan_anchor_is_writable(desired, result, resultSize)) return false;
+    // A curve request the planner can PROVE infeasible (a lock below a pre-tail
+    // point, an anchor or tail beyond the offset range, a floor point) is
+    // refused HERE, before the clamp or the reset-to-stock below write
+    // anything (curve_feasibility_plan.h).
+    if (!apply_curve_plan_precheck_before_writes(desired, result, resultSize)) {
+        set_last_apply_phase("apply: refused (curve plan)");
         return false;
     }
 #ifdef GREEN_CURVE_SERVICE_BINARY
@@ -349,9 +332,11 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                     g_app.freqOffsets[lockCi], anchorComponentKHz,
                     anchorOffsetInVfTable ? 1 : 0);
             }
-            for (int vi = lockVi; vi < g_app.numVisible; vi++) {
-                int ci = g_app.visibleMap[vi];
-                if (ci >= 0 && ci < VF_NUM_POINTS) lockedTailMask[ci] = true;
+            // Topology, not the editor list: every populated graphics point
+            // at or above the anchor (the listed set is a suffix of it, so the
+            // two agree whenever the anchor itself is listed).
+            for (int ci = lockCi; ci < VF_NUM_POINTS; ci++) {
+                if (g_app.curve[ci].freq_kHz != 0) lockedTailMask[ci] = true;
             }
         }
     }
@@ -408,53 +393,40 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         append_failure("GPU offset %d MHz is outside the supported range %d..%d MHz",
             desired->gpuOffsetMHz, g_app.gpuClockOffsetMinMHz, g_app.gpuClockOffsetMaxMHz);
     }
-    if (gpuOffsetValid && hasLock && lockMhz > 0 && (hasCurveEdits || hasLock || gpuPolicyViaCurveBatch)) {
-        // Backstop for apply_lock_pretail_precheck_before_reset(): a stock base
-        // that moved a bin between that read and the post-reset one.  Without a
-        // reset it is still ahead of the first write; after one it is not, and
-        // the refusal must take the recovery path instead of leaving the GPU on
-        // the stock curve under the transition clamp.
-        ApplyLockPretailArrays pretail = {};
-        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-            pretail.populated[ci] = originalCurvePopulated[ci];
-            pretail.tail[ci] = lockedTailMask[ci];
-            pretail.base[ci] = apply_lock_pretail_stock_base_khz(
-                (unsigned int)originalCurveFreqkHz[ci],
-                originalCurveOffsets[ci]);
-            pretail.unowned[ci] = originalCurveFreqkHz[ci];
-            pretail.gpuComponentMHz[ci] = desired->hasGpuOffset
-                ? gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz,
-                      desiredActiveGpuOffsetExcludeLowCount)
-                : 0;
-        }
-        unsigned int preTailTargetMHz = 0;
+    if (gpuOffsetValid && ((hasLock && lockMhz > 0) || hasCurveEdits)) {
+        // Backstop for apply_curve_plan_precheck_before_writes(): the full plan
+        // over the apply's own originals.  After a reset those are the stock
+        // curve (a verified transaction baseline), so an estimate the precheck
+        // had to leave open is decided here, and a stock base that moved a bin
+        // between the two reads is caught.  Without a reset it is still ahead
+        // of the first write; after one it is not, and the refusal must take
+        // the recovery path instead of leaving the GPU on the stock curve under
+        // the transition clamp.
+        DesiredSettings resolved = *desired;
+        resolved.hasLock = hasLock && lockMhz > 0;
+        resolved.lockCi = resolved.hasLock ? lockCi : -1;
+        resolved.lockMHz = resolved.hasLock ? lockMhz : 0;
+        resolved.lockMode = resolved.hasLock ? lockMode : LOCK_MODE_NONE;
         // After a reset the originals are the stock curve; without one they
         // still carry the live profile's shape (see the precheck).
         const ApplyLockPretailProvenance pretailProvenance =
             apply_lock_pretail_provenance_mode(offsetInVfTable,
                                                desired->resetOcBeforeApply != 0);
-        int ci = apply_lock_pretail_first_violation(VF_NUM_POINTS,
-            pretailProvenance, lockMhz,
-            pretail.populated, pretail.tail, desired->hasCurvePoint,
-            desired->curvePointFromGpuOffset, desired->curvePointMHz,
-            desired->hasGpuOffset != 0, pretail.base,
-            pretail.gpuComponentMHz, pretail.unowned, &preTailTargetMHz);
-        if (ci >= 0) {
-            char refusal[256] = {};
-            apply_lock_pretail_format_refusal(refusal, sizeof(refusal), lockMhz,
-                lockCi, ci, preTailTargetMHz,
-                desired->hasGpuOffset && desired->gpuOffsetMHz != 0 &&
-                    !desired->hasCurvePoint[ci]);
-            debug_log("lock monotonicity validation failed %s: lockCi=%d lockMHz=%u preTailCi=%d target=%u desiredGpu=%d exclude=%d requested=%d fromOffset=%d stockBase=%lld kHz storedMHz=%u provenance=%s\n",
+        const CurvePlanResult plan = apply_curve_plan_backstop(&resolved,
+            resolved.lockMode, originalCurvePopulated, originalCurveFreqkHz,
+            originalCurveOffsets, originalCurveVoltUv, pretailProvenance,
+            desired->hasGpuOffset ? desiredActiveGpuOffsetExcludeLowCount : 0);
+        if (plan.disposition == CURVE_PLAN_REFUSED) {
+            char refusal[512] = {};
+            curve_plan_format_message(plan, !desired->resetOcBeforeApply,
+                refusal, sizeof(refusal));
+            debug_log("curve-plan: refused %s: lockCi=%d lockMHz=%u desiredGpu=%d exclude=%d"
+                      " provenance=%s\n",
                 desired->resetOcBeforeApply ? "AFTER the reset-to-stock (recovering)"
                                             : "before writes",
-                lockCi, lockMhz, ci, preTailTargetMHz,
+                lockCi, lockMhz,
                 desired->hasGpuOffset ? desired->gpuOffsetMHz : currentAppliedGpuOffsetMHz,
                 desired->hasGpuOffset ? desiredActiveGpuOffsetExcludeLowCount : currentActiveGpuOffsetExcludeLowCount,
-                desired->hasCurvePoint[ci] ? 1 : 0,
-                desired->curvePointFromGpuOffset[ci] ? 1 : 0,
-                pretail.base[ci],
-                desired->hasCurvePoint[ci] ? desired->curvePointMHz[ci] : 0u,
                 apply_lock_pretail_provenance_name(pretailProvenance));
             if (desired->resetOcBeforeApply)
                 return apply_recover_clock_failure(clockCeiling, refusal, result, resultSize);

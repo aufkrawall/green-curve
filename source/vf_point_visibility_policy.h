@@ -6,10 +6,13 @@
 
 #include "gpu_core.h"
 
-// Which VF points the editor grid, the graph and saved profiles treat as
-// visible.  The answer must not depend on anything the driver moves at run
-// time, because it decides the grid's layout (a point's column and row) and
-// the `pointN_visible` flag a profile stores.
+// The voltage half of the editor's listed set (vf_writable_point_policy.h adds
+// the writable points below MIN_VISIBLE_VOLT_mV).  Every point this answers
+// true for is listed; it is also exactly the rule every profile saved before
+// sub-700 mV points were listed used for its `pointN_visible` flag, so legacy
+// readers that need the writer's answer use it directly.  The answer must not
+// depend on anything the driver moves at run time, because it decides the
+// grid's layout (a point's column and row).
 //
 // Each point's voltage is fixed by the driver's VF table.  Its frequency is
 // not: the stock curve's low ramp shifts by a couple of points with GPU
@@ -17,32 +20,15 @@
 // lower than at 30 C).  The previous rule also required a stock frequency of
 // at least 500 MHz, so the visible set changed between a cold logon read and a
 // later warm read, and the grid shifted when the window was next refreshed.
-// Visibility therefore depends on the voltage alone.  Entries below the
-// minimum voltage stay hidden; that also hides the out-of-order idle
-// placeholder some tables carry at their last index (a low-voltage, ~400 MHz
-// entry after the highest point).
+// This half therefore depends on the voltage alone.  Entries below the
+// minimum voltage are left to the writable rule, which lists them outside the
+// flat floor and excludes the out-of-order idle placeholder some tables carry
+// at their last index (a low-voltage, ~400 MHz entry after the highest point)
+// as a foreign domain.
 static inline bool vf_point_visible_in_editor(unsigned int freq_kHz,
                                               unsigned int volt_uV) {
     if (freq_kHz == 0) return false;  // unpopulated entry
     return volt_uV / 1000u >= (unsigned int)MIN_VISIBLE_VOLT_mV;
-}
-
-// Editor projection only: discard saved points the live grid cannot show.
-// Ownership reads bypass this projection and keep the saved claim intact.
-static inline unsigned int vf_filter_hidden_editor_curve_points(
-    DesiredSettings* desired, const VFCurvePoint* curve) {
-    if (!desired || !curve) return 0;
-    unsigned int dropped = 0;
-    for (int i = 0; i < VF_NUM_POINTS; ++i) {
-        if (!desired->hasCurvePoint[i] ||
-            vf_point_visible_in_editor(curve[i].freq_kHz, curve[i].volt_uV))
-            continue;
-        desired->hasCurvePoint[i] = false;
-        desired->curvePointMHz[i] = 0;
-        desired->curvePointFromGpuOffset[i] = false;
-        ++dropped;
-    }
-    return dropped;
 }
 
 #endif

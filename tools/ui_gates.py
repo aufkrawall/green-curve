@@ -1414,22 +1414,35 @@ def check_graph_frequency_axis(ctx, require_text, forbid_text):
 
 
 def check_vf_point_visibility_is_drift_free(ctx, require_text, forbid_text):
-    """The VF grid's point set depends on voltage only.
+    """The VF grid's point set never depends on a live frequency read.
 
     The stock curve's low ramp shifts with GPU temperature, so a 500 MHz
     frequency term put two points in or out of the grid between a cold logon
     read and a later warm read, and the grid's columns moved on Refresh.  The
     grid map and is_curve_point_visible_in_gui() (graph, saved profiles, lock
-    projection) share vf_point_visible_in_editor(); the graph's frequency
-    axis may go below 500 MHz because the stock floor is now plotted.
+    projection) share vf_point_listed(): every point at or above 700 mV by
+    voltage alone, plus writable points below it outside the flat floor, whose
+    end is decided once per topology binding (vf_writable_point_policy.h).
+    The graph's frequency axis may go below 500 MHz because the stock floor is
+    plotted.
     """
     require_text(_p(ctx, "gpu_backend.cpp"),
-                 "vf_point_visible_in_editor(g_app.curve[i].freq_kHz",
-                 "the VF grid map uses the shared voltage-only rule")
-    require_text(_p(ctx, "main_gpu_state.cpp"), "return vf_point_visible_in_editor(",
-                 "is_curve_point_visible_in_gui uses the shared voltage-only rule")
+                 "vf_point_listed(g_app.vfFloorBinding.floor, g_app.curve, i)",
+                 "the VF grid map uses the shared listed-point rule")
+    require_text(_p(ctx, "gpu_backend.cpp"),
+                 "if (vf_floor_binding_update(&g_app.vfFloorBinding, g_app.curve,",
+                 "the flat floor is decided once per topology binding")
+    require_text(_p(ctx, "vf_writable_point_policy.h"),
+                 "if (binding->bound && binding->topologyKey == key) return false;",
+                 "an unchanged topology keeps its first floor answer")
+    require_text(_p(ctx, "vf_writable_point_policy.h"),
+                 "if (vf_point_visible_in_editor(curve[ci].freq_kHz, curve[ci].volt_uV))",
+                 "every point the 700 mV voltage rule lists stays listed")
+    require_text(_p(ctx, "main_gpu_state.cpp"),
+                 "return vf_point_listed(g_app.vfFloorBinding.floor, g_app.curve, pointIndex);",
+                 "is_curve_point_visible_in_gui uses the shared listed-point rule")
     require_text(_p(ctx, "config_profiles.cpp"),
-                 "vf_filter_hidden_editor_curve_points(",
+                 "vf_filter_unlisted_editor_curve_points(",
                  "profile editor projection uses the same rule as the grid")
     require_text(_p(ctx, "config_profiles.cpp"),
                  "bool haveLiveCurveVisibility = projectOntoLiveCurve &&",
@@ -1440,6 +1453,8 @@ def check_vf_point_visibility_is_drift_free(ctx, require_text, forbid_text):
                 "no frequency threshold decides VF point visibility")
     forbid_text(_p(ctx, "ui_main_graph.cpp"), "FREQ_AXIS_MIN_MHZ = 500",
                 "the graph frequency axis must not clip the visible stock floor")
+    require_text(_p(ctx, "ui_main_graph.cpp"), "gui_graph_voltage_axis_floor_mv(firstListedMv,",
+                 "the graph voltage axis starts at or below the first listed point")
 
 
 def check_read_miss_is_not_a_disconnect(ctx, require_text, forbid_text):

@@ -27,20 +27,27 @@
 // The GPU offset range (±1000 MHz) is the authoritative hardware capability
 // that the driver actually accepts for VF curve offsets, superseding the
 // narrower curve-specific range reported by NVML.
-static VfOffsetRange vf_offset_range_current() {
+static VfOffsetRange vf_offset_range_current_with_source(VfOffsetRangeSource* sourceOut) {
+    if (sourceOut) *sourceOut = VF_OFFSET_RANGE_SOURCE_FALLBACK;
     if (g_app.gpuOffsetRangeKnown &&
         g_app.gpuClockOffsetMinMHz <= g_app.gpuClockOffsetMaxMHz &&
         g_app.gpuClockOffsetMinMHz >= INT_MIN / 1000 &&
         g_app.gpuClockOffsetMaxMHz <= INT_MAX / 1000) {
+        if (sourceOut) *sourceOut = VF_OFFSET_RANGE_SOURCE_NVML_GRAPHICS;
         return vf_offset_range_from_probe(true, g_app.gpuClockOffsetMinMHz * 1000,
                                           g_app.gpuClockOffsetMaxMHz * 1000);
     }
     if (g_app.curveOffsetRangeKnown &&
         g_app.curveOffsetMinkHz <= g_app.curveOffsetMaxkHz) {
+        if (sourceOut) *sourceOut = VF_OFFSET_RANGE_SOURCE_PSTATE;
         return vf_offset_range_from_probe(true, g_app.curveOffsetMinkHz,
                                           g_app.curveOffsetMaxkHz);
     }
     return vf_offset_range_fallback();
+}
+
+static VfOffsetRange vf_offset_range_current() {
+    return vf_offset_range_current_with_source(nullptr);
 }
 
 static bool get_curve_offset_range_khz(int* minkHz, int* maxkHz) {

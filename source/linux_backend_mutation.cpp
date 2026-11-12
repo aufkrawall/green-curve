@@ -376,6 +376,8 @@ static LinuxCurveTargetBuildResult build_curve_transition_targets(
 }
 
 #include "linux_backend_apply_context.h"
+// Read-only feasibility of the built targets, before the first setter.
+#include "linux_backend_curve_plan.h"
 
 static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
     LinuxApplyTransactionContext* context = (LinuxApplyTransactionContext*)opaque;
@@ -500,6 +502,26 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     LinuxCurveTargetBuildResult curveBuild =
         linux_apply_build_curve(&context, &cleanupPointCount);
     context.plannedBuild = curveBuild;
+    // A curve request the shared planner PROVES infeasible (a flatten below a
+    // pre-tail point, an anchor or tail beyond the range, a floor or foreign
+    // point) is refused here, before any phase can write.
+    {
+        const DesiredSettings* planned =
+            context.transitionBuild ? committedIntent : d;
+        const bool curveWork = curveBuild.pointCount > 0 ||
+            (planned->hasLock && planned->lockMHz > 0);
+        if (curveWork) {
+            const CurvePlanResult plan = linux_backend_curve_plan(g, planned,
+                &snapshot, context.curveTargets, context.curveMask);
+            if (plan.disposition == CURVE_PLAN_REFUSED) {
+                LinuxMutationResult mutation = {};
+                if (result) curve_plan_format_message(plan, true, result, resultSize);
+                lb_log("apply: curve plan refused before any write (%s)\n",
+                       curve_plan_reason_name(curve_plan_lead_issue(plan)->reason));
+                return mutation;
+            }
+        }
+    }
     context.composedGpuOffset = curveBuild.composedGpuOffset;
     const bool clearStaleGpuOffset = linux_composed_offset_must_clear_scalar(
         curveBuild.composedGpuOffset, snapshot.gpuOffsetValid,

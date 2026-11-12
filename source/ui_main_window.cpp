@@ -787,15 +787,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     }
                     debug_log("PROFILE_SAVE: no user edits, saving live state\n");
                 }
+                const bool usedGuiCapture = profile_save_uses_gui_capture(
+                    g_app.guiHasUserModifiedValues, gui_has_pending_curve_or_lock_edits(),
+                    appliedCurveOrLock);
+                const bool lockFromUserEdit = gui_has_pending_curve_or_lock_edits();
                 if (!save_profile_to_config(g_app.configPath, slot, &desired, err, sizeof(err))) {
                     write_error_report_log_for_user_failure("Profile save failed", err);
                     gc_message_box(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
                     break;
                 }
+                const ProfileSaveNotice saveNotice = report_profile_save_omissions(
+                    slot, &desired, usedGuiCapture, lockFromUserEdit);
                 populate_desired_into_gui(&desired);
                 sync_applied_profile_from_service_metadata();
                 refresh_profile_controls_from_config();
-                set_profile_status_text("Saved the current GUI values to slot %d.", slot);
+                if (saveNotice == PROFILE_SAVE_NOTICE_OMITTED_EXTERNAL_CURVE)
+                    set_profile_status_text("Saved slot %d without the GPU's current VF curve (not set by Green Curve).", slot);
+                else if (saveNotice == PROFILE_SAVE_NOTICE_DETECTED_APPROXIMATION)
+                    set_profile_status_text("Saved slot %d with a flatten detected from the GPU's curve.", slot);
+                else
+                    set_profile_status_text("Saved the current GUI values to slot %d.", slot);
                 invalidate_main_window();
             } else if (LOWORD(wParam) == PROFILE_CLEAR_ID) {
                 int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);

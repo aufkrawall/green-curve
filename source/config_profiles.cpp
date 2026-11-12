@@ -385,8 +385,8 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
     bool haveLiveCurveVisibility = projectOntoLiveCurve &&
         g_app.loaded && g_app.numPopulated > 0;
     if (haveLiveCurveVisibility) {
-        const unsigned int dropped = vf_filter_hidden_editor_curve_points(
-            desired, g_app.curve);
+        const unsigned int dropped = vf_filter_unlisted_editor_curve_points(
+            desired, g_app.vfFloorBinding.floor, g_app.curve);
         if (dropped)
             debug_log("profile load: editor projection dropped %u hidden VF points\n", dropped);
     }

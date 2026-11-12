@@ -167,11 +167,16 @@ static void draw_graph(HDC hdc, RECT* rc) {
     // high clocks never hit the ceiling, low clocks do not float in empty
     // space, and a GPU whose curve begins at 750 mV does not show an empty
     // 700-750 mV cell on the left.
-    const int VOLT_AXIS_MIN_MV = MIN_VISIBLE_VOLT_mV;
     const int VOLT_AXIS_MAX_MV = 1250;
     const int VOLT_AXIS_GRID_STEP_MV = 50;
     const int VOLT_AXIS_MIN_SPAN_MV = 300;
     const int VOLT_AXIS_HEADROOM_MV = 10;
+    // Writable points below 700 mV are listed, so the axis may start lower.
+    const int firstListedMv = (g_app.numVisible > 0 &&
+            g_app.visibleMap[0] >= 0 && g_app.visibleMap[0] < VF_NUM_POINTS)
+        ? (int)(g_app.curve[g_app.visibleMap[0]].volt_uV / 1000u) : 0;
+    const int VOLT_AXIS_MIN_MV = gui_graph_voltage_axis_floor_mv(firstListedMv,
+        MIN_VISIBLE_VOLT_mV, VOLT_AXIS_GRID_STEP_MV, VOLT_AXIS_HEADROOM_MV);
     // Visible points include the stock clock floor (~200 MHz), so the floor
     // follows the data down to 0 instead of clipping it at 500 MHz.
     const int FREQ_AXIS_MIN_MHZ = 0;

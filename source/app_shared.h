@@ -120,6 +120,8 @@
 // Which VF points the editor shows: by voltage only, never by a frequency the
 // driver moves with temperature.
 #include "vf_point_visibility_policy.h"
+#include "vf_writable_point_policy.h"
+#include "vf_flat_tail_recognition.h"
 // OS-abstraction shim (dynamic loading, sleep, atomics, threads, bounded
 // strings, subprocess capture) used by the shared backend.
 #include "platform.h"
@@ -532,6 +534,9 @@ struct AppData {
 
     int visibleMap[VF_NUM_POINTS];
     int numVisible;
+    // Flat low-voltage floor, decided once per topology binding
+    // (vf_writable_point_policy.h); visibleMap lists outside it below 700 mV.
+    VfFloorBinding vfFloorBinding;
 
     int lockedVi;
     int lockedCi;

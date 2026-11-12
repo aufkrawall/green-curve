@@ -228,10 +228,8 @@ int tui_vf_reveal_first_visible(const TuiViewModel& vm, int selectedPoint,
 // identical and any target written there is clamped straight back to the floor.
 // A selection inside the floor lowers the bound, so what the user points at is
 // never invisible.
-// Shortest leading run of equal base MHz that counts as a driver floor rather
-// than an ordinary curve. Real floors are dozens of points (45 on an RTX 5070);
-// this only has to be high enough that a normal rising curve is never trimmed.
-#define TUI_VF_MIN_FLAT_FLOOR_RUN 4
+// The floor rule is shared with the daemon's anchor/target validation and the
+// Windows editor: vf_writable_point_policy.h (VF_MIN_FLAT_FLOOR_RUN).
 int tui_vf_first_listed_point(const TuiViewModel& vm);
 // Populated points the bound above hides, for the "N flat pts hidden" note.
 int tui_vf_hidden_low_point_count(const TuiViewModel& vm);

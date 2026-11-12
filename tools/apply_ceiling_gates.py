@@ -117,9 +117,26 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         "locked-clock release at the end of the apply can still consult it")
     # CT-02, the other half: an explicitly requested lock point this GPU cannot
     # resolve is refused up front rather than silently applied unlocked.
-    require_text(apply_cpp,
+    require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
                  "is not available on this",
                  "an unresolvable explicit lock anchor is refused before any write")
+    require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
+                 "low-voltage floor (%d MHz); writes there are clamped back to the",
+                 "a flat-floor lock anchor is refused by name before any write")
+    require_order_in_operation(
+        apply_cpp,
+        "static bool apply_desired_settings_service(const DesiredSettings* desired",
+        "if (!apply_curve_plan_anchor_is_writable(desired, result, resultSize)) return false;",
+        "ApplyClockCeilingGuard clockCeiling(desired);",
+        "the writable-anchor refusal precedes the transition clamp")
+    # The Linux daemon refuses a proven curve-plan failure before its
+    # transaction can run any phase.
+    require_order_in_operation(
+        linux_mutation_cpp,
+        "LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings* d,",
+        "const CurvePlanResult plan = linux_backend_curve_plan(g, planned,",
+        "LinuxMutationResult mutation = linux_execute_transaction(",
+        "the Linux curve plan runs before the transaction's first phase")
     require_text(apply_cpp,
                  "clockCeiling.adopt(\"re-asserted as the final hard pin\");",
                  "a HARD apply re-asserts the clamp as the authoritative pin")
@@ -400,16 +417,23 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
                  "if (!nvapi_read_curve() || !nvapi_read_offsets()) {",
                  "the pre-reset base reads frequencies and offsets from the same moment")
+    # Both pre-tail checks run through the shared curve planner, which reads
+    # the request's own per-point provenance and derives each base from the
+    # programmed VF offsets read with the curve.
+    plan_h = _p(ctx, "curve_feasibility_plan.h")
+    require_text(plan_h, "const bool fromOffset = requested && d->curvePointFromGpuOffset[ci] != 0;",
+                 "the planner's pre-tail check reads per-point provenance")
+    require_text(plan_h, "baseKHz[ci] = curve_point_stock_base_khz(in.curve[ci].freq_kHz,\n"
+                 "                                                 in.programmedOffsetsKHz[ci]);",
+                 "the planner's base uses the existing VF-offset derivation")
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
-                 "desired->curvePointFromGpuOffset, desired->curvePointMHz,",
-                 "the pre-reset pre-tail check passes per-point provenance")
-    require_text(apply_cpp, "desired->curvePointFromGpuOffset, desired->curvePointMHz,",
-                 "the post-reset pre-tail check passes per-point provenance")
+                 "in.desired = desired;",
+                 "the pre-reset plan judges the request itself")
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
-                 "g_app.freqOffsets[ci]);",
-                 "the pre-reset pre-tail base uses the existing VF-offset derivation")
-    require_text(apply_cpp, "originalCurveOffsets[ci]);",
-                 "the post-reset pre-tail base uses the existing VF-offset derivation")
+                 "apply_curve_plan_lock_mode(desired), g_app.curve, g_app.freqOffsets,",
+                 "the pre-reset plan reads frequencies and offsets from the same read")
+    require_text(apply_cpp, "originalCurveOffsets, originalCurveVoltUv, pretailProvenance,",
+                 "the post-reset plan uses the apply's own post-reset originals")
     require_text(pretail_policy_h,
                  "const bool offsetIntent = provenanceMode != APPLY_LOCK_PRETAIL_PROVENANCE_STORED &&",
                  "live-base provenance projection is confined to the VF-table route")
@@ -446,16 +470,19 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "currentAppliedMHz, currentActiveExclude);",
                  "the pre-reset pre-tail check supplies the retained offset route")
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
-                 "provenance, desired->lockMHz,",
-                 "the pre-reset pre-tail check supplies the VF-table routing")
+                 "route.evidence, route.provenance, true, route.excludeLow, componentKHz);",
+                 "the pre-reset plan supplies the VF-table routing")
+    require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
+                 "apply_curve_plan_pre_write_input(desired, route, componentKHz));",
+                 "the pre-reset plan uses the shared pre-write input builder")
     require_text(apply_cpp,
                  "const bool offsetInVfTable = curve_point_apply_uses_vf_table_offset(",
                  "the apply computes its effective VF-table offset route")
     require_text(apply_cpp,
                  "currentAppliedGpuOffsetMHz, currentActiveGpuOffsetExcludeLowCount);",
                  "the apply supplies the retained offset state to the route decision")
-    require_text(apply_cpp, "pretailProvenance, lockMhz,",
-                 "the post-reset pre-tail check supplies the VF-table routing")
+    require_text(apply_cpp, "originalCurveOffsets, originalCurveVoltUv, pretailProvenance,",
+                 "the post-reset plan supplies the VF-table routing")
     require_text(apply_cpp, "offsetRouting = CurveOffsetRoutingPlan{};",
                  "a post-preflight range change cannot leave a live routing plan")
     require_text(_p(ctx, "curve_point_offset_policy.h"),
@@ -825,21 +852,22 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(apply_cpp,
                  "!curveRequest && !curveBatchOk &&\n            curveRequestOk)",
                  "the curve-preserve failure is not counted twice after a refused batch")
-    # A lock below a pre-tail point is refused before the clamp is armed or the
-    # reset-to-stock runs.  It used to be refused only after both, with a bare
-    # `return false` that left the GPU on the stock curve under the clamp.
+    # A proven curve-plan refusal (a lock below a pre-tail point, an anchor or
+    # tail beyond the range, a floor point) happens before the clamp is armed
+    # or the reset-to-stock runs.  It used to be refused only after both, with
+    # a bare `return false` that left the GPU on the stock curve under the clamp.
     require_order_in_operation(
         apply_cpp,
         "static bool apply_desired_settings_service(const DesiredSettings* desired,",
-        "if (!apply_lock_pretail_precheck_before_reset(desired, result, resultSize)) {",
+        "if (!apply_curve_plan_precheck_before_writes(desired, result, resultSize)) {",
         "ApplyClockCeilingGuard clockCeiling(desired);",
-        "the lock pre-tail refusal runs before the first clock write")
+        "the curve-plan refusal runs before the first clock write")
     require_order_in_operation(
         apply_cpp,
         "static bool apply_desired_settings_service(const DesiredSettings* desired,",
-        "if (!apply_lock_pretail_precheck_before_reset(desired, result, resultSize)) {",
+        "if (!apply_curve_plan_precheck_before_writes(desired, result, resultSize)) {",
         "if (!reset_oc_before_gui_apply(desired, result, resultSize,",
-        "the lock pre-tail refusal runs before reset-to-stock")
+        "the curve-plan refusal runs before reset-to-stock")
     require_text(apply_cpp,
                  "return apply_recover_clock_failure(clockCeiling, refusal, result, resultSize);",
                  "a post-reset pre-tail refusal recovers instead of returning bare")

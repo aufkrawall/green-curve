@@ -666,28 +666,128 @@ checks, and full build 433; RTX 5080 hardware acceptance remains pending.
 
 - `VF_NUM_POINTS` = 128 slots; the leading graphics domain may be shorter.
 - Each point: `VFCurvePoint { freq_kHz, volt_uV }` in physical kHz and uV.
-- Visible points: populated and at least `MIN_VISIBLE_VOLT_mV` (700), by
-  voltage ONLY (`vf_point_visible_in_editor()` in
-  `source/vf_point_visibility_policy.h`, used by `rebuild_visible_map()` and
-  `is_curve_point_visible_in_gui()`). Invariant: no frequency term. A point's
-  voltage is fixed by the VF table, but the stock low ramp moves with
-  temperature: on an RTX 5070 the 22 C logon read put points 49-50 about
-  200 MHz lower than a 30 C read, so the former `>= 500 MHz` term showed 76
-  points at logon and 78 later, and the grid's columns shifted on Refresh
-  (fixed 2026-10-24). The stock clock floor (~180 MHz, ci 40-44 on that card)
-  is therefore visible and the graph's frequency axis floor follows the data
-  down to 0. Trailing lower-voltage clock domains are omitted by both readers;
-  formerly the ci=127 entry (~405 MHz at 540 mV) was hidden by voltage.
-  Diagnostic: `vf visibility:
-  visible=N first=ciA last=ciB populated=P (was ...)`, logged once per
-  topology change in each process. `VF_PLACEHOLDER_MAX_FREQ_MHz` (500) is
-  only the driver-refused placeholder bound, not a visibility rule.
+- Listed (editor) points, since 2026-11-12: every populated point of the
+  graphics domain that is either at least `MIN_VISIBLE_VOLT_mV` (700) or
+  outside the driver's flat low-voltage floor (`vf_point_listed()` in
+  `source/vf_writable_point_policy.h`, used by `rebuild_visible_map()`,
+  `is_curve_point_visible_in_gui()`, the profile editor projection and the
+  Linux TUI). The floor is a leading run of at least
+  `VF_MIN_FLAT_FLOOR_RUN` (4) points with one equal stock base (live minus
+  programmed offset); a write there is clamped back to the floor. Writable
+  points below 700 mV are therefore editable (a GTX 1080 Ti-shaped Pascal
+  table lists all 80 graphics points instead of 55), while floor points at
+  or above 700 mV stay listed so existing profiles keep their points (RTX 5070
+  points 40..44). Stability: the floor is computed once per topology binding
+  (`VfFloorBinding`, keyed by membership and voltages, never frequencies) and
+  frozen until the topology changes, because the stock ramp start moves with
+  temperature (RTX 5070: point 45 warm, 47 cold; both ends lie above 700 mV,
+  so that card's list is unchanged at 87). Diagnostics: `vf floor: bound
+  ...` once per binding and `vf visibility: visible=N first=ciA last=ciB
+  populated=P (was ...)` once per topology change. The voltage half alone
+  (`vf_point_visible_in_editor()`, no frequency term since 2026-10-24) is
+  still the rule legacy `pointN_visible` flags were written under.
+  `VF_PLACEHOLDER_MAX_FREQ_MHz` (500) is only the driver-refused placeholder
+  bound, not a listing rule. Trailing lower-voltage clock domains are never
+  listed.
+- Anchor and explicit-target status (`vf_point_target_status()`): OK, FLOOR
+  (refused by name: "inside the driver's flat low-voltage floor"),
+  FOREIGN_DOMAIN, UNPOPULATED, INDEX_INVALID. CT-02's pre-write refusal covers
+  the last three, the planner the floor.
 - Point locking: flatten the curve tail after a chosen voltage anchor
 - Global GPU clock offset can optionally exclude low-voltage points (`gpuOffsetExcludeLow70`)
 - VF curve apply/save uses sparse user intent: only user-explicit points plus the locked tail are persisted or re-applied. Live NVAPI readback shifts on stock/pre-tail points are diagnostics, not desired curve state.
 - Fan-only applies are partial hardware requests. They must merge into the service active desired state and preserve the existing sparse VF intent/masks instead of replacing the active desired state with fan-only data.
 - The GUI graph/header display is intent-aware for locked profiles: points at and above the configured lock are drawn/summarized at the requested lock MHz and lock voltage, even if live NVAPI readback has temperature/boost drift in the hidden tail. This is display-only and does not trigger background VF reapply.
 - **Drift-free owned-curve baseline (`g_app.appliedCurveMHz[VF_NUM_POINTS]`, build 350):** the single GUI-side source of truth for *owned* VF point MHz. Populated EXCLUSIVELY from intent (the applied / service-active `DesiredSettings`) via `capture_applied_curve_baseline()` (`main_runtime_gpu.cpp`), **never** from live `g_app.curve[]` readback. `0` = point not owned (show live). This extends the intent-aware display to **pre-tail** points, not just the locked tail. It drives: (a) fan-only apply detection in `capture_gui_apply_settings` (editor vs baseline, so expected boost drift on a pre-tail point can't reclassify a fan-only change as a curve edit → no spurious full reset-and-reapply mid-game); (b) `populate_edits()` owned-point display (so the graph/edit fields and any later save show intent, not drift — voltage/mV is immutable so still read live). Set on client apply success (only when `!fanOnlyApply`, so fan-only never drops the curve the service still holds), service active-desired adoption (`apply_service_desired_to_gui`), and startup; cleared on Reset (`reset_curve`). Guarded by `F-DRIFT-1` source checks in `build.py`. Intent-isolation only — it does NOT write the GPU to counteract drift, and as of 0.18 nothing does (the continuous drift monitor was removed — see "NO continuous VF drift correction" below).
+
+## Curve feasibility planner (2026-11-12)
+
+Source anchors: `source/curve_feasibility_plan.h`,
+`source/curve_feasibility_message.h`, `source/gpu_backend_apply_lock_pretail.h`
+(Windows adapter), `source/linux_backend_curve_plan.h` (Linux adapter),
+`source/vf_offset_range_runtime.h` (`vf_offset_range_current_with_source()`),
+`tests/curve_plan_tests.cpp` (7800-7899), `tools/apply_ceiling_gates.py`.
+
+- **One pure planner for every curve request.** `curve_plan_evaluate()`
+  takes a coherent curve observation (frequencies plus programmed offsets
+  from the same read), the frozen floor topology, an evidence class, the
+  offset range with its source, the resolved lock mode and tail strategy,
+  and the request. It returns a disposition (REPRESENTABLE, REFUSED,
+  NEEDS_FRESH_BASELINE, UNAVAILABLE) and up to `CURVE_PLAN_MAX_ISSUES` (8)
+  structured issues, each with first, worst and affected count. Reasons:
+  prefix above plateau, anchor above/below range, tail unreachable, point out
+  of range, missing point, foreign domain, floor point, flatten unsupported.
+  It replaced the bare pre-tail check, whose provenance modes
+  (`apply_lock_pretail_policy.h`: STORED, LIVE_BASE, AGREEMENT) it keeps.
+- **Evidence decides what is proven.** UNSHAPED_LIVE (every graphics offset
+  zero and the scalar known to be zero) and TRANSACTION_BASELINE (the
+  post-reset readback inside the apply) prove baseline-derived failures;
+  LIVE_SHAPED_ESTIMATE makes them conditional. A baseline-derived excess is
+  proven only beyond one VF bin (the distance to the nearest distinct
+  neighbouring base); a typed MHz is exact. Unowned prefix points under a
+  shaped outgoing curve are conditional (the old check refused them); the
+  post-reset backstop decides.
+- **Every populated graphics point counts**, listed or not: the prefix scan
+  covers hidden sub-700 mV points (message: "Points below 700 mV are listed
+  at the start of the curve."). Per-point prefix values come from
+  `curve_plan_prefix_point_target()`.
+- **Tail strategies.** Windows FLATTEN writes the tail at a uniform minimum
+  offset and relies on the driver's monotonic rule (unreachable when
+  `base + min > plateau`; `tailLowerBound` reports the lowest plateau that
+  tail allows); Windows HARD checks the anchor only; Linux HARD checks each
+  tail point's absolute target. Windows checks the prefix for HARD locks too,
+  Linux does not.
+- **Windows integration.** `apply_curve_plan_anchor_is_writable()` (CT-02)
+  and `apply_curve_plan_precheck_before_writes()` run before
+  `ApplyClockCeilingGuard` and the reset (reset requests only; fresh
+  `nvapi_read_curve()` + `nvapi_read_offsets()`; a failed read defers to the
+  backstop). The backstop (`apply_curve_plan_backstop()`) runs over the
+  apply's own originals; after a reset a refusal returns through
+  `apply_recover_clock_failure()`. The shared input builders
+  (`apply_curve_plan_pre_write_route()`, `apply_curve_plan_pre_write_input()`)
+  are the only way to plan a request before writes.
+- **Linux integration.** `linux_backend_curve_plan()` runs in
+  `linux_backend_apply()` after the curve build and before
+  `linux_execute_transaction()`; a refusal returns an empty mutation result
+  with the message. Linux has no post-reset backstop yet (open follow-up:
+  Linux baseline and post-write verification parity).
+- **Messages lead with physical values** ("%u MHz at %u mV requires a %+d MHz
+  point adjustment. The current permitted maximum is ... (driver graphics
+  offset range)"), always name the range source (NVML graphics range, P-state
+  range, or the application's +/-1000 MHz fallback), and append "Nothing was
+  changed." only when no setter ran. Diagnostics: one `curve-plan: phase=...
+  disposition=... evidence=...` line plus one `curve-plan: issue=...` line
+  per issue.
+- **Live flatten detection** (`vf_recognize_flat_tail()` in
+  `source/vf_flat_tail_recognition.h`, used by
+  `detect_locked_tail_from_curve()`): candidates in ascending index over
+  listed non-floor points; the first whose whole populated tail is flat wins
+  (exact kHz with at least 1 tail point, or within 1 MHz with at least 3,
+  plateau = rounded mean). The former exact-first pass over >= 700 mV points
+  anchored a Pascal external flatten at point 67 (1125 mV) instead of its
+  true start below 700 mV. Diagnostic: `lock detect: ...`.
+- **Passive pin/limit getters (inventory).** Both backends
+  resolve the same read-only NVML clock/limit set:
+  `nvmlDeviceGetClock` (only `NVML_CLOCK_ID_CURRENT` is used),
+  `nvmlDeviceGetMaxClockInfo`, `nvmlDeviceGetPerformanceState`,
+  `nvmlDeviceGetGpcClkVfOffset` / `...MinMaxVfOffset`,
+  `nvmlDeviceGetMemClkVfOffset` / `...MinMaxVfOffset`,
+  `nvmlDeviceGetClockOffsets`, and the power-limit getters. NvAPI adds
+  `NvAPI_GPU_GetAllClockFrequencies` and the VF table reads. None of them
+  reports an active locked-clock range or a per-point pin, so a pin can only
+  ever be a reviewed proposal, never inferred from current clocks; the NVML
+  locked-clock setters are Volta and newer, so a Pascal "pin" is not an NVML
+  locked clock. Per-family availability of the getters is unverified.
+
+Open questions / stale-risk:
+- Floor stability is reasoned from the RTX 5070 fixture; hardware
+  confirmation that the bound floor never moves under load is pending.
+- Blackwell points between the floor and 700 mV are listed as writable; a
+  hardware write test there is pending.
+- No fake-driver harness drives the real Windows or Linux apply; zero-setter
+  refusal is proven by pure tests plus the order gates.
+- Pascal (issue 17) evidence is pending: the synthetic fixture follows the
+  report's numbers, not a capture.
 
 ## Apply pipeline
 

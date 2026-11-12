@@ -187,6 +187,24 @@ live Pascal apply/Reset/recovery sequence remain unverified.
 - Linux got the Windows placeholder rule (`vf_offset_zero_readback_is_benign`)
   in its VF writer; it previously had no correction loop to hide the difference.
 
+## 2026-11-12 the shared curve planner replaces the bare pre-tail check
+
+- The pre-write refusal and its post-reset backstop now run the shared
+  planner (`curve_feasibility_plan.h`; gpu-backend.md, "Curve feasibility
+  planner"). Same positions in the apply (before `ApplyClockCeilingGuard` and
+  `reset_oc_before_gui_apply()`; the backstop after the reset, refusing
+  through `apply_recover_clock_failure()`), so the 2026-09-24 ordering below
+  still holds and is still gated. The planner also refuses an anchor beyond
+  the offset range, an unreachable flatten tail and a floor anchor before any
+  write, where those used to surface as a generic target error after the
+  reset had run.
+- Linux gained the same pre-transaction refusal
+  (`linux_backend_curve_plan()` before `linux_execute_transaction()`); its
+  post-reset backstop is an open follow-up, not built yet.
+- Gates: `tools/apply_ceiling_gates.py` names the planner adapter
+  (`apply_curve_plan_precheck_before_writes`, the shared pre-write input
+  builder, the Linux order).
+
 ## 2026-09-24 lock pre-tail refusal moved ahead of reset-to-stock
 
 - **Defect.** The "Curve lock X MHz at point N is below pre-tail point M" check

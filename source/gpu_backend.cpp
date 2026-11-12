@@ -623,15 +623,25 @@ static bool nvapi_set_gpu_offset(int offsetkHz, bool forceWrite) {
 }
 #include "gpu_backend_memory_offset.h"
 static void rebuild_visible_map() {
+    // The flat floor is decided once per topology binding: its end moves with
+    // temperature, and the grid must not (vf_writable_point_policy.h).
+    if (vf_floor_binding_update(&g_app.vfFloorBinding, g_app.curve,
+            g_app.freqOffsets, VF_NUM_POINTS, 0)) {
+        const VfFloorTopology& floor = g_app.vfFloorBinding.floor;
+        debug_log("vf floor: bound topology key=%08x graphicsEnd=%d first=ci%d"
+                  " floorEnd=ci%d floorRun=%d floorMHz=%d\n",
+            g_app.vfFloorBinding.topologyKey, floor.graphicsEnd,
+            floor.firstPopulated, floor.floorEnd, floor.floorRun, floor.floorMHz);
+    }
     g_app.numVisible = 0;
     int populatedOrdinal = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         g_app.populatedOrdinal[i] = -1;
         if (g_app.curve[i].freq_kHz == 0) continue;
         g_app.populatedOrdinal[i] = populatedOrdinal++;
-        // Voltage only: the stock frequency drifts with temperature and must
-        // not move a point into or out of the grid.
-        if (vf_point_visible_in_editor(g_app.curve[i].freq_kHz, g_app.curve[i].volt_uV)) {
+        // Voltage at or above 700 mV, or writable below it -- never the live
+        // frequency, which drifts with temperature.
+        if (vf_point_listed(g_app.vfFloorBinding.floor, g_app.curve, i)) {
             g_app.visibleMap[g_app.numVisible++] = i;
         }
     }
@@ -751,43 +761,31 @@ static void detect_locked_tail_from_curve() {
             return;
         }
     }
-    for (int vi = 0; vi < g_app.numVisible - 1; vi++) {
-        int ci = g_app.visibleMap[vi];
-        unsigned int lockFreqkHz = g_app.curve[ci].freq_kHz;
-        if (lockFreqkHz == 0) continue;
-        bool hasTail = false;
-        bool allSame = true;
-        for (int j = vi + 1; j < g_app.numVisible; j++) {
-            int cj = g_app.visibleMap[j];
-            unsigned int freqkHz = g_app.curve[cj].freq_kHz;
-            if (freqkHz == 0) {
-                allSame = false;
-                break;
-            }
-            hasTail = true;
-            if (freqkHz != lockFreqkHz) {
-                allSame = false;
-                break;
-            }
-        }
-        if (hasTail && allSame) {
-            g_app.lockedVi = vi;
-            g_app.lockedCi = ci;
-            g_app.lockedFreq = displayed_curve_mhz(lockFreqkHz);
-            g_app.lockMode = LOCK_MODE_FLATTEN;
-            sync_applied_lock_state_from_curve();
-            return;
-        }
+    // Candidates in ascending voltage over every writable listed point, each
+    // judged by the exact rule (>= 1 tail point) or the 1 MHz tolerant rule
+    // (>= 3 tail points).  An exact-kHz run at the top of the curve must not
+    // preempt an earlier plateau that carries sub-MHz bin jitter
+    // (vf_flat_tail_recognition.h).
+    const VfFlatTailRecognition rec = vf_recognize_flat_tail(
+        g_app.curve, g_app.vfFloorBinding.floor, 1, 3);
+    int recVi = -1;
+    for (int vi = 0; rec.found && vi < g_app.numVisible; vi++) {
+        if (g_app.visibleMap[vi] == rec.anchorCi) { recVi = vi; break; }
     }
-    // Some drivers report a flattened tail with tiny per-point kHz drift even though
-    // the visible curve is effectively locked. Accept a long suffix that stays within
-    // 1 MHz of the anchor so startup detection does not jump to a later voltage point.
-    for (int vi = 0; vi < g_app.numVisible - 1; vi++) {
-        int ci = g_app.visibleMap[vi];
-        if (restore_locked_tail_from_curve_index_tolerant(ci, 3)) {
-            sync_applied_lock_state_from_curve();
-            return;
-        }
+    debug_log_on_change("lock detect: found=%d anchor=ci%d vi=%d mv=%u plateau=%u MHz"
+        " tail=%d exact=%d tolerance=%d MHz maxDeviation=%d kHz candidates=%d\n",
+        rec.found ? 1 : 0, rec.anchorCi, recVi,
+        rec.anchorCi >= 0 ? g_app.curve[rec.anchorCi].volt_uV / 1000u : 0u,
+        rec.plateauMHz, rec.tailCount, rec.exact ? 1 : 0, rec.toleranceMHz,
+        rec.maxDeviationKHz, rec.candidatesTried);
+    if (rec.found && recVi >= 0 && recVi < g_app.numVisible - 1) {
+        g_app.lockedVi = recVi;
+        g_app.lockedCi = rec.anchorCi;
+        g_app.lockedFreq = rec.plateauMHz;
+        g_app.lockMode = LOCK_MODE_FLATTEN;
+        g_app.guiLockTracksAnchor = true;
+        sync_applied_lock_state_from_curve();
+        return;
     }
     // No lock detected - appliedLock already synced at function entry.
 }

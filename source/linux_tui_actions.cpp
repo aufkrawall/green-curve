@@ -9,6 +9,7 @@
 // The lockout notice tui_refresh_service() puts on the status line.
 #include "linux_auto_restore_policy.h"
 #include "auto_apply_failure_notice_policy.h"
+#include "profile_save_policy.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -517,9 +518,42 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
                 set_daemon_failure(state, "Profile save failed", error);
                 break;
             }
-            snprintf(state->status, sizeof(state->status),
-                     "Saved staged values to profile slot %d",
-                     state->currentSlot);
+            // A draft without curve intent saves no curve.  Say so when the
+            // GPU carries one Green Curve did not set, instead of reporting a
+            // plain save over the curve the table shows (profile_save_policy.h).
+            const DesiredSettings& saved = state->desired;
+            bool draftHasCurve = saved.hasLock && saved.lockMHz > 0;
+            for (int ci = 0; ci < VF_NUM_POINTS && !draftHasCurve; ++ci)
+                draftHasCurve = saved.hasCurvePoint[ci] && saved.curvePointMHz[ci] > 0;
+            int omitted = 0;
+            int firstOmitted = -1;
+            if (!draftHasCurve && state->serviceOnline) {
+                int componentKHz[VF_NUM_POINTS] = {};
+                int ordinal = 0;
+                for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+                    if (state->service.snapshot.curve[ci].freq_kHz == 0) continue;
+                    if (saved.hasGpuOffset && ordinal >= saved.gpuOffsetExcludeLowCount)
+                        componentKHz[ci] = saved.gpuOffsetMHz * 1000;
+                    ++ordinal;
+                }
+                omitted = profile_save_count_unsaved_programmed_points(
+                    state->service.snapshot.curve, state->service.snapshot.freqOffsets,
+                    componentKHz, &firstOmitted);
+            }
+            linux_debug_logf("profile-save: slot=%d source=staged-draft draftCurve=%d"
+                             " omittedProgrammedPoints=%d firstOmitted=ci%d\n",
+                             state->currentSlot, draftHasCurve ? 1 : 0, omitted,
+                             firstOmitted);
+            if (omitted > 0) {
+                snprintf(state->status, sizeof(state->status),
+                    "Saved slot %d without the GPU's current VF curve: it was not set by"
+                    " Green Curve (%d programmed points) and is not included",
+                    state->currentSlot, omitted);
+            } else {
+                snprintf(state->status, sizeof(state->status),
+                         "Saved staged values to profile slot %d",
+                         state->currentSlot);
+            }
             sync_startup_snapshot_after_profile_write(state,
                 state->currentSlot, true);
             break;

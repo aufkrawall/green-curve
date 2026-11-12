@@ -265,11 +265,15 @@ under the cursor; later launches restore the last validated normal placement.
   pending offset or flatten target never runs flat against the top edge and a
   low-clock curve does not float in empty space. The **voltage axis follows
   the same idea** on the 50 mV grid: `gui_graph_voltage_axis()` starts at the
-  first visible point's voltage (rounded down, clamped to 700) and ends at the
-  last visible point (rounded up, clamped to 1250), with a 300 mV minimum
-  span, so a GPU whose curve only becomes meaningful at 750 mV does not waste
-  the whole 700-750 mV cell. Hidden low points (voltage < 700 mV or base
-  frequency < 500 MHz) are never plotted or labelled, and on-curve MHz labels
+  first listed point's voltage (rounded down, clamped to the floor below) and
+  ends at the last listed point (rounded up, clamped to 1250), with a 300 mV
+  minimum span, so a GPU whose curve only becomes meaningful at 750 mV does
+  not waste the whole 700-750 mV cell. The clamp floor is 700 mV unless a
+  writable point below 700 mV is listed; then
+  `gui_graph_voltage_axis_floor_mv()` lowers it to that point's grid cell
+  (since 2026-11-12), so no editable point lies off the graph. Unlisted
+  points (the driver's flat floor below 700 mV, other clock domains) are
+  never plotted or labelled, and on-curve MHz labels
   that would spill left of the plot are skipped. The 500 MHz / 50 mV grids and
   labels are unchanged; the rounding uses true floor/ceil grid helpers
   (`gui_grid_floor()` / `gui_grid_ceil()`), so a negative pre-clamp value steps
@@ -723,6 +727,51 @@ as "nothing happened".
   exceed what is already applied is not a new risk. Automation never consults
   the policy at all, which is enforced by source guards as well as by the
   presentation-silent gate.
+
+## Listed sub-700 mV points: editor decisions and consumer inventory (2026-11-12)
+
+Source anchors: `source/vf_writable_point_policy.h`, `source/gpu_backend.cpp`
+(`rebuild_visible_map()`), `source/main_gpu_state.cpp`
+(`is_curve_point_visible_in_gui()`), `source/ui_main_graph.cpp`,
+`source/gui_graph_axis_policy.h`, `source/config_profile_repair.cpp`
+(`profile_point_saved_visible()`), `tests/curve_plan_tests.cpp` (7890-7893),
+`tools/ui_gates.py` (`check_vf_point_visibility_is_drift_free`).
+
+The editor lists every writable graphics point, including those below 700 mV
+(the rule is on gpu-backend.md, "VF curve data model"). Decisions:
+
+- **Grid.** The column plan stays valid for 55, 80 (a full Pascal table) and
+  128 points at the minimum viewport for every DPI case from 96 to 288
+  (7890-7891). No layout constant changed.
+- **Graph.** The voltage axis starts at the first listed point's grid cell
+  when that point is below 700 mV (`gui_graph_voltage_axis_floor_mv()`,
+  7892); otherwise it is unchanged.
+- **Stored `pointN_visible` flags.** New saves write the listed rule. A
+  stored flag is read as written. A profile without the key falls back to
+  the rule its writer used, the 700 mV voltage rule
+  (`vf_point_visible_in_editor()`), so legacy repair never treats a newly
+  listed point as saved-visible; the editor projection
+  (`vf_filter_unlisted_editor_curve_points()`) keeps it instead of dropping
+  it (7893).
+- **Text.** The CLI help's `--point49 ... --point127` is an example range,
+  and the parser accepts any index; the planner refuses floor, foreign and
+  unpopulated targets by name. No hint names 700 mV.
+- **Stability.** The listed set is decided once per topology binding and does
+  not move with temperature (RTX 5070 cold and warm both list 87 points).
+- **Other families.** A Blackwell table lists the points between its floor
+  and 700 mV; a hardware write test there is still pending.
+
+Consumer inventory of `visibleMap`, `numVisible`, `lockedVi` and
+`is_curve_point_visible_in_gui()` (about 30 files):
+
+| Class | Rule | Consumers |
+|---|---|---|
+| Topology | Every populated graphics point, never `visibleMap` | the planner's prefix and tail (`curve_feasibility_plan.h`), the apply's locked-tail mask (`gpu_backend_apply.cpp`, every populated point from the anchor), the Save omission count (`profile_save_policy.h`), the flat-tail scan (`vf_flat_tail_recognition.h`) |
+| Editor listing | `visibleMap` is the listed set; `vi` <-> `ci` identity | `rebuild_visible_map()`; lock identity in `gpu_backend.cpp`, `main_state_sync.cpp`, `gpu_backend_apply.cpp` (interactive stored lock), `ui_lock_checkbox.cpp`, `lock_checkbox_policy.h`, `ui_main_context_menus.cpp`; draft capture in `main_shell.cpp`, `main_runtime_control.cpp`, `main_runtime_capture.cpp`; drafts and pending state in `ui_pending_changes.cpp`, `config_profiles_gui_state.cpp`; profile flags and projection through `is_curve_point_visible_in_gui()` in `config_profiles.cpp`, `config_profile_curve_format.cpp`, `config_profiles_ui.cpp`, `main_tail_diagnostics.cpp`; topology-change detection in `gui_service_state.cpp` |
+| Presentation | Draws what is listed | `ui_main_layout.cpp`, `ui_main_controls.cpp`, `ui_main_control_lifecycle.cpp`, `ui_main.cpp`, `main_gpu_front.cpp`, `ui_main_graph.cpp`, `ui_main_window.cpp` (row to point on `EN_CHANGE`), `ui_mutation_completion.cpp`, `gpu_backend_snapshot.h` (count in diagnostics) |
+
+Open questions: the real window has not been exercised at 80 listed points
+(the layout plan is covered by pure tests only).
 
 ## Service status notices live in a tooltip (2026-09-23)
 

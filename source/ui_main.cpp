@@ -522,5 +522,6 @@ static void create_lock_tooltips(HWND hParent) {
 
 #include "ui_main_controls.cpp"
 
+#include "ui_profile_save_notice.cpp"
 #include "ui_main_window.cpp"
 #include "gui_process_cleanup.cpp"

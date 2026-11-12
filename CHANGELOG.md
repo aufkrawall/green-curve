@@ -29,15 +29,22 @@
 
 ## Unreleased
 
-Dialog messages can be copied to the clipboard, and typing into active curve lock fields follows normal text input order.
+Curves are checked before anything is written, low-voltage curve points become editable, and dialog messages can be copied.
 
 ### New
 
 - **Dialog text copying:** pressing Ctrl+C on any confirmation, warning, or error dialog copies the complete message box contents to the clipboard.
+- **Curve points below 700 mV:** writable low-voltage points are now listed in the editor and graph; the driver's fixed clock floor below 700 mV stays hidden.
+
+### Improved
+
+- **Curve checks before Apply:** a lock that conflicts with earlier points, an unreachable target or tail, or a fixed floor point is refused before any setting changes, naming the voltage, clock and permitted range.
+- **Saving over another tool's curve:** Save now says when the GPU's current curve was not set by Green Curve and is not part of the slot.
 
 ### Fixed
 
 - **VF curve flatten editing:** retyping the target frequency in a ticked flatten point's edit box preserves normal left-to-right typing order without caret resets.
+- **Externally flattened curves:** a flatten set by another tool is detected at its real starting point, so saving, resetting and loading it no longer fails on a hidden low-voltage point.
 
 ### Compatibility notes
 

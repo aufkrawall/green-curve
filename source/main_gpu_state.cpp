@@ -779,8 +779,7 @@ static bool load_curve_points_explicit_from_section(const char* path, const char
 
 static bool is_curve_point_visible_in_gui(int pointIndex) {
     if (pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return false;
-    return vf_point_visible_in_editor(g_app.curve[pointIndex].freq_kHz,
-                                      g_app.curve[pointIndex].volt_uV);
+    return vf_point_listed(g_app.vfFloorBinding.floor, g_app.curve, pointIndex);
 }
 
 static void resolve_displayed_live_gpu_offset_state_for_gui(int* gpuOffsetMHzOut, int* excludeLowCountOut) {

@@ -71,6 +71,13 @@ static void restore_curve_points_from_base_plus_gpu_offset(DesiredSettings* desi
 // applied-profile comparison tests, so a live-derived answer would make the
 // same file decode differently as the GPU boosts.  Absent the key, the record
 // asserts visibility by containing the point at all.
+//
+// The editor fallback answers with the rule the WRITER used: every build that
+// predates the key listed by voltage alone (>= MIN_VISIBLE_VOLT_mV).  The
+// current listed set is larger (writable points below 700 mV), and treating
+// such a point as saved-visible would let this repair clear it as stock
+// scaffold.  A stored flag is read as written: 0 means the point was hidden
+// in the writer's editor, whatever the current rule lists.
 static bool profile_point_saved_visible(const char* path, const char* section, int pointIndex,
                                         ProfileReadMode mode) {
     int visible = 0;
@@ -78,7 +85,9 @@ static bool profile_point_saved_visible(const char* path, const char* section, i
         return visible != 0;
     }
     if (mode == PROFILE_READ_FOR_OWNERSHIP) return true;
-    return is_curve_point_visible_in_gui(pointIndex);
+    if (pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return false;
+    return vf_point_visible_in_editor(g_app.curve[pointIndex].freq_kHz,
+                                      g_app.curve[pointIndex].volt_uV);
 }
 
 static int profile_point_saved_offset_khz(const char* path, const char* section, int pointIndex, bool* foundOut) {

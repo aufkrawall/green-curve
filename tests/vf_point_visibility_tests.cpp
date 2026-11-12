@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "vf_point_visibility_policy.h"
+#include "vf_writable_point_policy.h"
 
 namespace {
 
@@ -108,26 +109,36 @@ int run_vf_point_visibility_tests() {
     for (unsigned int f : freqs) {
         if (!vf_point_visible_in_editor(f, 760000u)) return 7389;
     }
-    // 7390-7392: profile projection uses the grid rule, clears all of a
-    // hidden point's saved intent, and preserves even the low-frequency floor.
+    // 7390-7392: profile projection uses the listed rule
+    // (vf_writable_point_policy.h) and clears all of an unlisted point's
+    // saved intent.  A writable point just below 700 mV is listed now (it used
+    // to be dropped); a flat-floor point below 700 mV is not.  Floor points at
+    // or above 700 mV stay listed (tests/curve_plan_tests.cpp, 7804).
     VFCurvePoint live[VF_NUM_POINTS] = {};
     DesiredSettings saved = {};
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 9; ++i) {
         saved.hasCurvePoint[i] = true;
         saved.curvePointMHz[i] = 2000;
         saved.curvePointFromGpuOffset[i] = true;
     }
     live[0].freq_kHz = 0;       live[0].volt_uV = 900000; // unpopulated
-    live[1].freq_kHz = 2000000; live[1].volt_uV = 699999; // below threshold
-    live[2].freq_kHz = 180000;  live[2].volt_uV = 700000; // visible floor
-    live[3].freq_kHz = 2500000; live[3].volt_uV = 1000000;
-    if (vf_filter_hidden_editor_curve_points(&saved, live) != 2) return 7390;
-    for (int i = 0; i < 2; ++i)
+    for (int i = 1; i <= 4; ++i) {                        // flat floor
+        live[i].freq_kHz = 150000;
+        live[i].volt_uV = 600000 + (unsigned int)i * 10000;
+    }
+    live[5].freq_kHz = 160000;  live[5].volt_uV = 690000;  // writable, below 700 mV
+    live[6].freq_kHz = 2000000; live[6].volt_uV = 699999;  // writable, below 700 mV
+    live[7].freq_kHz = 2000000; live[7].volt_uV = 700000;  // listed by voltage
+    live[8].freq_kHz = 2500000; live[8].volt_uV = 1000000;
+    const VfFloorTopology floor = vf_floor_topology_compute(live, nullptr, VF_NUM_POINTS);
+    if (floor.floorEnd != 5 || floor.floorRun != 4) return 7390;
+    if (vf_filter_unlisted_editor_curve_points(&saved, floor, live) != 5) return 7390;
+    for (int i = 0; i < 5; ++i)
         if (saved.hasCurvePoint[i] || saved.curvePointMHz[i] ||
             saved.curvePointFromGpuOffset[i]) return 7391;
-    for (int i = 2; i < 4; ++i)
+    for (int i = 5; i < 9; ++i)
         if (!saved.hasCurvePoint[i] || saved.curvePointMHz[i] != 2000 ||
             !saved.curvePointFromGpuOffset[i]) return 7392;
-    if (vf_filter_hidden_editor_curve_points(&saved, live) != 0) return 7392;
+    if (vf_filter_unlisted_editor_curve_points(&saved, floor, live) != 0) return 7392;
     return 0;
 }

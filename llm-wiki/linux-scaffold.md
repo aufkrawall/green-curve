@@ -1686,8 +1686,24 @@ invariant now lives in the full `linux_tui_layout*` family:
   data loss: the count is stated in the panel header (`45 flat pts hidden`); a
   selection inside the floor (a profile lock, a graph click) *lowers* the bound
   so what the user points at is never invisible; and a run shorter than
-  `TUI_VF_MIN_FLAT_FLOOR_RUN` is not a floor at all, so an ordinary rising curve
-  is never trimmed and a wholly flat curve never produces an empty table.
+  `VF_MIN_FLAT_FLOOR_RUN` (4) is not a floor at all, so an ordinary rising
+  curve is never trimmed and a wholly flat curve never produces an empty
+  table. Since 2026-11-12 the floor comes from the shared
+  `vf_floor_topology_compute()` (`source/vf_writable_point_policy.h`, the rule
+  the Windows editor and both planners use; the TUI-local constant is gone),
+  and the daemon binds it per topology in `LinuxGpuState::vfFloor`.
+- **Curve requests are planned before the transaction (2026-11-12).**
+  `linux_backend_curve_plan()` (`source/linux_backend_curve_plan.h`) runs the
+  shared planner over the daemon's snapshot before
+  `linux_execute_transaction()`; a proven refusal returns with the planner's
+  message and no phase runs (`apply: curve plan refused before any write`).
+  Points the request cleans up are judged at stock, HARD locks check each tail
+  point's absolute target, and the prefix is not checked for HARD locks. No
+  post-reset backstop yet (open follow-up).
+- **Save names an omitted external curve (2026-11-12).** A staged draft with
+  no curve or lock intent saves no curve; when the GPU carries programmed
+  points Green Curve did not set, the status line says so instead of a plain
+  "Saved" (config-profiles.md, "Save names what it leaves out").
 - **A layout with no VF table carries no scroll information.** `draw_vf_table()`
   is the only writer of `layout.vfVisibleRows` and `build_tui_layout()` zeroes
   the layout every frame, so on the Fan or Profiles tab it reads zero. Treating

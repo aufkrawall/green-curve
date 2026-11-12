@@ -25,6 +25,7 @@
 #include "linux_gpu_uuid.h"
 #include "linux_transaction.h"
 #include "linux_vf_layout_summary.h"
+#include "vf_writable_point_policy.h"
 #include "fan_fixed_maintenance_policy.h"
 #include "debug_log_steady_state_policy.h"
 #include "platform.h"
@@ -82,6 +83,9 @@ struct LinuxGpuState {
     int vfControlStatus;
     // Shape of the last VF read, also when it was refused (diagnostics only).
     LinuxVfLayoutSummary vfLayout;
+    // Flat low-voltage floor, decided once per topology binding; lock anchors
+    // and explicit targets must be writable (vf_writable_point_policy.h).
+    VfFloorBinding vfFloor;
     ServiceGpuHealth health;
     ServiceGpuHealth lastLoggedHealth;
     bool healthLogged;
