@@ -601,6 +601,44 @@ reading the phase order (§ the comments in `linux_backend_mutation.cpp`) and
 by the pure functions above, not by an end-to-end fixture; no Linux hardware
 run under load yet.
 
+## Authoring document, point intent and unit conversions (2026-11-12)
+
+Source anchors: `tests/profile_document_tests.cpp`, `source/profile_document.h`,
+`source/profile_point_intent.h`, `source/tuning_units.h`. See
+[profile-document.md](profile-document.md) for the type summary and open
+questions (no runtime/IPC/disk consumer exists yet; these are the only
+exercising code).
+
+- 7960-7977 power ratio and Hz/kHz conversions: a captured 249000/250000 mW
+  pair reduces to 249/250 and resolves back to 249000 mW on the same
+  default; resolving against a different default that does not divide
+  evenly reports conversion-required, not a silent round; a user percentage;
+  invalid (zero/negative numerator or denominator) construction never
+  invents a ratio; a checked multiply overflow and an invalid destination
+  default both refuse rather than wrap; the scale-2 Pascal half-kHz
+  remainder (15000500 Hz) is reported, not silently narrowed to a clean kHz
+  value.
+- 7980-7989 point intent: each kind's own structural-validity rule (an
+  absolute point needs a nonzero target; a captured zero is valid and
+  distinct from absent); canonicalization clears every payload field a kind
+  does not own; semantic equality ignores the observed-frequency preview but
+  still catches a real payload difference; typing an absolute MHz value
+  converts the point and drops captured authority.
+- 7990-8000 document: an empty document and a mixed absolute/projected/
+  captured-zero document with hidden sub-700 mV topology are structurally
+  valid; an absurd absolute target is still structurally valid (only
+  planning judges feasibility); duplicate topology identity and a lock
+  anchor that does not reference a topology point in the document both
+  refuse; a power intent present without a valid ratio refuses; a moving
+  point preview, and a fan-only edit holding the rest of the document
+  constant, never break semantic equality; a retyped point does.
+- Mutation check: disabling the captured-offset comparison in
+  `profile_point_intent_semantically_equal()` fails 7988.
+
+Not covered: everything downstream of this document (schema migration,
+capture, the portable codec, destination mapping, bank import/export) --
+none of it exists yet.
+
 ## Linux GPU selection across PCI bus renumbering (2026-10-22)
 
 Source anchors: `tests/linux_gpu_location_tests.cpp`,

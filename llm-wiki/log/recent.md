@@ -5,6 +5,23 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-12: New authoring document (ProfileDocument), point intent and unit types
+
+- Added `source/profile_document.h`, `source/profile_point_intent.h` and
+  `source/tuning_units.h`: a from-scratch, platform-neutral, GPU-free
+  document type (`ProfileDocument`) with four mutually exclusive per-point
+  kinds (absent, absolute frequency, projection, captured offset), explicit
+  application scope and domain presence, and an exact reduced power ratio
+  of board default instead of raw mW. See
+  [profile-document.md](../profile-document.md) for the full summary.
+- This is scaffolding only: nothing in the live runtime, IPC or disk layer
+  builds, persists or transmits a `ProfileDocument` yet. No user-visible
+  behavior changed; no CHANGELOG entry was added for this reason.
+- Verified: `python build.py --test` (new 7960-8000 in
+  `tests/profile_document_tests.cpp`; mutation check disabling the
+  captured-offset comparison fails 7988), `--gates`, `--check`, `--tidy` (no
+  new findings).
+
 ## 2026-11-12: Linux VF baseline reset and post-write curve/plateau verification parity
 
 - `LINUX_MUTATION_RESET_BASELINE` cleared the NVML graphics/memory scalars on
