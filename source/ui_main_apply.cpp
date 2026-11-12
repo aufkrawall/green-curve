@@ -13,6 +13,7 @@
 
 #include "oc_high_warning_policy.h"
 #include "ui_mutation_completion.cpp"
+#include "ui_curve_prepare.cpp"
 
 // Read the configured warning thresholds.  0 (or any negative value) disables
 // that domain, which is the escape hatch for users who deliberately run high
@@ -162,6 +163,11 @@ static void apply_changes() {
         gc_message_box(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
         return;
     }
+    // A proven prefix conflict with the lock: offer to lower those points in
+    // the draft (only the draft changes) instead of sending a request the
+    // service would refuse.  Before the high-OC gate, which would otherwise
+    // ask about a request that never leaves the editor.
+    if (gui_curve_prepare_intercept_apply(&desired)) return;
     // Gate AFTER capture: the captured request is the exact intent that would
     // reach the hardware, and capture has already established that something
     // actually changed, so an unchanged high clock never reaches the dialog.

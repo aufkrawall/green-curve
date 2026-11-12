@@ -35,6 +35,7 @@ Curves are checked before anything is written, low-voltage curve points become e
 
 - **Dialog text copying:** pressing Ctrl+C on any confirmation, warning, or error dialog copies the complete message box contents to the clipboard.
 - **Curve points below 700 mV:** writable low-voltage points are now listed in the editor and graph; the driver's fixed clock floor below 700 mV stays hidden.
+- **Prepare compatible curve:** when earlier points rise above a lock, Apply offers to lower them in the editor for review instead of failing; nothing is applied until you press Apply again.
 
 ### Improved
 

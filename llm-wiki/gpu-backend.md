@@ -745,7 +745,8 @@ Source anchors: `source/curve_feasibility_plan.h`,
   apply's own originals; after a reset a refusal returns through
   `apply_recover_clock_failure()`. The shared input builders
   (`apply_curve_plan_pre_write_route()`, `apply_curve_plan_pre_write_input()`)
-  are the only way to plan a request before writes.
+  are the only way to plan a request before writes; the GUI's "Prepare
+  compatible curve" (windows-ui-layout.md) uses them over the mirrored state.
 - **Linux integration.** `linux_backend_curve_plan()` runs in
   `linux_backend_apply()` after the curve build and before
   `linux_execute_transaction()`; a refusal returns an empty mutation result

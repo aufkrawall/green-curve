@@ -547,6 +547,34 @@ so zero-setter refusal rests on these pure tests plus the order gates
 (planner before `ApplyClockCeilingGuard`, before reset-to-stock, and before
 `linux_execute_transaction()`); no Pascal hardware capture yet.
 
+## Prepare compatible curve, operation A (2026-11-12)
+
+Source anchors: `tests/curve_prefix_repair_tests.cpp`,
+`tests/curve_plan_fixtures.h`, `source/curve_prefix_repair.h`,
+`source/curve_prefix_repair_message.h`, `tools/apply_ceiling_gates.py`.
+
+- 7900-7909 HELP-01: Pascal at stock, an old slot's 1000 MHz flatten at
+  point 67 plus typed points (950 MHz at 40, 1400 at 30, 700 at 10): 46
+  points lowered (41..66 to the plateau, 20..39 to the typed 950 above them,
+  hidden points 20..24 included), none raised, anchor and plateau kept, the
+  repaired draft typed-only and non-decreasing, re-planned representable
+  before and after the reset; preview text (count, span, lowest voltage
+  first, "... and 38 more") and the bounded `curve-prepare:` log.
+- 7910-7915 HELP-02: a -500 MHz minimum stops point 66 (needs -955 MHz); an
+  RTX 5070 floor point (725 mV, 180 MHz) cannot come down to 150 MHz; a
+  projected point nearer the anchor does not hide the floor. The draft stays
+  byte-identical in every refusal.
+- 7920-7922 projected and GPU-offset-covered points report conversion
+  required; 7925-7926 a shaped estimate reports baseline required; 7928-7930
+  a repair that cannot fix an independent tail is UNRESOLVED; 7932-7933
+  not needed at the true anchor, no lock, floor anchor.
+- Mutation check: dropping the floor test from the repair fails 7914.
+
+Not covered: the GUI dialog and the `EN_CHANGE` typing path on a real
+window (source-gated: intercept before queueing, no writer names). HELP-03
+to HELP-08 (conversion preview, closest-target search, stale revisions,
+restore of an accepted repair) are not implemented yet.
+
 ## Linux GPU selection across PCI bus renumbering (2026-10-22)
 
 Source anchors: `tests/linux_gpu_location_tests.cpp`,

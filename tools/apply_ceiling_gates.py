@@ -472,9 +472,27 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
                  "route.evidence, route.provenance, true, route.excludeLow, componentKHz);",
                  "the pre-reset plan supplies the VF-table routing")
+    # The GUI's "Prepare compatible curve" judges a draft with the very input
+    # the service's pre-write check builds, not a parallel approximation.
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
                  "apply_curve_plan_pre_write_input(desired, route, componentKHz));",
                  "the pre-reset plan uses the shared pre-write input builder")
+    require_text(_p(ctx, "ui_curve_prepare.cpp"),
+                 "apply_curve_plan_pre_write_input(desired, route, componentKHz);",
+                 "the GUI's prefix repair plans with the shared pre-write input builder")
+    # Accepting a repair changes only the editor draft: the GUI decides before
+    # queueing anything, and the prepare code never reaches a writer.
+    ui_apply_cpp = _p(ctx, "ui_main_apply.cpp")
+    require_order_in_operation(
+        ui_apply_cpp,
+        "static void apply_changes()",
+        "if (gui_curve_prepare_intercept_apply(&desired)) return;",
+        "if (!gui_mutation_queue_apply(&desired, true, SERVICE_APPLY_ORIGIN_GUI,",
+        "the GUI's prefix repair offer precedes queueing the apply")
+    for writer in ("gui_mutation_queue_", "apply_desired_settings", "nvapi_",
+                   "nvml_", "service_request_"):
+        forbid_text(_p(ctx, "ui_curve_prepare.cpp"), writer,
+                    "Prepare compatible curve changes only the editor draft")
     require_text(apply_cpp,
                  "const bool offsetInVfTable = curve_point_apply_uses_vf_table_offset(",
                  "the apply computes its effective VF-table offset route")

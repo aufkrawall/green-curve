@@ -1021,6 +1021,9 @@ int run_vf_point_visibility_tests();
 // Curve feasibility planner, writable VF points, flat-tail anchors, honest
 // Save and round trips (tests/curve_plan_tests.cpp, 7800-7899).
 int run_curve_plan_tests();
+// "Prepare compatible curve" prefix repair (tests/curve_prefix_repair_tests.cpp,
+// 7900-7939).
+int run_curve_prefix_repair_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2681,6 +2684,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int curvePlanFailure = run_curve_plan_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", curvePlanFailure);
         return curvePlanFailure;
+    }
+    if (int prefixRepairFailure = run_curve_prefix_repair_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", prefixRepairFailure);
+        return prefixRepairFailure;
     }
     if (int tuiTargetFailure = run_linux_tui_gpu_target_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", tuiTargetFailure);

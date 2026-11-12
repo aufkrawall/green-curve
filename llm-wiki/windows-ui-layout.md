@@ -773,6 +773,51 @@ Consumer inventory of `visibleMap`, `numVisible`, `lockedVi` and
 Open questions: the real window has not been exercised at 80 listed points
 (the layout plan is covered by pure tests only).
 
+## Prepare compatible curve on Apply (2026-11-12)
+
+Source anchors: `source/ui_curve_prepare.cpp`, `source/ui_main_apply.cpp`
+(`apply_changes()`), `source/curve_prefix_repair.h`,
+`source/curve_prefix_repair_message.h`, `tests/curve_prefix_repair_tests.cpp`
+(7900-7939), `tools/apply_ceiling_gates.py`.
+
+- After `capture_gui_apply_settings()` and before the high-OC gate, a
+  reset-first manual Apply with a lock is planned with the exact input the
+  service's pre-write check builds (`apply_curve_plan_pre_write_route()` +
+  `apply_curve_plan_pre_write_input()`), over the state mirrored from the
+  service. Only a REFUSED plan with a proven prefix issue is intercepted;
+  anchor and tail refusals still come from the service.
+- `curve_prefix_repair_prepare()` (operation A) walks back from the anchor:
+  each earlier point's new value is min(its target, its successor's new
+  value), using the planner's own per-point value
+  (`curve_plan_prefix_point_target()`). The anchor and plateau never move and
+  no point is raised. PREPARED only when every lowered point is typed, or
+  unowned over a proving baseline; then the repaired request is re-planned
+  and offered only if that plan is not REFUSED.
+- PREPARED shows a Yes/No preview (count, voltage span, up to 8 points lowest
+  voltage first with old and new MHz, "becomes a typed value" for unowned
+  points). Yes types the values into the point fields through the ordinary
+  `EN_CHANGE` path, so the draft owns plain absolute targets; nothing is
+  applied until the user presses Apply again. No cancels the Apply.
+  All-or-nothing: if any lowered point has no editor row before the lock,
+  nothing is typed.
+- Other outcomes cancel the Apply with the planner's refusal plus why no fix
+  is offered: LIMITED (a floor point or the range minimum, named by voltage
+  and point), CONVERSION_REQUIRED (a point that follows the GPU offset;
+  never converted silently), BASELINE_REQUIRED (a shaped curve hides an
+  unowned point's stock value), UNRESOLVED (the tail or anchor still fails).
+  A limit outranks a conversion or baseline finding.
+- Diagnostics: `curve-plan: phase=gui-draft ...` and `curve-prepare:
+  phase=gui-draft status=... changed=... span=... limiting=...` plus up to 8
+  `curve-prepare: point ...` lines.
+- Gates: the intercept precedes `gui_mutation_queue_apply()`; the file names
+  no writer (`gui_mutation_queue_`, `apply_desired_settings`, `nvapi_`,
+  `nvml_`, `service_request_`).
+
+Open questions: no undo of an accepted repair beyond editing or reloading
+the slot; after a repair, points the GUI used to infer from live offsets are
+no longer inferred (an explicit point exists), which the next Apply's check
+covers. The real dialog flow has not been exercised on a window.
+
 ## Service status notices live in a tooltip (2026-09-23)
 
 The background-service status label is one clipped 18 px line, but up to four

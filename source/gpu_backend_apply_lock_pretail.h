@@ -137,8 +137,9 @@ static bool apply_curve_plan_anchor_is_writable(const DesiredSettings* desired,
 // How a reset-first request is judged before any write, over the curve and
 // programmed offsets currently held in g_app (no hardware read here): the
 // GPU-offset route, the pre-tail provenance rule and the evidence class.  The
-// service's precheck refreshes g_app first; any other pre-write judgement of a
-// request must build its input here too, so it cannot drift from Apply's.
+// service's precheck refreshes g_app first; the GUI's "Prepare compatible
+// curve" uses the state mirrored from the service, so both judge a request by
+// the same rules.
 struct ApplyCurvePlanPreWriteRoute {
     int excludeLow;
     bool offsetInVfTable;

@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-12: Prepare compatible curve (operation A) on the GUI Apply path
+
+- A manual Apply whose lock sits below earlier points (the plan proves a
+  prefix refusal) now offers to lower those points in the editor draft
+  (`ui_curve_prepare.cpp`, `curve_prefix_repair.h`). The repair reuses the
+  planner's per-point values and the service's pre-write input builder, so
+  it cannot disagree with Apply; accepted values are typed through the
+  normal edit path and nothing is written until the next Apply. Projected
+  points, shaped baselines, floor and range limits and independent tail
+  failures are reported instead of repaired.
+- Verified: `python build.py --test` (7900-7939; dropping the floor test from
+  the repair fails 7914), `python build.py --check`. Not covered: the dialog
+  on a real window; HELP-03..08.
+
 ## 2026-11-12: Shared curve planner, listed sub-700 mV points, flatten anchor fix
 
 - Issue 17 (Pascal): an externally flattened 1000 MHz curve, saved and

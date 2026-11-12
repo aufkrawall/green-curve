@@ -348,9 +348,9 @@ static inline bool curve_plan_check_point_topology(CurvePlanResult* r,
 }
 
 // What one populated pre-anchor point will land at under this request, and
-// whether that value is evidence enough to refuse.  The planner's prefix
-// check; anything that proposes prefix changes must reuse it, so it lowers
-// exactly the values the planner judges.
+// whether that value is evidence enough to refuse.  Shared by the planner's
+// prefix check and the prefix repair (curve_prefix_repair.h), so the repair
+// lowers exactly the values the planner judges.
 struct CurvePlanPrefixTarget {
     unsigned int targetMHz;
     CurvePlanPointKind kind;

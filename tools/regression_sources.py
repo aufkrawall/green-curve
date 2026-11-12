@@ -37,6 +37,7 @@ REGRESSION_SOURCES = (
     'linux_gpu_uuid_tests.cpp',
     'vf_point_visibility_tests.cpp',
     'curve_plan_tests.cpp',
+    'curve_prefix_repair_tests.cpp',
     'linux_vf_read_tests.cpp',
     'linux_vf_write_tests.cpp',
     'linux_read_request_tests.cpp',
