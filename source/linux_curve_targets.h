@@ -30,7 +30,7 @@ struct LinuxCurveTargetBuildResult {
     bool pointAbsoluteIntent[VF_NUM_POINTS];
     unsigned int pointTargetMHz[VF_NUM_POINTS];
     bool pointCapturedIntent[VF_NUM_POINTS];
-    int pointCapturedOffsetKHz[VF_NUM_POINTS];
+    gc_i64 pointCapturedOffsetHz[VF_NUM_POINTS];
 };
 
 // Compose the complete Linux VF target in one pass.  Absolute explicit points
@@ -100,9 +100,10 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
             write = true;
         } else if (desired_curve_point_has_target(desired, i)) {
             // Same shared answer Windows uses; see curve_point_offset_policy.h.
-            long long offsetKHz = 0;
-            if (!desired_curve_point_offset_khz(desired, i, baseKHz,
-                    ordinal >= exclude ? desired->gpuOffsetMHz * 1000 : 0, &offsetKHz)) continue;
+            long long offsetHz = 0;
+            if (!desired_curve_point_offset_hz(desired, i, baseKHz,
+                    ordinal >= exclude ? desired->gpuOffsetMHz * 1000 : 0, &offsetHz)) continue;
+            long long offsetKHz = offsetHz / 1000;
             if (offsetKHz < INT_MIN) offsetKHz = INT_MIN;
             if (offsetKHz > INT_MAX) offsetKHz = INT_MAX;
             targetOffsets[i] = (int)offsetKHz;
@@ -115,7 +116,7 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
             result.pointAbsoluteIntent[i] = desired_curve_point_kind(desired, i) == DESIRED_CURVE_ABSOLUTE;
             result.pointTargetMHz[i] = desired->curvePointMHz[i];
             result.pointCapturedIntent[i] = desired->curvePointCaptured[i] != 0;
-            result.pointCapturedOffsetKHz[i] = (int)offsetKHz;
+            result.pointCapturedOffsetHz[i] = offsetHz;
             result.pointCount++;
             continue;
         } else if (result.composedGpuOffset && ordinal >= exclude) {
@@ -170,15 +171,20 @@ static inline bool linux_verify_curve_absolute_targets(
     return true;
 }
 
-static inline bool linux_verify_curve_captured_targets(const int* offsets,
-    const LinuxCurveTargetBuildResult& build, char* detail, size_t detailSize) {
-    if (!offsets) return false;
+static inline bool linux_verify_curve_captured_targets(const gc_i64* offsetsHz,
+    const LinuxCurveTargetBuildResult& build, char* detail, size_t detailSize,
+    bool exactReadbackValid = true) {
+    if (!offsetsHz) return false;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         if (!build.pointCapturedIntent[ci]) continue;
-        if (offsets[ci] != build.pointCapturedOffsetKHz[ci]) {
+        if (!exactReadbackValid) {
+            if (detail) gc_snprintf(detail, detailSize, "Captured VF offset readback is unavailable");
+            return false;
+        }
+        if (offsetsHz[ci] != build.pointCapturedOffsetHz[ci]) {
             if (detail) gc_snprintf(detail, detailSize,
-                "Captured VF point %d offset is %d kHz, requested %d kHz",
-                ci, offsets[ci], build.pointCapturedOffsetKHz[ci]);
+                "Captured VF point %d offset is %lld Hz, requested %lld Hz",
+                ci, offsetsHz[ci], build.pointCapturedOffsetHz[ci]);
             return false;
         }
     }
@@ -257,6 +263,8 @@ linux_build_curve_transition_targets(
         if (!previousMask[i] || pointMask[i]) continue;
         targetOffsets[i] = 0;
         pointMask[i] = true;
+        result.pointCapturedIntent[i] = true; // cleanup must clear fractional raw values too
+        result.pointCapturedOffsetHz[i] = 0;
         result.pointMask[i] = true;
         ++result.pointCount;
         if (cleanupPointCountOut) ++*cleanupPointCountOut;

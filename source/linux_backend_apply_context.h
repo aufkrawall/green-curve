@@ -91,10 +91,11 @@ static bool linux_apply_rebuild_curve_targets(LinuxApplyTransactionContext* cont
 // not the pre-reset sample.
 static bool linux_apply_reset_baseline_vf_curve(LinuxGpuState* g) {
     int vfResetTargets[VF_NUM_POINTS] = {};
+    gc_i64 vfResetHz[VF_NUM_POINTS] = {};
     bool vfResetMask[VF_NUM_POINTS] = {};
     for (int i = 0; i < VF_NUM_POINTS; i++)
         vfResetMask[i] = g->curve[i].freq_kHz != 0;
-    if (!apply_curve_offsets_verified(g, vfResetTargets, vfResetMask, 2)) {
+    if (!apply_curve_offsets_verified(g, vfResetTargets, vfResetMask, 2, vfResetHz, vfResetMask)) {
         lb_log("apply: VF curve offsets did not reset to stock baseline\n");
         return false;
     }
@@ -122,8 +123,9 @@ static bool linux_apply_verify_curve_write(LinuxApplyTransactionContext* context
     }
     char detail[160] = {};
     bool ok = linux_verify_curve_absolute_targets(g->curve, context->plannedBuild,
-        detail, sizeof(detail)) && linux_verify_curve_captured_targets(g->freqOffsets,
-            context->plannedBuild, detail, sizeof(detail));
+        detail, sizeof(detail)) &&
+        linux_verify_curve_captured_targets(g->freqOffsetsHz,
+            context->plannedBuild, detail, sizeof(detail), g->vfOffsetsHzValid);
     if (!ok) lb_log("curve verify: %s\n", detail);
     return ok;
 }

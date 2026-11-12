@@ -111,8 +111,10 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
             g->vfStructureValid, g->vfSnapshotFresh) &&
         g->numPopulated > 0) {
         snapshot->curveValid = true;
+        snapshot->curveOffsetsExact = g->vfOffsetsHzValid;
         for (int i = 0; i < VF_NUM_POINTS; ++i) {
             snapshot->curveOffsets[i] = g->freqOffsets[i];
+            snapshot->curveOffsetsHz[i] = g->freqOffsetsHz[i];
             snapshot->curveMask[i] = g->curve[i].freq_kHz != 0;
         }
     }
@@ -415,7 +417,8 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
         case LINUX_MUTATION_CURVE: {
             if (!linux_apply_rebuild_curve_targets(context)) return false;
             bool curveOk = apply_curve_offsets_verified(g, context->curveTargets,
-                                                        context->curveMask, 25) &&
+                context->curveMask, 25, context->plannedBuild.pointCapturedOffsetHz,
+                context->plannedBuild.pointCapturedIntent) &&
                 linux_apply_verify_curve_write(context);
             // The curve is now at its new (raised) shape and LINUX_MUTATION_LOCK
             // has not run: this is the instant that was uncapped before
@@ -655,10 +658,11 @@ static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
         }
         case LINUX_MUTATION_CURVE: {
             int targets[VF_NUM_POINTS] = {};
+            gc_i64 targetsHz[VF_NUM_POINTS] = {};
             bool mask[VF_NUM_POINTS];
             for (int i = 0; i < VF_NUM_POINTS; ++i)
                 mask[i] = g->curve[i].freq_kHz != 0;
-            return apply_curve_offsets_verified(g, targets, mask, 25);
+            return apply_curve_offsets_verified(g, targets, mask, 25, targetsHz, mask);
         }
         case LINUX_MUTATION_FAN:
             return nvml_set_fan(g, FAN_MODE_AUTO, true, 0);

@@ -33,12 +33,12 @@ static bool apply_verify_curve_targets(const DesiredSettings* desired,
         sawPoint = true;
         if (desired->curvePointCaptured[ci]) {
             long long expected = 0;
-            if (!desired_curve_point_offset_khz(desired, ci, 0, 0, &expected) ||
-                g_app.freqOffsets[ci] != expected) {
+            if (!desired_curve_point_offset_hz(desired, ci, 0, 0, &expected) ||
+                !g_app.vfOffsetsHzValid || g_app.freqOffsetsHz[ci] != expected) {
                 set_message(detail, detailSize,
                     "Captured VF point %d did not retain its requested programmed offset", ci);
-                debug_log("curve captured verification failed: ci=%d actual=%d target=%lld kHz\n",
-                    ci, g_app.freqOffsets[ci], expected);
+                debug_log("curve captured verification failed: ci=%d actual=%lld target=%lld Hz valid=%d\n",
+                    ci, g_app.freqOffsetsHz[ci], expected, g_app.vfOffsetsHzValid ? 1 : 0);
                 return false;
             }
             continue;

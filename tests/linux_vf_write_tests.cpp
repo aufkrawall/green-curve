@@ -265,6 +265,44 @@ int run_linux_vf_write_tests() {
     build.pointAbsoluteIntent[2] = false; // offset-intent points are ignored
     if (!linux_verify_curve_absolute_targets(fresh, build, detail, sizeof(detail)))
         return 7948;
+
+    // Exact driver controls retain both signs of the half-kHz remainder.
+    initialize(&d, &g, &g_vfBackendPascal);
+    gc_i64 exact[VF_NUM_POINTS]{};
+    memset(mask, 0, sizeof(mask));
+    mask[2] = mask[3] = true;
+    exact[2] = 15000500; exact[3] = -15000500;
+    targets[2] = 15000; targets[3] = -15000;
+    if (!apply_curve_offsets_verified(&g, targets, mask, 2, exact, mask) ||
+        d.raw[2] != 30001 || d.raw[3] != -30001 || !g.vfOffsetsHzValid ||
+        g.freqOffsetsHz[2] != exact[2] || g.freqOffsetsHz[3] != exact[3] ||
+        !d.bufferValid || d.raw[7] != 30001) return 8090;
+    if (!apply_curve_offsets_verified(&g, targets, mask, 2, exact, mask) ||
+        d.setCalls != 1) return 8091;
+    if (!nvapi_read_vf_snapshot(&g, why, sizeof(why)) ||
+        !g.vfOffsetsHzValid || g.freqOffsetsHz[7] != 15000500) return 8092;
+    // A zero-kHz projection must not hide a nonzero raw half step at Reset.
+    d.raw[2] = 1; d.raw[3] = -1;
+    exact[2] = exact[3] = 0; targets[2] = targets[3] = 0;
+    if (!apply_curve_offsets_verified(&g, targets, mask, 2, exact, mask) ||
+        d.raw[2] || d.raw[3] || d.setCalls != 2 || !d.bufferValid) return 8093;
+    // No unit guessing or range clamping, even for a sub-kHz excess.
+    exact[2] = 501;
+    if (apply_curve_offsets_verified(&g, targets, mask, 2, exact, mask) ||
+        d.setCalls != 2) return 8094;
+    exact[2] = 1000000500;
+    if (apply_curve_offsets_verified(&g, targets, mask, 2, exact, mask) ||
+        d.setCalls != 2) return 8095;
+    exact[2] = 500; exact[3] = -500; d.ignoreWrites = true;
+    if (apply_curve_offsets_verified(&g, targets, mask, 2, exact, mask) ||
+        d.setCalls != 4 || g.freqOffsets[2] || g.freqOffsetsHz[2]) return 8096;
+    initialize(&d, &g, &g_vfBackendFuture);
+    if (apply_curve_offsets_verified(&g, targets, mask, 2, exact, mask) ||
+        d.setCalls || vf_graphics_offset_grid_hz(g.backend) != 1000 ||
+        vf_graphics_offset_grid_hz(&g_vfBackendPascal) != 500) return 8097;
+    if (vf_graphics_offset_readback_matches(0, true, 500, 0) ||
+        !vf_graphics_offset_readback_matches(0, true, 0, 0) ||
+        !vf_graphics_offset_readback_matches(0, false, 500, 0)) return 8098;
     return 0;
 }
 

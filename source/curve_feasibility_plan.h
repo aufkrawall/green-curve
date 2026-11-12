@@ -116,6 +116,7 @@ struct CurvePlanIssue {
     unsigned int targetMHz;     // the point's effective target / plateau
     long long baseKHz;          // baseline the check used (0 when none)
     long long adjustmentKHz;    // required point offset (anchor/explicit)
+    long long adjustmentHz;     // exact captured offset, including sub-kHz remainder
     long long limitKHz;         // range bound crossed, or plateau kHz
     int worstCi;                // worst offending point (== ci when one)
     unsigned int worstVoltUv;
@@ -173,6 +174,7 @@ struct CurvePlanInput {
     // This request's GPU-offset component per point (kHz), already resolved
     // against the exclude-low rule; null means zero everywhere.
     const int* gpuComponentKHz;
+    int offsetGridHz; // 0 = the legacy physical-kHz interface
 };
 
 static inline const char* curve_plan_disposition_name(CurvePlanDisposition d) {
@@ -296,7 +298,7 @@ static inline void curve_plan_aggregate_note(CurvePlanAggregate* a,
     CurvePlanReason reason, bool proven, int ci, const VFCurvePoint* curve,
     unsigned int targetMHz, long long baseKHz, long long adjustmentKHz,
     long long limitKHz, long long excessKHz, CurvePlanPointKind kind,
-    bool inferred) {
+    bool inferred, long long adjustmentHz = 0) {
     const unsigned int volt = curve[ci].volt_uV;
     if (!a->any) {
         a->any = true;
@@ -307,6 +309,7 @@ static inline void curve_plan_aggregate_note(CurvePlanAggregate* a,
         a->issue.targetMHz = targetMHz;
         a->issue.baseKHz = baseKHz;
         a->issue.adjustmentKHz = adjustmentKHz;
+        a->issue.adjustmentHz = adjustmentHz;
         a->issue.limitKHz = limitKHz;
         a->issue.kind = kind;
         a->issue.inferredFromProgrammed = inferred;
@@ -372,7 +375,8 @@ static inline CurvePlanPrefixTarget curve_plan_prefix_point_target(
     if (d->curvePointCaptured[ci]) {
         t.requested = true;
         t.kind = CURVE_PLAN_POINT_CAPTURED;
-        t.targetMHz = curve_plan_display_mhz(baseKHz + d->curvePointCapturedOffsetHz[ci] / 1000);
+        const long long hz = baseKHz * 1000 + d->curvePointCapturedOffsetHz[ci];
+        t.targetMHz = hz > 0 ? (unsigned int)((hz + 500000) / 1000000) : 0;
         t.proven = baselineProves;
         return t;
     }
@@ -496,7 +500,8 @@ static inline CurvePlanResult curve_plan_evaluate(const CurvePlanInput& in) {
     CurvePlanAggregate pointRange = {};
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         if (!desired_curve_point_present(d, ci)) continue;
-        if (d->curvePointCaptured[ci] && d->curvePointCapturedOffsetHz[ci] % 1000) {
+        const int gridHz = in.offsetGridHz > 0 ? in.offsetGridHz : 1000;
+        if (d->curvePointCaptured[ci] && d->curvePointCapturedOffsetHz[ci] % gridHz) {
             CurvePlanIssue issue{};
             issue.reason = CURVE_PLAN_REASON_POINT_GRID;
             issue.proven = true;
@@ -509,6 +514,18 @@ static inline CurvePlanResult curve_plan_evaluate(const CurvePlanInput& in) {
         if (!d->curvePointCaptured[ci] && d->curvePointMHz[ci] == 0) continue;
         if (lockUsable && ci >= d->lockCi) continue;  // the lock owns the tail
         if (!curve_plan_check_point_topology(&r, in, ci, d->curvePointMHz[ci])) continue;
+        if (d->curvePointCaptured[ci]) {
+            const long long hz = d->curvePointCapturedOffsetHz[ci];
+            const long long minHz = (long long)in.range.minKHz * 1000;
+            const long long maxHz = (long long)in.range.maxKHz * 1000;
+            if (hz >= minHz && hz <= maxHz) continue;
+            const long long limitHz = hz < minHz ? minHz : maxHz;
+            const long long excessHz = hz < minHz ? minHz - hz : hz - maxHz;
+            curve_plan_aggregate_note(&pointRange, CURVE_PLAN_REASON_POINT_OUT_OF_RANGE,
+                true, ci, in.curve, 0, baseKHz[ci], hz / 1000, limitHz / 1000,
+                (excessHz + 999) / 1000, CURVE_PLAN_POINT_CAPTURED, false, hz);
+            continue;
+        }
         long long offset = 0;
         if (!desired_curve_point_offset_khz(d, ci, baseKHz[ci],
                 in.gpuComponentKHz ? in.gpuComponentKHz[ci] : 0, &offset)) continue;

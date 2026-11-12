@@ -579,10 +579,12 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     policy_h = _p(ctx, "curve_point_offset_policy.h")
     require_text(policy_h, "static inline long long curve_point_target_offset_khz(",
                  "the shared curve-point offset policy exists")
-    for site, what in ((targets_h, "initial target build"),
-                       (_p(ctx, "linux_curve_targets.h"), "Linux target build")):
-        require_text(site, "desired_curve_point_offset_khz(desired,",
-                     f"the {what} asks the shared offset policy")
+    require_text(targets_h, "desired_curve_point_offset_khz(desired,",
+                 "the initial target build asks the shared offset policy")
+    require_text(_p(ctx, "linux_curve_targets.h"), "desired_curve_point_offset_hz(desired,",
+                 "the Linux target build asks the exact shared offset policy")
+    require_text(_p(ctx, "desired_curve_intent.h"), "desired_curve_point_offset_khz(d, ci,",
+                 "exact point conversion preserves the legacy shared offset policy")
     require_text(_p(ctx, "desired_curve_intent.h"), "curve_point_target_offset_khz(&request)",
                  "the tagged runtime adapter preserves the legacy shared offset policy")
     require_text(correction_policy_h, "curve_point_target_offset_khz(&want)",

@@ -84,6 +84,7 @@ static CurvePlanResult linux_backend_curve_plan(LinuxGpuState* g,
     in.desired = planned;
     in.lockMode = planned->lockMode;
     in.gpuComponentKHz = componentKHz;
+    in.offsetGridHz = vf_graphics_offset_grid_hz(g->backend);
     CurvePlanResult plan = curve_plan_evaluate(in);
     curve_plan_log(plan, "pre-write", linux_curve_plan_log_line);
     return plan;

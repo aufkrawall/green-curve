@@ -103,7 +103,9 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
     // Baseline preparation itself writes the VF table, even when failure
     // prevents the later CURVE phase from starting.
     if ((baseline || (phaseMask & LINUX_MUTATION_CURVE)) && snapshot->curveValid)
-        ok &= apply_curve_offsets_verified(g, snapshot->curveOffsets, snapshot->curveMask, 25);
+        ok &= apply_curve_offsets_verified(g, snapshot->curveOffsets, snapshot->curveMask, 25,
+            snapshot->curveOffsetsExact ? snapshot->curveOffsetsHz : nullptr,
+            snapshot->curveOffsetsExact ? snapshot->curveMask : nullptr);
     if ((phaseMask & LINUX_MUTATION_FAN) && snapshot->fanValid) {
         for (unsigned int i = 0; i < snapshot->fanCount; ++i) {
             bool fanOk = false;

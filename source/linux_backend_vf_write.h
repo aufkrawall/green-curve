@@ -9,9 +9,12 @@
 // Write verification needs a fresh CONTROL table before the full status read
 // performed at transaction completion.
 static bool nvapi_read_offsets(LinuxGpuState* g) {
+    g->vfOffsetsHzValid = false;
     LinuxVfReadCandidate candidate = {};
     if (!nvapi_read_offsets_candidate(g, &candidate)) return false;
     memcpy(g->freqOffsets, candidate.offsets, sizeof(g->freqOffsets));
+    memcpy(g->freqOffsetsHz, candidate.offsetsHz, sizeof(g->freqOffsetsHz));
+    g->vfOffsetsHzValid = candidate.offsetsHzValid;
     return true;
 }
 
@@ -35,12 +38,15 @@ static void curve_offset_range_khz(LinuxGpuState* g, int* minKHz, int* maxKHz) {
 // on a driver that rejects multi-bit masks the verify loop converges via
 // repeated single-changed-point passes.
 static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffsets,
-                                         const bool* pointMask, int maxBatchPasses) {
+    const bool* pointMask, int maxBatchPasses, const gc_i64* exactHz = nullptr,
+    const bool* exactMask = nullptr) {
     const VfBackendSpec* b = g->backend;
     if (!b || !b->writeSupported || !targetOffsets || !pointMask) return false;
 
     bool desiredMask[VF_NUM_POINTS] = {};
     int desiredOffsets[VF_NUM_POINTS] = {};
+    int desiredRaw[VF_NUM_POINTS] = {};
+    gc_i64 desiredHz[VF_NUM_POINTS] = {};
     bool pendingMask[VF_NUM_POINTS] = {};
     bool driverRefused[VF_NUM_POINTS] = {};
     int desiredCount = 0;
@@ -56,9 +62,18 @@ static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffs
         // before any setter ran; silently clamping an out-of-range value
         // here would hide a mismatch between that proof and the write
         // surface's own range instead of surfacing it (contract 12).
-        if (targetOffsets[i] < rangeMinKHz || targetOffsets[i] > rangeMaxKHz) {
-            lb_log("curve: point %d target %d kHz outside range [%d, %d]; refusing\n",
-                   i, targetOffsets[i], rangeMinKHz, rangeMaxKHz);
+        const bool precise = exactMask && exactMask[i];
+        if (precise && !exactHz) return false;
+        desiredHz[i] = precise ? exactHz[i] : (gc_i64)targetOffsets[i] * 1000;
+        if (desiredHz[i] < (gc_i64)rangeMinKHz * 1000 ||
+            desiredHz[i] > (gc_i64)rangeMaxKHz * 1000) {
+            lb_log("curve: point %d target %lld Hz outside range [%lld, %lld] Hz; refusing\n",
+                   i, desiredHz[i], (gc_i64)rangeMinKHz * 1000, (gc_i64)rangeMaxKHz * 1000);
+            return false;
+        }
+        if (!vf_graphics_offset_driver_units_hz(b, desiredHz[i], &desiredRaw[i])) {
+            lb_log("curve: point %d target %lld Hz is not representable on this surface\n",
+                i, desiredHz[i]);
             return false;
         }
         desiredMask[i] = pendingMask[i] = true;
@@ -87,12 +102,13 @@ static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffs
                 unsigned int off = b->controlEntryBaseOffset + (unsigned int)i * b->controlEntryStride + b->controlEntryDeltaOffset;
                 if (off + sizeof(cur) > b->controlBufferSize) { anyPendingWrite = false; break; }
                 memcpy(&cur, batchBuf + off, sizeof(cur));
-                if (vf_graphics_offset_khz(b, cur) == desiredOffsets[i]) {
+                const bool precise = exactMask && exactMask[i];
+                if (precise ? cur == desiredRaw[i] : vf_graphics_offset_khz(b, cur) == desiredOffsets[i]) {
                     pendingMask[i] = false;
                     continue;
                 }
-                int rawDelta = 0;
-                if (!vf_graphics_offset_driver_units(b, desiredOffsets[i], &rawDelta)) {
+                int rawDelta = desiredRaw[i];
+                if (!precise && !vf_graphics_offset_driver_units(b, desiredOffsets[i], &rawDelta)) {
                     lb_log("curve: point %d offset %d kHz exceeds driver unit range\n",
                            i, desiredOffsets[i]);
                     free(baseControl);
@@ -118,15 +134,19 @@ static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffs
             if (!readOk) break;
 
             bool anyPending = false;
+            int exactPending = 0, firstExactPending = -1;
             for (int i = 0; i < VF_NUM_POINTS; i++) {
                 if (!desiredMask[i]) continue;
-                pendingMask[i] = (g->freqOffsets[i] != desiredOffsets[i]);
+                const bool precise = exactMask && exactMask[i];
+                pendingMask[i] = precise
+                    ? (!g->vfOffsetsHzValid || g->freqOffsetsHz[i] != desiredHz[i])
+                    : g->freqOffsets[i] != desiredOffsets[i];
                 // Same rule as the Windows writer (main_runtime_gpu.cpp): an
                 // idle placeholder entry below the operating range that the
                 // driver pins at offset 0 can never converge.  Without this the
                 // loop spent every remaining pass (~1 s each) rewriting it and
                 // then failed -- and rolled back -- a curve that had landed.
-                if (pendingMask[i] &&
+                if (pendingMask[i] && !precise &&
                     vf_offset_zero_readback_is_benign(desiredOffsets[i],
                         g->freqOffsets[i], g->curve[i].freq_kHz,
                         VF_PLACEHOLDER_MAX_FREQ_MHz * 1000u)) {
@@ -139,10 +159,16 @@ static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffs
                 }
                 if (pendingMask[i]) {
                     anyPending = true;
-                    lb_log("curve batch pass %d unconverged: ci=%d wroteOffset=%dkHz readbackOffset=%dkHz\n",
+                    if (precise) {
+                        if (!exactPending) firstExactPending = i;
+                        ++exactPending;
+                    } else lb_log("curve batch pass %d unconverged: ci=%d wroteOffset=%dkHz readbackOffset=%dkHz\n",
                            pass + 1, i, desiredOffsets[i], g->freqOffsets[i]);
                 }
             }
+            if (exactPending) lb_log("curve exact verification: pass=%d pending=%d firstCi=%d targetHz=%lld readbackHz=%lld valid=%d\n",
+                pass + 1, exactPending, firstExactPending, desiredHz[firstExactPending],
+                g->freqOffsetsHz[firstExactPending], g->vfOffsetsHzValid ? 1 : 0);
             if (!anyPending) { ok = true; break; }
             // Keep driver units in the raw preimage, including sub-kHz values.
             if (!nvapi_read_control_table(g, baseControl, LB_CONTROL_BUF_SIZE)) break;

@@ -101,6 +101,8 @@ struct LinuxHardwareSnapshot {
     int sysClkOffsetKhz;
     int videoClkOffsetKhz;
     int curveOffsets[VF_NUM_POINTS];
+    long long curveOffsetsHz[VF_NUM_POINTS];
+    bool curveOffsetsExact;
     bool curveMask[VF_NUM_POINTS];
     unsigned int fanCount;
     unsigned int fanPolicy[MAX_GPU_FANS];
@@ -116,6 +118,8 @@ struct LinuxHardwareSnapshot {
 #include "linux_apply_ceiling.h"
 static int clockOffsetWrites=0, curveOffsetWrites=0, memoryOffsetWrites=0;
 static int lastMemoryOffsetMHz=0;
+static long long lastCurveOffsetHz=0;
+static bool lastCurveExact=false;
 static bool nvml_set_clock_offset(LinuxGpuState*,unsigned int domain,int value){
  ++clockOffsetWrites;if(domain==NVML_CLOCK_MEM){++memoryOffsetWrites;lastMemoryOffsetMHz=value;}return true;
 }
@@ -128,7 +132,11 @@ template<class... A> static int nvml_read_fan_measured(A...){return 0;}
 template<class... A> static bool fan_manual_write_confirmed(A...){return true;}
 static void gc_strlcpy(char* dst,size_t n,const char* s){if(dst&&n)std::snprintf(dst,n,"%s",s);}
 static void linux_backend_refresh(LinuxGpuState*){}
-static bool apply_curve_offsets_verified(LinuxGpuState*,const int*,const bool*,int){++curveOffsetWrites;return true;}
+static bool apply_curve_offsets_verified(LinuxGpuState*,const int*,const bool*,int,
+ const long long* hz=nullptr,const bool* exact=nullptr){
+ ++curveOffsetWrites;lastCurveExact=hz&&exact&&exact[0];
+ lastCurveOffsetHz=lastCurveExact?hz[0]:0;return true;
+}
 #include "linux_backend_rollback.h"
 static bool linux_apply_reset_baseline_vf_curve(LinuxGpuState*) {++curveOffsetWrites;return true;}
 #include "linux_apply_baseline.h"
@@ -154,6 +162,7 @@ struct App {
  bool isServiceProcess=true,usingBackgroundService=false,loaded=false;
  int numVisible=0,numPopulated=0;
  Point curve[VF_NUM_POINTS]{}; int freqOffsets[VF_NUM_POINTS]{};
+ long long freqOffsetsHz[VF_NUM_POINTS]{}; bool vfOffsetsHzValid{};
  int gpuClockOffsetkHz{}; LockMode lockMode{};
  GpuFamily gpuFamily{};
  unsigned int appliedLockFreq{},lockedFreq{},transitionClockCapMHz{}; bool transitionClockCapActive{};
@@ -362,6 +371,11 @@ static int run(){
    CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
      LINUX_MUTATION_RESET_BASELINE|LINUX_MUTATION_CURVE,pascalErr,sizeof(pascalErr)));
    CHECK(clockOffsetWrites==oldOffsetWrites+1&&curveOffsetWrites==oldCurveWrites+1);
+   pascalSnapshot.curveOffsetsExact=true;pascalSnapshot.curveOffsetsHz[0]=15000500;
+   pascalSnapshot.curveMask[0]=true;
+   CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
+     LINUX_MUTATION_CURVE,pascalErr,sizeof(pascalErr)));
+   CHECK(lastCurveExact&&lastCurveOffsetHz==15000500);
    int oldMemoryWrites=memoryOffsetWrites;
    oldCurveWrites=curveOffsetWrites;
    CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
@@ -435,10 +449,15 @@ static int run(){
    CHECK(mask[1]&&mask[2]&&target[1]==0&&target[2]==-15000);
    g_app.curve[1].freq_kHz=2000000;g_app.curve[2].freq_kHz=2100000;
    g_app.freqOffsets[1]=0;g_app.freqOffsets[2]=-15000;
+   g_app.vfOffsetsHzValid=true;g_app.freqOffsetsHz[1]=0;g_app.freqOffsetsHz[2]=-15000000;
    char detail[128]{};
    CHECK(apply_verify_curve_targets(&d,explicitMask,target,true,false,false,
      LOCK_MODE_NONE,tail,0,detail,sizeof(detail)));
    g_app.freqOffsets[1]=1;
+   g_app.freqOffsetsHz[1]=500; // unchanged zero-kHz projection is insufficient
+   CHECK(!apply_verify_curve_targets(&d,explicitMask,target,true,false,false,
+     LOCK_MODE_NONE,tail,0,detail,sizeof(detail)));
+   g_app.freqOffsetsHz[1]=0;g_app.vfOffsetsHzValid=false;
    CHECK(!apply_verify_curve_targets(&d,explicitMask,target,true,false,false,
      LOCK_MODE_NONE,tail,0,detail,sizeof(detail)));
    g_app.freqOffsets[1]=0;g_app.freqOffsets[2]=0;

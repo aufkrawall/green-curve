@@ -83,15 +83,15 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
             unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)i * backend->controlEntryStride + backend->controlEntryDeltaOffset;
             if (deltaOffset + sizeof(currentDelta) > backend->controlBufferSize) return false;
             memcpy(&currentDelta, &buf[deltaOffset], sizeof(currentDelta));
-            if (vf_graphics_offset_khz(backend, currentDelta) == desiredOffsets[i]) {
-                pendingMask[i] = false;
-                continue;
-            }
             int rawDelta = 0;
             if (!vf_graphics_offset_driver_units(backend, desiredOffsets[i], &rawDelta)) {
                 debug_log("curve: point %d offset %d kHz exceeds driver unit range\n",
                     i, desiredOffsets[i]);
                 return false;
+            }
+            if (currentDelta == rawDelta) {
+                pendingMask[i] = false;
+                continue;
             }
             memcpy(&buf[deltaOffset], &rawDelta, sizeof(rawDelta));
             writeMask[i / 8] |= (unsigned char)(1u << (i % 8));
@@ -135,7 +135,8 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
         bool anyPending = false;
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (!desiredMask[i]) continue;
-            bool converged = (g_app.freqOffsets[i] == desiredOffsets[i]);
+            bool converged = vf_graphics_offset_readback_matches(g_app.freqOffsets[i],
+                g_app.vfOffsetsHzValid, g_app.freqOffsetsHz[i], desiredOffsets[i]);
             // Driver-refusal: a populated-but-placeholder VF entry (marked editable in
             // vfMask, but an idle/non-operating point — e.g. a high-index entry that
             // reports ~400 MHz, below the operating range) that the driver silently
@@ -180,7 +181,8 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (!desiredMask[i]) continue;
         if (driverRefused[i]) { pendingMask[i] = false; continue; }  // non-offsettable placeholder: don't fall back
-        if (g_app.freqOffsets[i] != desiredOffsets[i]) {
+        if (!vf_graphics_offset_readback_matches(g_app.freqOffsets[i],
+            g_app.vfOffsetsHzValid, g_app.freqOffsetsHz[i], desiredOffsets[i])) {
             pendingMask[i] = true;
             hasPending = true;
         } else {
@@ -244,7 +246,8 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (!desiredMask[i]) continue;
         if (driverRefused[i]) { refusedCount++; continue; }  // accepted: driver won't move a placeholder, not a real miss
-        if (g_app.freqOffsets[i] != desiredOffsets[i]) {
+        if (!vf_graphics_offset_readback_matches(g_app.freqOffsets[i],
+            g_app.vfOffsetsHzValid, g_app.freqOffsetsHz[i], desiredOffsets[i])) {
             allOk = false;
             unconvergedCount++;
             debug_log("curve offset unconverged (final): ci=%d wroteOffset=%dkHz readbackOffset=%dkHz driverDelta=%dkHz liveFreq=%ukHz\n",

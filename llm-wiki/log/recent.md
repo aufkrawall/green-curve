@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-12: Exact VF readback, raw replay and recovery
+
+- Retained physical-Hz control values alongside legacy kHz caches. Linux raw
+  targets and rollback snapshots preserve fractional controls; reset and cleanup
+  compare exact zero. Windows captured verification rejects fractional drift
+  hidden by the kHz projection.
+- Added exact surface-grid/range planning and bounded per-pass failure summaries.
+  Production fake-driver cases cover half steps of either sign, ignored writes,
+  untouched raw entries and refusal before mutation. IPC capture replay remains
+  disabled pending document/scope integration. No physical GPU replay claimed.
+- See [profile-document.md](../profile-document.md) for current boundaries.
+
 ## 2026-11-12: Exact memory recovery and checked ratio arithmetic
 
 - Added physical-Hz/effective-MHz conversion helpers and a strict programmed

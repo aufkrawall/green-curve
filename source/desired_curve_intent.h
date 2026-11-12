@@ -62,6 +62,23 @@ static inline bool desired_curve_point_offset_khz(const Settings* d, int ci,
 }
 
 template <class Settings>
+static inline bool desired_curve_point_offset_hz(const Settings* d, int ci,
+    long long liveBaseKHz, int gpuComponentKHz, long long* out) {
+    if (!out) return false;
+    if (desired_curve_point_kind(d, ci) == DESIRED_CURVE_CAPTURED) {
+        const long long hz = d->curvePointCapturedOffsetHz[ci];
+        if (hz < -2147483648000LL || hz > 2147483647000LL) return false;
+        *out = hz;
+        return true;
+    }
+    long long khz = 0;
+    if (!desired_curve_point_offset_khz(d, ci, liveBaseKHz, gpuComponentKHz, &khz) ||
+        khz < LLONG_MIN / 1000 || khz > LLONG_MAX / 1000) return false;
+    *out = khz * 1000;
+    return true;
+}
+
+template <class Settings>
 static inline bool desired_curve_point_semantically_equal(
     const Settings* a, const Settings* b, int ci) {
     const DesiredCurvePointKind kind = desired_curve_point_kind(a, ci);

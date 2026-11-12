@@ -92,13 +92,40 @@ applied-profile matching; structural runtime equality stays separate.
 
 Schema migration can preserve this intent, but IPC captured replay remains
 explicitly disabled until operation scopes and document/editor persistence are
-connected. The current legacy write interfaces require exact physical kHz;
-raw half-kHz replay and precise scalar/power adapters remain later work.
+connected. The Windows write interface requires exact physical kHz; the Linux
+raw control surface now supports its exact integer-Hz grid as described below.
+Precise scalar/power runtime intent remains later work.
 
 Fixtures 8040-8060 and the production Windows target/verify fixture cover zero,
 negative offsets, preview/global-offset independence, strict readback, merge,
 restore, unavailable-domain projection and malformed intent. No hardware write
 or native Linux execution is claimed by these host-neutral fixtures.
+
+## Exact VF controls and recovery (2026-11-12)
+
+Source anchors: `source/vf_curve_units.h`, `source/linux_backend_vf_read.h`,
+`source/linux_backend_vf_write.h`, `source/linux_backend_rollback.h`,
+`source/gpu_backend.cpp`, `source/main_runtime_gpu.cpp`,
+`tests/linux_vf_write_tests.cpp` (8090-8098),
+`tests/captured_intent_runtime_tests.cpp` (8099-8102).
+
+Control readers retain exact physical Hz alongside the legacy kHz projection.
+The scale-2 raw value 30001 retains 15000500 Hz; a failed fresh read invalidates
+exact evidence. Linux captured writes compile checked Hz directly into raw
+driver units, verify exact controls and preserve untouched raw entries. The
+surface grid is derived from its declared scale without adding a family
+allowlist. The planner checks exact captured bounds, including fractional
+excesses, independently of a sampled MHz preview.
+
+Linux recovery snapshots retain exact controls. Baseline reset, explicit reset
+and ownership cleanup clear raw fractional values to exact zero. Windows raw
+no-op comparisons and convergence use exact controls when available; captured
+verification requires fresh exact evidence, while its kHz-only write contract
+still refuses half-kHz targets. Exact failures log a bounded per-pass summary.
+The production fake-driver and rollback fixtures cover positive/negative half
+steps, ignored writes, no-op detection, range/grid refusal without setters and
+untouched fractional controls. Native Linux and physical GPU replay remain
+unverified.
 
 ## Precise memory and bounded arithmetic (2026-11-12)
 

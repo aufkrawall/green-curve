@@ -1,10 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 // Normalize only the graphics VF domain at the driver boundary. Everything
-// above it (targets, verification, snapshots and persistence) uses physical kHz.
+// above it uses physical kHz for legacy controls and exact Hz for capture.
 
 #ifndef GREEN_CURVE_VF_CURVE_UNITS_H
 #define GREEN_CURVE_VF_CURVE_UNITS_H
+
+// Exact cached control values take precedence over their legacy kHz projection.
+// Unknown fractional normalization leaves the established legacy path available.
+static inline bool vf_graphics_offset_readback_matches(int projectedKHz,
+    bool exactValid, long long actualHz, int targetKHz) {
+    return exactValid ? actualHz == (long long)targetKHz * 1000 : projectedKHz == targetKHz;
+}
 
 #include "gpu_core.h"
 #include <limits.h>
@@ -13,8 +20,33 @@ static inline unsigned int vf_graphics_frequency_scale(const VfBackendSpec* b) {
     return b && b->graphicsFrequencyScale ? b->graphicsFrequencyScale : 1u;
 }
 
+static inline int vf_graphics_offset_grid_hz(const VfBackendSpec* b) {
+    unsigned int a = vf_graphics_frequency_scale(b), divisor = 1000;
+    while (divisor) { const unsigned int r = a % divisor; a = divisor; divisor = r; }
+    return (int)(1000 / a);
+}
+
 static inline int vf_graphics_offset_khz(const VfBackendSpec* b, int raw) {
     return (int)((long long)raw / vf_graphics_frequency_scale(b));
+}
+
+static inline bool vf_graphics_offset_hz(const VfBackendSpec* b, int raw, gc_i64* hz) {
+    if (!hz) return false;
+    const gc_i64 numerator = (gc_i64)raw * 1000;
+    const gc_i64 scale = vf_graphics_frequency_scale(b);
+    if (numerator % scale) return false;
+    *hz = numerator / scale;
+    return true;
+}
+
+static inline bool vf_graphics_offset_driver_units_hz(
+    const VfBackendSpec* b, gc_i64 hz, int* raw) {
+    const gc_i64 scale = vf_graphics_frequency_scale(b);
+    if (!raw || hz < LLONG_MIN / scale || hz > LLONG_MAX / scale) return false;
+    const gc_i64 scaled = hz * scale;
+    if (scaled % 1000 || scaled / 1000 < INT_MIN || scaled / 1000 > INT_MAX) return false;
+    *raw = (int)(scaled / 1000);
+    return true;
 }
 
 static inline bool vf_graphics_offset_driver_units(

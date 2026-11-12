@@ -109,11 +109,17 @@ static inline void curve_plan_describe_issue(const CurvePlanResult& r,
             }
             break;
         case CURVE_PLAN_REASON_POINT_OUT_OF_RANGE:
+            if (i.kind == CURVE_PLAN_POINT_CAPTURED) {
+                curve_plan_appendf(out, outSize,
+                    "Captured offset of %+lld Hz at %u mV (point %d) exceeds the permitted"
+                    " %+lld Hz (%s).", i.adjustmentHz, mv, i.ci, i.limitKHz * 1000, source);
+            } else {
             curve_plan_appendf(out, outSize,
                 "%u MHz at %u mV (point %d) requires a %+d MHz point adjustment, beyond the"
                 " permitted %+d MHz (%s).",
                 i.targetMHz, mv, i.ci, curve_plan_signed_mhz(i.adjustmentKHz),
                 curve_plan_signed_mhz(i.limitKHz), source);
+            }
             if (i.affectedCount > 1)
                 curve_plan_appendf(out, outSize, " %d points are affected; the worst is point %d at %u mV.",
                     i.affectedCount, i.worstCi, worstMv);

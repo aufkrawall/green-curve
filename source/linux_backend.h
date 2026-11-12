@@ -70,6 +70,8 @@ struct LinuxGpuState {
     // VF curve state
     VFCurvePoint curve[VF_NUM_POINTS];
     int freqOffsets[VF_NUM_POINTS];
+    gc_i64 freqOffsetsHz[VF_NUM_POINTS];
+    bool vfOffsetsHzValid;
     unsigned char vfMask[32];
     bool vfInfoCached;
     int numPopulated;
@@ -177,6 +179,8 @@ struct LinuxHardwareSnapshot {
     int sysClkOffsetKhz;
     int videoClkOffsetKhz;
     int curveOffsets[VF_NUM_POINTS];
+    gc_i64 curveOffsetsHz[VF_NUM_POINTS];
+    bool curveOffsetsExact;
     bool curveMask[VF_NUM_POINTS];
     unsigned int fanCount;
     unsigned int fanPolicy[MAX_GPU_FANS];

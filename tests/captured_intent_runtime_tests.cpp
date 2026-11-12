@@ -47,6 +47,16 @@ int run_captured_intent_runtime_tests() {
         nvml_range(-1000, 1000));
     if (!find_issue(plan, CURVE_PLAN_REASON_POINT_GRID) ||
         plan.disposition != CURVE_PLAN_REFUSED) return 8048;
+    CurvePlanInput precise = plan_input_windows(table, changed,
+        CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE, nvml_range(-1000, 1000));
+    precise.offsetGridHz = 500; // Pascal Linux raw control surface
+    plan = curve_plan_evaluate(precise);
+    if (plan.disposition != CURVE_PLAN_REPRESENTABLE) return 8099;
+    changed.curvePointCapturedOffsetHz[22] = 1000000500;
+    plan = curve_plan_evaluate(precise);
+    const CurvePlanIssue* rangeIssue = find_issue(plan, CURVE_PLAN_REASON_POINT_OUT_OF_RANGE);
+    if (plan.disposition != CURVE_PLAN_REFUSED || !rangeIssue ||
+        rangeIssue->adjustmentHz != 1000000500) return 8100;
     changed = desired;
     changed.hasLock = 1;
     changed.lockCi = 22;
@@ -65,13 +75,23 @@ int run_captured_intent_runtime_tests() {
     if (built.pointCount != 2 || !mask[22] || !mask[23] || targets[22] != 15000 || targets[23] ||
         built.pointAbsoluteIntent[22] || !built.pointCapturedIntent[22]) return 8050;
     char detail[128]{};
-    int readback[VF_NUM_POINTS]{};
-    readback[22] = 15000;
+    gc_i64 readback[VF_NUM_POINTS]{};
+    readback[22] = 15000000;
     if (!linux_verify_curve_captured_targets(readback, built, detail, sizeof(detail))) return 8051;
-    readback[22] = 14999;
+    readback[22] = 14999000;
     if (linux_verify_curve_captured_targets(readback, built, detail, sizeof(detail))) return 8052;
-    readback[22] = 15001;
+    readback[22] = 15001000;
     if (linux_verify_curve_captured_targets(readback, built, detail, sizeof(detail))) return 8053;
+    readback[22] = 15000000;
+    if (linux_verify_curve_captured_targets(readback, built, detail, sizeof(detail), false))
+        return 8101;
+    desired.curvePointCapturedOffsetHz[22] = 15000500;
+    built = linux_build_curve_targets(table.curve, table.offsets, &desired,
+        -1000000, targets, mask);
+    readback[22] = 15000500;
+    if (built.pointCapturedOffsetHz[22] != 15000500 ||
+        !linux_verify_curve_captured_targets(readback, built, detail, sizeof(detail))) return 8102;
+    desired.curvePointCapturedOffsetHz[22] = 15000000;
 
     DesiredSettings previous{};
     previous.hasPowerLimit = 1;

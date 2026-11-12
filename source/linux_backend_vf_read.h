@@ -13,6 +13,8 @@ static const int LB_NVAPI_NOT_ATTEMPTED = -100003;
 struct LinuxVfReadCandidate {
     VFCurvePoint curve[VF_NUM_POINTS];
     int offsets[VF_NUM_POINTS];
+    gc_i64 offsetsHz[VF_NUM_POINTS];
+    bool offsetsHzValid;
     int populated;
 };
 
@@ -259,12 +261,15 @@ static bool nvapi_read_offsets_candidate(LinuxGpuState* g,
     if (!buf) return false;
     bool ok = nvapi_read_control_table(g, buf, b->controlBufferSize);
     if (ok) {
+        candidate->offsetsHzValid = true;
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             int delta = 0;
             unsigned int off = b->controlEntryBaseOffset + (unsigned int)i * b->controlEntryStride + b->controlEntryDeltaOffset;
             if (off + sizeof(delta) <= b->controlBufferSize) memcpy(&delta, buf + off, sizeof(delta));
             else delta = 0;
             candidate->offsets[i] = vf_graphics_offset_khz(b, delta);
+            if (!vf_graphics_offset_hz(b, delta, &candidate->offsetsHz[i]))
+                candidate->offsetsHzValid = false;
         }
     }
     free(buf);
@@ -288,6 +293,7 @@ static bool nvapi_read_vf_snapshot(LinuxGpuState* g, char* why,
     g->vfStatusFresh = false;
     g->vfControlFresh = false;
     g->vfSnapshotFresh = false;
+    g->vfOffsetsHzValid = false;
     g->vfStructureValid = false;
     g->vfInfoStatus = LB_NVAPI_FUNCTION_MISSING;
     g->vfStatusStatus = LB_NVAPI_NOT_ATTEMPTED;
@@ -313,6 +319,8 @@ static bool nvapi_read_vf_snapshot(LinuxGpuState* g, char* why,
         return false;
     memcpy(g->curve, candidate.curve, sizeof(g->curve));
     memcpy(g->freqOffsets, candidate.offsets, sizeof(g->freqOffsets));
+    memcpy(g->freqOffsetsHz, candidate.offsetsHz, sizeof(g->freqOffsetsHz));
+    g->vfOffsetsHzValid = candidate.offsetsHzValid;
     g->numPopulated = candidate.populated;
     g->vfStructureValid = true;
     g->vfSnapshotFresh = true;

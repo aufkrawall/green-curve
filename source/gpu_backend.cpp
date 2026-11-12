@@ -459,6 +459,7 @@ static void detect_clock_offsets() {
     }
 }
 static bool nvapi_read_offsets() {
+    g_app.vfOffsetsHzValid = false;
     const VfBackendSpec* backend = g_app.vfBackend;
     if (!backend || !backend->readSupported) return false;
     HeapBuffer buf(backend->controlBufferSize > 0 ? backend->controlBufferSize : 0x4000);
@@ -466,15 +467,20 @@ static bool nvapi_read_offsets() {
     memset(buf, 0, backend->controlBufferSize);
     if (backend->controlBufferSize > 0x4000) return false;
     if (!nvapi_read_control_table(buf, backend->controlBufferSize)) return false;
+    bool exact = true;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         int delta = 0;
         unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)i * backend->controlEntryStride + backend->controlEntryDeltaOffset;
         if (deltaOffset + sizeof(delta) > backend->controlBufferSize || !buf.read_at(deltaOffset, &delta, sizeof(delta))) {
             g_app.freqOffsets[i] = 0;
+            g_app.freqOffsetsHz[i] = 0;
+            exact = false;
             continue;
         }
         g_app.freqOffsets[i] = vf_graphics_offset_khz(backend, delta);
+        if (!vf_graphics_offset_hz(backend, delta, &g_app.freqOffsetsHz[i])) exact = false;
     }
+    g_app.vfOffsetsHzValid = exact;
     return true;
 }
 static bool nvapi_set_point(int pointIndex, int freqDelta_kHz) {
