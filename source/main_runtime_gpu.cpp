@@ -258,41 +258,18 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
     return allOk;
 }
 
+#include "curve_point_verify_policy.h"
+
 static unsigned int displayed_curve_mhz(unsigned int rawFreq_kHz) {
-    return (unsigned int)((displayed_curve_khz(rawFreq_kHz) + 500) / 1000);
+    return curve_display_mhz_from_khz((unsigned int)displayed_curve_khz(rawFreq_kHz));
 }
 
+// Delegates to the pure, platform-shared tolerance rule (curve_point_verify_policy.h)
+// over g_app.curve, so Windows and Linux cannot drift onto different answers
+// for the same quantization.
 static unsigned int curve_point_verify_tolerance_mhz(int pointIndex) {
-    if (pointIndex < 0 || pointIndex >= VF_NUM_POINTS || g_app.curve[pointIndex].freq_kHz == 0) {
-        return 1;
-    }
-
-    unsigned int actualMHz = displayed_curve_mhz(g_app.curve[pointIndex].freq_kHz);
-    auto nearest_distinct_neighbor_distance_mhz = [&](int startIndex, int step) -> unsigned int {
-        for (int ci = startIndex; ci >= 0 && ci < VF_NUM_POINTS; ci += step) {
-            if (g_app.curve[ci].freq_kHz == 0) continue;
-            unsigned int neighborMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
-            if (neighborMHz == actualMHz) continue;
-            return actualMHz > neighborMHz ? (actualMHz - neighborMHz) : (neighborMHz - actualMHz);
-        }
-        return 0;
-    };
-
-    unsigned int leftDistanceMHz = nearest_distinct_neighbor_distance_mhz(pointIndex - 1, -1);
-    unsigned int rightDistanceMHz = nearest_distinct_neighbor_distance_mhz(pointIndex + 1, 1);
-    unsigned int minDistanceMHz = 0;
-    if (leftDistanceMHz && rightDistanceMHz) {
-        minDistanceMHz = (unsigned int)nvmin((int)leftDistanceMHz, (int)rightDistanceMHz);
-    } else {
-        minDistanceMHz = leftDistanceMHz ? leftDistanceMHz : rightDistanceMHz;
-    }
-
-    if (minDistanceMHz == 0) return 8;
-
-    unsigned int toleranceMHz = (minDistanceMHz + 1) / 2;
-    if (toleranceMHz < 1) toleranceMHz = 1;
-    if (toleranceMHz > 8) toleranceMHz = 8;
-    return toleranceMHz;
+    return curve_point_verify_tolerance_mhz_over(
+        [](int ci) { return g_app.curve[ci].freq_kHz; }, pointIndex, VF_NUM_POINTS);
 }
 
 static bool curve_targets_match_request(const DesiredSettings* desired, const bool* lockedTailMask, unsigned int lockMhz, char* detail, size_t detailSize) {

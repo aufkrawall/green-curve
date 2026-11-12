@@ -5,6 +5,43 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-12: Linux VF baseline reset and post-write curve/plateau verification parity
+
+- `LINUX_MUTATION_RESET_BASELINE` cleared the NVML graphics/memory scalars on
+  every profile switch but never the per-point VF curve offsets, so a point
+  the new profile does not re-boost kept the previous profile's raw offset
+  (Windows has reset this unconditionally since `reset_oc_before_gui_apply()`
+  was written). `linux_apply_reset_baseline_vf_curve()`
+  (`linux_backend_apply_context.h`) now zeroes every populated point whenever
+  `resetOcBeforeApply` is requested and re-reads the settled curve before the
+  next build; `rebuildCurveTargets` is forced regardless of the NVML scalar's
+  prior value.
+- `apply_curve_offsets_verified()` (`linux_backend_vf_write.h`) silently
+  clamped an out-of-range write target into the surface's own range instead
+  of refusing; removed. The shared planner already proves representability
+  before any setter runs, so a write-time mismatch now surfaces instead of
+  landing on a value nothing validated.
+- Offset convergence alone never proved a curve landed on its requested
+  frequency: the driver can move a point's stock base between the write and
+  the check (one VF bin under load on Blackwell). `linux_build_curve_targets()`
+  now tags each written point absolute- or offset-intent (hard-lock tails stay
+  untagged: the pin is the contract, not a flat raw table), and
+  `linux_apply_verify_curve_write()` re-reads the curve and checks every
+  absolute-intent point's frequency with the same quantization-aware
+  tolerance Windows uses. Extracted the tolerance formula itself to a new
+  shared, platform-neutral header (`curve_point_verify_policy.h`) that both
+  Windows (`main_runtime_gpu.cpp`, pure refactor, no behavior change) and
+  Linux call, so the two platforms cannot drift onto different answers.
+  `LINUX_MUTATION_LOCK` (which releases the F-APPLY-CEILING transition
+  ceiling) only runs if the curve phase's stronger check passes.
+- Verified: `python build.py --test` (new 7940-7948 in
+  `tests/linux_vf_write_tests.cpp`), `--gates`, `--check`, `--tidy` (no new
+  findings), `--test --asan`, `--fuzz --fuzz-runs 5000`, plain `python
+  build.py` (fresh dist, strings for the new log lines confirmed present in
+  the Linux binary). Not covered: no fake-driver harness exercises the
+  complete `linux_backend_apply()` transaction end to end; no Linux hardware
+  run under load.
+
 ## 2026-11-12: Prepare compatible curve (operation A) on the GUI Apply path
 
 - A manual Apply whose lock sits below earlier points (the plan proves a

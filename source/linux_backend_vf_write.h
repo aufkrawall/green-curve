@@ -30,14 +30,6 @@ static void curve_offset_range_khz(LinuxGpuState* g, int* minKHz, int* maxKHz) {
     if (maxKHz) *maxKHz = mx;
 }
 
-static int clamp_freq_delta_khz(LinuxGpuState* g, int freqDelta_kHz) {
-    int mn = 0, mx = 0;
-    curve_offset_range_khz(g, &mn, &mx);
-    if (freqDelta_kHz > mx) { lb_log("clamp_freq_delta_khz: %d -> max %d\n", freqDelta_kHz, mx); return mx; }
-    if (freqDelta_kHz < mn) { lb_log("clamp_freq_delta_khz: %d -> min %d\n", freqDelta_kHz, mn); return mn; }
-    return freqDelta_kHz;
-}
-
 // ports apply_curve_offsets_verified(): batch per-point writes with readback
 // verification.  The set-control mask carries multiple bits per pass on Windows;
 // on a driver that rejects multi-bit masks the verify loop converges via
@@ -52,14 +44,25 @@ static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffs
     bool pendingMask[VF_NUM_POINTS] = {};
     bool driverRefused[VF_NUM_POINTS] = {};
     int desiredCount = 0;
+    int rangeMinKHz = 0, rangeMaxKHz = 0;
+    curve_offset_range_khz(g, &rangeMinKHz, &rangeMaxKHz);
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (!pointMask[i] || g->curve[i].freq_kHz == 0) continue;
         if (!(g->vfMask[i / 8] & (1u << (i % 8)))) {
             lb_log("curve: point %d not in vfMask, skipping\n", i);
             continue;
         }
+        // The shared planner already proved this target representable
+        // before any setter ran; silently clamping an out-of-range value
+        // here would hide a mismatch between that proof and the write
+        // surface's own range instead of surfacing it (contract 12).
+        if (targetOffsets[i] < rangeMinKHz || targetOffsets[i] > rangeMaxKHz) {
+            lb_log("curve: point %d target %d kHz outside range [%d, %d]; refusing\n",
+                   i, targetOffsets[i], rangeMinKHz, rangeMaxKHz);
+            return false;
+        }
         desiredMask[i] = pendingMask[i] = true;
-        desiredOffsets[i] = clamp_freq_delta_khz(g, targetOffsets[i]);
+        desiredOffsets[i] = targetOffsets[i];
         desiredCount++;
     }
     if (desiredCount == 0) return true;

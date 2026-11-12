@@ -402,7 +402,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             if (d->hasVideoClkOffsetKhz &&
                 !linux_xbar_write_entry(g, XBAR_PINNED_VIDEO_ENTRY_INDEX, 0))
                 return false;
-            return true;
+            return linux_apply_reset_baseline_vf_curve(g);
         }
         case LINUX_MUTATION_GPU_OFFSET:
             return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS,
@@ -429,7 +429,8 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
         case LINUX_MUTATION_CURVE: {
             if (!linux_apply_rebuild_curve_targets(context)) return false;
             bool curveOk = apply_curve_offsets_verified(g, context->curveTargets,
-                                                        context->curveMask, 25);
+                                                        context->curveMask, 25) &&
+                linux_apply_verify_curve_write(context);
             // The curve is now at its new (raised) shape and LINUX_MUTATION_LOCK
             // has not run: this is the instant that was uncapped before
             // F-APPLY-CEILING.
@@ -526,9 +527,14 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     const bool clearStaleGpuOffset = linux_composed_offset_must_clear_scalar(
         curveBuild.composedGpuOffset, snapshot.gpuOffsetValid,
         snapshot.gpuOffsetMHz, d->resetOcBeforeApply);
+    // resetOcBeforeApply now always zeroes the VF curve too (parity with
+    // Windows), not only when a nonzero NVML scalar was cleared, so any
+    // curve/lock apply over a reset baseline must rebuild from that fresh
+    // readback regardless of the scalar's prior value.
     context.rebuildCurveTargets = curveBuild.pointCount > 0 &&
-        linux_curve_targets_rebuild_after_scalar(snapshot.gpuOffsetValid,
-            snapshot.gpuOffsetMHz, d->resetOcBeforeApply, clearStaleGpuOffset);
+        (d->resetOcBeforeApply ||
+         linux_curve_targets_rebuild_after_scalar(snapshot.gpuOffsetValid,
+            snapshot.gpuOffsetMHz, d->resetOcBeforeApply, clearStaleGpuOffset));
     lb_log("apply: gpu offset routing composed=%d nvmlOffset=%d MHz (known=%d)"
            " reset=%d clearStale=%d rebuildCurve=%d\n",
            curveBuild.composedGpuOffset ? 1 : 0, snapshot.gpuOffsetMHz,

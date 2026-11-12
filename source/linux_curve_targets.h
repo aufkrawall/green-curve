@@ -5,6 +5,7 @@
 #define GREEN_CURVE_LINUX_CURVE_TARGETS_H
 
 #include "curve_point_offset_policy.h"
+#include "curve_point_verify_policy.h"
 
 #include <limits.h>
 
@@ -17,6 +18,17 @@ struct LinuxCurveTargetBuildResult {
     // membership must not silently describe different VF points.
     bool pointMask[VF_NUM_POINTS];
     unsigned int pointVoltageUv[VF_NUM_POINTS];
+    // Post-write verification contract, matching Windows
+    // gpu_backend_apply_verify.h: true only for a written point whose
+    // intent is a frequency -- the flatten/hard-lock tail and an explicit,
+    // non-offset-derived typed point -- never for a point the GPU-offset
+    // batch or offset provenance filled, which stays verified by
+    // apply_curve_offsets_verified's own offset convergence. A hard-lock
+    // tail is written here but excluded: the pin is the safety contract for
+    // that tail, not a flat raw table, matching Windows' own tail-skip under
+    // LOCK_MODE_HARD in gpu_backend_apply_verify.h.
+    bool pointAbsoluteIntent[VF_NUM_POINTS];
+    unsigned int pointTargetMHz[VF_NUM_POINTS];
 };
 
 // Compose the complete Linux VF target in one pass.  Absolute explicit points
@@ -61,14 +73,24 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
             (long long)currentOffsets[i];
         long long targetKHz = 0;
         bool write = false;
+        bool absoluteIntent = false;
+        bool skipVerify = false;
 
         if ((hardLock || flatten) && i >= desired->lockCi) {
             if (i == desired->lockCi || hardLock) {
                 targetKHz = (long long)desired->lockMHz * 1000LL;
+                absoluteIntent = true;
+                skipVerify = hardLock;
             } else {
+                // Uniform-minimum-offset tail strategy (§6.4): still a
+                // frequency intent (the plateau), verified like any other
+                // flatten-tail point even though the write itself is a
+                // fixed offset rather than a solved target.
                 targetOffsets[i] = minimumOffsetKHz;
                 pointMask[i] = true;
                 result.pointMask[i] = true;
+                result.pointAbsoluteIntent[i] = true;
+                result.pointTargetMHz[i] = desired->lockMHz;
                 result.pointCount++;
                 continue;
             }
@@ -88,6 +110,12 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
             targetOffsets[i] = (int)offsetKHz;
             pointMask[i] = true;
             result.pointMask[i] = true;
+            // Same predicate Windows verification uses
+            // (curve_point_offset_is_intent): a point the request marks
+            // offset-derived stays verified by offset, never by a projected
+            // MHz sampled over an earlier base.
+            result.pointAbsoluteIntent[i] = !desired->curvePointFromGpuOffset[i];
+            result.pointTargetMHz[i] = desired->curvePointMHz[i];
             result.pointCount++;
             continue;
         } else if (result.composedGpuOffset && ordinal >= exclude) {
@@ -103,9 +131,43 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
         targetOffsets[i] = (int)offset;
         pointMask[i] = true;
         result.pointMask[i] = true;
+        result.pointAbsoluteIntent[i] = absoluteIntent && !skipVerify;
+        if (absoluteIntent) result.pointTargetMHz[i] = desired->lockMHz;
         result.pointCount++;
     }
     return result;
+}
+
+// Post-write check that a written absolute-intent point's resulting
+// frequency actually landed on its target, not just that its offset
+// converged, matching Windows gpu_backend_apply_verify.h: the
+// driver can move a point's stock base between the write and the readback
+// (one VF bin under load on Blackwell), so offset convergence alone cannot
+// tell a successful flatten/hard-pin/explicit target from one whose base
+// moved out from under it. `curve` must be a FRESH post-write readback, not
+// the pre-write sample the targets were built from.
+static inline bool linux_verify_curve_absolute_targets(
+    const VFCurvePoint* curve, const LinuxCurveTargetBuildResult& build,
+    char* detail, size_t detailSize) {
+    if (!curve) return false;
+    auto freqAt = [&](int ci) { return curve[ci].freq_kHz; };
+    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+        if (!build.pointMask[ci] || !build.pointAbsoluteIntent[ci]) continue;
+        if (curve[ci].freq_kHz == 0) {
+            if (detail) gc_snprintf(detail, detailSize,
+                "VF point %d has no fresh readback", ci);
+            return false;
+        }
+        if (!curve_point_absolute_target_verified_over(freqAt, ci, VF_NUM_POINTS,
+                build.pointTargetMHz[ci])) {
+            unsigned int actualMHz = curve_display_mhz_from_khz(curve[ci].freq_kHz);
+            if (detail) gc_snprintf(detail, detailSize,
+                "VF point %d verified at %u MHz, requested %u MHz", ci,
+                actualMHz, build.pointTargetMHz[ci]);
+            return false;
+        }
+    }
+    return true;
 }
 
 // A composed GPU offset lives entirely in the VF deltas, so the NVML graphics

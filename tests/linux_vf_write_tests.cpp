@@ -190,6 +190,81 @@ int run_linux_vf_write_tests() {
         d.raw[2] != 400000 || g.curve[2].freq_kHz != 1700000u ||
         g.freqOffsets[2] != 200000 || d.raw[3] != -250000 || !d.bufferValid)
         return 7728;
+
+    // An out-of-range target is refused outright, never silently clamped
+    // into range (contract 12): the shared planner already proved
+    // representability before any setter could run, so a write-time
+    // mismatch must surface, not be hidden by a second silent clamp.
+    initialize(&d, &g, &g_vfBackendPascal);
+    targets[2] = 2000000; // 2000 MHz, outside the +-1000 MHz fallback range
+    mask[2] = true; mask[3] = false;
+    if (apply_curve_offsets_verified(&g, targets, mask, 2) || d.setCalls != 0)
+        return 7940;
+
+    // linux_build_curve_targets tags each written point with whether its
+    // intent is a frequency (verify absolute MHz) or an offset (verify via
+    // apply_curve_offsets_verified's own convergence) -- CT-02 parity with
+    // Windows gpu_backend_apply_verify.h / curve_point_offset_policy.h.
+    initialize(&d, &g, &g_vfBackendPascal);
+    DesiredSettings explicitAbs = {};
+    explicitAbs.hasCurvePoint[2] = true;
+    explicitAbs.curvePointMHz[2] = 1700;
+    LinuxCurveTargetBuildResult r = linux_build_curve_targets(
+        g.curve, g.freqOffsets, &explicitAbs, -1000000, targets, mask);
+    if (!r.pointAbsoluteIntent[2] || r.pointTargetMHz[2] != 1700) return 7941;
+
+    DesiredSettings explicitOffset = {};
+    explicitOffset.hasCurvePoint[2] = true;
+    explicitOffset.curvePointMHz[2] = 1700;
+    explicitOffset.curvePointFromGpuOffset[2] = true;
+    r = linux_build_curve_targets(g.curve, g.freqOffsets, &explicitOffset,
+        -1000000, targets, mask);
+    if (r.pointAbsoluteIntent[2]) return 7942;
+
+    DesiredSettings flatten = {};
+    flatten.hasLock = true;
+    flatten.lockMode = LOCK_MODE_FLATTEN;
+    flatten.lockMHz = 1600;
+    flatten.lockCi = 2;
+    r = linux_build_curve_targets(g.curve, g.freqOffsets, &flatten,
+        -1000000, targets, mask);
+    if (!r.pointAbsoluteIntent[2] || r.pointTargetMHz[2] != 1600 ||
+        !r.pointAbsoluteIntent[3] || r.pointTargetMHz[3] != 1600 ||
+        !r.pointAbsoluteIntent[7] || r.pointTargetMHz[7] != 1600)
+        return 7943;
+
+    DesiredSettings hard = {};
+    hard.hasLock = true;
+    hard.lockMode = LOCK_MODE_HARD;
+    hard.lockMHz = 1600;
+    hard.lockCi = 2;
+    r = linux_build_curve_targets(g.curve, g.freqOffsets, &hard,
+        -1000000, targets, mask);
+    if (r.pointAbsoluteIntent[2] || r.pointAbsoluteIntent[3] ||
+        r.pointAbsoluteIntent[7] || !r.pointMask[2] || !r.pointMask[7])
+        return 7944;
+
+    // linux_verify_curve_absolute_targets: the pure post-write check shared
+    // across every absolute-intent point built above.
+    LinuxCurveTargetBuildResult build = {};
+    build.pointMask[2] = true;
+    build.pointAbsoluteIntent[2] = true;
+    build.pointTargetMHz[2] = 1600;
+    VFCurvePoint fresh[VF_NUM_POINTS] = {};
+    fresh[2] = {1604000u, 800000u}; // within the quantization-aware tolerance
+    char detail[160] = {};
+    if (!linux_verify_curve_absolute_targets(fresh, build, detail, sizeof(detail)))
+        return 7945;
+    fresh[2].freq_kHz = 1700000u; // far outside tolerance
+    if (linux_verify_curve_absolute_targets(fresh, build, detail, sizeof(detail)) ||
+        !detail[0])
+        return 7946;
+    fresh[2].freq_kHz = 0; // masked absolute point lost its readback
+    if (linux_verify_curve_absolute_targets(fresh, build, detail, sizeof(detail)))
+        return 7947;
+    build.pointAbsoluteIntent[2] = false; // offset-intent points are ignored
+    if (!linux_verify_curve_absolute_targets(fresh, build, detail, sizeof(detail)))
+        return 7948;
     return 0;
 }
 

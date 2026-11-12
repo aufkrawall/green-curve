@@ -1698,8 +1698,38 @@ invariant now lives in the full `linux_tui_layout*` family:
   `linux_execute_transaction()`; a proven refusal returns with the planner's
   message and no phase runs (`apply: curve plan refused before any write`).
   Points the request cleans up are judged at stock, HARD locks check each tail
-  point's absolute target, and the prefix is not checked for HARD locks. No
-  post-reset backstop yet (open follow-up).
+  point's absolute target, and the prefix is not checked for HARD locks.
+- **Linux VF baseline reset and post-write verification now match Windows
+  (2026-11-12).** `LINUX_MUTATION_RESET_BASELINE` used to clear the NVML
+  graphics/memory scalars but never the per-point VF curve offsets, so a
+  point the next profile does not re-boost kept the PREVIOUS profile's raw
+  offset (it never appears in that transaction's write set at all).
+  `linux_apply_reset_baseline_vf_curve()` (`source/linux_backend_apply_context.h`)
+  now zeroes every populated point whenever `resetOcBeforeApply` is
+  requested, matching Windows' unconditional `reset_oc_before_gui_apply()`
+  contract, then re-reads the settled curve so the following build measures
+  the fresh stock baseline; `linux_curve_rebuild_keeps_shape()` still gates the
+  curve phase on an unchanged write set. `apply_curve_offsets_verified()`
+  (`source/linux_backend_vf_write.h`) no longer silently clamps a write-time
+  target into the surface's own range: the shared planner already proved
+  representability before any setter ran, so an out-of-range target now
+  refuses outright instead of landing on a different value than planned.
+  `linux_build_curve_targets()` tags each written point as absolute-intent
+  (a flatten/hard-lock anchor, a flatten tail point under the uniform-minimum
+  strategy, or an explicit non-offset-derived typed point) or offset-intent
+  (everything else, including a hard-lock tail -- the pin is the safety
+  contract there, not a flat raw table), and `linux_apply_verify_curve_write()`
+  re-reads the curve after a successful offset write and checks every
+  absolute-intent point's resulting frequency against its target with the
+  same quantization-aware tolerance Windows uses
+  (`source/curve_point_verify_policy.h`, shared by both platforms). Because
+  `LINUX_MUTATION_LOCK` -- which releases the F-APPLY-CEILING transition
+  ceiling -- only runs if the curve phase returned true, this also closes the
+  gap where the ceiling could be released on an offset-converged but
+  frequency-wrong curve. No fake-driver harness exercises the complete
+  `linux_backend_apply()` transaction yet (open follow-up); the new behavior
+  is covered at the pure-function level in `tests/linux_vf_write_tests.cpp`
+  (7940-7948).
 - **Save names an omitted external curve (2026-11-12).** A staged draft with
   no curve or lock intent saves no curve; when the GPU carries programmed
   points Green Curve did not set, the status line says so instead of a plain

@@ -575,6 +575,32 @@ window (source-gated: intercept before queueing, no writer names). HELP-03
 to HELP-08 (conversion preview, closest-target search, stale revisions,
 restore of an accepted repair) are not implemented yet.
 
+## Linux VF baseline reset and curve/plateau verification parity (2026-11-12)
+
+Source anchors: `tests/linux_vf_write_tests.cpp`, `source/linux_backend_vf_write.h`,
+`source/linux_curve_targets.h`, `source/linux_backend_apply_context.h`,
+`source/linux_backend_mutation.cpp`, `source/curve_point_verify_policy.h`.
+
+- 7940 an out-of-range write target is refused outright (no setter call);
+  the write-time silent clamp is gone, so a target the shared planner
+  already proved representable cannot be silently altered at the surface.
+- 7941-7944 `linux_build_curve_targets()`'s absolute/offset-intent tagging:
+  an explicit typed point is absolute-intent at its own MHz; the same point
+  marked `curvePointFromGpuOffset` is offset-intent; a flatten anchor and its
+  uniform-minimum-offset tail points are both absolute-intent at the lock
+  MHz; a hard lock's tail (anchor included) is written but never
+  absolute-intent, matching Windows' APPLY-04 pin-is-the-contract rule.
+- 7945-7948 `linux_verify_curve_absolute_targets()`: within tolerance passes,
+  a far-off readback fails with a detail message, a masked absolute point
+  with no fresh readback fails, and an offset-intent point is never checked.
+
+Not covered: no fake-driver harness drives the complete `linux_backend_apply()`
+transaction, so the reset-then-rebuild-then-verify sequence and the gating of
+`LINUX_MUTATION_LOCK`'s ceiling release on a verified curve are proven by
+reading the phase order (§ the comments in `linux_backend_mutation.cpp`) and
+by the pure functions above, not by an end-to-end fixture; no Linux hardware
+run under load yet.
+
 ## Linux GPU selection across PCI bus renumbering (2026-10-22)
 
 Source anchors: `tests/linux_gpu_location_tests.cpp`,

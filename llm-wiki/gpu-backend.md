@@ -750,8 +750,10 @@ Source anchors: `source/curve_feasibility_plan.h`,
 - **Linux integration.** `linux_backend_curve_plan()` runs in
   `linux_backend_apply()` after the curve build and before
   `linux_execute_transaction()`; a refusal returns an empty mutation result
-  with the message. Linux has no post-reset backstop yet (open follow-up:
-  Linux baseline and post-write verification parity).
+  with the message. Linux still has no post-reset backstop (the plan
+  equivalent of `apply_recover_clock_failure()` run after a refusal that
+  follows a reset); Linux baseline and post-write verification parity landed
+  2026-11-12 (below) and is a separate question from the backstop.
 - **Messages lead with physical values** ("%u MHz at %u mV requires a %+d MHz
   point adjustment. The current permitted maximum is ... (driver graphics
   offset range)"), always name the range source (NVML graphics range, P-state
@@ -779,6 +781,18 @@ Source anchors: `source/curve_feasibility_plan.h`,
   ever be a reviewed proposal, never inferred from current clocks; the NVML
   locked-clock setters are Volta and newer, so a Pascal "pin" is not an NVML
   locked clock. Per-family availability of the getters is unverified.
+- **Shared verification tolerance (2026-11-12).** `displayed_curve_mhz()` and
+  `curve_point_verify_tolerance_mhz()` (`source/main_runtime_gpu.cpp`) now
+  delegate to pure, platform-neutral functions in
+  `source/curve_point_verify_policy.h`
+  (`curve_display_mhz_from_khz()`, `curve_point_verify_tolerance_mhz_over()`,
+  `curve_point_absolute_target_verified_over()`): half the distance to the
+  nearest distinct neighbor's displayed MHz, clamped to [1, 8]. Linux's post-
+  write curve verification (linux-scaffold.md, "Linux VF baseline reset and
+  curve/plateau verification parity") calls the same functions over
+  `LinuxGpuState::curve`, so the two platforms cannot drift onto different
+  tolerance rules for the same quantization. Pure extraction; no Windows
+  behavior change.
 
 Open questions / stale-risk:
 - Floor stability is reasoned from the RTX 5070 fixture; hardware

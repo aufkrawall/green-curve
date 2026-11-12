@@ -80,4 +80,51 @@ static bool linux_apply_rebuild_curve_targets(LinuxApplyTransactionContext* cont
     return true;
 }
 
+// LINUX_MUTATION_RESET_BASELINE's per-point VF curve reset-to-zero (parity
+// with Windows reset_oc_before_gui_apply()): a point this apply does not
+// re-boost would otherwise keep the PREVIOUS profile's raw offset, since a
+// point outside this transaction's write set never appears in
+// curveTargets/curveMask at all. Always runs when resetOcBeforeApply is
+// requested, not only when a scalar was nonzero, matching the unconditional
+// Windows contract. Re-reads the full curve afterward so every curve/lock
+// target this apply computes next is measured from the settled baseline,
+// not the pre-reset sample.
+static bool linux_apply_reset_baseline_vf_curve(LinuxGpuState* g) {
+    int vfResetTargets[VF_NUM_POINTS] = {};
+    bool vfResetMask[VF_NUM_POINTS] = {};
+    for (int i = 0; i < VF_NUM_POINTS; i++)
+        vfResetMask[i] = g->curve[i].freq_kHz != 0;
+    if (!apply_curve_offsets_verified(g, vfResetTargets, vfResetMask, 2)) {
+        lb_log("apply: VF curve offsets did not reset to stock baseline\n");
+        return false;
+    }
+    char why[160] = {};
+    if (!nvapi_read_vf_snapshot(g, why, sizeof(why))) {
+        lb_log("apply: curve re-read after VF baseline reset failed (%s)\n", why);
+        return false;
+    }
+    return true;
+}
+
+// LINUX_MUTATION_CURVE's post-write verification: offset convergence alone
+// does not prove the curve landed where requested, since the driver can
+// move a point's stock base between the write and this check (one VF bin
+// under load on Blackwell). Re-read the full curve and verify every
+// absolute-intent point's resulting frequency, matching Windows
+// gpu_backend_apply_verify.h. LINUX_MUTATION_LOCK, which releases the
+// F-APPLY-CEILING transition ceiling, only runs if this returns true.
+static bool linux_apply_verify_curve_write(LinuxApplyTransactionContext* context) {
+    LinuxGpuState* g = context->gpu;
+    char why[160] = {};
+    if (!nvapi_read_vf_snapshot(g, why, sizeof(why))) {
+        lb_log("curve verify: post-write curve re-read failed (%s)\n", why);
+        return false;
+    }
+    char detail[160] = {};
+    bool ok = linux_verify_curve_absolute_targets(g->curve, context->plannedBuild,
+        detail, sizeof(detail));
+    if (!ok) lb_log("curve verify: %s\n", detail);
+    return ok;
+}
+
 #endif

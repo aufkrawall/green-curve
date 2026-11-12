@@ -41,6 +41,7 @@ Curves are checked before anything is written, low-voltage curve points become e
 
 - **Curve checks before Apply:** a lock that conflicts with earlier points, an unreachable target or tail, or a fixed floor point is refused before any setting changes, naming the voltage, clock and permitted range.
 - **Saving over another tool's curve:** Save now says when the GPU's current curve was not set by Green Curve and is not part of the slot.
+- **Linux profile switching:** switching to a new profile now clears every leftover raw curve point from the previous one first, matching Windows, and a flatten or clock lock is checked against the resulting frequency after Apply, not only against whether the write itself succeeded.
 
 ### Fixed
 
