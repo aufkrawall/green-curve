@@ -45,6 +45,14 @@ static inline bool desired_application_scope_valid(gc_u32 scope) {
         scope == (DESIRED_SCOPE_UPDATE_INCLUDED | DESIRED_SCOPE_REPLACE_VF_POINTS);
 }
 
+// Programmable offset controls with distinct read/write surfaces. Unspecified
+// preserves legacy caller behavior; exact replay names the surface it observed.
+enum ClockOffsetSurface : gc_u32 {
+    CLOCK_OFFSET_SURFACE_UNSPECIFIED = 0,
+    CLOCK_OFFSET_SURFACE_P0 = 1,
+    CLOCK_OFFSET_SURFACE_GLOBAL = 2,
+};
+
 static inline gc_bool8 gc_bool8_from_bool(bool value) {
     return value ? (gc_bool8)1u : (gc_bool8)0u;
 }

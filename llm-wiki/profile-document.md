@@ -179,7 +179,21 @@ a fresh programmable-control getter before mutation and verifies that control
 directly afterwards. A quantized-match hint or a P-state frequency cannot prove
 an exact captured offset. Legacy integer-MHz writes retain their established
 verification. Linux recovery snapshots preserve the effective control separately
-from their legacy integer display-MHz projection.
+from their legacy integer display-MHz projection, including the observed API
+surface. Exact recovery verifies that same surface without accepting a grid
+snap or switching to another getter after a write. A failed precise setter
+does not fall through to a second API. Missing surface evidence refuses rather
+than degrading to legacy tolerance. Legacy integer tuning keeps its established
+verification and fallback behavior.
+
+Source anchors for Linux verification: `source/linux_backend_clock_offsets.h`,
+`source/linux_backend_rollback.h`, `tests/linux_clock_offset_tests.cpp`
+(8150-8163), `tests/clock_transition_tests.cpp` (snapshot surface propagation).
+The [NVML query documentation](https://docs.nvidia.com/deploy/nvml-api/latest/api/group__nvmlDeviceQueries.html)
+specifies a P-state for modern offset controls. The implementation binds exact
+readback to its observed interface instead of treating API substitution as proof
+of identical values. An invalid modern read can still use a valid legacy getter
+for ordinary observation; it is labeled as a legacy surface.
 
 Signed unit conversion avoids negating the signed minimum and checks scaling
 before multiplication. Power-ratio resolution computes quotient/remainder
@@ -228,4 +242,4 @@ cases 8070-8086 and the production Linux rollback fixture cover these contracts.
   deliberately shaped to make that codec straightforward (see the §9.1
   section/key table it mirrors), not to replace it.
 
-Last verified: 2026-11-12.
+Last verified: 2026-11-13.

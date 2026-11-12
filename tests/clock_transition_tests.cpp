@@ -94,6 +94,7 @@ struct LinuxHardwareSnapshot {
     // Display/actual MHz (NVML effective MHz halved at capture, as on Windows).
     int memOffsetMHz;
     bool memOffsetExact;
+    unsigned int memOffsetSurface;
     int memOffsetEffectiveMHz;
     unsigned int powerLimitmW;
     int xbarOffsetKhz;
@@ -118,10 +119,11 @@ struct LinuxHardwareSnapshot {
 #include "linux_apply_ceiling.h"
 static int clockOffsetWrites=0, curveOffsetWrites=0, memoryOffsetWrites=0;
 static int lastMemoryOffsetMHz=0;
+static unsigned int lastMemoryOffsetSurface=0;
 static long long lastCurveOffsetHz=0;
 static bool lastCurveExact=false;
-static bool nvml_set_clock_offset(LinuxGpuState*,unsigned int domain,int value){
- ++clockOffsetWrites;if(domain==NVML_CLOCK_MEM){++memoryOffsetWrites;lastMemoryOffsetMHz=value;}return true;
+static bool nvml_set_clock_offset(LinuxGpuState*,unsigned int domain,int value,unsigned int surface=0){
+ ++clockOffsetWrites;if(domain==NVML_CLOCK_MEM){++memoryOffsetWrites;lastMemoryOffsetMHz=value;lastMemoryOffsetSurface=surface;}return true;
 }
 static int nvml_mem_effective_mhz_from_display_mhz(int x){return x*2;}
 template<class... A> static bool linux_xbar_write_owned(A...){return true;}
@@ -392,10 +394,17 @@ static int run(){
      LINUX_MUTATION_MEM_OFFSET,pascalErr,sizeof(pascalErr)));
    CHECK(memoryOffsetWrites==oldMemoryWrites+1);
    pascalSnapshot.memOffsetExact=true;pascalSnapshot.memOffsetEffectiveMHz=247;
+   pascalSnapshot.memOffsetSurface=1;
    pascalSnapshot.memOffsetMHz=123;
    CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
      LINUX_MUTATION_MEM_OFFSET,pascalErr,sizeof(pascalErr)));
-   CHECK(lastMemoryOffsetMHz==247);
+   CHECK(lastMemoryOffsetMHz==247&&lastMemoryOffsetSurface==1);
+   int verifiedMemoryWrites=memoryOffsetWrites;
+   pascalSnapshot.memOffsetSurface=0;
+   CHECK(!linux_backend_restore_snapshot(&g,&pascalSnapshot,
+     LINUX_MUTATION_MEM_OFFSET,pascalErr,sizeof(pascalErr)));
+   CHECK(memoryOffsetWrites==verifiedMemoryWrites);
+   pascalSnapshot.memOffsetSurface=1;
    CHECK(resets==0);
    g.retainedTransitionCeilingMHz=2300;
    CHECK(!linux_apply_reset_baseline_locked_clocks(&g,&flat));

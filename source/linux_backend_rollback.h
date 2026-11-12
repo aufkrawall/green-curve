@@ -64,7 +64,11 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
         lb_log("offset: rollback domain=%u display=%d effective=%d\n",
                (unsigned int)NVML_CLOCK_MEM, snapshot->memOffsetMHz,
                restoreEffectiveMHz);
-        ok &= nvml_set_clock_offset(g, NVML_CLOCK_MEM, restoreEffectiveMHz);
+        if (snapshot->memOffsetExact && !snapshot->memOffsetSurface) {
+            lb_log("offset: exact rollback refused; captured surface is unavailable\n");
+            ok = false;
+        } else ok &= nvml_set_clock_offset(g, NVML_CLOCK_MEM, restoreEffectiveMHz,
+            snapshot->memOffsetExact ? snapshot->memOffsetSurface : 0);
     }
     if (((baseline && (snapshot->availableMutationDomains &
                        SERVICE_MUTATION_DOMAIN_XBAR)) ||

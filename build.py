@@ -3433,7 +3433,7 @@ def run_source_regression_checks():
     _linux_backend_surface = os.path.join(BUILD_WORK_DIR, "_linux_backend_surface.cpp")
     with open(_linux_backend_surface, "w", encoding="utf-8", errors="ignore") as _lf:
         for _cpp in ("linux_backend.cpp", "linux_backend_vf_read.h", "linux_backend_vf_write.h",
-                     "linux_backend_nvml_write.cpp", "linux_backend_discovery.cpp",
+                     "linux_backend_nvml_write.cpp", "linux_backend_clock_offsets.h", "linux_backend_discovery.cpp",
                      "linux_backend_preflight.h", "linux_backend_mutation.cpp"):
             with open(os.path.join(SOURCE_DIR, _cpp), "r", encoding="utf-8", errors="ignore") as _source:
                 _lf.write(_source.read())

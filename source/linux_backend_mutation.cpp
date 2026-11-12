@@ -79,6 +79,7 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
             nvml_mem_display_mhz_from_effective_mhz(memOffset.offsetMHz);
         snapshot->memOffsetEffectiveMHz = memOffset.offsetMHz;
         snapshot->memOffsetExact = true;
+        snapshot->memOffsetSurface = memOffset.modernApi ? CLOCK_OFFSET_SURFACE_P0 : CLOCK_OFFSET_SURFACE_GLOBAL;
         snapshot->memOffsetValid = true;
     }
     // An unknown response schema cannot become safe without a rebind/driver

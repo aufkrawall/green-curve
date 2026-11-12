@@ -172,6 +172,7 @@ struct LinuxHardwareSnapshot {
     int memOffsetMHz;
     // The exact control preserves odd effective values across rollback.
     bool memOffsetExact;
+    gc_u32 memOffsetSurface;
     int memOffsetEffectiveMHz;
     unsigned int powerLimitmW;
     int xbarOffsetKhz;

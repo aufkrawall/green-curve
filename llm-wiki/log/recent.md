@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Exact memory recovery binds its control surface
+
+- Linux snapshots retain the API surface that supplied memory control.
+  Exact restoration requires the same getter/setter and an equal control;
+  a grid snap, another getter or missing surface cannot prove recovery.
+- A failed precise write does not try a second setter. Legacy tuning retains
+  its documented snap tolerance and observation fallback. Offset helpers moved
+  to a focused, production-tested header; malformed modern metadata never
+  becomes a valid P0 observation.
+- Fixtures 8150-8163 and the rollback fixture cover exact/fractional values,
+  failed setters that mutated, invalid metadata, unavailable getters and
+  per-surface isolation. Full native regressions and the Windows/Linux compiler
+  matrix pass. No physical replay claimed. See [profile-document.md](../profile-document.md).
+
 ## 2026-11-12: Explicit runtime scopes and ownership compilation
 
 - Added the shared scoped transition compiler and Windows/Linux call sites.
