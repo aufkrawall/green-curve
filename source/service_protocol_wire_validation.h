@@ -54,6 +54,7 @@ static inline bool service_wire_string_is_log_safe(
 static inline bool service_desired_bool_fields_valid(
     const DesiredSettings* desired) {
     if (!desired) return false;
+    if (desired->applicationScope > DESIRED_SCOPE_EXPLICIT_RELEASE) return false;
     for (int i = 0; i < VF_NUM_POINTS; ++i) {
         if (desired->hasCurvePoint[i] > 1) return false;
         // Provenance decides whether a point is written as an offset or held to
@@ -61,7 +62,15 @@ static inline bool service_desired_bool_fields_valid(
         // and belongs on this side of the trust boundary.  Canonicalization
         // downstream folds 2 into true, which is why the omission was not
         // exploitable -- and also why it would have stayed invisible.
-        if (desired->curvePointFromGpuOffset[i] > 1) return false;
+        if (desired->curvePointFromGpuOffset[i] > 1 ||
+            desired->curvePointCaptured[i] > 1) return false;
+        // Captured offsets have independent presence and cannot also be an
+        // absolute or projected target. No clamping at this boundary.
+        if (desired->curvePointCaptured[i] &&
+            (desired->hasCurvePoint[i] || desired->curvePointFromGpuOffset[i]))
+            return false;
+        if (desired->curvePointCapturedOffsetHz[i] < -2147483647000LL ||
+            desired->curvePointCapturedOffsetHz[i] > 2147483647000LL) return false;
     }
     const gc_bool8* flags[] = {
         &desired->hasLock, &desired->lockTracksAnchor,

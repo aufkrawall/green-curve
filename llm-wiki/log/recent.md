@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-12: Captured-offset schema capacity and historical record migration
+
+- Appended independent signed-Hz VF offset presence/payload arrays without
+  reinterpreting old absolute/projected settings. Froze outgoing desired,
+  restart and UUID-bearing daemon records; widened old bytes with their
+  original checksums and identity intact. See
+  [persistence-schema.md](../persistence-schema.md).
+- Protocol 30 rejects old/new peers and explicitly refuses captured replay
+  until its runtime consumers are connected. No capture UI or producer yet.
+- Added historical-layout, precision, owned-zero and strict-wire fixtures
+  (8010-8030). Full native Windows regression tests and the Windows/Linux check
+  matrix pass. Linux loaders are cross-linked; native Linux execution and GPU
+  replay remain unverified.
+
 ## 2026-11-12: New authoring document (ProfileDocument), point intent and unit types
 
 - Added `source/profile_document.h`, `source/profile_point_intent.h` and

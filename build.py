@@ -2102,6 +2102,7 @@ def run_source_regression_checks():
         # service_protocol.h, split out only to stay inside the source-size
         # ratchet; the guards address the two as one logical surface.
         for _h in (os.path.join(SOURCE_DIR, "app_shared.h"), gpu_core_h,
+                   os.path.join(SOURCE_DIR, "gpu_wire_types.h"),
                    os.path.join(SOURCE_DIR, "desired_settings_ipc.h"),
                    service_protocol_h,
                    os.path.join(SOURCE_DIR, "service_protocol_validation.h")):
@@ -2117,7 +2118,7 @@ def run_source_regression_checks():
 
     require_text(shared_h, "APP_DEBUG_DEFAULT_ENABLED 1", "debug logging remains default-on")
     require_text(shared_h, "APP_TITLE           APP_NAME \" v\" APP_VERSION", "plain title macro exists")
-    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 29",
+    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 30",
                  "service protocol publishes outcome severity, update state, XBAR, the handback lockout and the auto-apply failure")
     require_text(shared_h, "typedef gc_u8 gc_bool8", "IPC bool fields use a fixed-width one-byte type")
     require_text(shared_h, "canonicalize_gc_bool8", "IPC bool fields are canonicalized at trust boundaries")
@@ -3345,7 +3346,7 @@ def run_source_regression_checks():
     # Persistence hardening: both the service restart snapshot and INI profile
     # loads route through the IPC validator so corrupt bytes cannot reach the
     # apply path or the GUI-side curve math unclamped.
-    require_text(os.path.join(SOURCE_DIR, "main_service_persist.cpp"), "validate_desired_settings_for_ipc(&payload.desired);", "restart-reapply snapshot fields are clamped on load")
+    require_text(os.path.join(SOURCE_DIR, "main_service_restart_load.cpp"), "validate_desired_settings_for_ipc(&payload.desired);", "restart-reapply snapshot fields are clamped on load")
     require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"), "validate_desired_settings_for_ipc(desired);", "INI profile loads clamp fields before derived curve math")
     require_text(shared_h, "if (d->lockMHz > 5000u)", "IPC validator clamps lockMHz like the curve points")
 

@@ -83,7 +83,8 @@ enum {
     // v29 appends ServiceAutoApplyFailure to ServiceSnapshot (192 bytes): the
     // cause of the automatic write that latched AUTOMATIC_APPLY_FAILED, so the
     // GUI can tell the user instead of leaving a silent lockout.
-    SERVICE_PROTOCOL_VERSION = 29,
+    // v30 preserves independent signed-Hz captured VF offsets, including zero.
+    SERVICE_PROTOCOL_VERSION = 30,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply; on a state read it
@@ -692,7 +693,7 @@ static_assert(sizeof(ControlState) == 188,
 // restart snapshot), and their loaders dispatch on the record's byte size.  A
 // change here that bumps only the protocol version leaves those three records
 // unreadable on upgrade -- which is exactly what 0.26.0 shipped into review.
-static_assert(sizeof(DesiredSettings) == 964,
+static_assert(sizeof(DesiredSettings) == 2120,
               "DesiredSettings changed: bump SERVICE_PROTOCOL_VERSION *and* "
               "freeze the outgoing on-disk layout as a new "
               "DesiredSettingsSchema<N> with a widening migration, then bump "
@@ -700,7 +701,7 @@ static_assert(sizeof(DesiredSettings) == 964,
               "SERVICE_ACTIVE_DESIRED_VERSION (see desired_settings_schema.h)");
 static_assert(sizeof(ServiceSnapshot) == 4440,
               "ServiceSnapshot changed without an IPC protocol-version bump");
-static_assert(sizeof(ServiceRequest) == 1552,
+static_assert(sizeof(ServiceRequest) == 2712,
               "ServiceRequest changed without an IPC protocol-version bump");
 
 #include "service_protocol_wire_validation.h"
@@ -772,7 +773,7 @@ struct ServiceResponse {
     ServiceUpdateState update;
     char message[512];
 };
-static_assert(sizeof(ServiceResponse) == 7560,
+static_assert(sizeof(ServiceResponse) == 9872,
               "ServiceResponse changed without an IPC protocol-version bump");
 
 static_assert(offsetof(ServiceResponse, magic) == 0, "ServiceResponse.magic must be at offset 0");

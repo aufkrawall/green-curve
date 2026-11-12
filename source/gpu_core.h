@@ -28,37 +28,7 @@ static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
               "gpu_core.h assumes a little-endian target (NVAPI/NVML buffer parsing)");
 #endif
 
-// ---------------------------------------------------------------------------
-// Fixed-width aliases for the binary IPC protocol.
-//
-// The wire structs historically used Win32 DWORD/ULONGLONG and MAX_PATH.  To
-// stay byte-identical on Windows (where DWORD == `unsigned long`, 32-bit under
-// LLP64) AND correctly sized on Linux (where `unsigned long` is 64-bit), we
-// alias to `unsigned long` on Windows — the exact type DWORD already is, so all
-// existing %lu format strings and DWORD assignments keep compiling — and to
-// uint32_t on Linux.  Both are 32-bit, so the struct layout matches across OSes.
-// ---------------------------------------------------------------------------
-#if defined(_WIN32)
-typedef unsigned long gc_u32;       // identical to Win32 DWORD
-#else
-typedef uint32_t gc_u32;
-#endif
-typedef uint8_t gc_u8;
-typedef unsigned long long gc_u64;  // identical to Win32 ULONGLONG
-typedef gc_u8 gc_bool8;
-static_assert(sizeof(gc_bool8) == 1, "gc_bool8 must stay a one-byte wire flag");
-
-static inline gc_bool8 gc_bool8_from_bool(bool value) {
-    return value ? (gc_bool8)1u : (gc_bool8)0u;
-}
-
-static inline bool gc_bool8_is_canonical(gc_bool8 value) {
-    return value == 0u || value == 1u;
-}
-
-static inline void canonicalize_gc_bool8(gc_bool8* value) {
-    if (value) *value = *value ? (gc_bool8)1u : (gc_bool8)0u;
-}
+#include "gpu_wire_types.h"
 
 // ServiceRequest.path is a fixed 260-byte field (== MAX_PATH on Windows); keep
 // the size constant so the protocol layout is stable across platforms.
@@ -526,6 +496,10 @@ struct DesiredSettings {
     // sets this too, and must: its VF fields show the same projection for any
     // point it did not get from the user.
     gc_bool8 curvePointFromGpuOffset[VF_NUM_POINTS];
+    // Independent programmed-offset intent; presence includes an owned zero.
+    gc_bool8 curvePointCaptured[VF_NUM_POINTS];
+    gc_u32 applicationScope; // DesiredApplicationScope; independent of reset
+    gc_i64 curvePointCapturedOffsetHz[VF_NUM_POINTS];
 };
 
 static inline void validate_gpu_adapter_info_for_ipc(GpuAdapterInfo* g) {

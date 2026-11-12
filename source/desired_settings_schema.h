@@ -54,7 +54,7 @@
 
 // Generation of the live DesiredSettings layout.  Schema 1 shipped through
 // 0.25.2; schema 2 added curvePointFromGpuOffset[] for 0.26.0.
-enum { DESIRED_SETTINGS_SCHEMA_CURRENT = 2 };
+enum { DESIRED_SETTINGS_SCHEMA_CURRENT = 3 };
 
 // Schema 1: DesiredSettings exactly as it was written to disk up to and
 // including 0.25.2.  FROZEN -- never edit a field here, and never "keep it in
@@ -286,6 +286,120 @@ static inline void desired_settings_narrow_schema2(DesiredSettingsSchema2* out,
     out->hasVideoClkOffsetKhz = in->hasVideoClkOffsetKhz;
     out->videoClkOffsetKhz = in->videoClkOffsetKhz;
     memcpy(out->curvePointFromGpuOffset, in->curvePointFromGpuOffset, sizeof(out->curvePointFromGpuOffset));
+}
+
+// FROZEN captured-offset payload. Never synchronize with the live layout.
+struct DesiredSettingsSchema3 {
+    gc_bool8 hasCurvePoint[VF_NUM_POINTS];
+    unsigned int curvePointMHz[VF_NUM_POINTS];
+    gc_bool8 hasLock;
+    int lockCi;
+    unsigned int lockMHz;
+    LockMode lockMode;
+    gc_bool8 lockTracksAnchor;
+    gc_bool8 hasGpuOffset;
+    int gpuOffsetMHz;
+    int gpuOffsetExcludeLowCount;
+    gc_bool8 hasMemOffset;
+    int memOffsetMHz;
+    gc_bool8 hasPowerLimit;
+    int powerLimitPct;
+    gc_bool8 hasFan;
+    gc_bool8 fanAuto;
+    int fanMode;
+    int fanPercent;
+    FanCurveConfig fanCurve;
+    gc_bool8 resetOcBeforeApply;
+    gc_bool8 hasXbarOffsetKhz;
+    int xbarOffsetKhz;
+    gc_bool8 hasXbarMsvddOffsetUv;
+    int xbarMsvddOffsetUv;
+    gc_bool8 hasSysClkOffsetKhz;
+    int sysClkOffsetKhz;
+    gc_bool8 hasVideoClkOffsetKhz;
+    int videoClkOffsetKhz;
+    gc_bool8 curvePointFromGpuOffset[VF_NUM_POINTS];
+    gc_bool8 curvePointCaptured[VF_NUM_POINTS];
+    gc_u32 applicationScope;
+    gc_i64 curvePointCapturedOffsetHz[VF_NUM_POINTS];
+};
+static_assert(sizeof(DesiredSettingsSchema3) == 2120,
+              "DesiredSettingsSchema3 is a FROZEN on-disk layout");
+
+static inline void desired_settings_widen_schema3(DesiredSettings* out,
+    const DesiredSettingsSchema3* in) {
+    if (!out || !in) return;
+    memset(out, 0, sizeof(*out));
+    memcpy(out->hasCurvePoint, in->hasCurvePoint, sizeof(out->hasCurvePoint));
+    memcpy(out->curvePointMHz, in->curvePointMHz, sizeof(out->curvePointMHz));
+    out->hasLock = in->hasLock;
+    out->lockCi = in->lockCi;
+    out->lockMHz = in->lockMHz;
+    out->lockMode = in->lockMode;
+    out->lockTracksAnchor = in->lockTracksAnchor;
+    out->hasGpuOffset = in->hasGpuOffset;
+    out->gpuOffsetMHz = in->gpuOffsetMHz;
+    out->gpuOffsetExcludeLowCount = in->gpuOffsetExcludeLowCount;
+    out->hasMemOffset = in->hasMemOffset;
+    out->memOffsetMHz = in->memOffsetMHz;
+    out->hasPowerLimit = in->hasPowerLimit;
+    out->powerLimitPct = in->powerLimitPct;
+    out->hasFan = in->hasFan;
+    out->fanAuto = in->fanAuto;
+    out->fanMode = in->fanMode;
+    out->fanPercent = in->fanPercent;
+    out->fanCurve = in->fanCurve;
+    out->resetOcBeforeApply = in->resetOcBeforeApply;
+    out->hasXbarOffsetKhz = in->hasXbarOffsetKhz;
+    out->xbarOffsetKhz = in->xbarOffsetKhz;
+    out->hasXbarMsvddOffsetUv = in->hasXbarMsvddOffsetUv;
+    out->xbarMsvddOffsetUv = in->xbarMsvddOffsetUv;
+    out->hasSysClkOffsetKhz = in->hasSysClkOffsetKhz;
+    out->sysClkOffsetKhz = in->sysClkOffsetKhz;
+    out->hasVideoClkOffsetKhz = in->hasVideoClkOffsetKhz;
+    out->videoClkOffsetKhz = in->videoClkOffsetKhz;
+    memcpy(out->curvePointFromGpuOffset, in->curvePointFromGpuOffset, sizeof(out->curvePointFromGpuOffset));
+    memcpy(out->curvePointCaptured, in->curvePointCaptured, sizeof(out->curvePointCaptured));
+    out->applicationScope = in->applicationScope;
+    memcpy(out->curvePointCapturedOffsetHz, in->curvePointCapturedOffsetHz, sizeof(out->curvePointCapturedOffsetHz));
+}
+
+static inline void desired_settings_narrow_schema3(DesiredSettingsSchema3* out,
+    const DesiredSettings* in) {
+    if (!out || !in) return;
+    memset(out, 0, sizeof(*out));
+    memcpy(out->hasCurvePoint, in->hasCurvePoint, sizeof(out->hasCurvePoint));
+    memcpy(out->curvePointMHz, in->curvePointMHz, sizeof(out->curvePointMHz));
+    out->hasLock = in->hasLock;
+    out->lockCi = in->lockCi;
+    out->lockMHz = in->lockMHz;
+    out->lockMode = in->lockMode;
+    out->lockTracksAnchor = in->lockTracksAnchor;
+    out->hasGpuOffset = in->hasGpuOffset;
+    out->gpuOffsetMHz = in->gpuOffsetMHz;
+    out->gpuOffsetExcludeLowCount = in->gpuOffsetExcludeLowCount;
+    out->hasMemOffset = in->hasMemOffset;
+    out->memOffsetMHz = in->memOffsetMHz;
+    out->hasPowerLimit = in->hasPowerLimit;
+    out->powerLimitPct = in->powerLimitPct;
+    out->hasFan = in->hasFan;
+    out->fanAuto = in->fanAuto;
+    out->fanMode = in->fanMode;
+    out->fanPercent = in->fanPercent;
+    out->fanCurve = in->fanCurve;
+    out->resetOcBeforeApply = in->resetOcBeforeApply;
+    out->hasXbarOffsetKhz = in->hasXbarOffsetKhz;
+    out->xbarOffsetKhz = in->xbarOffsetKhz;
+    out->hasXbarMsvddOffsetUv = in->hasXbarMsvddOffsetUv;
+    out->xbarMsvddOffsetUv = in->xbarMsvddOffsetUv;
+    out->hasSysClkOffsetKhz = in->hasSysClkOffsetKhz;
+    out->sysClkOffsetKhz = in->sysClkOffsetKhz;
+    out->hasVideoClkOffsetKhz = in->hasVideoClkOffsetKhz;
+    out->videoClkOffsetKhz = in->videoClkOffsetKhz;
+    memcpy(out->curvePointFromGpuOffset, in->curvePointFromGpuOffset, sizeof(out->curvePointFromGpuOffset));
+    memcpy(out->curvePointCaptured, in->curvePointCaptured, sizeof(out->curvePointCaptured));
+    out->applicationScope = in->applicationScope;
+    memcpy(out->curvePointCapturedOffsetHz, in->curvePointCapturedOffsetHz, sizeof(out->curvePointCapturedOffsetHz));
 }
 
 #endif

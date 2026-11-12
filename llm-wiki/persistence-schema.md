@@ -8,9 +8,9 @@ changed underneath them**:
 
 | File | Record | Current version | Frozen predecessor |
 |------|--------|-----------------|--------------------|
-| Linux `active.bin` | `LinuxDaemonStateRecord` (1280 B) | `LINUX_DAEMON_RECORD_VERSION = 7` | `LinuxDaemonStateRecordSchema3` (1184 B, versions 5-6), `LinuxDaemonStateRecordSchema2` (1176 B, version 4), `LinuxDaemonStateRecordSchema1` (1048 B, versions 2-3), `LinuxDaemonStateRecordSchema1V1` (1036 B, version 1) |
-| Linux `startup.bin` | `LinuxDaemonStartupRecord` (1336 B) | `LINUX_DAEMON_STARTUP_VERSION = 6` | `LinuxDaemonStartupRecordSchema3` (1240 B, versions 4-5), `LinuxDaemonStartupRecordSchema2` (1236 B, version 3), `LinuxDaemonStartupRecordSchema1` (1108 B, versions 1-2) |
-| Windows restart snapshot | `ServiceRestartReapplySnapshot` (1160 B) | `SERVICE_ACTIVE_DESIRED_VERSION = 6u` | `ServiceRestartReapplySnapshotSchema1` (1032 B, version 5) |
+| Linux `active.bin` | `LinuxDaemonStateRecord` (2440 B) | `LINUX_DAEMON_RECORD_VERSION = 8` | schema 4 (1280 B, v7), `LinuxDaemonStateRecordSchema3` (1184 B, versions 5-6), `LinuxDaemonStateRecordSchema2` (1176 B, version 4), `LinuxDaemonStateRecordSchema1` (1048 B, versions 2-3), `LinuxDaemonStateRecordSchema1V1` (1036 B, version 1) |
+| Linux `startup.bin` | `LinuxDaemonStartupRecord` (2496 B) | `LINUX_DAEMON_STARTUP_VERSION = 7` | schema 4 (1336 B, v6), `LinuxDaemonStartupRecordSchema3` (1240 B, versions 4-5), `LinuxDaemonStartupRecordSchema2` (1236 B, version 3), `LinuxDaemonStartupRecordSchema1` (1108 B, versions 1-2) |
+| Windows restart snapshot | `ServiceRestartReapplySnapshot` (2320 B) | `SERVICE_ACTIVE_DESIRED_VERSION = 7u` | schema 2 (1160 B, v6), `ServiceRestartReapplySnapshotSchema1` (1032 B, version 5) |
 
 Every loader admitted a file only when its byte size equalled the **current**
 struct. That had two consequences, and the second is the nastier one:
@@ -25,6 +25,35 @@ current payload size). So was `LinuxDaemonStateRecordV1`, whose "v1" layout
 embedded the live `DesiredSettings`. Both are gone; a v1 file whose size still
 identifies it (schema-1 `DesiredSettings`, no operation identity) is migrated
 properly instead.
+
+## Captured-offset capacity (2026-11-12)
+
+Source anchors: `source/desired_settings_schema.h`,
+`source/linux_daemon_captured_offset_schema.h`,
+`source/service_restart_snapshot_schema.h`,
+`source/main_service_restart_load.cpp`, `tests/captured_schema_tests.cpp`.
+
+DesiredSettings schema 3 (2120 bytes) appends independent presence and signed
+physical-Hz arrays for captured VF offsets, plus an explicit application scope
+in new-layout padding. Captured zero is owned; absence is separate. Schema 2
+stays frozen at 964 bytes and widens with empty new arrays and legacy scope.
+Protocol 30 has 2712-byte requests and 9872-byte responses. Sizes are checked
+with the real compiler, including enclosing-record alignment. No capture
+producer is connected yet; IPC explicitly refuses captured replay and explicit
+scope until runtime consumers support them, preventing silent no-op behavior.
+
+The outgoing UUID-bearing daemon layouts are frozen as schema 4. Loaders
+validate the original checksum before widening and retain UUID, location role
+and operation identity. The outgoing Windows payload is frozen as schema 2 and
+loaded by its size/version pair. Older migration branches remain. New flags,
+inactive-payload canonicalization, empty-response validation and semantic
+comparisons cover the appended arrays. Fixed-width aliases moved to
+`source/gpu_wire_types.h`; restart loading moved out of its oversized shard.
+
+Fixtures 8010-8030 construct historical structs directly, verify checksums and
+widening, distinguish an owned zero, preserve 15000500 Hz and reject mixed
+protocol versions. Actual Linux loader execution and hardware replay remain
+unverified on this Windows host.
 
 ## The rule
 

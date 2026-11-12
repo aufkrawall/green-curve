@@ -66,6 +66,13 @@ static inline const char* service_request_reject_reason(
         return "non-boolean target GPU flags";
     if (!service_desired_bool_fields_valid(&r->desired))
         return "non-boolean desired settings flags";
+    // The layout can preserve captured intent before a client can request
+    // replay. Never let an unimplemented point kind become a silent no-op.
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
+        if (r->desired.curvePointCaptured[ci])
+            return "captured offset replay is not available";
+    if (r->desired.applicationScope != DESIRED_SCOPE_LEGACY)
+        return "explicit application scope is not available";
     const gc_u32 allowedFlags = SERVICE_REQUEST_FLAG_INTERACTIVE |
         SERVICE_REQUEST_FLAG_SHARED_SLOT |
         (SERVICE_REQUEST_SHARED_SLOT_MASK <<
@@ -479,9 +486,11 @@ static inline bool service_desired_settings_is_zero(
     const DesiredSettings& desired) {
     if (!service_scalar_array_is_zero(desired.hasCurvePoint) ||
         !service_scalar_array_is_zero(desired.curvePointMHz) ||
-        !service_scalar_array_is_zero(desired.curvePointFromGpuOffset))
+        !service_scalar_array_is_zero(desired.curvePointFromGpuOffset) ||
+        !service_scalar_array_is_zero(desired.curvePointCaptured) ||
+        !service_scalar_array_is_zero(desired.curvePointCapturedOffsetHz))
         return false;
-    return desired.hasLock == 0 && desired.lockCi == 0 &&
+    return desired.applicationScope == 0 && desired.hasLock == 0 && desired.lockCi == 0 &&
         desired.lockMHz == 0 && desired.lockMode == 0 &&
         desired.lockTracksAnchor == 0 && desired.hasGpuOffset == 0 &&
         desired.gpuOffsetMHz == 0 && desired.gpuOffsetExcludeLowCount == 0 &&

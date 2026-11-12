@@ -1027,6 +1027,7 @@ int run_curve_prefix_repair_tests();
 // The new authoring document, point intent and unit/power-ratio conversions
 // (tests/profile_document_tests.cpp, 7960-8000). Pure; no GPU, no IPC.
 int run_profile_document_fixture_tests();
+int run_captured_schema_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2676,6 +2677,7 @@ static int run_all_tests(int argc, char** argv) {
     }
     if (int vfFailure = run_linux_vf_read_tests()) return vfFailure;
     if (int vfFailure = run_linux_vf_write_tests()) return vfFailure;
+    if (int schemaFailure = run_captured_schema_tests()) return schemaFailure;
     if (int readFailure = run_linux_read_request_tests()) return readFailure;
     if (int xbarLogFailure = run_xbar_read_log_tests()) return xbarLogFailure;
     if (int domainDumpFailure = run_clk_domain_dump_tests()) return domainDumpFailure;
@@ -4448,16 +4450,16 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 29) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 30) return 81;
         // These are release gates, not incidental layout observations. A field
         // addition that changes a fixed-size IPC structure must bump the wire
         // version; otherwise mixed old/new peers pass the header handshake and
         // then disagree on the number of body bytes to read.
-        if (sizeof(ServiceRequest) != 1552 ||
+        if (sizeof(ServiceRequest) != 2712 ||
             sizeof(ControlState) != 188 ||
-            sizeof(DesiredSettings) != 964 ||
+            sizeof(DesiredSettings) != 2120 ||
             sizeof(ServiceSnapshot) != 4440 ||
-            sizeof(ServiceResponse) != 7560) return 4521;
+            sizeof(ServiceResponse) != 9872) return 4521;
         if (offsetof(ServiceRequest, expectedServiceInstanceId) <=
             offsetof(ServiceRequest, operationId) ||
             offsetof(ServiceResponse, state) <=

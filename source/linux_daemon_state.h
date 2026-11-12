@@ -50,7 +50,8 @@ enum {
     // provenance, 0.26.0).  The layout GREW, which is why the version had to
     // move: see desired_settings_schema.h for why size, not version, now
     // selects the layout a loader decodes with.
-    LINUX_DAEMON_RECORD_VERSION = 7,
+    LINUX_DAEMON_RECORD_VERSION = 8,
+    LINUX_DAEMON_RECORD_PRE_CAPTURED_OFFSET_VERSION = 7,
     LINUX_DAEMON_RECORD_PRE_UUID_VERSION = 6,
     LINUX_DAEMON_RECORD_PRE_TRUSTED_ROLE_VERSION = 5,
     LINUX_DAEMON_RECORD_PRE_LOCATION_ROLE_VERSION = 4,
@@ -82,7 +83,7 @@ struct LinuxDaemonStateRecord {
 // The live record's size is part of the upgrade contract, because the loader
 // admits a file by comparing st_size against it.  GpuAdapterInfo is embedded
 // here too, so this assert covers a change to either struct.
-static_assert(sizeof(LinuxDaemonStateRecord) == 1280,
+static_assert(sizeof(LinuxDaemonStateRecord) == 2440,
               "LinuxDaemonStateRecord changed size: freeze the outgoing layout "
               "as LinuxDaemonStateRecordSchema<N>, teach the loader its size, "
               "and bump LINUX_DAEMON_RECORD_VERSION "
@@ -263,6 +264,7 @@ enum LinuxDaemonRecordGeneration : gc_u32 {
     LINUX_DAEMON_RECORD_GENERATION_SCHEMA2 = 3,
     LINUX_DAEMON_RECORD_GENERATION_SCHEMA1_V1 = 2, // version 1, no operation id
     LINUX_DAEMON_RECORD_GENERATION_SCHEMA3 = 5, // location-role layout, version 6
+    LINUX_DAEMON_RECORD_GENERATION_SCHEMA4 = 6,
     LINUX_DAEMON_RECORD_GENERATION_PRE_TRUSTED_ROLE = 4, // current layout, version 5
 };
 
@@ -395,7 +397,8 @@ enum {
     // like the state record's v2->v3 bump, so a v1 record is halved once on
     // read.  Size selects the layout, version the meaning; see
     // desired_settings_schema.h.
-    LINUX_DAEMON_STARTUP_VERSION = 6,
+    LINUX_DAEMON_STARTUP_VERSION = 7,
+    LINUX_DAEMON_STARTUP_PRE_CAPTURED_OFFSET_VERSION = 6,
     LINUX_DAEMON_STARTUP_PRE_UUID_VERSION = 5,
     LINUX_DAEMON_STARTUP_PRE_TRUSTED_ROLE_VERSION = 4,
     LINUX_DAEMON_STARTUP_PRE_LOCATION_ROLE_VERSION = 3,
@@ -419,7 +422,7 @@ struct LinuxDaemonStartupRecord {
     gc_u32 checksum;
 };
 
-static_assert(sizeof(LinuxDaemonStartupRecord) == 1336,
+static_assert(sizeof(LinuxDaemonStartupRecord) == 2496,
               "LinuxDaemonStartupRecord changed size: freeze the outgoing "
               "layout as LinuxDaemonStartupRecordSchema<N>, teach the loader "
               "its size, and bump LINUX_DAEMON_STARTUP_VERSION "
@@ -564,6 +567,7 @@ static inline bool linux_daemon_startup_widen_schema1(
 
 #include "linux_daemon_location_schema.h"
 #include "linux_daemon_uuid_schema.h"
+#include "linux_daemon_captured_offset_schema.h"
 
 // Automatic-restore guard.  Stored beside active.bin with the same root-owned
 // checksummed atomic write, for the same reason: it decides whether an

@@ -81,9 +81,9 @@ def check_all(ctx, require_text, forbid_text):
 
     # Every record that embeds DesiredSettings pins its own size, so a change to
     # DesiredSettings *or* GpuAdapterInfo breaks the build at the record.
-    require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecord) == 1280",
+    require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecord) == 2440",
                  "the live daemon state record pins its on-disk size")
-    require_text(daemon_state_h, "sizeof(LinuxDaemonStartupRecord) == 1336",
+    require_text(daemon_state_h, "sizeof(LinuxDaemonStartupRecord) == 2496",
                  "the live startup-policy record pins its on-disk size")
     require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecordSchema1) == 1048",
                  "the frozen schema-1 state record stays 1048 bytes")
@@ -105,6 +105,15 @@ def check_all(ctx, require_text, forbid_text):
 
     location_h = _p(ctx, "linux_daemon_location_schema.h")
     uuid_schema_h = _p(ctx, "linux_daemon_uuid_schema.h")
+    captured_schema_h = _p(ctx, "linux_daemon_captured_offset_schema.h")
+    for kind, size in (("State", 1280), ("Startup", 1336)):
+        require_text(captured_schema_h, f"sizeof(LinuxDaemon{kind}RecordSchema4) == {size}",
+                     "UUID-bearing layouts remain frozen before captured offsets")
+        require_text(daemon_state_cpp, f"sizeof(LinuxDaemon{kind}RecordSchema4)",
+                     "the loader admits the previous UUID-bearing record size")
+    require_text(_p(ctx, "main_service_restart_load.cpp"),
+                 "service_restart_snapshot_read_payload(version, size,",
+                 "controlled restart widens the previous offset-provenance layout")
     for kind, size in (("State", 1184), ("Startup", 1240)):
         require_text(uuid_schema_h, f"sizeof(LinuxDaemon{kind}RecordSchema3) == {size}",
                      "the location-role layout remains frozen before UUID support")

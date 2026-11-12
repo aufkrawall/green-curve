@@ -74,11 +74,15 @@ static inline void normalize_desired_settings_for_ui(DesiredSettings* desired) {
 static inline bool desired_settings_equal(const DesiredSettings* left,
                                           const DesiredSettings* right) {
     if (!left || !right) return left == right;
+    if (left->applicationScope != right->applicationScope) return false;
     for (int i = 0; i < VF_NUM_POINTS; ++i) {
         if (left->hasCurvePoint[i] != right->hasCurvePoint[i] ||
             left->curvePointMHz[i] != right->curvePointMHz[i] ||
             left->curvePointFromGpuOffset[i] !=
-                right->curvePointFromGpuOffset[i]) return false;
+                right->curvePointFromGpuOffset[i] ||
+            left->curvePointCaptured[i] != right->curvePointCaptured[i] ||
+            (left->curvePointCaptured[i] && left->curvePointCapturedOffsetHz[i] !=
+                right->curvePointCapturedOffsetHz[i])) return false;
     }
     if (left->hasLock != right->hasLock ||
         left->lockCi != right->lockCi ||

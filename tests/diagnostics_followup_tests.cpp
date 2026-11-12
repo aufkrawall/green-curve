@@ -438,7 +438,7 @@ int run_auto_apply_notice_tests() {
 
 int run_auto_apply_wire_tests() {
     // v29 carries the record; every fixed-size peer must refuse a v28 header.
-    if (SERVICE_PROTOCOL_VERSION != 29) return 6770;
+    if (SERVICE_PROTOCOL_VERSION != 30) return 6770;
     if (sizeof(ServiceAutoApplyFailure) != 192 ||
         offsetof(ServiceSnapshot, autoApplyFailure) + sizeof(ServiceAutoApplyFailure) >
             sizeof(ServiceSnapshot)) return 6771;
