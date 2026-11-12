@@ -66,7 +66,8 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out, GpuAdapt
     GpuAdapterInfo originalTarget = payload.targetGpu;
     validate_desired_settings_for_ipc(&payload.desired);
     validate_gpu_adapter_info_for_ipc(&payload.targetGpu);
-    if (!desired_settings_equal(&originalDesired, &payload.desired) ||
+    if (!service_desired_bool_fields_valid(&payload.desired) ||
+        !desired_settings_equal(&originalDesired, &payload.desired) ||
         !gpu_adapter_info_equal(&originalTarget, &payload.targetGpu)) {
         debug_log("restart reapply load: payload fields required sanitization; rejecting corrupt snapshot\n");
         gc_DeleteFileUtf8(path);

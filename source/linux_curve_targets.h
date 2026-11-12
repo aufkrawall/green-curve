@@ -29,6 +29,8 @@ struct LinuxCurveTargetBuildResult {
     // LOCK_MODE_HARD in gpu_backend_apply_verify.h.
     bool pointAbsoluteIntent[VF_NUM_POINTS];
     unsigned int pointTargetMHz[VF_NUM_POINTS];
+    bool pointCapturedIntent[VF_NUM_POINTS];
+    int pointCapturedOffsetKHz[VF_NUM_POINTS];
 };
 
 // Compose the complete Linux VF target in one pass.  Absolute explicit points
@@ -42,6 +44,7 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
     LinuxCurveTargetBuildResult result = {};
     if (!curve || !currentOffsets || !desired || !targetOffsets || !pointMask)
         return result;
+    if (!desired_curve_intent_valid(desired)) return result;
     bool hardLock = desired->hasLock &&
         desired->lockMode == LOCK_MODE_HARD && desired->lockMHz > 0 &&
         desired->lockCi >= 0 && desired->lockCi < VF_NUM_POINTS;
@@ -50,7 +53,7 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
         desired->lockCi >= 0 && desired->lockCi < VF_NUM_POINTS;
     bool hasExplicit = false;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (desired->hasCurvePoint[i] && desired->curvePointMHz[i] > 0) {
+        if (desired_curve_point_has_target(desired, i)) {
             hasExplicit = true;
             break;
         }
@@ -95,16 +98,11 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
                 continue;
             }
             write = true;
-        } else if (desired->hasCurvePoint[i] &&
-                   desired->curvePointMHz[i] > 0) {
+        } else if (desired_curve_point_has_target(desired, i)) {
             // Same shared answer Windows uses; see curve_point_offset_policy.h.
-            CurvePointOffsetRequest want = {};
-            want.fromGpuOffset = desired->curvePointFromGpuOffset[i];
-            want.gpuOffsetComponentKHz = (ordinal >= exclude)
-                ? desired->gpuOffsetMHz * 1000 : 0;
-            want.absoluteMHz = desired->curvePointMHz[i];
-            want.liveBaseKHz = baseKHz;
-            long long offsetKHz = curve_point_target_offset_khz(&want);
+            long long offsetKHz = 0;
+            if (!desired_curve_point_offset_khz(desired, i, baseKHz,
+                    ordinal >= exclude ? desired->gpuOffsetMHz * 1000 : 0, &offsetKHz)) continue;
             if (offsetKHz < INT_MIN) offsetKHz = INT_MIN;
             if (offsetKHz > INT_MAX) offsetKHz = INT_MAX;
             targetOffsets[i] = (int)offsetKHz;
@@ -114,8 +112,10 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
             // (curve_point_offset_is_intent): a point the request marks
             // offset-derived stays verified by offset, never by a projected
             // MHz sampled over an earlier base.
-            result.pointAbsoluteIntent[i] = !desired->curvePointFromGpuOffset[i];
+            result.pointAbsoluteIntent[i] = desired_curve_point_kind(desired, i) == DESIRED_CURVE_ABSOLUTE;
             result.pointTargetMHz[i] = desired->curvePointMHz[i];
+            result.pointCapturedIntent[i] = desired->curvePointCaptured[i] != 0;
+            result.pointCapturedOffsetKHz[i] = (int)offsetKHz;
             result.pointCount++;
             continue;
         } else if (result.composedGpuOffset && ordinal >= exclude) {
@@ -164,6 +164,21 @@ static inline bool linux_verify_curve_absolute_targets(
             if (detail) gc_snprintf(detail, detailSize,
                 "VF point %d verified at %u MHz, requested %u MHz", ci,
                 actualMHz, build.pointTargetMHz[ci]);
+            return false;
+        }
+    }
+    return true;
+}
+
+static inline bool linux_verify_curve_captured_targets(const int* offsets,
+    const LinuxCurveTargetBuildResult& build, char* detail, size_t detailSize) {
+    if (!offsets) return false;
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        if (!build.pointCapturedIntent[ci]) continue;
+        if (offsets[ci] != build.pointCapturedOffsetKHz[ci]) {
+            if (detail) gc_snprintf(detail, detailSize,
+                "Captured VF point %d offset is %d kHz, requested %d kHz",
+                ci, offsets[ci], build.pointCapturedOffsetKHz[ci]);
             return false;
         }
     }

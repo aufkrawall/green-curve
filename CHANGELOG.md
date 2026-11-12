@@ -43,6 +43,7 @@ Curves are checked before anything is written, low-voltage curve points become e
 - **Saving over another tool's curve:** Save now says when the GPU's current curve was not set by Green Curve and is not part of the slot.
 - **Linux profile switching:** switching to a new profile now clears every leftover raw curve point from the previous one first, matching Windows, and a flatten or clock lock is checked against the resulting frequency after Apply, not only against whether the write itself succeeded.
 - **Linux memory clocks:** applying a curve preserves memory tuning until a requested memory change is applied directly; curve recovery also restores the prior curve if baseline preparation fails.
+- **Profile matching:** offset intent is compared directly, so temperature-dependent clock previews do not change which tuning matches the applied profile.
 
 ### Fixed
 

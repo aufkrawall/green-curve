@@ -56,7 +56,7 @@ static bool apply_curve_plan_has_curve_work(const DesiredSettings* desired) {
     if (!desired) return false;
     if (desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0) return true;
     for (int ci = 0; ci < VF_NUM_POINTS; ci++)
-        if (desired->hasCurvePoint[ci] && desired->curvePointMHz[ci] > 0) return true;
+        if (desired_curve_point_present(desired, ci)) return true;
     return false;
 }
 

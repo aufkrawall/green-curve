@@ -61,6 +61,8 @@ enum CurvePlanReason {
     CURVE_PLAN_REASON_FLATTEN_UNSUPPORTED = 9,
     CURVE_PLAN_REASON_ARITHMETIC_OVERFLOW = 10,
     CURVE_PLAN_REASON_READ_FAILED = 11,
+    CURVE_PLAN_REASON_POINT_INTENT_CONFLICT = 12,
+    CURVE_PLAN_REASON_POINT_GRID = 13,
 };
 
 enum CurvePlanEvidence {
@@ -81,6 +83,7 @@ enum CurvePlanRangeSource {
 
 // How a requested non-tail point is interpreted.
 enum CurvePlanPointKind {
+    CURVE_PLAN_POINT_CAPTURED = 3,
     CURVE_PLAN_POINT_ABSENT = 0,     // not in the request: stock or left live
     CURVE_PLAN_POINT_ABSOLUTE = 1,   // a frequency the user asked for
     CURVE_PLAN_POINT_PROJECTED = 2,  // offset intent (GPU-offset projection
@@ -196,6 +199,8 @@ static inline const char* curve_plan_reason_name(CurvePlanReason r) {
         case CURVE_PLAN_REASON_FLATTEN_UNSUPPORTED: return "flatten-unsupported";
         case CURVE_PLAN_REASON_ARITHMETIC_OVERFLOW: return "arithmetic-overflow";
         case CURVE_PLAN_REASON_READ_FAILED: return "read-failed";
+        case CURVE_PLAN_REASON_POINT_INTENT_CONFLICT: return "point-intent-conflict";
+        case CURVE_PLAN_REASON_POINT_GRID: return "point-grid";
         default: return "unknown";
     }
 }
@@ -363,7 +368,14 @@ static inline CurvePlanPrefixTarget curve_plan_prefix_point_target(
     const CurvePlanInput& in, long long baseKHz, int ci, bool baselineProves) {
     CurvePlanPrefixTarget t = {};
     const DesiredSettings* d = in.desired;
-    const bool requested = d->hasCurvePoint[ci] && d->curvePointMHz[ci] > 0;
+    const bool requested = desired_curve_point_present(d, ci);
+    if (d->curvePointCaptured[ci]) {
+        t.requested = true;
+        t.kind = CURVE_PLAN_POINT_CAPTURED;
+        t.targetMHz = curve_plan_display_mhz(baseKHz + d->curvePointCapturedOffsetHz[ci] / 1000);
+        t.proven = baselineProves;
+        return t;
+    }
     const bool fromOffset = requested && d->curvePointFromGpuOffset[ci] != 0;
     const bool offsetIntent = fromOffset &&
         in.provenanceMode != APPLY_LOCK_PRETAIL_PROVENANCE_STORED;
@@ -416,6 +428,17 @@ static inline CurvePlanResult curve_plan_evaluate(const CurvePlanInput& in) {
     r.range = in.range;
     r.lockCi = -1;
     const DesiredSettings* d = in.desired;
+    int invalidCi = -1;
+    if (d && !desired_curve_intent_valid(d, &invalidCi)) {
+        CurvePlanIssue issue{};
+        issue.reason = CURVE_PLAN_REASON_POINT_INTENT_CONFLICT;
+        issue.proven = true;
+        issue.ci = issue.worstCi = invalidCi;
+        issue.affectedCount = 1;
+        curve_plan_add_issue(&r, issue);
+        r.disposition = CURVE_PLAN_REFUSED;
+        return r;
+    }
     if (!in.curve || !in.programmedOffsetsKHz || !d || !in.floor.valid ||
         in.evidence == CURVE_PLAN_EVIDENCE_UNAVAILABLE) {
         CurvePlanIssue issue = {};
@@ -472,15 +495,24 @@ static inline CurvePlanResult curve_plan_evaluate(const CurvePlanInput& in) {
     // Explicit points outside the tail: topology, then range.
     CurvePlanAggregate pointRange = {};
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
-        if (!d->hasCurvePoint[ci] || d->curvePointMHz[ci] == 0) continue;
+        if (!desired_curve_point_present(d, ci)) continue;
+        if (d->curvePointCaptured[ci] && d->curvePointCapturedOffsetHz[ci] % 1000) {
+            CurvePlanIssue issue{};
+            issue.reason = CURVE_PLAN_REASON_POINT_GRID;
+            issue.proven = true;
+            issue.ci = issue.worstCi = ci;
+            issue.voltUv = issue.worstVoltUv = in.curve[ci].volt_uV;
+            issue.affectedCount = 1;
+            curve_plan_add_issue(&r, issue);
+            continue;
+        }
+        if (!d->curvePointCaptured[ci] && d->curvePointMHz[ci] == 0) continue;
         if (lockUsable && ci >= d->lockCi) continue;  // the lock owns the tail
         if (!curve_plan_check_point_topology(&r, in, ci, d->curvePointMHz[ci])) continue;
-        CurvePointOffsetRequest want = {};
-        want.fromGpuOffset = d->curvePointFromGpuOffset[ci] != 0;
-        want.gpuOffsetComponentKHz = in.gpuComponentKHz ? in.gpuComponentKHz[ci] : 0;
-        want.absoluteMHz = d->curvePointMHz[ci];
-        want.liveBaseKHz = baseKHz[ci];
-        const long long offset = curve_point_target_offset_khz(&want);
+        long long offset = 0;
+        if (!desired_curve_point_offset_khz(d, ci, baseKHz[ci],
+                in.gpuComponentKHz ? in.gpuComponentKHz[ci] : 0, &offset)) continue;
+        const bool offsetIntent = d->curvePointCaptured[ci] || d->curvePointFromGpuOffset[ci];
         long long excess = 0;
         long long limit = 0;
         if (offset > in.range.maxKHz) { excess = offset - in.range.maxKHz; limit = in.range.maxKHz; }
@@ -488,10 +520,11 @@ static inline CurvePlanResult curve_plan_evaluate(const CurvePlanInput& in) {
         else continue;
         // A projected offset is the request's own number; an absolute one is
         // only as good as the baseline it was subtracted from.
-        const bool proven = want.fromGpuOffset || (baselineProves && beyondBin(ci, excess));
+        const bool proven = offsetIntent || (baselineProves && beyondBin(ci, excess));
         curve_plan_aggregate_note(&pointRange, CURVE_PLAN_REASON_POINT_OUT_OF_RANGE,
             proven, ci, in.curve, d->curvePointMHz[ci], baseKHz[ci], offset, limit,
-            excess, want.fromGpuOffset ? CURVE_PLAN_POINT_PROJECTED : CURVE_PLAN_POINT_ABSOLUTE,
+            excess, d->curvePointCaptured[ci] ? CURVE_PLAN_POINT_CAPTURED :
+                offsetIntent ? CURVE_PLAN_POINT_PROJECTED : CURVE_PLAN_POINT_ABSOLUTE,
             false);
     }
 

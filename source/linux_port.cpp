@@ -456,7 +456,7 @@ bool desired_has_any_action(const DesiredSettings* desired) {
     // but still demands a curve-tail lock apply.
     if (desired->hasGpuOffset || desired->hasMemOffset || desired->hasPowerLimit || desired->hasFan || desired->hasLock) return true;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (desired->hasCurvePoint[i]) return true;
+        if (desired_curve_point_present(desired, i)) return true;
     }
     return false;
 }

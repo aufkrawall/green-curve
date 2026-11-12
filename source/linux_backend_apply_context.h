@@ -122,7 +122,8 @@ static bool linux_apply_verify_curve_write(LinuxApplyTransactionContext* context
     }
     char detail[160] = {};
     bool ok = linux_verify_curve_absolute_targets(g->curve, context->plannedBuild,
-        detail, sizeof(detail));
+        detail, sizeof(detail)) && linux_verify_curve_captured_targets(g->freqOffsets,
+            context->plannedBuild, detail, sizeof(detail));
     if (!ok) lb_log("curve verify: %s\n", detail);
     return ok;
 }

@@ -112,6 +112,7 @@ static inline CurvePrefixRepair curve_prefix_repair_prepare(const CurvePlanInput
         // Lowering a point that follows the GPU offset (projected, or unowned
         // but shifted by the offset) would turn it into a typed value.
         const bool projected = t.kind == CURVE_PLAN_POINT_PROJECTED ||
+            t.kind == CURVE_PLAN_POINT_CAPTURED ||
             (!requested && d->hasGpuOffset && componentKHz != 0);
         const unsigned int target = t.targetMHz;
         if (target <= bound) {

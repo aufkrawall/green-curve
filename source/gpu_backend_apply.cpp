@@ -18,6 +18,7 @@
 #include "apply_correction_budget_policy.h"
 // The correction loop's pure decisions (planning, classification, exit order).
 #include "apply_correction_policy.h"
+#include "gpu_backend_apply_correction.h"
 // Lock below a pre-tail point: refused before the reset, not after it.
 #include "gpu_backend_apply_lock_pretail.h"
 
@@ -241,7 +242,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         originalCurveVoltUv[ci] = g_app.curve[ci].volt_uV;
         originalCurvePopulated[ci] = g_app.curve[ci].freq_kHz > 0;
         if (originalCurveOffsets[ci] != 0) haveNonZeroCurveOffsets = true;
-        if (desired->hasCurvePoint[ci]) {
+        if (desired_curve_point_present(desired, ci)) {
             hasCurveEdits = true;
             // EXPLICIT means "the user typed this absolute MHz", which is what
             // earns a point the right to fail an apply on its absolute readback.
@@ -250,7 +251,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             // offset component, and the base it was projected from is not the
             // base the driver reports now.  Those points keep offset authority
             // and are verified as offsets.  Per point: one request mixes both.
-            explicitCurveMask[ci] = !desired->curvePointFromGpuOffset[ci];
+            explicitCurveMask[ci] = desired_curve_point_kind(desired, ci) == DESIRED_CURVE_ABSOLUTE;
         }
     }
     // After reset-before-apply, the live curve base frequencies may have shifted
@@ -778,7 +779,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             DesiredSettings verifyDesired = *desired;
             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                 if (hasLock && lockedTailMask[ci]) continue;
-                if (!desired->hasCurvePoint[ci]) {
+                if (!desired_curve_point_present(desired, ci)) {
                     verifyDesired.hasCurvePoint[ci] = false;
                     verifyDesired.curvePointMHz[ci] = 0;
                     verifyDesired.curvePointFromGpuOffset[ci] = 0;
@@ -787,7 +788,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             if (gpuPolicyViaCurveBatch) {
                 bool currentDetected = (currentAppliedGpuOffsetMHz != 0 || currentActiveGpuOffsetExcludeLowCount > 0);
                 for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-                    if (!originalCurvePopulated[ci] || verifyDesired.hasCurvePoint[ci]) continue;
+                    if (!originalCurvePopulated[ci] || desired_curve_point_present(&verifyDesired, ci)) continue;
                     long long currentPointGpuOffsetkHz;
                     if (currentDetected) {
                         currentPointGpuOffsetkHz = (long long)gpu_offset_component_mhz_for_point(ci, currentAppliedGpuOffsetMHz, currentActiveGpuOffsetExcludeLowCount) * 1000LL;
@@ -859,10 +860,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             correction.lockedTailMask = lockedTailMask;
             correction.explicitCurveMask = explicitCurveMask;
             correction.originalCurvePopulated = originalCurvePopulated;
-            correction.hasCurvePoint = verifyDesired.hasCurvePoint;
-            correction.curvePointMHz = verifyDesired.curvePointMHz;
-            // The verify request's provenance, exactly what verification reads.
-            correction.fromGpuOffset = verifyDesired.curvePointFromGpuOffset;
+            gc_bool8 correctionPresent[VF_NUM_POINTS] = {}, correctionOffset[VF_NUM_POINTS] = {};
+            apply_bind_correction_curve_intent(&correction, &verifyDesired,
+                correctionPresent, correctionOffset);
             correction.targetOffsetKHz = targetCurveOffsets;
             if (curveRequest) {
                 curveRequestOk = verify_curve_request(curveVerifyDetail, sizeof(curveVerifyDetail));

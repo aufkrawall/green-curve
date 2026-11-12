@@ -68,6 +68,38 @@ later piece of work; see "Open questions / stale-risk" below.
   fixture, ported here as a 15000500 Hz synthetic case) is never silently
   narrowed into a clean kHz value without the caller knowing.
 
+## Runtime point adapter (2026-11-12)
+
+Source anchors: `source/desired_curve_intent.h`,
+`source/gpu_backend_apply_targets.h`, `source/gpu_backend_apply_verify.h`,
+`source/gpu_backend_apply_correction.h`, `source/linux_curve_targets.h`,
+`tests/captured_intent_runtime_tests.cpp`, `tests/clock_transition_tests.cpp`.
+
+One adapter interprets runtime absent, absolute, projected and captured point
+fields. Captured presence is independent of MHz and includes zero; contradictory
+tags, frequency payloads and lock-tail overlap refuse before mutation. Checked
+conversion reports a sub-kHz remainder instead of dropping it. Both target
+builders preserve the captured offset independently of the graphics component
+or measured scalar shift. Captured readback must equal the programmed target;
+the legacy projected-clock tolerance does not excuse a different captured offset.
+
+The Windows correction loop receives a temporary offset-intent view without
+creating sampled MHz authority in the stored request. Linux post-write checks
+verify captured offsets as well as absolute targets. Domain masks, restore
+builders and both merges retain captured zero. Hardware-independent point
+equality compares authority, including ignoring projected preview drift for
+applied-profile matching; structural runtime equality stays separate.
+
+Schema migration can preserve this intent, but IPC captured replay remains
+explicitly disabled until operation scopes and document/editor persistence are
+connected. The current legacy write interfaces require exact physical kHz;
+raw half-kHz replay and precise scalar/power adapters remain later work.
+
+Fixtures 8040-8060 and the production Windows target/verify fixture cover zero,
+negative offsets, preview/global-offset independence, strict readback, merge,
+restore, unavailable-domain projection and malformed intent. No hardware write
+or native Linux execution is claimed by these host-neutral fixtures.
+
 ## Invariants
 
 - No field, constructor or function in these three headers reads `g_app`,

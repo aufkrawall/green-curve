@@ -330,10 +330,15 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "an offset-intent correction writes the build's own target offset")
     require_text(apply_cpp, "correction.targetOffsetKHz = targetCurveOffsets;",
                  "the correction is steered by the offsets verification compares against")
-    require_text(apply_cpp, "correction.fromGpuOffset = verifyDesired.curvePointFromGpuOffset;",
-                 "the correction reads the same provenance array as verification")
+    require_text(apply_cpp, "apply_bind_correction_curve_intent(&correction, &verifyDesired,",
+                 "the correction binds the verification request's exact point intent")
+    require_text(_p(ctx, "gpu_backend_apply_correction.h"),
+                 "offset[ci] = gc_bool8_from_bool(desired->curvePointCaptured[ci] ||",
+                 "captured offsets and projections both retain offset authority in correction")
+    require_text(_p(ctx, "gpu_backend_apply_correction.h"), "correction->fromGpuOffset = offset;",
+                 "correction consumes the bound offset predicates")
     diagnostics_h = _p(ctx, "gpu_backend_apply_diagnostics.h")
-    require_text(diagnostics_h, "const bool offsetIntent = !isTail && curve_point_offset_is_intent(",
+    require_text(diagnostics_h, "curve_point_offset_is_intent(explicitMask[ci],",
                  "post-apply diagnostics judge points with the verification predicate")
     require_text(diagnostics_h, "curve_point_shortfall_mhz(offsetIntent,",
                  "SHORTFALL judges an offset-intent point by its missing offset, not a stale preview")
@@ -361,8 +366,11 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "the NVML-free sample is trusted only after a reset that owned the GPU-offset domain")
     require_text(apply_cpp, "provenanceShiftMeasured ? provenanceScalarShiftKHz : nullptr))",
                  "the target build receives the measured shift only when it was measurable")
-    require_text(targets_h, "if (want.fromGpuOffset && provenanceScalarShiftKHz)",
+    require_text(targets_h, "if (projected && provenanceScalarShiftKHz)",
                  "only provenance points are compensated by the measured shift")
+    require_text(targets_h,
+                 "const bool projected = desired_curve_point_kind(desired, ci) == DESIRED_CURVE_PROJECTED;",
+                 "captured offsets never inherit graphics-scalar shift compensation")
     require_text(targets_h, "const long long bounded = curve_point_bounded_scalar_shift_khz(",
                  "the measured shift is bounded by the written NVML offset")
     shift_h = _p(ctx, "gpu_backend_apply_scalar_shift.h")
@@ -557,7 +565,8 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # very sample that moved.
     forbid_text(targets_h, "offset = (long long)desired->curvePointMHz[ci] * 1000 - base;",
                 "projected points keep the requested offset, not absolute-minus-live-base")
-    require_text(_p(ctx, "linux_curve_targets.h"), "desired->curvePointFromGpuOffset[i]",
+    require_text(_p(ctx, "linux_curve_targets.h"),
+                 "desired_curve_point_kind(desired, i) == DESIRED_CURVE_ABSOLUTE",
                  "Linux target building honours the same provenance rule")
     forbid_text(targets_h, "desired->curvePointFromGpuOffset[ci] && gpuPolicyViaCurveBatch",
                 "offset ownership is routing-independent: a profile with no GPU offset never sets that flag")
@@ -571,10 +580,13 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(policy_h, "static inline long long curve_point_target_offset_khz(",
                  "the shared curve-point offset policy exists")
     for site, what in ((targets_h, "initial target build"),
-                       (_p(ctx, "apply_correction_policy.h"), "correction loop"),
                        (_p(ctx, "linux_curve_targets.h"), "Linux target build")):
-        require_text(site, "curve_point_target_offset_khz(&want)",
+        require_text(site, "desired_curve_point_offset_khz(desired,",
                      f"the {what} asks the shared offset policy")
+    require_text(_p(ctx, "desired_curve_intent.h"), "curve_point_target_offset_khz(&request)",
+                 "the tagged runtime adapter preserves the legacy shared offset policy")
+    require_text(correction_policy_h, "curve_point_target_offset_khz(&want)",
+                 "the correction loop preserves the shared offset policy")
     forbid_text(apply_cpp, "long long targetKHz = (long long)raw_curve_khz_from_display_mhz(targetMHz);",
                 "the correction loop may not re-derive a point's offset from the live base itself")
 

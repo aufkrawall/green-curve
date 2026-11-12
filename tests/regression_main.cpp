@@ -1028,6 +1028,7 @@ int run_curve_prefix_repair_tests();
 // (tests/profile_document_tests.cpp, 7960-8000). Pure; no GPU, no IPC.
 int run_profile_document_fixture_tests();
 int run_captured_schema_tests();
+int run_captured_intent_runtime_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2678,6 +2679,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int vfFailure = run_linux_vf_read_tests()) return vfFailure;
     if (int vfFailure = run_linux_vf_write_tests()) return vfFailure;
     if (int schemaFailure = run_captured_schema_tests()) return schemaFailure;
+    if (int capturedFailure = run_captured_intent_runtime_tests()) {
+        fprintf(stderr, "captured intent regression failed: %d\n", capturedFailure);
+        return capturedFailure;
+    }
     if (int readFailure = run_linux_read_request_tests()) return readFailure;
     if (int xbarLogFailure = run_xbar_read_log_tests()) return xbarLogFailure;
     if (int domainDumpFailure = run_clk_domain_dump_tests()) return domainDumpFailure;

@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-12: Shared captured-point runtime interpretation
+
+- Added a shared point adapter used by Windows/Linux planning, target builds,
+  verification, ownership and merge paths. Captured zero is owned independently
+  of MHz; raw offsets never inherit graphics projection/scalar compensation.
+- Captured readback is checked against the exact programmed offset. The
+  correction view preserves offset authority; malformed point/lock combinations
+  and sub-grid values refuse explicitly. Restore records validate point tags.
+- Added 8040-8060 and production Windows target/verify cases; source gates follow
+  the central adapter. See [profile-document.md](../profile-document.md).
+- IPC replay stays disabled pending scope/editor/document integration. The
+  legacy write interfaces still require exact kHz; no hardware replay claimed.
+
 ## 2026-11-12: Linux baseline preparation preserves memory tuning
 
 - Removed the transient memory reset and its baseline-only rollback write;

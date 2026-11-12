@@ -139,6 +139,14 @@ static inline void curve_plan_describe_issue(const CurvePlanResult& r,
         case CURVE_PLAN_REASON_ARITHMETIC_OVERFLOW:
             curve_plan_appendf(out, outSize, "The curve request is out of numeric range.");
             break;
+        case CURVE_PLAN_REASON_POINT_INTENT_CONFLICT:
+            curve_plan_appendf(out, outSize,
+                "VF point %d has contradictory tuning intent or overlaps the lock tail.", i.ci);
+            break;
+        case CURVE_PLAN_REASON_POINT_GRID:
+            curve_plan_appendf(out, outSize,
+                "Captured VF point %d needs an explicit precision conversion for this write surface.", i.ci);
+            break;
         case CURVE_PLAN_REASON_READ_FAILED:
         default:
             curve_plan_appendf(out, outSize, "The VF curve could not be read.");

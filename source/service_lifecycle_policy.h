@@ -13,7 +13,7 @@ static inline bool service_intent_owns_vf_cleanup(
     if (!intent) return false;
     if (intent->hasLock || intent->hasGpuOffset) return true;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
-        if (intent->hasCurvePoint[ci]) return true;
+        if (desired_curve_point_present(intent, ci)) return true;
     }
     return false;
 }
@@ -24,7 +24,7 @@ static inline bool service_request_replaces_lock_domain(
     if (request->resetOcBeforeApply || request->hasGpuOffset ||
         request->hasLock) return true;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
-        if (request->hasCurvePoint[ci]) return true;
+        if (desired_curve_point_present(request, ci)) return true;
     }
     return false;
 }

@@ -10,7 +10,7 @@ static inline int service_desired_curve_point_count(
     if (!desired) return 0;
     int count = 0;
     for (int i = 0; i < VF_NUM_POINTS; ++i)
-        if (desired->hasCurvePoint[i]) ++count;
+        if (desired_curve_point_present(desired, i)) ++count;
     return count;
 }
 
@@ -44,6 +44,8 @@ static inline void service_project_desired_to_available_domains(
             desired->hasCurvePoint[i] = false;
             desired->curvePointMHz[i] = 0;
             desired->curvePointFromGpuOffset[i] = 0;
+            desired->curvePointCaptured[i] = 0;
+            desired->curvePointCapturedOffsetHz[i] = 0;
         }
         // Every current lock mode composes a VF anchor/tail write.
         desired->hasLock = false;
@@ -95,6 +97,8 @@ static inline DesiredSettings service_merge_desired_after_mutation(
             merged.hasCurvePoint[i] = false;
             merged.curvePointMHz[i] = 0;
             merged.curvePointFromGpuOffset[i] = 0;
+            merged.curvePointCaptured[i] = 0;
+            merged.curvePointCapturedOffsetHz[i] = 0;
         }
         merged.hasLock = false;
         merged.lockCi = -1;
@@ -132,6 +136,8 @@ static inline DesiredSettings service_merge_desired_after_mutation(
             // losing the flag here turns every projected profile point back
             // into a typed absolute on the next replay.
             merged.curvePointFromGpuOffset[i] = requested->curvePointFromGpuOffset[i];
+            merged.curvePointCaptured[i] = requested->curvePointCaptured[i];
+            merged.curvePointCapturedOffsetHz[i] = requested->curvePointCapturedOffsetHz[i];
         }
     }
     if (domains & SERVICE_MUTATION_DOMAIN_LOCK) {

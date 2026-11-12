@@ -20,7 +20,7 @@ static bool service_desired_has_owned_intent(const DesiredSettings* desired) {
         desired->hasPowerLimit || desired->hasFan ||
         desired_claims_advanced_clock_domain(desired)) return true;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
-        if (desired->hasCurvePoint[ci]) return true;
+        if (desired_curve_point_present(desired, ci)) return true;
     }
     return false;
 }
@@ -86,7 +86,7 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
     int requestedCurvePoints = 0;
     if (desired) {
         for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-            if (desired->hasCurvePoint[ci]) requestedCurvePoints++;
+            if (desired_curve_point_present(desired, ci)) requestedCurvePoints++;
         }
     }
     debug_log("service_apply_desired_settings: interactive=%d gpu=%d exclude=%d mem=%d power=%d fanMode=%d lockCi=%d lockMHz=%u curvePoints=%d\n",
@@ -136,6 +136,8 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
                 mergedActiveDesired.hasCurvePoint[ci] = false;
                 mergedActiveDesired.curvePointMHz[ci] = 0;
                 mergedActiveDesired.curvePointFromGpuOffset[ci] = 0;
+                mergedActiveDesired.curvePointCaptured[ci] = 0;
+                mergedActiveDesired.curvePointCapturedOffsetHz[ci] = 0;
             }
             mergedActiveDesired.hasLock = false;
             mergedActiveDesired.lockCi = -1;

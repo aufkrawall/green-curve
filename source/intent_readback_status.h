@@ -54,6 +54,11 @@ static inline bool intent_owned_point_target_mhz(
         if (targetMHz) *targetMHz = (int)desired->lockMHz;
         return true;
     }
+    if (desired->curvePointCaptured[index]) {
+        if (targetMHz) *targetMHz = intent_point_base_mhz(&response->snapshot, index) +
+            (int)(desired->curvePointCapturedOffsetHz[index] / 1000000);
+        return true;
+    }
     if (desired->hasCurvePoint[index] &&
         desired->curvePointMHz[index] > 0) {
         if (targetMHz) *targetMHz = (int)desired->curvePointMHz[index];

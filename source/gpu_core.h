@@ -502,6 +502,8 @@ struct DesiredSettings {
     gc_i64 curvePointCapturedOffsetHz[VF_NUM_POINTS];
 };
 
+#include "desired_curve_intent.h"
+
 static inline void validate_gpu_adapter_info_for_ipc(GpuAdapterInfo* g) {
     if (!g) return;
     canonicalize_gc_bool8(&g->valid);

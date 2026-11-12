@@ -23,11 +23,13 @@ enum {NVML_SUCCESS=0,NVML_ERROR_NOT_SUPPORTED=3,
 struct Point {unsigned int freq_kHz,volt_uV;};
 struct DesiredSettings {
  bool hasLock{},resetOcBeforeApply{},hasGpuOffset{},hasPowerLimit{},hasMemOffset{};
- LockMode lockMode{}; unsigned int lockMHz{}; int gpuOffsetMHz{},gpuOffsetExcludeLowCount{};
+ LockMode lockMode{}; unsigned int lockMHz{}; int lockCi{},gpuOffsetMHz{},gpuOffsetExcludeLowCount{};
  bool hasXbarOffsetKhz{},hasXbarMsvddOffsetUv{},hasSysClkOffsetKhz{},hasVideoClkOffsetKhz{};
  bool hasCurvePoint[VF_NUM_POINTS]{};
  unsigned int curvePointMHz[VF_NUM_POINTS]{};
  bool curvePointFromGpuOffset[VF_NUM_POINTS]{};
+ unsigned char curvePointCaptured[VF_NUM_POINTS]{};
+ long long curvePointCapturedOffsetHz[VF_NUM_POINTS]{};
 };
 static bool service_request_replaces_lock_domain(const DesiredSettings* d) {
  return d->hasLock||d->hasGpuOffset||d->resetOcBeforeApply;
@@ -411,6 +413,31 @@ static int run(){
  CHECK(linux_outgoing_state_holds_clocks_down(&g,nullptr));
  CHECK(linux_apply_write_final_lock(&g,&next));
  CHECK(g.retainedTransitionCeilingMHz==0);
+ // Captured offsets (including zero) stay independent of sampled MHz,
+ // graphics-offset components and the scalar-shift projection adjustment.
+ {
+   DesiredSettings d{};d.hasGpuOffset=true;d.gpuOffsetMHz=400;
+   d.curvePointCaptured[1]=d.curvePointCaptured[2]=1;
+   d.curvePointCapturedOffsetHz[2]=-15000000;
+   bool populated[VF_NUM_POINTS]{},tail[VF_NUM_POINTS]{},mask[VF_NUM_POINTS]{},explicitMask[VF_NUM_POINTS]{};
+   int offsets[VF_NUM_POINTS]{},freq[VF_NUM_POINTS]{},target[VF_NUM_POINTS]{},shift[VF_NUM_POINTS]{};
+   for(int i=0;i<4;++i){populated[i]=true;freq[i]=2400000;shift[i]=400000;}
+   CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,-1,0,false,0,0,0,
+     populated,offsets,freq,tail,target,mask,d.gpuOffsetMHz,shift));
+   CHECK(mask[1]&&mask[2]&&target[1]==0&&target[2]==-15000);
+   g_app.curve[1].freq_kHz=2000000;g_app.curve[2].freq_kHz=2100000;
+   g_app.freqOffsets[1]=0;g_app.freqOffsets[2]=-15000;
+   char detail[128]{};
+   CHECK(apply_verify_curve_targets(&d,explicitMask,target,true,false,false,
+     LOCK_MODE_NONE,tail,0,detail,sizeof(detail)));
+   g_app.freqOffsets[1]=1;
+   CHECK(!apply_verify_curve_targets(&d,explicitMask,target,true,false,false,
+     LOCK_MODE_NONE,tail,0,detail,sizeof(detail)));
+   g_app.freqOffsets[1]=0;g_app.freqOffsets[2]=0;
+   d.hasCurvePoint[1]=true;
+   CHECK(!apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,-1,0,false,0,0,0,
+     populated,offsets,freq,tail,target,mask,0,nullptr));
+ }
  // Exact explicit targets override selective policy for every lock mode.
  for(int mode=0;mode<3;++mode){
    DesiredSettings d{};d.hasGpuOffset=true;d.gpuOffsetMHz=300;

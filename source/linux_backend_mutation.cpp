@@ -13,7 +13,7 @@
 static bool desired_has_curve_write(const DesiredSettings* d) {
     if (!d) return false;
     for (int i = 0; i < VF_NUM_POINTS; ++i)
-        if (d->hasCurvePoint[i]) return true;
+        if (desired_curve_point_present(d, i)) return true;
     return (d->hasLock && (d->lockMode == LOCK_MODE_FLATTEN ||
                            d->lockMode == LOCK_MODE_HARD)) ||
            (d->hasGpuOffset && d->gpuOffsetExcludeLowCount > 0);
@@ -23,7 +23,7 @@ static bool desired_gpu_offset_uses_curve(const DesiredSettings* d) {
     if (!d || !d->hasGpuOffset) return false;
     if (d->gpuOffsetExcludeLowCount > 0 || d->hasLock) return true;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (d->hasCurvePoint[i]) return true;
+        if (desired_curve_point_present(d, i)) return true;
     }
     return false;
 }
@@ -493,7 +493,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     {
         const DesiredSettings* planned =
             context.transitionBuild ? committedIntent : d;
-        const bool curveWork = curveBuild.pointCount > 0 ||
+        const bool curveWork = curveBuild.pointCount > 0 || service_desired_has_curve_point(planned) ||
             (planned->hasLock && planned->lockMHz > 0);
         if (curveWork) {
             const CurvePlanResult plan = linux_backend_curve_plan(g, planned,

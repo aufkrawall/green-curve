@@ -66,7 +66,7 @@ static void apply_log_post_apply_curve_diagnostics(
                     int farBelow = 0, farBelowCi = -1;
                     unsigned int farBelowActual = 0, farBelowTarget = 0, farBelowWorst = 0;
                     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-                        if (!verifyDesired.hasCurvePoint[ci]) continue;
+                        if (!desired_curve_point_present(&verifyDesired, ci)) continue;
                         if (g_app.curve[ci].freq_kHz == 0) continue;
                         unsigned int actualMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
                         unsigned int targetMHz = (lockedTailMask[ci] && lockMhz > 0) ? lockMhz : verifyDesired.curvePointMHz[ci];
@@ -89,8 +89,9 @@ static void apply_log_post_apply_curve_diagnostics(
                         // The verification predicate: an offset-intent point is
                         // short when its OFFSET is, never because a cold or
                         // loaded base moved its MHz off the projected preview.
-                        const bool offsetIntent = !isTail && curve_point_offset_is_intent(
-                            explicitMask[ci], verifyDesired.curvePointFromGpuOffset[ci] != 0, selective);
+                        const bool offsetIntent = !isTail && (verifyDesired.curvePointCaptured[ci] ||
+                            curve_point_offset_is_intent(explicitMask[ci],
+                                verifyDesired.curvePointFromGpuOffset[ci] != 0, selective));
                         const unsigned int shortMHz = curve_point_shortfall_mhz(offsetIntent,
                             targetOffsets[ci], g_app.freqOffsets[ci], targetMHz, actualMHz);
                         if (!refusedPlaceholder && shortMHz >= 100) {

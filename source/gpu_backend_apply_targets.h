@@ -4,6 +4,7 @@
 #define GREEN_CURVE_GPU_BACKEND_APPLY_TARGETS_H
 
 #include "curve_point_offset_policy.h"
+#include "desired_curve_intent.h"
 
 // Fill `shiftOut` with each point's bounded base shift across this apply's
 // NVML write (curve_point_bounded_scalar_shift_khz()) and return true, or
@@ -69,13 +70,19 @@ static bool apply_build_curve_targets(
     // for the same GPU session/scalar/topology, or null when no separate
     // scalar needs compensation. Subtracted from provenance points only.
     const int* provenanceScalarShiftKHz) {
+    if (!desired_curve_intent_valid(desired)) return false;
+    int capturedCount = 0;
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
+        if (desired->curvePointCaptured[ci]) ++capturedCount;
+    if (capturedCount) debug_log("curve target intent: captured=%d; programmed offsets own the targets\n",
+        capturedCount);
     const VfOffsetRange range = vf_offset_range_current();
     if (hasLock && lockMode == LOCK_MODE_FLATTEN &&
         !vf_offset_range_supports_flatten(range)) return false;
     if (!curveRequest && !preserveCurveAcrossMem) return true;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         if (!originalCurvePopulated[ci]) {
-            if (desired->hasCurvePoint[ci]) return false;
+            if (desired_curve_point_present(desired, ci)) return false;
             continue;
         }
         long long offset = originalCurveOffsets[ci];
@@ -103,18 +110,15 @@ static bool apply_build_curve_targets(
         // Routing-independent on purpose: a re-apply that requests no offset
         // CHANGE has gpuPolicyViaCurveBatch == false, and a profile with no GPU
         // offset never sets it at all, but neither point is less projected.
-        if (desired->hasCurvePoint[ci] && !tail) {
-            CurvePointOffsetRequest want = {};
-            want.fromGpuOffset = desired->curvePointFromGpuOffset[ci];
-            want.gpuOffsetComponentKHz = gpu_offset_component_mhz_for_point(ci,
-                desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
-            want.absoluteMHz = desired->curvePointMHz[ci];
-            want.liveBaseKHz = curve_point_stock_base_khz(
-                originalCurveFreqkHz[ci], originalCurveOffsets[ci]);
-            offset = curve_point_target_offset_khz(&want);
+        if (desired_curve_point_present(desired, ci) && !tail) {
+            const bool projected = desired_curve_point_kind(desired, ci) == DESIRED_CURVE_PROJECTED;
+            if (!desired_curve_point_offset_khz(desired, ci,
+                    curve_point_stock_base_khz(originalCurveFreqkHz[ci], originalCurveOffsets[ci]),
+                    gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz,
+                        desiredActiveGpuOffsetExcludeLowCount) * 1000, &offset)) return false;
             // Measured, not assumed: the part of the component this apply's
             // NVML write already moved the point by (zero when it did not).
-            if (want.fromGpuOffset && provenanceScalarShiftKHz)
+            if (projected && provenanceScalarShiftKHz)
                 offset -= provenanceScalarShiftKHz[ci];
             write = true;
         }

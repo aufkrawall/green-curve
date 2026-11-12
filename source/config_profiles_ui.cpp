@@ -468,13 +468,15 @@ static void merge_desired_settings(DesiredSettings* base, const DesiredSettings*
         copy_fan_curve(&base->fanCurve, &override->fanCurve);
     }
     for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (override->hasCurvePoint[i]) {
-            base->hasCurvePoint[i] = true;
+        if (desired_curve_point_present(override, i)) {
+            base->hasCurvePoint[i] = override->hasCurvePoint[i];
             base->curvePointMHz[i] = override->curvePointMHz[i];
             // Provenance is per point and describes THIS value: a merge that
             // copies the MHz but not the flag turns a projection into an
             // absolute (or the reverse) and hands the apply the wrong rule.
             base->curvePointFromGpuOffset[i] = override->curvePointFromGpuOffset[i];
+            base->curvePointCaptured[i] = override->curvePointCaptured[i];
+            base->curvePointCapturedOffsetHz[i] = override->curvePointCapturedOffsetHz[i];
         }
     }
 }
@@ -487,7 +489,7 @@ static bool desired_has_any_action(const DesiredSettings* desired) {
         desired->hasFan || desired->hasLock || desired->hasXbarOffsetKhz ||
         desired->hasXbarMsvddOffsetUv) return true;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (desired->hasCurvePoint[i]) return true;
+        if (desired_curve_point_present(desired, i)) return true;
     }
     return false;
 }

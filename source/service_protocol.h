@@ -417,7 +417,7 @@ static inline bool service_desired_has_curve_point(
     const DesiredSettings* desired) {
     if (!desired) return false;
     for (int i = 0; i < VF_NUM_POINTS; ++i)
-        if (desired->hasCurvePoint[i]) return true;
+        if (desired_curve_point_present(desired, i)) return true;
     return false;
 }
 

@@ -53,7 +53,7 @@ static inline bool service_wire_string_is_log_safe(
 
 static inline bool service_desired_bool_fields_valid(
     const DesiredSettings* desired) {
-    if (!desired) return false;
+    if (!desired || !desired_curve_intent_valid(desired)) return false;
     if (desired->applicationScope > DESIRED_SCOPE_EXPLICIT_RELEASE) return false;
     for (int i = 0; i < VF_NUM_POINTS; ++i) {
         if (desired->hasCurvePoint[i] > 1) return false;

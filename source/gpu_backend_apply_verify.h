@@ -25,12 +25,24 @@ static bool apply_verify_curve_targets(const DesiredSettings* desired,
     bool sawPoint = false;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         bool tail = hasLock && tailMask[ci];
-        if (!desired->hasCurvePoint[ci] && !tail) continue;
+        if (!desired_curve_point_present(desired, ci) && !tail) continue;
         if (g_app.curve[ci].freq_kHz == 0) {
             set_message(detail, detailSize, "Requested VF point %d has no fresh readback", ci);
             return false;
         }
         sawPoint = true;
+        if (desired->curvePointCaptured[ci]) {
+            long long expected = 0;
+            if (!desired_curve_point_offset_khz(desired, ci, 0, 0, &expected) ||
+                g_app.freqOffsets[ci] != expected) {
+                set_message(detail, detailSize,
+                    "Captured VF point %d did not retain its requested programmed offset", ci);
+                debug_log("curve captured verification failed: ci=%d actual=%d target=%lld kHz\n",
+                    ci, g_app.freqOffsets[ci], expected);
+                return false;
+            }
+            continue;
+        }
         // A HARD pin owns the tail frequency. The explicit pre-tail points still
         // own their own voltage/frequency targets and are checked below.
         if (tail && mode == LOCK_MODE_HARD) continue;

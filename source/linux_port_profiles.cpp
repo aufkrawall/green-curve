@@ -56,11 +56,13 @@ void merge_desired_settings(DesiredSettings* base, const DesiredSettings* incomi
         base->fanCurve = incoming->fanCurve;
     }
     for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (incoming->hasCurvePoint[i]) {
-            base->hasCurvePoint[i] = true;
+        if (desired_curve_point_present(incoming, i)) {
+            base->hasCurvePoint[i] = incoming->hasCurvePoint[i];
             base->curvePointMHz[i] = incoming->curvePointMHz[i];
             // Same rule as the Windows merge: the flag belongs to the value.
             base->curvePointFromGpuOffset[i] = incoming->curvePointFromGpuOffset[i];
+            base->curvePointCaptured[i] = incoming->curvePointCaptured[i];
+            base->curvePointCapturedOffsetHz[i] = incoming->curvePointCapturedOffsetHz[i];
         }
     }
 }

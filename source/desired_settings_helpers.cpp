@@ -7,7 +7,7 @@ static int desired_curve_point_count(const DesiredSettings* desired) {
     if (!desired) return 0;
     int count = 0;
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        if (desired->hasCurvePoint[ci]) count++;
+        if (desired_curve_point_present(desired, ci)) count++;
     }
     return count;
 }
@@ -196,14 +196,8 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
     }
 
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        if (!desired_bool_equal(profile->hasCurvePoint[ci], active->hasCurvePoint[ci])) {
-            set_message(detail, detailSize, "curve ownership differs at ci%d profile=%d active=%d",
-                ci, profile->hasCurvePoint[ci] ? 1 : 0, active->hasCurvePoint[ci] ? 1 : 0);
-            return false;
-        }
-        if (profile->hasCurvePoint[ci] && profile->curvePointMHz[ci] != active->curvePointMHz[ci]) {
-            set_message(detail, detailSize, "curve point ci%d differs profile=%u active=%u",
-                ci, profile->curvePointMHz[ci], active->curvePointMHz[ci]);
+        if (!desired_curve_point_semantically_equal(profile, active, ci)) {
+            set_message(detail, detailSize, "curve intent differs at ci%d", ci);
             return false;
         }
     }
