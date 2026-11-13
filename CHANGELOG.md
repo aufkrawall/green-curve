@@ -34,16 +34,17 @@ Curves are checked before Apply, low-voltage points become editable, and dialogs
 ### New
 
 - **Dialog text copying:** Ctrl+C copies confirmation, warning and error dialogs.
-- **Curve points below 700 mV:** writable low-voltage points are now listed in the editor and graph; the driver's fixed clock floor below 700 mV stays hidden.
-- **Prepare compatible curve:** Apply can offer to lower conflicting earlier points in the editor; review them before applying again.
+- **Curve points below 700 mV:** writable points appear in the editor and graph; fixed clock-floor points stay hidden.
+- **Prepare compatible curve:** Apply can offer to lower conflicting earlier points; review the draft before applying.
 - **CLI profile transfer:** import and export saved profiles without a connected GPU; review replacements and existing assignments before confirming.
+- **CLI hardware capture:** read programmed controls without resetting the GPU, inspect omissions, and explicitly choose partial capture and exact representation before saving.
 
 ### Improved
 
-- **Curve checks before Apply:** proven prefix, target, tail and fixed-floor conflicts are refused before tuning changes, with voltage, clock and range details.
+- **Curve checks before Apply:** proven conflicts are refused before tuning changes, with voltage, clock and range details.
 - **Saving over another tool's curve:** Save identifies a curve that Green Curve does not own and the slot omits.
 - **Linux profile switching:** leftover curve points are cleared first, matching Windows; flatten and lock verification checks the resulting frequency after Apply.
-- **Linux memory clocks:** curve-only changes preserve memory tuning and work without memory controls; recovery restores the prior curve if baseline preparation fails.
+- **Linux memory clocks:** curve-only changes preserve memory tuning; failed baseline preparation restores the prior curve.
 - **Profile matching:** exact offsets and power ratios are compared directly, keeping rounded or temperature-dependent previews from changing the match.
 
 ### Fixed

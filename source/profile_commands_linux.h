@@ -5,10 +5,21 @@
 #include "profile_commands.h"
 #include "profile_legacy_document.h"
 #include "profile_file_read.h"
+#include "profile_capture_commands.h"
 #include "linux_config_lock.h"
 #include <stdlib.h>
 
 struct LinuxProfileCommands {
+    bool capture(gc_u32 domains, HardwareCaptureObservation& output, ProfileCodecError& error) {
+        ServiceRequest request{}; auto response = std::make_unique<ServiceResponse>();
+        request.magic = SERVICE_PROTOCOL_MAGIC; request.version = SERVICE_PROTOCOL_VERSION;
+        request.command = SERVICE_CMD_CAPTURE_CURRENT; request.captureDomains = domains;
+        request.callerPid = (gc_u32)getpid();
+        if (!linux_daemon_send(&request, response.get(), error.message, sizeof(error.message))) return false;
+        if (response->status != SERVICE_STATUS_OK || !response->capture.valid)
+            return profile_codec::fail(&error, 0, response->message[0] ? response->message : "capture is unavailable");
+        output = response->capture; return true;
+    }
     bool distinct(const std::string& config, const std::string& file, ProfileCodecError& error) {
         const auto resolved = [](const std::string& path) {
             char* full = realpath(path.c_str(), nullptr);
@@ -66,7 +77,7 @@ static bool profile_commands_linux(int argc, char** argv, int& exitCode) {
     bool transfer = false, exporting = false;
     for (int i = 1; i < argc; ++i) {
         exporting |= !strcmp(argv[i], "--export-profiles");
-        transfer |= exporting || !strcmp(argv[i], "--import-profiles");
+        transfer |= exporting || !strcmp(argv[i], "--import-profiles") || !strcmp(argv[i], "--capture-current");
     }
     if (!transfer) return false;
     char defaultConfig[LINUX_PATH_MAX]{};
@@ -74,6 +85,7 @@ static bool profile_commands_linux(int argc, char** argv, int& exitCode) {
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
     LinuxProfileCommands io;
+    if (profile_capture_commands_run(args, defaultConfig, io, exitCode)) return true;
     if (exporting) {
         ProfileCommand command; ProfileCodecError error; bool handled = false;
         if (!profile_command_parse(args, defaultConfig, command, handled, &error)) {

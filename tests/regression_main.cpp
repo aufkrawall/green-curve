@@ -1038,6 +1038,7 @@ int run_profile_document_contract_tests();
 int run_profile_codec_tests();
 int run_profile_slot_codec_tests();
 int run_profile_commands_tests();
+int run_profile_capture_commands_tests();
 int run_profile_mapping_tests();
 int run_profile_conversion_tests();
 int run_hardware_capture_tests();
@@ -2706,6 +2707,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int commandFailure = run_profile_commands_tests()) {
         fprintf(stderr, "profile command regression failed: %d\n", commandFailure);
         return commandFailure;
+    }
+    if (int captureCommandFailure = run_profile_capture_commands_tests()) {
+        fprintf(stderr, "capture command regression failed: %d\n", captureCommandFailure);
+        return captureCommandFailure;
     }
     if (int mappingFailure = run_profile_mapping_tests()) {
         fprintf(stderr, "profile mapping regression failed: %d\n", mappingFailure);

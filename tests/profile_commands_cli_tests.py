@@ -67,6 +67,11 @@ def verify(executable: Path, workspace: Path) -> None:
         # Normalized aliases cannot turn an export into a config overwrite.
         run(["--export-profiles", folder / "." / "config.ini", "--config", config], expected=2)
         assert config.read_bytes() == saved
+        # Invalid capture choices are rejected before contacting a GPU service.
+        run(["--capture-current", exported, "--domains", "vf,vf"], expected=2)
+        run(["--capture-current", config, "--config", config], expected=2)
+        run(["--capture-current", exported, "--representation", "sampled"], expected=2)
+        assert config.read_bytes() == saved
         incoming.write_text(seed + "\n[unknown]\nfield=1\n", encoding="utf-8", newline="\n")
         run(import_args, expected=2)
         assert config.read_bytes() == saved

@@ -299,8 +299,10 @@ Windows never uses the lazy driver loader. A different target, deferred recovery
 or uncertain Linux session refuses without discovery or handback. See
 `source/main_service_capture.cpp`, `source/linux_backend_capture.h`,
 `source/linux_daemon_capture.h`, `tests/hardware_capture_service_tests.cpp`
-(8520-8526). Client capture review remains pending. Fixtures load no driver and
-perform no hardware mutation.
+(8520-8526). Both CLI clients now report completeness and explicitly review
+partial/exact saving; see [config-profiles.md](config-profiles.md#passive-capture-cli-2026-11-13).
+GUI/TUI and flatten/pin proposal review remain pending. Fixtures load no driver
+and perform no hardware mutation.
 
 ## Invariants
 

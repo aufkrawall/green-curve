@@ -68,6 +68,36 @@ refuse these new records until destination review exists; they cannot silently
 read a new document as an empty/default legacy profile. Shared publication and
 the updater's richer-intent handoff still require their document integration.
 
+### Passive capture CLI (2026-11-13)
+
+Source anchors: `source/profile_capture_commands.h`,
+`source/profile_commands_windows.h`, `source/profile_commands_linux.h`,
+`tests/profile_capture_commands_tests.cpp` (8540-8551),
+`tests/profile_commands_cli_tests.py` (invalid choices before service access).
+
+Both clients recognize `--capture-current FILE` before ordinary GPU setup.
+They send only a domain mask to the existing service session; file output stays
+in the client. Default requested domains are VF, graphics, memory, power and pin.
+`--domains vf,graphics,memory,power,pin,fan,xbar,system,video` selects a subset;
+duplicates and unknown values refuse before connecting. Fan is optional and
+copies only explicitly requested owned intent, never an external fan controller.
+
+The report names each requested domain's status, driver status, completeness,
+composition and pin knowledge. Strict capture writes nothing when a domain is
+omitted; `--allow-partial` explicitly accepts that report. `--representation exact`
+is separately required before saving the raw programmed controls. Capturing no
+successful controls always refuses. A failed session, invalid result or failed
+atomic write preserves the prior output file. `--config` changes only the path
+protected against accidental overwrite; capture neither reads nor changes slots.
+
+Saved portable documents retain exact offsets including owned zero, microvolt
+identities, named memory control, power ratios and separate observations. Import
+can subsequently place the document into a local slot. Capture establishes no
+service ownership and performs no Apply. Flatten/pin proposals and GUI/TUI
+review remain pending; exact capture does not infer a missing pin or scalar
+composition. Native fixtures execute review/refusal/save and local restart
+decoding; production builds run invalid-command tests without contacting a GPU.
+
 ### Existing access helpers
 
 - Cross-session mutex-protected via `enter_config_storage_lock()` /

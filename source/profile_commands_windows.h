@@ -5,8 +5,20 @@
 #include "profile_commands.h"
 #include "profile_legacy_document.h"
 #include "profile_file_read.h"
+#include "profile_capture_commands.h"
 
 struct WindowsProfileCommands {
+    bool capture(gc_u32 domains, HardwareCaptureObservation& output, ProfileCodecError& error) {
+        ServiceRequest request{}; auto response = std::make_unique<ServiceResponse>();
+        request.magic = SERVICE_PROTOCOL_MAGIC; request.version = SERVICE_PROTOCOL_VERSION;
+        request.command = SERVICE_CMD_CAPTURE_CURRENT; request.captureDomains = domains;
+        request.callerPid = GetCurrentProcessId(); ProcessIdToSessionId(request.callerPid, &request.callerSessionId);
+        StringCchCopyA(request.source, ARRAY_COUNT(request.source), "client passive capture");
+        if (!service_send_request(&request, response.get(), (DWORD)service_state_read_response_timeout_ms(true), error.message, sizeof(error.message))) return false;
+        if (response->status != SERVICE_STATUS_OK || !response->capture.valid)
+            return profile_codec::fail(&error, 0, response->message[0] ? response->message : "capture is unavailable");
+        output = response->capture; return true;
+    }
     bool distinct(const std::string& config, const std::string& file, ProfileCodecError& error) {
         char a[MAX_PATH]{}, b[MAX_PATH]{};
         const DWORD na = gc_GetFullPathNameUtf8(config.c_str(), sizeof(a), a, nullptr);
@@ -75,7 +87,7 @@ static bool profile_commands_windows(LPWSTR commandLine, int& exitCode) {
     bool transfer = false, exporting = false;
     for (int i = 1; i < argc; ++i) {
         exporting |= !wcscmp(argv[i], L"--export-profiles");
-        transfer |= exporting || !wcscmp(argv[i], L"--import-profiles");
+        transfer |= exporting || !wcscmp(argv[i], L"--import-profiles") || !wcscmp(argv[i], L"--capture-current");
     }
     if (!transfer) { LocalFree(argv); return false; }
     gc_cli_console_ready();
@@ -89,6 +101,7 @@ static bool profile_commands_windows(LPWSTR commandLine, int& exitCode) {
     }
     LocalFree(argv);
     WindowsProfileCommands io;
+    if (profile_capture_commands_run(args, g_app.configPath, io, exitCode)) return true;
     // Historical readers use the INI API. Keep the complete export generation
     // locked while those readers decode it; new documents use the raw snapshot.
     if (exporting) {

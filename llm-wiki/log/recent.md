@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Reviewed CLI capture to portable intent
+
+- Both clients report domain completeness and pin/composition knowledge before
+  an exact portable save. Partial results require an explicit choice; unavailable
+  sessions, malformed results and failed writes preserve existing output.
+- Cases 8540-8551 execute review, decisions, exact zero/fractional/ratio retention
+  and offline local restart decoding. Invalid executable commands refuse before
+  service access. All declared production targets compile; native Windows CLI
+  fixtures pass. GUI/TUI and flatten/pin proposals remain pending.
+- See [config-profiles.md](../config-profiles.md#passive-capture-cli-2026-11-13).
+
 ## 2026-11-13: Dedicated passive capture IPC
 
 - Protocol 33 carries a separate bounded observation, preserving the desired
