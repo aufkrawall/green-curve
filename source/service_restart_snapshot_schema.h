@@ -22,7 +22,8 @@
 // identifiable after the fact.
 
 #define SERVICE_ACTIVE_DESIRED_MAGIC   0x47434144u /* 'GCAD' */
-#define SERVICE_ACTIVE_DESIRED_VERSION 7u
+#define SERVICE_ACTIVE_DESIRED_VERSION 8u
+#define SERVICE_ACTIVE_DESIRED_SCHEMA3_VERSION 7u
 #define SERVICE_ACTIVE_DESIRED_SCHEMA2_VERSION 6u
 #define SERVICE_ACTIVE_DESIRED_SCHEMA1_VERSION 5u
 
@@ -34,7 +35,7 @@ struct ServiceRestartReapplySnapshot {
     DWORD reserved[2];
 };
 
-static_assert(sizeof(ServiceRestartReapplySnapshot) == 2320,
+static_assert(sizeof(ServiceRestartReapplySnapshot) == 2352,
               "ServiceRestartReapplySnapshot changed size: freeze the outgoing "
               "layout as ServiceRestartReapplySnapshotSchema<N>, teach the "
               "loader its size, and bump SERVICE_ACTIVE_DESIRED_VERSION "
@@ -90,6 +91,29 @@ static inline void service_restart_snapshot_widen_schema2(
     // widened record must not invent bytes the source file did not have.
 }
 
+struct ServiceRestartReapplySnapshotSchema3 {
+    DesiredSettingsSchema3 desired;
+    GpuAdapterInfo targetGpu;
+    DWORD activeProfileSource;
+    DWORD activeProfileSlot;
+    DWORD reserved[2];
+};
+
+static_assert(sizeof(ServiceRestartReapplySnapshotSchema3) == 2320,
+              "the pre-precise-scalar restart snapshot is frozen");
+static inline void service_restart_snapshot_widen_schema3(
+    ServiceRestartReapplySnapshot* out,
+    const ServiceRestartReapplySnapshotSchema3* in) {
+    if (!out || !in) return;
+    *out = {};
+    desired_settings_widen_schema3(&out->desired, &in->desired);
+    out->targetGpu = in->targetGpu;
+    out->activeProfileSource = in->activeProfileSource;
+    out->activeProfileSlot = in->activeProfileSlot;
+    // `reserved` stays zero: the old layout never carried anything in it, and a
+    // widened record must not invent bytes the source file did not have.
+}
+
 // The same bounded payload decoder serves the real file reader and byte
 // fixtures. Version selects meaning only after the exact layout size matches.
 template <typename Read>
@@ -108,6 +132,13 @@ static bool service_restart_snapshot_read_payload(unsigned int version,
         ServiceRestartReapplySnapshotSchema2 old{};
         if (!read(&old, sizeof(old))) return false;
         service_restart_snapshot_widen_schema2(out, &old);
+        return true;
+    }
+    if (version == SERVICE_ACTIVE_DESIRED_SCHEMA3_VERSION &&
+        size == sizeof(ServiceRestartReapplySnapshotSchema3)) {
+        ServiceRestartReapplySnapshotSchema3 old{};
+        if (!read(&old, sizeof(old))) return false;
+        service_restart_snapshot_widen_schema3(out, &old);
         return true;
     }
     if (version != SERVICE_ACTIVE_DESIRED_VERSION || size != sizeof(*out)) return false;

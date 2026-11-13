@@ -54,7 +54,7 @@
 
 // Generation of the live DesiredSettings layout.  Schema 1 shipped through
 // 0.25.2; schema 2 added curvePointFromGpuOffset[] for 0.26.0.
-enum { DESIRED_SETTINGS_SCHEMA_CURRENT = 3 };
+enum { DESIRED_SETTINGS_SCHEMA_CURRENT = 4 };
 
 // Schema 1: DesiredSettings exactly as it was written to disk up to and
 // including 0.25.2.  FROZEN -- never edit a field here, and never "keep it in

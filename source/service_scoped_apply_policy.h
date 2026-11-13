@@ -17,6 +17,29 @@ struct ServiceScopedApplyPlan {
     bool graphicsOffsetViaVf;
 };
 
+static inline void service_upgrade_legacy_scalar_scope(const DesiredSettings* previous,
+    DesiredSettings* requested, bool replacement = false) {
+    if (!previous || !requested || requested->applicationScope != DESIRED_SCOPE_LEGACY ||
+        (!previous->memOffsetPrecise && !previous->powerLimitRatio)) return;
+    requested->applicationScope = replacement || requested->resetOcBeforeApply
+        ? DESIRED_SCOPE_REPLACE_PROFILE : DESIRED_SCOPE_UPDATE_INCLUDED;
+    requested->resetOcBeforeApply = false;
+}
+
+static inline bool service_bind_scoped_memory_surface(ServiceScopedApplyPlan* p,
+    gc_u32 surface, char* why, size_t whySize) {
+    if (!p || !p->hardware.memOffsetPrecise) return p != nullptr;
+    if (surface < CLOCK_OFFSET_SURFACE_P0 || surface > CLOCK_OFFSET_SURFACE_GLOBAL ||
+        (p->hardware.memOffsetSurface && p->hardware.memOffsetSurface != surface)) {
+        if (why && whySize) snprintf(why, whySize, "Exact memory control surface changed or is unavailable");
+        return false;
+    }
+    p->hardware.memOffsetSurface = surface;
+    if (p->owned.hasMemOffset && p->owned.memOffsetPrecise && !p->owned.memOffsetSurface)
+        p->owned.memOffsetSurface = surface;
+    return true;
+}
+
 static inline bool service_scoped_has_owned_intent(const DesiredSettings& d) {
     if (d.hasGpuOffset || d.hasMemOffset || d.hasPowerLimit || d.hasFan || d.hasLock ||
         d.hasXbarOffsetKhz || d.hasXbarMsvddOffsetUv || d.hasSysClkOffsetKhz || d.hasVideoClkOffsetKhz)
@@ -77,7 +100,7 @@ static inline bool service_build_scoped_apply_plan(const DesiredSettings* previo
         return fail("An explicit valid application scope is required");
     if (requested.resetOcBeforeApply)
         return fail("Explicit application scope cannot request a global baseline reset");
-    if (!desired_curve_intent_valid(&requested)) return fail("Contradictory curve intent");
+    if (!desired_curve_intent_valid(&requested) || !desired_scalar_intent_valid(&requested)) return fail("Contradictory curve intent");
     const gc_u32 scope = desired_application_scope_kind(requested.applicationScope);
     const bool release = scope == DESIRED_SCOPE_EXPLICIT_RELEASE;
     const bool replace = scope == DESIRED_SCOPE_REPLACE_PROFILE;
@@ -98,12 +121,14 @@ static inline bool service_build_scoped_apply_plan(const DesiredSettings* previo
             owned.gpuOffsetExcludeLowCount = release ? 0 : requested.gpuOffsetExcludeLowCount;
         }
         if (requested.hasMemOffset) {
+            desired_memory_intent_copy(&owned, &requested);
             owned.hasMemOffset = !release;
-            owned.memOffsetMHz = release ? 0 : requested.memOffsetMHz;
+            if (release) { owned.memOffsetMHz = 0; desired_memory_precision_clear(&owned); }
         }
         if (requested.hasPowerLimit) {
+            desired_power_intent_copy(&owned, &requested);
             owned.hasPowerLimit = !release;
-            owned.powerLimitPct = release ? 100 : requested.powerLimitPct;
+            if (release) { owned.powerLimitPct = 100; desired_power_precision_clear(&owned); }
         }
         if (requested.hasFan) {
             owned.hasFan = !release;
@@ -155,10 +180,32 @@ static inline bool service_build_scoped_apply_plan(const DesiredSettings* previo
         hardware.hasGpuOffset = true; hardware.gpuOffsetMHz = 0; hardware.gpuOffsetExcludeLowCount = 0;
     }
     if ((old.hasMemOffset && !owned.hasMemOffset) || (release && requested.hasMemOffset)) {
-        hardware.hasMemOffset = true; hardware.memOffsetMHz = 0;
+        hardware.hasMemOffset = true; hardware.memOffsetMHz = 0; desired_memory_precision_clear(&hardware);
     }
     if ((old.hasPowerLimit && !owned.hasPowerLimit) || (release && requested.hasPowerLimit)) {
-        hardware.hasPowerLimit = true; hardware.powerLimitPct = 100;
+        hardware.hasPowerLimit = true; hardware.powerLimitPct = 100; desired_power_precision_clear(&hardware);
+    }
+    // Explicit scopes always resolve scalar intent in exact units. Cleanup
+    // uses the outgoing memory surface, including owned zero; previews cannot
+    // select another API or hide a difference below one displayed percent.
+    if (hardware.hasMemOffset) {
+        const gc_u32 oldSurface = old.hasMemOffset && old.memOffsetPrecise ? old.memOffsetSurface : 0;
+        const gc_u32 cleanupSurface = oldSurface ? oldSurface :
+            (requested.memOffsetPrecise ? requested.memOffsetSurface : 0);
+        if (!release && requested.memOffsetPrecise && oldSurface && requested.memOffsetSurface &&
+            requested.memOffsetSurface != oldSurface)
+            return fail("Release the previous memory control surface before changing it");
+        if (!hardware.memOffsetPrecise && !desired_memory_set_precise(&hardware,
+                (long long)hardware.memOffsetMHz * 1000000, cleanupSurface))
+            return fail("Memory intent requires explicit unit conversion or correction");
+        if (!hardware.memOffsetSurface && oldSurface) hardware.memOffsetSurface = oldSurface;
+        if (owned.hasMemOffset && requested.hasMemOffset) desired_memory_intent_copy(&owned, &hardware);
+    }
+    if (hardware.hasPowerLimit) {
+        if (!hardware.powerLimitRatio && !desired_power_set_ratio(&hardware,
+                tuning_power_ratio_from_percent(hardware.powerLimitPct)))
+            return fail("Power intent requires a valid ratio");
+        if (owned.hasPowerLimit && requested.hasPowerLimit) desired_power_intent_copy(&owned, &hardware);
     }
     if ((old.hasFan && !owned.hasFan) || (release && requested.hasFan)) {
         hardware.hasFan = true; hardware.fanAuto = true; hardware.fanMode = FAN_MODE_AUTO;

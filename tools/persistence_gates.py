@@ -81,9 +81,9 @@ def check_all(ctx, require_text, forbid_text):
 
     # Every record that embeds DesiredSettings pins its own size, so a change to
     # DesiredSettings *or* GpuAdapterInfo breaks the build at the record.
-    require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecord) == 2440",
+    require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecord) == 2472",
                  "the live daemon state record pins its on-disk size")
-    require_text(daemon_state_h, "sizeof(LinuxDaemonStartupRecord) == 2496",
+    require_text(daemon_state_h, "sizeof(LinuxDaemonStartupRecord) == 2528",
                  "the live startup-policy record pins its on-disk size")
     require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecordSchema1) == 1048",
                  "the frozen schema-1 state record stays 1048 bytes")
@@ -106,6 +106,14 @@ def check_all(ctx, require_text, forbid_text):
     location_h = _p(ctx, "linux_daemon_location_schema.h")
     uuid_schema_h = _p(ctx, "linux_daemon_uuid_schema.h")
     captured_schema_h = _p(ctx, "linux_daemon_captured_offset_schema.h")
+    precise_schema_h = _p(ctx, "linux_daemon_precise_scalar_schema.h")
+    for kind, size in (("State", 2440), ("Startup", 2496)):
+        require_text(precise_schema_h, f"sizeof(LinuxDaemon{kind}RecordSchema5) == {size}",
+                     "captured-offset layouts remain frozen before precise scalar intent")
+        require_text(daemon_state_cpp, f"sizeof(LinuxDaemon{kind}RecordSchema5)",
+                     "the loader admits the previous captured-offset record size")
+    require_text(schema_h, "sizeof(DesiredSettingsSchema3) == 2120",
+                 "the captured-offset desired layout remains frozen")
     for kind, size in (("State", 1280), ("Startup", 1336)):
         require_text(captured_schema_h, f"sizeof(LinuxDaemon{kind}RecordSchema4) == {size}",
                      "UUID-bearing layouts remain frozen before captured offsets")

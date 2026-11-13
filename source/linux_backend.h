@@ -175,6 +175,7 @@ struct LinuxHardwareSnapshot {
     gc_u32 memOffsetSurface;
     int memOffsetEffectiveMHz;
     unsigned int powerLimitmW;
+    unsigned int powerDefaultmW;
     int xbarOffsetKhz;
     int xbarMsvddOffsetUv;
     int sysClkOffsetKhz;

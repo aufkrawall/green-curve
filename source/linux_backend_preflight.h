@@ -5,6 +5,7 @@
 #define GREEN_CURVE_LINUX_BACKEND_PREFLIGHT_H
 
 #include "power_ratio_control.h"
+#include "nvml_exact_clock_control.h"
 
 static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
                                     const LinuxHardwareSnapshot* snapshot,
@@ -12,6 +13,9 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
     if (!g || !d || !g->nvmlReady || !g->writeIdentityResolved) {
         gc_strlcpy(err, errSize, "GPU write target is unavailable or not uniquely resolved");
         return false;
+    }
+    if (!desired_scalar_intent_valid(d)) {
+        gc_strlcpy(err, errSize, "invalid precise scalar intent"); return false;
     }
     gc_u32 requestedDomains = service_desired_mutation_domains(d);
     const bool independentGpu = graphicsRouteOverride == 1 && d->hasGpuOffset;
@@ -48,13 +52,18 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
         (!snapshot->memOffsetValid || (!g->nvml.setMemClkVfOffset && !g->nvml.setClockOffsets))) {
         gc_strlcpy(err, errSize, "memory offset cannot be snapshotted and written safely"); return false;
     }
+    if (d->memOffsetPrecise && (!snapshot->memOffsetExact ||
+        (d->memOffsetSurface && d->memOffsetSurface != snapshot->memOffsetSurface) ||
+        !nvml_exact_clock_surface_available(g->nvml, NVML_CLOCK_MEM, snapshot->memOffsetSurface))) {
+        gc_strlcpy(err, errSize, "exact memory control surface cannot be snapshotted and written safely"); return false;
+    }
     if (d->hasPowerLimit && !powerInert &&
         (!snapshot->powerValid || !g->nvml.setPowerLimit)) {
         gc_strlcpy(err, errSize, "power limit cannot be snapshotted and written safely"); return false;
     }
     if (d->hasPowerLimit && !powerInert) {
         const PowerRatioControlPlan power = power_ratio_control_plan(
-            tuning_power_ratio_from_percent(d->powerLimitPct),
+            desired_power_ratio(*d),
             power_ratio_read_nvml(g->nvml, g->nvmlDevice));
         if (power.status != POWER_RATIO_READY) {
             gc_snprintf(err, errSize, "power limit preflight: %s", power_ratio_control_status_text(power.status));

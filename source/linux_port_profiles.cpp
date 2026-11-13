@@ -27,10 +27,12 @@ void merge_desired_settings(DesiredSettings* base, const DesiredSettings* incomi
     if (incoming->hasMemOffset) {
         base->hasMemOffset = true;
         base->memOffsetMHz = incoming->memOffsetMHz;
+        desired_memory_intent_copy(base, incoming);
     }
     if (incoming->hasPowerLimit) {
         base->hasPowerLimit = true;
         base->powerLimitPct = incoming->powerLimitPct;
+        desired_power_intent_copy(base, incoming);
     }
     if (incoming->hasXbarOffsetKhz) {
         base->hasXbarOffsetKhz = true;

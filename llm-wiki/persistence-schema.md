@@ -8,9 +8,9 @@ changed underneath them**:
 
 | File | Record | Current version | Frozen predecessor |
 |------|--------|-----------------|--------------------|
-| Linux `active.bin` | `LinuxDaemonStateRecord` (2440 B) | `LINUX_DAEMON_RECORD_VERSION = 8` | schema 4 (1280 B, v7), `LinuxDaemonStateRecordSchema3` (1184 B, versions 5-6), `LinuxDaemonStateRecordSchema2` (1176 B, version 4), `LinuxDaemonStateRecordSchema1` (1048 B, versions 2-3), `LinuxDaemonStateRecordSchema1V1` (1036 B, version 1) |
-| Linux `startup.bin` | `LinuxDaemonStartupRecord` (2496 B) | `LINUX_DAEMON_STARTUP_VERSION = 7` | schema 4 (1336 B, v6), `LinuxDaemonStartupRecordSchema3` (1240 B, versions 4-5), `LinuxDaemonStartupRecordSchema2` (1236 B, version 3), `LinuxDaemonStartupRecordSchema1` (1108 B, versions 1-2) |
-| Windows restart snapshot | `ServiceRestartReapplySnapshot` (2320 B) | `SERVICE_ACTIVE_DESIRED_VERSION = 7u` | schema 2 (1160 B, v6), `ServiceRestartReapplySnapshotSchema1` (1032 B, version 5) |
+| Linux `active.bin` | `LinuxDaemonStateRecord` (2472 B) | `LINUX_DAEMON_RECORD_VERSION = 9` | schema 5 (2440 B, v8), schema 4 (1280 B, v7), `LinuxDaemonStateRecordSchema3` (1184 B, versions 5-6), `LinuxDaemonStateRecordSchema2` (1176 B, version 4), `LinuxDaemonStateRecordSchema1` (1048 B, versions 2-3), `LinuxDaemonStateRecordSchema1V1` (1036 B, version 1) |
+| Linux `startup.bin` | `LinuxDaemonStartupRecord` (2528 B) | `LINUX_DAEMON_STARTUP_VERSION = 8` | schema 5 (2496 B, v7), schema 4 (1336 B, v6), `LinuxDaemonStartupRecordSchema3` (1240 B, versions 4-5), `LinuxDaemonStartupRecordSchema2` (1236 B, version 3), `LinuxDaemonStartupRecordSchema1` (1108 B, versions 1-2) |
+| Windows restart snapshot | `ServiceRestartReapplySnapshot` (2352 B) | `SERVICE_ACTIVE_DESIRED_VERSION = 8u` | schema 3 (2320 B, v7), schema 2 (1160 B, v6), `ServiceRestartReapplySnapshotSchema1` (1032 B, version 5) |
 
 Every loader admitted a file only when its byte size equalled the **current**
 struct. That had two consequences, and the second is the nastier one:
@@ -25,6 +25,36 @@ current payload size). So was `LinuxDaemonStateRecordV1`, whose "v1" layout
 embedded the live `DesiredSettings`. Both are gone; a v1 file whose size still
 identifies it (schema-1 `DesiredSettings`, no operation identity) is migrated
 properly instead.
+
+## Precise scalar runtime (2026-11-13)
+
+Source anchors: `source/desired_scalar_intent.h`,
+`source/linux_daemon_precise_scalar_schema.h`,
+`source/gpu_backend_apply_precise_scalar.h`, `source/gpu_backend_apply_power.h`,
+`tests/precise_scalar_schema_tests.cpp` (8220-8263).
+
+DesiredSettings schema 4 is 2152 bytes. It appends memory Hz and surface
+provenance, a reduced positive power ratio, and independent presence tags.
+Legacy scalar fields remain checked display projections when a precise tag is
+present. Old desired schema 3 stays frozen at 2120 bytes; wideners leave the new
+tags/payloads zero. Protocol 32 uses 2744-byte requests and 9936-byte responses.
+All enclosing sizes above are compiler-checked on the supported architectures.
+
+Explicit scalar scopes resolve exact units before mutation. Memory keeps the
+existing application bound of +/-3000 physical MHz and refuses sub-grid values;
+power resolves against fresh destination controls, never its percent preview.
+Memory cleanup binds the outgoing surface. Prepared ownership retains the
+resolved API, and independently refreshed backend reads must agree. Legacy
+overrides following precise ownership resolve exact units; a named-profile transition
+following precise ownership goes through scoped cleanup. Profile matching uses
+physical memory intent and rational power, retaining named-surface authority.
+No new local-slot, capture or portable-codec producer is connected yet.
+
+Frozen daemon schema 5 and Windows restart schema 3 preserve the outgoing
+captured-offset layout. Loaders check original versions/checksums before
+widening and keep identity, scope and operation metadata. Current record,
+historical byte and production power-phase fixtures cover precision, owned zero,
+cleanup, stale denominators and previews that hide a different target.
 
 ## Captured-offset capacity (2026-11-12)
 

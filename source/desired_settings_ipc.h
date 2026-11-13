@@ -49,6 +49,7 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
     if (d->hasVideoClkOffsetKhz && (d->videoClkOffsetKhz < -1000000 || d->videoClkOffsetKhz > 1000000)) {
         d->videoClkOffsetKhz = d->videoClkOffsetKhz < -1000000 ? -1000000 : 1000000;
     }
+    desired_scalar_intent_canonicalize(d);
     validate_fan_curve_flags_for_ipc(&d->fanCurve);
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (d->curvePointMHz[ci] > 5000u) d->curvePointMHz[ci] = 5000u;
@@ -57,14 +58,14 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
     // range clamp, exactly as normalize_desired_settings_for_ui() does it.  A
     // bare clamp promotes 0 to the 50% floor, which silently turns "this board
     // never told us its power target" into a genuine request to halve it.
-    if (d->hasPowerLimit) {
+    if (d->hasPowerLimit && !d->powerLimitRatio) {
         d->powerLimitPct = clamp_power_limit_pct(
             d->powerLimitPct == 0 ? POWER_LIMIT_DEFAULT_PCT : d->powerLimitPct);
     }
     if (d->hasGpuOffset && (d->gpuOffsetMHz < -1000 || d->gpuOffsetMHz > 1000)) {
         d->gpuOffsetMHz = d->gpuOffsetMHz < -1000 ? -1000 : 1000;
     }
-    if (d->hasMemOffset && (d->memOffsetMHz < -3000 || d->memOffsetMHz > 3000)) {
+    if (d->hasMemOffset && !d->memOffsetPrecise && (d->memOffsetMHz < -3000 || d->memOffsetMHz > 3000)) {
         d->memOffsetMHz = d->memOffsetMHz < -3000 ? -3000 : 3000;
     }
     // lockCi indexes VF_NUM_POINTS-sized arrays downstream.  Preserve the -1

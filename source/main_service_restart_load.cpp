@@ -23,15 +23,19 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out, GpuAdapt
     // across an upgrade from silently dropping the active overclock.
     bool current = version == SERVICE_ACTIVE_DESIRED_VERSION &&
         size == (DWORD)sizeof(ServiceRestartReapplySnapshot);
+    bool schema3 = version == SERVICE_ACTIVE_DESIRED_SCHEMA3_VERSION &&
+        size == (DWORD)sizeof(ServiceRestartReapplySnapshotSchema3);
     bool schema2 = version == SERVICE_ACTIVE_DESIRED_SCHEMA2_VERSION &&
         size == (DWORD)sizeof(ServiceRestartReapplySnapshotSchema2);
     bool schema1 = version == SERVICE_ACTIVE_DESIRED_SCHEMA1_VERSION &&
         size == (DWORD)sizeof(ServiceRestartReapplySnapshotSchema1);
-    if (ok && (magic != SERVICE_ACTIVE_DESIRED_MAGIC || !(current || schema2 || schema1))) {
-        debug_log("restart reapply load: header mismatch magic=%08lX ver=%lu size=%lu (expected v%u/%lu or v%u/%lu or v%u/%lu); clearing old snapshot\n",
+    if (ok && (magic != SERVICE_ACTIVE_DESIRED_MAGIC || !(current || schema3 || schema2 || schema1))) {
+        debug_log("restart reapply load: header mismatch magic=%08lX ver=%lu size=%lu (expected v%u/%lu or v%u/%lu or v%u/%lu or v%u/%lu); clearing old snapshot\n",
             (unsigned long)magic, (unsigned long)version, (unsigned long)size,
             (unsigned)SERVICE_ACTIVE_DESIRED_VERSION,
             (unsigned long)sizeof(ServiceRestartReapplySnapshot),
+            (unsigned)SERVICE_ACTIVE_DESIRED_SCHEMA3_VERSION,
+            (unsigned long)sizeof(ServiceRestartReapplySnapshotSchema3),
             (unsigned)SERVICE_ACTIVE_DESIRED_SCHEMA2_VERSION,
             (unsigned long)sizeof(ServiceRestartReapplySnapshotSchema2),
             (unsigned)SERVICE_ACTIVE_DESIRED_SCHEMA1_VERSION,
@@ -47,6 +51,8 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out, GpuAdapt
         [&](void* dst, size_t count) {
             return ReadFile(h, dst, (DWORD)count, &read, nullptr) && read == count;
         }, &payload);
+    if (schema3)
+        debug_log("restart reapply load: schema-3 snapshot widened (ok=%d)\n", ok ? 1 : 0);
     if (schema2)
         debug_log("restart reapply load: schema-2 snapshot widened (ok=%d)\n", ok ? 1 : 0);
     BYTE trailing = 0;

@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Precise scalar runtime and frozen-record evolution
+
+- Appended exact memory Hz/surface and reduced power-ratio authority, with
+  strict previews and protocol 32. Frozen outgoing daemon/restart records
+  retain historical bytes and widen without inventing precise intent.
+- Scoped Apply resolves scalars exactly, preserves outgoing memory-surface
+  cleanup and retires selected ownership. Legacy profile transitions after
+  precise ownership use the scoped compiler; matching compares exact intent.
+- Windows preflight and the extracted power phase bind a fresh denominator;
+  Linux retains it in the transaction snapshot and verifies it after writes.
+  Fixtures 8220-8263 cover the new contracts and historical records.
+- Local document slots, capture and portable producers remain pending. See
+  [persistence-schema.md](../persistence-schema.md) and
+  [profile-document.md](../profile-document.md). No physical replay claimed.
+
 ## 2026-11-13: Shared exact memory control verification
 
 - Windows strict memory writes now bind the API surface observed by their

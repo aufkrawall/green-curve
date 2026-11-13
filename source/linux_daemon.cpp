@@ -376,7 +376,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 &g_gpu.selectedGpu, g_gpu.adapters, g_gpu.adapterCount);
             DesiredSettings committedDesired{};
             if (!daemon_prepare_apply_ownership(hadPrevious ? &previousDesired : nullptr,
-                    d, &committedDesired, targetErr, sizeof(targetErr))) {
+                    &d, &committedDesired, targetErr, sizeof(targetErr))) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_strlcpy(resp->message, sizeof(resp->message), targetErr);
                 break;

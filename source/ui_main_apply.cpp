@@ -108,7 +108,7 @@ static bool confirm_high_oc_apply(const DesiredSettings* desired,
 // reach this dialog.  Returns false only when the user explicitly declines.
 static bool confirm_unified_memory_write(const DesiredSettings* desired) {
     if (!desired || !desired->hasMemOffset) return true;
-    if (desired->memOffsetMHz == 0) return true;
+    if (desired->memOffsetPrecise ? desired->memOffsetHz == 0 : desired->memOffsetMHz == 0) return true;
     if (!gpu_capability_memory_write_is_risky(&g_app.gpuCapability)) return true;
 
     debug_log("unified-memory gate: memOffset=%d MHz topology=%s -> confirming\n",

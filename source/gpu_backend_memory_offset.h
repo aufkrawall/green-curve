@@ -7,7 +7,7 @@
 
 // Included at the backend's original definition site. Recovery can force a
 // write even when cached stock is the last value from before a failed setter.
-static bool nvapi_set_mem_offset_impl(int offsetkHz, bool forceWrite, bool strictReadback) {
+static bool nvapi_set_mem_offset_impl(int offsetkHz, bool forceWrite, bool strictReadback, gc_u32 requestedSurface = CLOCK_OFFSET_SURFACE_UNSPECIFIED) {
     int nvmlValueMHz = 0;
     if (!memory_offset_effective_mhz_from_khz(offsetkHz, &nvmlValueMHz)) {
         debug_log("memory offset: %d physical kHz is not representable by the NVML surface\n", offsetkHz);
@@ -18,7 +18,7 @@ static bool nvapi_set_mem_offset_impl(int offsetkHz, bool forceWrite, bool stric
         char readDetail[128] = {};
         g_app.readback.memOffset = false;
         nvml_read_clock_offsets(readDetail, sizeof(readDetail));
-        if (!g_app.readback.memOffset) {
+        if (!g_app.readback.memOffset || (requestedSurface && requestedSurface != g_app.memOffsetSurface)) {
             debug_log("memory offset: exact programmed-control readback unavailable; no write\n");
             return false;
         }
@@ -90,7 +90,7 @@ static bool nvapi_set_mem_offset(int offsetkHz, bool forceWrite) {
     return nvapi_set_mem_offset_impl(offsetkHz, forceWrite, false);
 }
 
-static bool nvapi_set_mem_offset_precise(int offsetkHz, bool forceWrite) {
-    return nvapi_set_mem_offset_impl(offsetkHz, forceWrite, true);
+static bool nvapi_set_mem_offset_precise(int offsetkHz, bool forceWrite, gc_u32 surface = CLOCK_OFFSET_SURFACE_UNSPECIFIED) {
+    return nvapi_set_mem_offset_impl(offsetkHz, forceWrite, true, surface);
 }
 #endif

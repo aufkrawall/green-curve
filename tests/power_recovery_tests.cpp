@@ -85,6 +85,7 @@ static BOOL WINAPI fixture_create_process(LPCWSTR, LPWSTR,
 }
 #define CreateProcessW fixture_create_process
 #include "gpu_backend_power.cpp"
+#include "gpu_backend_apply_power.h"
 #undef CreateProcessW
 
 static bool vf_curve_global_gpu_offset_supported() { return true; }
@@ -211,6 +212,23 @@ static int run_precise_ratio_tests() {
         !g_app.powerLimitWriteUncertain || g_app.readback.powerLimit) return 8195;
     initialize();
     if (nvapi_set_power_limit_ratio({249, 250}, false, 260000) || powerWrites) return 8196;
+    // A ratio's truncated preview equals the old 100% display, but its actual
+    // target differs. Execute the production Apply phase, not a copied model.
+    initialize();
+    if (!nvml_read_power_limit()) return 8250;
+    DesiredSettings precise{};
+    desired_power_set_ratio(&precise, {1001, 1000});
+    int successes = 0, failures = 0;
+    bool changed = false, risk = false;
+    apply_power_settings(&precise, false, 250000, successes, failures, changed, risk,
+        [](const char*, ...) {});
+    if (successes != 1 || failures || !changed || risk || powerWrites != 1 ||
+        hardwareCurrentmW != 250250 || g_app.powerLimitWriteUncertain) return 8251;
+    initialize();
+    successes = failures = 0; changed = risk = false;
+    apply_power_settings(&precise, false, 260000, successes, failures, changed, risk,
+        [](const char*, ...) {});
+    if (successes || failures != 1 || !risk || powerWrites) return 8252;
     return 0;
 }
 

@@ -104,6 +104,7 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
     unsigned int powerDefaultmW = 0;
     snapshot->powerValid = linux_read_power_limit_pair(
         g, &snapshot->powerLimitmW, &powerDefaultmW);
+    snapshot->powerDefaultmW = powerDefaultmW;
     g->powerLimitCurrentmW = snapshot->powerLimitmW > 0
         ? (int)snapshot->powerLimitmW : 0;
     g->powerLimitDefaultmW = powerDefaultmW > 0 ? (int)powerDefaultmW : 0;
@@ -279,7 +280,8 @@ static bool linux_power_request_is_inert(const DesiredSettings* d,
         snapshot->powerValid, g->powerLimitDefaultmW,
         (int)snapshot->powerLimitmW) &&
         g->nvml.setPowerLimit != nullptr;
-    return !surfaceAvailable && d->powerLimitPct == POWER_LIMIT_DEFAULT_PCT;
+    const TuningPowerRatio ratio = desired_power_ratio(*d);
+    return !surfaceAvailable && ratio.numerator == ratio.denominator && ratio.numerator > 0;
 }
 
 #include "linux_backend_preflight.h"
@@ -330,20 +332,28 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
         case LINUX_MUTATION_MEM_OFFSET: {
             // DesiredSettings is display MHz; the NVML wire unit is effective
             // MHz (matches Windows, which writes (offsetkHz/1000)*2).
-            int applyEffectiveMHz =
-                nvml_mem_effective_mhz_from_display_mhz(d->memOffsetMHz);
+            int applyEffectiveMHz = nvml_mem_effective_mhz_from_display_mhz(d->memOffsetMHz);
+            if (d->memOffsetPrecise && !memory_offset_effective_mhz_from_hz(d->memOffsetHz, &applyEffectiveMHz)) return false;
             lb_log("offset: apply domain=%u display=%d effective=%d\n",
                    (unsigned int)NVML_CLOCK_MEM, d->memOffsetMHz,
                    applyEffectiveMHz);
-            return nvml_set_clock_offset(g, NVML_CLOCK_MEM, applyEffectiveMHz);
+            return nvml_set_clock_offset(g, NVML_CLOCK_MEM, applyEffectiveMHz,
+                d->memOffsetPrecise ? context->snapshot->memOffsetSurface : (gc_u32)CLOCK_OFFSET_SURFACE_UNSPECIFIED);
         }
         case LINUX_MUTATION_POWER: {
-            if (!nvml_set_power_limit_pct(g, d->powerLimitPct)) return false;
+            if (d->powerLimitRatio ? !nvml_set_power_limit_ratio(g, desired_power_ratio(*d), context->snapshot->powerDefaultmW)
+                    : !nvml_set_power_limit_pct(g, d->powerLimitPct)) return false;
             unsigned int currentmW = 0;
             unsigned int defaultmW = 0;
             bool pairValid = linux_read_power_limit_pair(g, &currentmW, &defaultmW);
             g->powerLimitCurrentmW = currentmW > 0 ? (int)currentmW : 0;
             g->powerLimitDefaultmW = defaultmW > 0 ? (int)defaultmW : 0;
+            if (d->powerLimitRatio) {
+                const TuningPowerRatioResolution target = tuning_power_ratio_resolve(
+                    desired_power_ratio(*d), context->snapshot->powerDefaultmW);
+                pairValid = pairValid && defaultmW == context->snapshot->powerDefaultmW &&
+                    target.exact && currentmW == (unsigned long long)target.resolvedMw;
+            }
             return pairValid;
         }
         case LINUX_MUTATION_CURVE: {
@@ -399,6 +409,12 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
                                         const DesiredSettings* previousIntent,
                                         const DesiredSettings* committedIntent,
                                         char* result, size_t resultSize) {
+    DesiredSettings upgraded{};
+    if (d) {
+        upgraded = *d;
+        service_upgrade_legacy_scalar_scope(previousIntent, &upgraded);
+        d = &upgraded;
+    }
     LinuxHardwareSnapshot snapshot = {};
     char preflight[256] = {};
     // Record what this transaction is LEAVING before any phase runs, so
@@ -415,6 +431,11 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     ServiceScopedApplyPlan scopedPlan{};
     if (d && d->applicationScope != DESIRED_SCOPE_LEGACY) {
         if (!linux_apply_resolve_scope(g, d, previousIntent, &scopedPlan, preflight, sizeof(preflight))) {
+            LinuxMutationResult mutation{};
+            if (result) gc_strlcpy(result, resultSize, preflight);
+            return mutation;
+        }
+        if (!service_bind_scoped_memory_surface(&scopedPlan, snapshot.memOffsetSurface, preflight, sizeof(preflight))) {
             LinuxMutationResult mutation{};
             if (result) gc_strlcpy(result, resultSize, preflight);
             return mutation;

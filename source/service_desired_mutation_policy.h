@@ -76,6 +76,7 @@ static inline void service_project_desired_to_available_domains(
         desired->hasVideoClkOffsetKhz = false;
         desired->videoClkOffsetKhz = 0;
     }
+    desired_scalar_intent_canonicalize(desired);
 }
 
 // Successful sparse Apply operations update only the requested domains of the
@@ -123,10 +124,12 @@ static inline DesiredSettings service_merge_desired_after_mutation(
     if (domains & SERVICE_MUTATION_DOMAIN_MEM_OFFSET) {
         merged.hasMemOffset = requested->hasMemOffset;
         merged.memOffsetMHz = requested->memOffsetMHz;
+        desired_memory_intent_copy(&merged, requested);
     }
     if (domains & SERVICE_MUTATION_DOMAIN_POWER) {
         merged.hasPowerLimit = requested->hasPowerLimit;
         merged.powerLimitPct = requested->powerLimitPct;
+        desired_power_intent_copy(&merged, requested);
     }
     if (domains & SERVICE_MUTATION_DOMAIN_VF_CURVE) {
         for (int i = 0; i < VF_NUM_POINTS; ++i) {

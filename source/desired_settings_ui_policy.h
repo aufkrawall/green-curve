@@ -53,7 +53,7 @@ static inline void normalize_desired_settings_for_ui(DesiredSettings* desired) {
     // Deliberately NOT a 0..100 percent clamp: the power limit is a percentage
     // *of the board default*, and every board worth overclocking allows more
     // than 100% (an RTX 5070 defaults to 250 W with a 300 W ceiling).
-    desired->powerLimitPct = clamp_power_limit_pct(
+    if (!desired->powerLimitRatio) desired->powerLimitPct = clamp_power_limit_pct(
         desired->powerLimitPct == 0 ? 100 : desired->powerLimitPct);
     // A fan duty, unlike the power limit, really is 0..100.
     desired->fanPercent = desired_ui_clamp_fan_percent(
@@ -74,7 +74,11 @@ static inline void normalize_desired_settings_for_ui(DesiredSettings* desired) {
 static inline bool desired_settings_equal(const DesiredSettings* left,
                                           const DesiredSettings* right) {
     if (!left || !right) return left == right;
-    if (left->applicationScope != right->applicationScope) return false;
+    if (left->applicationScope != right->applicationScope ||
+        left->memOffsetPrecise != right->memOffsetPrecise || left->memOffsetHz != right->memOffsetHz ||
+        left->memOffsetSurface != right->memOffsetSurface || left->powerLimitRatio != right->powerLimitRatio ||
+        left->powerRatioNumerator != right->powerRatioNumerator ||
+        left->powerRatioDenominator != right->powerRatioDenominator) return false;
     for (int i = 0; i < VF_NUM_POINTS; ++i) {
         if (left->hasCurvePoint[i] != right->hasCurvePoint[i] ||
             left->curvePointMHz[i] != right->curvePointMHz[i] ||

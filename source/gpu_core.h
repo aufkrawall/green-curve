@@ -500,9 +500,16 @@ struct DesiredSettings {
     gc_bool8 curvePointCaptured[VF_NUM_POINTS];
     gc_u32 applicationScope; // DesiredApplicationScope; independent of reset
     gc_i64 curvePointCapturedOffsetHz[VF_NUM_POINTS];
+    gc_bool8 memOffsetPrecise;
+    gc_bool8 powerLimitRatio;
+    gc_u32 memOffsetSurface; // zero selects a fresh destination surface
+    gc_i64 memOffsetHz;
+    gc_i64 powerRatioNumerator;
+    gc_i64 powerRatioDenominator;
 };
 
 #include "desired_curve_intent.h"
+#include "desired_scalar_intent.h"
 
 static inline void validate_gpu_adapter_info_for_ipc(GpuAdapterInfo* g) {
     if (!g) return;

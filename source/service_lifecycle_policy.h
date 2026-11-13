@@ -68,6 +68,12 @@ static inline bool service_build_profile_transition_request(
     DesiredSettings* requestOut) {
     if (!nextIntent || !requestOut) return false;
     *requestOut = *nextIntent;
+    if (nextIntent->applicationScope == DESIRED_SCOPE_LEGACY && previousIntent &&
+        (previousIntent->memOffsetPrecise || previousIntent->powerLimitRatio)) {
+        requestOut->applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+        requestOut->resetOcBeforeApply = false;
+        return true; // the scoped compiler retains exact cleanup authority
+    }
     if (nextIntent->applicationScope != DESIRED_SCOPE_LEGACY) {
         requestOut->resetOcBeforeApply = false;
         return true; // the shared scoped planner resolves ownership and cleanup
@@ -87,10 +93,12 @@ static inline bool service_build_profile_transition_request(
     if (previousIntent->hasMemOffset && !nextIntent->hasMemOffset) {
         requestOut->hasMemOffset = true;
         requestOut->memOffsetMHz = 0;
+        desired_memory_precision_clear(requestOut);
     }
     if (previousIntent->hasPowerLimit && !nextIntent->hasPowerLimit) {
         requestOut->hasPowerLimit = true;
         requestOut->powerLimitPct = 100;
+        desired_power_precision_clear(requestOut);
     }
     if (previousIntent->hasFan && !nextIntent->hasFan) {
         requestOut->hasFan = true;

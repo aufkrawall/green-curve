@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 #include "service_apply_severity_policy.h"
+#include "gpu_backend_apply_precise_scalar.h"
+#include "gpu_backend_apply_power.h"
 #include "gpu_backend_reset_baseline.cpp"
 
 #include "gpu_backend_apply_ceiling.h"
@@ -36,6 +38,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         return false;
     }
     if (!apply_write_uncertainty_precheck(desired, result, resultSize)) return false;
+    unsigned int precisePowerDefaultMw = 0;
+    gc_u32 preciseMemSurface = 0;
+    if (!apply_precise_scalar_precheck(desired, &precisePowerDefaultMw, &preciseMemSurface, result, resultSize)) return false;
     // Every VF write below measures itself against this, so the apply cannot
     // outrun the budget its client deadline is derived from.
     const ULONGLONG applyStartTickMs = GetTickCount64();
@@ -342,7 +347,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         }
     }
     if (desired->hasMemOffset) {
-        targetMemkHz = mem_driver_khz_from_display_mhz(desired->memOffsetMHz);
+        targetMemkHz = desired->memOffsetPrecise ? (int)(desired->memOffsetHz / 1000)
+            : mem_driver_khz_from_display_mhz(desired->memOffsetMHz);
         shouldApplyMemOffset = apply_plan_mem_offset_write(g_app, targetMemkHz);
         if (g_app.memOffsetRangeKnown &&
             (desired->memOffsetMHz < g_app.memClockOffsetMinMHz || desired->memOffsetMHz > g_app.memClockOffsetMaxMHz)) {
@@ -599,8 +605,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             debug_log("apply mem offset: display=%d MHz driver_kHz=%d nvml_mhz=%d\n",
                 desired->memOffsetMHz,
                 targetMemkHz,
-                (targetMemkHz / 1000) * 2);
-            if (nvapi_set_mem_offset(targetMemkHz)) {
+                targetMemkHz / 500);
+            if (desired->memOffsetPrecise ? nvapi_set_mem_offset_precise(targetMemkHz, false, preciseMemSurface)
+                    : nvapi_set_mem_offset(targetMemkHz)) {
                 successCount++;
                 memApplied = true;
                 debug_log("apply mem offset: accepted by driver\n");
@@ -1295,48 +1302,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     } else if (!desired->hasGpuOffset && curveTouched && failCount == 0) {
         clear_runtime_selective_gpu_offset_request();
     }
-    if (desired->hasPowerLimit && powerTargetWrittenByReset) {
-        // The reset-to-stock phase already put the board on this apply's own
-        // power target instead of passing through the board default first, so
-        // the domain is satisfied before the VF curve was ever raised.  It is
-        // still counted and still refreshes state, exactly as the late write
-        // used to -- only the timing moved.
-        successCount++;
-        powerChanged = true;
-        debug_log("apply power limit: %d%% already established by the reset phase"
-                  " (before the curve write), no second write\n",
-            desired->powerLimitPct);
-    } else if (desired->hasPowerLimit) {
-        int currentPowerPct = g_app.powerLimitPct;
-        const bool forcePowerWrite = g_app.powerLimitWriteUncertain;
-        if (forcePowerWrite || desired->powerLimitPct != currentPowerPct) {
-            if (desired->powerLimitPct != clamp_power_limit_pct(desired->powerLimitPct)) {
-                append_failure("Power limit %d%% outside safe range %d..%d%%", desired->powerLimitPct, POWER_LIMIT_MIN_PCT, POWER_LIMIT_MAX_PCT);
-                failCount++;
-                partialApplyRisk = true;
-            } else if (!forcePowerWrite && !power_limit_surface_available(
-                           g_app.readback.powerLimit, g_app.powerLimitDefaultmW, g_app.powerLimitCurrentmW)) {
-                // A real request for a target this board has no surface for.
-                // It fails, loudly and by name — the silent-refusal path is the
-                // one this domain was getting wrong, not the refusal itself.
-                append_failure("Power limit %d%% cannot be set: this GPU's driver does not"
-                               " report a power target (constraints %d..%d mW)",
-                    desired->powerLimitPct, g_app.powerLimitMinmW, g_app.powerLimitMaxmW);
-                failCount++;
-                partialApplyRisk = true;
-            } else {
-                powerChanged = true;
-                set_last_apply_phase("apply: power limit write");
-                if (nvapi_set_power_limit(desired->powerLimitPct, forcePowerWrite))
-                    successCount++;
-                else {
-                    failCount++;
-                    partialApplyRisk = true;
-                    append_failure("Power limit %d%% was not accepted by the driver", desired->powerLimitPct);
-                }
-            }
-        }
-    }
+    apply_power_settings(desired, powerTargetWrittenByReset, precisePowerDefaultMw,
+        successCount, failCount, powerChanged, partialApplyRisk, append_failure);
     bool fanChanged = false;
     // Fan request validity was checked before any writes.  The helper is void:
     // attempted fan writes contribute only to the same core success/failure

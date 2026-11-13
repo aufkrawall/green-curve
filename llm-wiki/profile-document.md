@@ -94,8 +94,10 @@ Schema migration can preserve this intent, but IPC captured replay remains
 explicitly disabled until document/editor persistence is connected. Explicit
 runtime scopes now use the transition compiler below. The Windows write interface requires exact physical kHz; the Linux
 raw control surface now supports its exact integer-Hz grid as described below.
-Precise scalar/power runtime intent remains later work; the exact power backend
-below establishes its destination contract first.
+Runtime schema 4 now carries exact memory Hz/surface and rational power intent,
+with scoped merges, cleanup, restart migration and backend consumers. See
+[persistence-schema.md](persistence-schema.md). Document/local-slot producers
+and precise graphics/absolute-frequency evolution remain pending.
 
 Fixtures 8040-8060 and the production Windows target/verify fixture cover zero,
 negative offsets, preview/global-offset independence, strict readback, merge,
@@ -122,7 +124,8 @@ Windows precise and legacy setters share the selected-GPU writer and its
 uncertainty tracking. The precise entry point does not round for the trusted
 CLI fallback; legacy percentage recovery retains its established behavior.
 Linux percentage requests now use the exact engine and preflight board bounds
-before any transaction writes. Ratio IPC/editor producers remain pending.
+before any transaction writes. Protocol 32 accepts precise ratios with explicit
+scopes; document/editor producers remain pending.
 
 Fixtures 8170-8199 cover exact 249/250, partial reads, changing defaults/bounds,
 failed or rounded writes, unavailable surfaces, CLI grid refusal, forced repair,
@@ -259,11 +262,10 @@ cases 8070-8086 and the production Linux rollback fixture cover these contracts.
 
 ## Open questions / stale-risk
 
-- **No runtime/IPC/disk consumer yet.** This type is exercised only by its
-  own pure tests. The schema migration that lets the live service/GUI/TUI
-  actually build, persist and transmit a `ProfileDocument` is separate,
-  later work; until it lands, nothing here changes observed product
-  behavior.
+- **No authoring-document producer yet.** Runtime fields/backends implement
+  captured points, explicit scopes and exact memory/power intent. GUI/TUI,
+  local-slot and portable producers still do not build or consume a
+  `ProfileDocument`; that authoring pipeline remains pending.
 - **Graphics-offset exclusion identity is simplified.** `ProfileGraphicsOffset::excludeLowCount`
   is a count, matching the live runtime's `gpuOffsetExcludeLowCount`
   exactly, not yet the per-topology-identity exclusion set the plan's §5.4/§9.1
@@ -275,9 +277,8 @@ cases 8070-8086 and the production Linux rollback fixture cover these contracts.
   recognition evidence (anchor voltage, plateau, tolerance, tail count) a
   flatten/pin capture will need is deferred until that capture work exists,
   to avoid guessing its shape now.
-- **No codec.** The portable `.gcprofile` format, its bounded parser, legacy
-  adapters and destination mapping are unrelated, later work; this type is
-  deliberately shaped to make that codec straightforward (see the §9.1
-  section/key table it mirrors), not to replace it.
+- **No codec.** The portable `.gcprofile` format, bounded parser, legacy
+  adapters and destination mapping remain pending. The document will carry
+  their durable intent independently of live destination observations.
 
 Last verified: 2026-11-13.

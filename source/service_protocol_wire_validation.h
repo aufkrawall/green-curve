@@ -53,7 +53,7 @@ static inline bool service_wire_string_is_log_safe(
 
 static inline bool service_desired_bool_fields_valid(
     const DesiredSettings* desired) {
-    if (!desired || !desired_curve_intent_valid(desired)) return false;
+    if (!desired || !desired_curve_intent_valid(desired) || !desired_scalar_intent_valid(desired)) return false;
     if (!desired_application_scope_valid(desired->applicationScope)) return false;
     for (int i = 0; i < VF_NUM_POINTS; ++i) {
         if (desired->hasCurvePoint[i] > 1) return false;
@@ -106,8 +106,8 @@ static inline bool service_scoped_values_valid(const DesiredSettings& d) {
     }
     if (d.hasGpuOffset && (d.gpuOffsetMHz < -1000 || d.gpuOffsetMHz > 1000 ||
         d.gpuOffsetExcludeLowCount < 0 || d.gpuOffsetExcludeLowCount > VF_NUM_POINTS)) return false;
-    if (d.hasMemOffset && (d.memOffsetMHz < -3000 || d.memOffsetMHz > 3000)) return false;
-    if (d.hasPowerLimit && (d.powerLimitPct < POWER_LIMIT_MIN_PCT || d.powerLimitPct > POWER_LIMIT_MAX_PCT)) return false;
+    if (d.hasMemOffset && !d.memOffsetPrecise && (d.memOffsetMHz < -3000 || d.memOffsetMHz > 3000)) return false;
+    if (d.hasPowerLimit && !d.powerLimitRatio && (d.powerLimitPct < POWER_LIMIT_MIN_PCT || d.powerLimitPct > POWER_LIMIT_MAX_PCT)) return false;
     if (d.hasLock && (d.lockMode < LOCK_MODE_NONE || d.lockMode > LOCK_MODE_HARD ||
         d.lockMHz > 5000 || (d.lockMode != LOCK_MODE_NONE &&
         (d.lockCi < 0 || d.lockCi >= VF_NUM_POINTS || !d.lockMHz)))) return false;

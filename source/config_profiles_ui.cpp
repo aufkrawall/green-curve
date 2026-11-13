@@ -439,10 +439,12 @@ static void merge_desired_settings(DesiredSettings* base, const DesiredSettings*
     if (override->hasMemOffset) {
         base->hasMemOffset = true;
         base->memOffsetMHz = override->memOffsetMHz;
+        desired_memory_intent_copy(base, override);
     }
     if (override->hasPowerLimit) {
         base->hasPowerLimit = true;
         base->powerLimitPct = override->powerLimitPct;
+        desired_power_intent_copy(base, override);
     }
     if (override->hasXbarOffsetKhz) {
         base->hasXbarOffsetKhz = true;

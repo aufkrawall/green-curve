@@ -35,15 +35,15 @@ Curves are checked before anything is written, low-voltage curve points become e
 
 - **Dialog text copying:** pressing Ctrl+C on any confirmation, warning, or error dialog copies the complete message box contents to the clipboard.
 - **Curve points below 700 mV:** writable low-voltage points are now listed in the editor and graph; the driver's fixed clock floor below 700 mV stays hidden.
-- **Prepare compatible curve:** when earlier points rise above a lock, Apply offers to lower them in the editor for review instead of failing; nothing is applied until you press Apply again.
+- **Prepare compatible curve:** Apply can offer to lower conflicting earlier points in the editor; review them before applying again.
 
 ### Improved
 
-- **Curve checks before Apply:** a lock that conflicts with earlier points, an unreachable target or tail, or a fixed floor point is refused before any setting changes, naming the voltage, clock and permitted range.
-- **Saving over another tool's curve:** Save now says when the GPU's current curve was not set by Green Curve and is not part of the slot.
-- **Linux profile switching:** switching to a new profile now clears every leftover raw curve point from the previous one first, matching Windows, and a flatten or clock lock is checked against the resulting frequency after Apply, not only against whether the write itself succeeded.
+- **Curve checks before Apply:** proven prefix, target, tail and fixed-floor conflicts are refused before tuning changes, with voltage, clock and range details.
+- **Saving over another tool's curve:** Save identifies a curve that Green Curve does not own and the slot omits.
+- **Linux profile switching:** leftover curve points are cleared first, matching Windows; flatten and lock verification checks the resulting frequency after Apply.
 - **Linux memory clocks:** curve-only changes preserve memory tuning and work without memory controls; recovery restores the prior curve if baseline preparation fails.
-- **Profile matching:** offset intent is compared directly, so temperature-dependent clock previews do not change which tuning matches the applied profile.
+- **Profile matching:** exact offsets and power ratios are compared directly, keeping rounded or temperature-dependent previews from changing the match.
 
 ### Fixed
 

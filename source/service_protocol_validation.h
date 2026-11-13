@@ -64,8 +64,13 @@ static inline const char* service_request_reject_reason(
         return "control character in target GPU name";
     if (!service_gpu_bool_fields_valid(&r->targetGpu))
         return "non-boolean target GPU flags";
+    if (!desired_scalar_intent_valid(&r->desired))
+        return "invalid precise scalar intent";
     if (!service_desired_bool_fields_valid(&r->desired))
         return "non-boolean desired settings flags";
+    if ((r->desired.memOffsetPrecise || r->desired.powerLimitRatio) &&
+        r->desired.applicationScope == DESIRED_SCOPE_LEGACY)
+        return "precise scalar intent requires an explicit application scope";
     // The layout can preserve captured intent before a client can request
     // replay. Never let an unimplemented point kind become a silent no-op.
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
@@ -503,7 +508,10 @@ static inline bool service_desired_settings_is_zero(
         !service_scalar_array_is_zero(desired.curvePointCaptured) ||
         !service_scalar_array_is_zero(desired.curvePointCapturedOffsetHz))
         return false;
-    return desired.applicationScope == 0 && desired.hasLock == 0 && desired.lockCi == 0 &&
+    return desired.memOffsetPrecise == 0 && desired.powerLimitRatio == 0 &&
+        desired.memOffsetSurface == 0 && desired.memOffsetHz == 0 &&
+        desired.powerRatioNumerator == 0 && desired.powerRatioDenominator == 0 &&
+        desired.applicationScope == 0 && desired.hasLock == 0 && desired.lockCi == 0 &&
         desired.lockMHz == 0 && desired.lockMode == 0 &&
         desired.lockTracksAnchor == 0 && desired.hasGpuOffset == 0 &&
         desired.gpuOffsetMHz == 0 && desired.gpuOffsetExcludeLowCount == 0 &&

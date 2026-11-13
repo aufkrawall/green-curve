@@ -72,8 +72,10 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
         set_message(detail, detailSize, "memory offset ownership differs profile=%d active=%d", profile->hasMemOffset ? 1 : 0, active->hasMemOffset ? 1 : 0);
         return false;
     }
-    if (profile->hasMemOffset && profile->memOffsetMHz != active->memOffsetMHz) {
-        set_message(detail, detailSize, "memory offset differs profile=%d active=%d", profile->memOffsetMHz, active->memOffsetMHz);
+    if (!desired_memory_intent_matches(*profile, *active)) {
+        set_message(detail, detailSize, "memory control differs profile=%lld Hz/surface%u active=%lld Hz/surface%u",
+            desired_memory_hz(*profile), (unsigned)(profile->memOffsetPrecise ? profile->memOffsetSurface : 0),
+            desired_memory_hz(*active), (unsigned)(active->memOffsetPrecise ? active->memOffsetSurface : 0));
         return false;
     }
 
@@ -81,8 +83,10 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
         set_message(detail, detailSize, "power ownership differs profile=%d active=%d", profile->hasPowerLimit ? 1 : 0, active->hasPowerLimit ? 1 : 0);
         return false;
     }
-    if (profile->hasPowerLimit && profile->powerLimitPct != active->powerLimitPct) {
-        set_message(detail, detailSize, "power differs profile=%d active=%d", profile->powerLimitPct, active->powerLimitPct);
+    if (!desired_power_intent_matches(*profile, *active)) {
+        const TuningPowerRatio p = desired_power_ratio(*profile), a = desired_power_ratio(*active);
+        set_message(detail, detailSize, "power ratio differs profile=%lld/%lld active=%lld/%lld",
+            p.numerator, p.denominator, a.numerator, a.denominator);
         return false;
     }
 

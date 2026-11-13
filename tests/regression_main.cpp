@@ -1033,6 +1033,7 @@ int run_scoped_apply_tests();
 int run_linux_scope_preflight_tests();
 int run_linux_clock_offset_tests();
 int run_power_ratio_control_tests();
+int run_precise_scalar_schema_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2686,6 +2687,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int preflightFailure = run_linux_scope_preflight_tests()) return preflightFailure;
     if (int offsetFailure = run_linux_clock_offset_tests()) return offsetFailure;
     if (int ratioFailure = run_power_ratio_control_tests()) return ratioFailure;
+    if (int scalarSchemaFailure = run_precise_scalar_schema_tests()) {
+        fprintf(stderr, "precise scalar schema regression failed: %d\n", scalarSchemaFailure);
+        return scalarSchemaFailure;
+    }
     if (int scopeFailure = run_scoped_apply_tests()) {
         fprintf(stderr, "scoped Apply regression failed: %d\n", scopeFailure);
         return scopeFailure;
@@ -4466,16 +4471,16 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 31) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 32) return 81;
         // These are release gates, not incidental layout observations. A field
         // addition that changes a fixed-size IPC structure must bump the wire
         // version; otherwise mixed old/new peers pass the header handshake and
         // then disagree on the number of body bytes to read.
-        if (sizeof(ServiceRequest) != 2712 ||
+        if (sizeof(ServiceRequest) != 2744 ||
             sizeof(ControlState) != 188 ||
-            sizeof(DesiredSettings) != 2120 ||
+            sizeof(DesiredSettings) != 2152 ||
             sizeof(ServiceSnapshot) != 4440 ||
-            sizeof(ServiceResponse) != 9872) return 4521;
+            sizeof(ServiceResponse) != 9936) return 4521;
         if (offsetof(ServiceRequest, expectedServiceInstanceId) <=
             offsetof(ServiceRequest, operationId) ||
             offsetof(ServiceResponse, state) <=

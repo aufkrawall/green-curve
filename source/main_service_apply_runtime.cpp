@@ -80,6 +80,10 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
             return false;
         }
     }
+    sanitizedRequest = *desired;
+    service_upgrade_legacy_scalar_scope(g_serviceHasActiveDesired ? &g_serviceActiveDesired : nullptr,
+        &sanitizedRequest, replaceActiveIntent);
+    desired = &sanitizedRequest;
     ServiceScopedApplyPlan scopedPlan{};
     if (desired->applicationScope != DESIRED_SCOPE_LEGACY) {
         const bool curveWork = service_scoped_graphics_work(
@@ -94,6 +98,11 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         if (!service_build_scoped_apply_plan(g_serviceHasActiveDesired ? &g_serviceActiveDesired : nullptr,
                 *desired, g_app.curve, g_app.vfFloorBinding.floor,
                 vf_curve_global_gpu_offset_supported(), &scopedPlan, result, resultSize)) return false;
+        if (scopedPlan.hardware.memOffsetPrecise) {
+            nvml_read_clock_offsets(result, resultSize);
+            if (!g_app.readback.memOffset || !service_bind_scoped_memory_surface(
+                    &scopedPlan, g_app.memOffsetSurface, result, resultSize)) return false;
+        }
         debug_log("apply-scope: scope=%lu cleanupPoints=%d retainedLock=%d domains=0x%lX\n",
             desired->applicationScope, scopedPlan.cleanupPoints, scopedPlan.retainedLock ? 1 : 0,
             service_desired_mutation_domains(&scopedPlan.hardware));

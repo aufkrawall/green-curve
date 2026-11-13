@@ -171,10 +171,10 @@ def check_all(ctx, require_text, forbid_text):
     require_text(_p(ctx, "main_gpu_rollback.h"),
                  "nvapi_set_power_limit(100, true)",
                  "power rollback uses the forced verified route")
-    require_text(_p(ctx, "gpu_backend_apply.cpp"),
+    require_text(_p(ctx, "gpu_backend_apply_power.h"),
                  "const bool forcePowerWrite = g_app.powerLimitWriteUncertain;",
                  "Apply carries uncertain power intent into the forced write")
-    require_text(_p(ctx, "gpu_backend_apply.cpp"),
+    require_text(_p(ctx, "gpu_backend_apply_power.h"),
                  "!forcePowerWrite && !power_limit_surface_available(",
                  "an uncertain power repair is not blocked by missing fresh readback")
     require_text(_p(ctx, "gpu_backend_apply_failure.h"),
@@ -189,6 +189,12 @@ def check_all(ctx, require_text, forbid_text):
     require_text(_p(ctx, "gpu_backend_apply.cpp"),
                  "shouldApplyMemOffset = apply_plan_mem_offset_write(g_app, targetMemkHz);",
                  "the memory Apply plan goes through the evidence-aware helper")
+    require_text(_p(ctx, "gpu_backend_apply.cpp"),
+                 "nvapi_set_mem_offset_precise(targetMemkHz, false, preciseMemSurface)",
+                 "precise memory intent uses its preflighted control surface")
+    require_text(_p(ctx, "gpu_backend_apply.cpp"),
+                 "apply_power_settings(desired, powerTargetWrittenByReset, precisePowerDefaultMw,",
+                 "the actual Apply runs the shared exact-or-legacy power phase")
     require_text(_p(ctx, "gpu_backend_apply_failure.h"),
                  "mem_offset_write_required(app.memOffsetWriteUncertain,\n"
                  "        app.readback.memOffset, app.memClockOffsetkHz, targetMemkHz)",

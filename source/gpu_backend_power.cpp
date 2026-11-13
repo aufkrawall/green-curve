@@ -215,23 +215,24 @@ static bool power_limit_write_target_mw(unsigned int targetmW,
     return power_limit_verify_write("nvidia-smi", targetmW);
 }
 
+static PowerRatioSurface power_limit_read_ratio_surface() {
+    PowerRatioSurface s{};
+    if (!nvml_ensure_ready()) return s;
+    s = power_ratio_read_nvml(g_nvml_api, g_app.nvmlDevice);
+    if (!s.writable) {
+        WCHAR path[MAX_PATH]{};
+        char busId[32]{};
+        s.writable = find_trusted_nvidia_smi_path_w(path, ARRAY_COUNT(path)) &&
+            power_limit_selected_bus_id(busId, sizeof(busId));
+        s.gridMw = s.writable ? 1000u : 0u;
+    }
+    return s;
+}
+
 // Exact intent never rounds to a percentage or to the CLI's whole watts.
 static bool nvapi_set_power_limit_ratio(TuningPowerRatio ratio, bool forceWrite = false,
     unsigned int expectedDefaultMw = 0) {
-    const auto read = [&] {
-        PowerRatioSurface s{};
-        if (!nvml_ensure_ready()) return s;
-        s = power_ratio_read_nvml(g_nvml_api, g_app.nvmlDevice);
-        if (!s.writable) {
-            WCHAR path[MAX_PATH]{};
-            char busId[32]{};
-            s.writable = find_trusted_nvidia_smi_path_w(path, ARRAY_COUNT(path)) &&
-                power_limit_selected_bus_id(busId, sizeof(busId));
-            s.gridMw = s.writable ? 1000u : 0u;
-        }
-        return s;
-    };
-    const PowerRatioControlResult r = power_ratio_control_apply(ratio, read,
+    const PowerRatioControlResult r = power_ratio_control_apply(ratio, power_limit_read_ratio_surface,
         [&](unsigned int target) {
             bool attempted = false;
             const bool accepted = power_limit_write_target_mw(target, false, &attempted);
