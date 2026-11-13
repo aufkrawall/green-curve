@@ -652,6 +652,37 @@ The focused fixtures execute the production Linux factory and rebuild helper
 without a driver. Removing the metadata assignment fails at 8800. Coverage also
 checks output preservation, signed remainders, missing samples, exclusions,
 lock strategies, fixed floors, unknown-family fallback, deferred versus proven
-range failure, exact tolerance edges and zero-write failed rebuilds. The Windows
-authoring adapter, runtime replay and transition review remain pending; existing
-runtime authoring gates stay closed.
+range failure, exact tolerance edges and zero-write failed rebuilds. Runtime
+replay remains gated pending route and transition integration on both platforms.
+
+## Windows authoring targets and corrections (2026-11-13)
+
+Source anchors: `source/windows_curve_authoring_targets.h`,
+`source/gpu_backend_apply_authoring.h`, `source/gpu_backend_apply.cpp`,
+`source/gpu_backend_apply_diagnostics.h`, `tests/windows_vf_exact_tests.cpp`
+(8810-8827), `tools/apply_ceiling_gates.py`.
+
+Windows consumes shared exact targets for bound authoring requests. Frozen
+paired samples determine the initial offsets before a memory write. Controls
+outside the authored set can be transported across that write without gaining
+ownership; corrections retain their original raw preimage. The metadata keeps
+physical absolute targets, captured controls, preserved controls and baseline
+dependence separate. Full voltage bindings accompany every exact write.
+
+Corrections re-evaluate feasibility and compile over fresh paired samples under
+the existing pass/time budget. They reject changed write shape, fixed-control
+authority or voltage binding, and stop when offsets no longer change. Captured
+offsets and owned zero compare exactly; absolute frequency targets retain the
+established quantization tolerance without display rounding. Flatten prefix
+checks use physical intent over the latest baseline. Hard-pin tail frequency
+remains the pin's responsibility; preserved tail offsets still verify exactly.
+Exact boost tallies omit transported unowned controls. Legacy requests retain
+their existing correction policy and diagnostics.
+
+Fake-driver fixtures execute the production builder, exact writer and repeated
+correction path. They check signed half-kHz offsets, owned zero, independent
+base shifts, preservation after a memory clobber, exact tolerance edges,
+unwritable preservation, stale samples, changed topology and fixed-point exit.
+Replacing the saved unowned preimage with current controls fails case 8813.
+Replay gates remain closed: named graphics routing, transition protection,
+fresh-control preconditions and client authoring integration are still pending.

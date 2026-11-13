@@ -7,6 +7,8 @@
 #include "curve_preservation_precision.h"
 #include "vf_exact_control_write.h"
 #include "apply_correction_budget_policy.h"
+#include "apply_correction_policy.h"
+#include "curve_feasibility_message.h"
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
@@ -21,6 +23,8 @@ struct App {
     VFCurvePoint curve[VF_NUM_POINTS]{};
     int freqOffsets[VF_NUM_POINTS]{};
     gc_i64 freqOffsetsHz[VF_NUM_POINTS]{};
+    gc_i64 curveFrequencyHz[VF_NUM_POINTS]{};
+    bool vfFrequenciesHzValid = true;
     bool vfOffsetsHzValid = true, loaded = true;
 } g_app;
 struct Driver {
@@ -28,6 +32,9 @@ struct Driver {
     int gets = 0, sets = 0, rebuilds = 0;
     bool failRead = false, failSet = false, ignore = false, one = false, metadataBad = false;
     bool exactAvailable = true, untouched = true;
+    bool modelFrequency = false;
+    gc_i64 baseHz[VF_NUM_POINTS]{};
+    gc_i64 shiftAfterWriteHz = 0;
 } driver;
 static void debug_log(const char*, ...) {}
 static void set_last_apply_phase(const char*) {}
@@ -38,7 +45,15 @@ static bool apply_plan_mem_offset_write(const App&, int) { return true; }
 static VfOffsetRange vf_offset_range_current() { return vf_offset_range_fallback(); }
 static ULONGLONG GetTickCount64() { return 50; }
 static void rebuild_visible_map() { ++driver.rebuilds; }
-static bool nvapi_read_curve() { return true; }
+static bool nvapi_read_curve() {
+    if (driver.failRead) return false;
+    if (driver.modelFrequency) for (int i = 0; i < 8; ++i) {
+        gc_i64 hz = 0; vf_graphics_offset_hz(g_app.vfBackend, driver.raw[i], &hz);
+        g_app.curveFrequencyHz[i] = driver.baseHz[i] + hz;
+        g_app.curve[i].freq_kHz = (unsigned int)(g_app.curveFrequencyHz[i] / 1000);
+    }
+    return true;
+}
 static bool nvapi_read_offsets() {
     if (driver.failRead) return false;
     g_app.vfOffsetsHzValid = driver.exactAvailable;
@@ -68,6 +83,7 @@ static int set(void*, void* data) {
         if (driver.ignore || (driver.one && changed)) continue;
         driver.raw[i] = value; changed = true;
     }
+    driver.baseHz[2] += driver.shiftAfterWriteHz; driver.shiftAfterWriteHz = 0;
     return 0;
 }
 static void* nvapi_qi(unsigned int id) {
@@ -76,6 +92,24 @@ static void* nvapi_qi(unsigned int id) {
     return nullptr;
 }
 #include "gpu_backend_exact_curve.h"
+static void apply_curve_plan_log_line(const char*) {}
+static CurvePlanInput apply_curve_plan_input(const DesiredSettings* d, LockMode mode,
+    const VFCurvePoint* curve, const int* offsets, CurvePlanEvidence evidence,
+    ApplyLockPretailProvenance provenance, bool stock, int, int* componentKHz, gc_i64* componentHz) {
+    CurvePlanInput in{};
+    in.curve = curve; in.programmedOffsetsKHz = offsets; in.desired = d;
+    in.floor = vf_floor_topology_compute(curve, offsets, VF_NUM_POINTS);
+    in.evidence = evidence; in.lockMode = mode; in.range = {-1000000, 1000000, CURVE_PLAN_RANGE_POLICY_FALLBACK};
+    in.tailStrategy = mode == LOCK_MODE_HARD ? CURVE_PLAN_TAIL_ANCHOR_ONLY : CURVE_PLAN_TAIL_UNIFORM_MIN_OFFSET;
+    in.provenanceMode = provenance; in.unownedAtStock = stock; in.prefixAppliesToHardLock = true;
+    in.gpuComponentKHz = componentKHz; in.gpuComponentHz = componentHz;
+    in.offsetGridHz = vf_graphics_offset_grid_hz(g_app.vfBackend); in.lockGridHz = 1000000;
+    return in;
+}
+static bool read_live_curve_snapshot_settled(int, int, bool* offsetsOk) {
+    *offsetsOk = nvapi_read_offsets(); return *offsetsOk && nvapi_read_curve();
+}
+#include "gpu_backend_apply_authoring.h"
 static void initialize() {
     driver = {}; g_app = {}; g_app.gpuHandle = &driver;
     for (int i = 0; i < 8; ++i) {
@@ -85,9 +119,102 @@ static void initialize() {
     driver.raw[7] = 30001;
     nvapi_read_offsets();
 }
+static int windows_authoring_cases() {
+    initialize(); driver.modelFrequency = true;
+    for (int i = 0; i < 8; ++i) driver.baseHz[i] = 600000500LL + i * 100000000LL;
+    nvapi_read_curve();
+    DesiredSettings d{}; d.authoring.topologyBound = 1; d.authoring.topologyCount = 8;
+    for (int i = 0; i < 8; ++i) d.authoring.voltageUv[i] = g_app.curve[i].volt_uV;
+    d.curvePointCaptured[0] = d.curvePointCaptured[1] = d.curvePointCaptured[3] = 1;
+    d.curvePointCapturedOffsetHz[0] = 500; d.curvePointCapturedOffsetHz[1] = -500;
+    d.hasCurvePoint[2] = 1; d.curvePointMHz[2] = 820;
+    d.authoring.pointFrequencyPrecise[2] = 1; d.authoring.pointFrequencyHz[2] = 820001000;
+    CurveAuthoringTargets targets; char why[256]{};
+    if (!apply_build_authoring_curve_targets(d, LOCK_MODE_NONE, false, true, g_app.curve,
+            g_app.freqOffsets, g_app.curveFrequencyHz, g_app.freqOffsetsHz, CURVE_PLAN_EVIDENCE_TRANSACTION_BASELINE,
+            nullptr, targets, why, sizeof(why)) || targets.offsetHz[2] != 20000500 ||
+        !targets.preservedMask[7] || targets.offsetHz[7] != 15000500 || targets.capturedMask[7]) return 8810;
+    const auto original = targets;
+    driver.raw[7] = 0; // The memory setter cleared an unowned remainder.
+    if (!apply_curve_offsets_exact_hz(targets.offsetHz, targets.mask, 2, 0, targets.voltageUv) ||
+        !apply_verify_authoring_curve_targets(targets, LOCK_MODE_NONE, -1, why, sizeof(why)) ||
+        driver.raw[0] != 1 || driver.raw[1] != -1 || driver.raw[7] != 30001) return 8811;
+    driver.baseHz[2] += 20000000; nvapi_read_curve();
+    if (apply_verify_authoring_curve_targets(targets, LOCK_MODE_NONE, -1, why, sizeof(why))) return 8812;
+    // A second shift requires another correction. Every pass keeps captured
+    // raw controls and the original unowned preimage, with no MHz rewrite.
+    driver.raw[7] = 0; nvapi_read_offsets(); nvapi_read_curve(); driver.shiftAfterWriteHz = 10000000;
+    if (!apply_correct_authoring_curve_targets(d, LOCK_MODE_NONE, false, true, targets, 0, 0, why, sizeof(why)) ||
+        driver.raw[0] != 1 || driver.raw[1] != -1 || driver.raw[2] != -19999 || driver.raw[7] != 30001 ||
+        targets.absoluteHz[2] != 820001000 || targets.offsetHz[7] != original.offsetHz[7] ||
+        d.authoring.pointFrequencyHz[2] != 820001000 || !windows_authoring_curve_shape_matches(original, targets)) return 8813;
+    auto tally = apply_authoring_curve_boost_tally(targets, LOCK_MODE_NONE, -1);
+    if (tally.applied != 4 || tally.failed || tally.userApplied != 3) return 8820;
+    g_app.freqOffsetsHz[0] = 0;
+    tally = apply_authoring_curve_boost_tally(targets, LOCK_MODE_NONE, -1);
+    if (tally.applied != 3 || tally.failed != 1 || tally.firstFailedCi != 0 ||
+        apply_verify_authoring_curve_targets(targets, LOCK_MODE_NONE, -1, why, sizeof(why))) return 8821;
+    g_app.freqOffsetsHz[0] = 500;
+    // Exact tolerance boundaries cannot gain half a kHz by display rounding.
+    driver.baseHz[2] += 8000000; nvapi_read_curve();
+    if (!apply_verify_authoring_curve_targets(targets, LOCK_MODE_NONE, -1, why, sizeof(why))) return 8814;
+    driver.baseHz[2] += 500; nvapi_read_curve();
+    if (apply_verify_authoring_curve_targets(targets, LOCK_MODE_NONE, -1, why, sizeof(why))) return 8815;
+    const int writes = driver.sets;
+    ++g_app.curve[6].volt_uV;
+    if (apply_correct_authoring_curve_targets(d, LOCK_MODE_NONE, false, true, targets, 0, 0, why, sizeof(why)) ||
+        driver.sets != writes) return 8816;
+    --g_app.curve[6].volt_uV; g_app.vfFrequenciesHzValid = false;
+    if (apply_correct_authoring_curve_targets(d, LOCK_MODE_NONE, false, true, targets, 0, 0, why, sizeof(why)) ||
+        driver.sets != writes) return 8817;
+    g_app.vfFrequenciesHzValid = true; g_app.vfOffsetsHzValid = false;
+    if (apply_verify_authoring_curve_targets(targets, LOCK_MODE_NONE, -1, why, sizeof(why))) return 8818;
+    g_app.vfOffsetsHzValid = true; ++d.authoring.pointFrequencyHz[2];
+    if (apply_build_authoring_curve_targets(d, LOCK_MODE_NONE, false, true, g_app.curve, g_app.freqOffsets,
+            g_app.curveFrequencyHz, g_app.freqOffsetsHz, CURVE_PLAN_EVIDENCE_LIVE_SHAPED_ESTIMATE,
+            &original, targets, why, sizeof(why)) || driver.sets != writes) return 8819;
+    --d.authoring.pointFrequencyHz[2];
+    CurveAuthoringTargets partial;
+    if (!apply_build_authoring_curve_targets(d, LOCK_MODE_NONE, false, false, g_app.curve, g_app.freqOffsets,
+            g_app.curveFrequencyHz, g_app.freqOffsetsHz, CURVE_PLAN_EVIDENCE_LIVE_SHAPED_ESTIMATE,
+            nullptr, partial, why, sizeof(why)) || partial.pointCount != 4 || partial.mask[7]) return 8822;
+    const auto saved = partial;
+    g_app.vfMask[0] &= (unsigned char)~128u;
+    if (apply_build_authoring_curve_targets(d, LOCK_MODE_NONE, false, true, g_app.curve, g_app.freqOffsets,
+            g_app.curveFrequencyHz, g_app.freqOffsetsHz, CURVE_PLAN_EVIDENCE_LIVE_SHAPED_ESTIMATE,
+            nullptr, partial, why, sizeof(why)) || memcmp(&saved, &partial, sizeof(saved)) ||
+        driver.sets != writes) return 8823;
+    g_app.vfMask[0] |= 128;
+    // A raw offset before a flatten is judged over its current physical
+    // baseline. A sub-kHz prefix conflict cannot vanish in MHz projections.
+    auto flat = partial; flat.absoluteMask[3] = true; flat.absoluteHz[3] = 900000000;
+    g_app.curveFrequencyHz[0] = 900000500; g_app.curve[0].freq_kHz = 900000;
+    if (windows_verify_authoring_curve_targets(g_app.curve, g_app.curveFrequencyHz, g_app.freqOffsetsHz,
+            true, true, flat, LOCK_MODE_FLATTEN, 3, why, sizeof(why))) return 8824;
+    driver.baseHz[2] -= 500; nvapi_read_curve();
+    if (!windows_verify_authoring_curve_targets(g_app.curve, g_app.curveFrequencyHz, g_app.freqOffsetsHz,
+            true, true, flat, LOCK_MODE_FLATTEN, 3, why, sizeof(why))) return 8825;
+    // A hard pin owns its frequency tail, but preserved tail controls remain
+    // exact raw authority even where ordinary VF targets are skipped.
+    auto hard = original; hard.preservedMask[7] = true;
+    g_app.freqOffsetsHz[7] = 0;
+    if (windows_verify_authoring_curve_targets(g_app.curve, g_app.curveFrequencyHz, g_app.freqOffsetsHz,
+            true, true, hard, LOCK_MODE_HARD, 4, why, sizeof(why))) return 8826;
+    g_app.freqOffsetsHz[7] = original.offsetHz[7];
+    // Unchanged raw requests terminate without another setter; a moved
+    // physical baseline at an absolute point can be corrected independently.
+    targets = original; driver.baseHz[2] = 800000500;
+    driver.raw[2] = 40001; driver.raw[0] = 0;
+    nvapi_read_offsets(); nvapi_read_curve();
+    const int beforeUnchanged = driver.sets;
+    if (apply_correct_authoring_curve_targets(d, LOCK_MODE_NONE, false, true, targets, 0, 0, why, sizeof(why)) ||
+        driver.sets != beforeUnchanged) return 8827;
+    return 0;
+}
 }
 
 int run_windows_vf_exact_tests() {
+    if (int failure = windows_authoring_cases()) return failure;
     gc_i64 hz[VF_NUM_POINTS]{}; bool mask[VF_NUM_POINTS]{};
     initialize(); mask[0] = mask[1] = mask[2] = true;
     hz[0] = 15000500; hz[1] = -15000500; driver.raw[2] = 1;

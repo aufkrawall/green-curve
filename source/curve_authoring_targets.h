@@ -26,6 +26,9 @@ struct CurveAuthoringTargets {
     bool absoluteMask[VF_NUM_POINTS]{};
     gc_i64 absoluteHz[VF_NUM_POINTS]{};
     bool capturedMask[VF_NUM_POINTS]{};
+    bool preservedMask[VF_NUM_POINTS]{};
+    unsigned int voltageUv[VF_NUM_POINTS]{};
+    bool baselineDependentMask[VF_NUM_POINTS]{};
 };
 
 static inline bool curve_authoring_needs_exact_targets(const DesiredSettings* d) {
@@ -81,6 +84,8 @@ static inline bool curve_authoring_build_targets(const CurvePlanInput& in,
     if (lock && in.lockMode == LOCK_MODE_HARD && (in.lockGridHz <= 0 || plateau % in.lockGridHz))
         return fail(CURVE_AUTHORING_TARGET_UNREPRESENTABLE, d->lockCi, plateau);
     CurveAuthoringTargets next{};
+    for (int i = 0; i < VF_NUM_POINTS; ++i)
+        next.voltageUv[i] = in.curve[i].volt_uV;
     int ordinal = 0;
     for (int i = 0; i < VF_NUM_POINTS; ++i) {
         const bool populated = i < in.floor.graphicsEnd && in.curve[i].freq_kHz != 0;
@@ -130,6 +135,7 @@ static inline bool curve_authoring_build_targets(const CurvePlanInput& in,
                 next.requiresFreshBaseline = true; hz = 0;
             } else return fail(CURVE_AUTHORING_TARGET_UNREPRESENTABLE, i, hz);
         }
+        next.baselineDependentMask[i] = baselineDependent;
         next.mask[i] = true; next.offsetHz[i] = hz; ++next.pointCount;
     }
     output = next;

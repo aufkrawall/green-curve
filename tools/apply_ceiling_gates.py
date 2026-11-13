@@ -475,6 +475,20 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(_p(ctx, "gpu_backend_exact_curve.h"),
                  "curve_preservation_targets(desired, mask, lockTail, targetsKhz,",
                  "exact correction overlays authoritative controls before the driver write")
+    authoring_h = _p(ctx, "gpu_backend_apply_authoring.h")
+    require_text(apply_cpp, "exactCurveTargetsHz[ci] = authoringTargets.offsetHz[ci];",
+                 "the Windows initial batch consumes authoritative Hz targets")
+    require_text(apply_cpp, "if (authoringCurveWrite) return apply_verify_authoring_curve_targets(authoringTargets,",
+                 "authoring readback uses exact frequency and fixed-control semantics")
+    require_text(apply_cpp, "if (!curveRequestOk && !authoringCurveWrite) {",
+                 "authoring correction cannot rewrite precise intent through the legacy MHz classifier")
+    require_order_in_operation(authoring_h, "static bool apply_build_authoring_curve_targets(",
+                               "curve_plan_evaluate(in)", "windows_build_authoring_curve_targets(in,",
+                               "every authoring target build rechecks full feasibility")
+    require_text(authoring_h, "windows_authoring_curve_shape_matches(*original, next)",
+                 "corrections retain the reviewed write set and fixed controls")
+    require_text(authoring_h, "desired.hasLock ? 3 : 2, deadline, next.voltageUv);",
+                 "exact corrections keep the deadline and destination voltage precondition")
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
                  "in.desired = desired;",
                  "the pre-reset plan judges the request itself")
@@ -575,8 +589,13 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # The boost tally feeding the outcome severity is taken on the final
     # readback with verification's quantity per point, not after the first
     # batch with offsets for everything.
-    require_text(apply_cpp, "const ApplyBoostTally boost = apply_correction_boost_tally(correction,",
-                 "the boost tally runs after correction through the tested policy")
+    require_order_in_operation(apply_cpp, "static bool apply_desired_settings_service(const DesiredSettings* desired",
+                               "curveRequestOk = loop.verified;", "const ApplyBoostTally boost = authoringCurveWrite",
+                               "both boost tallies run after correction")
+    require_text(apply_cpp, "? apply_authoring_curve_boost_tally(authoringTargets, lockMode, lockCi)",
+                 "authoring boost tallies use exact targets")
+    require_text(apply_cpp, ": apply_correction_boost_tally(correction, readback,",
+                 "legacy boost tallies keep the tested policy")
     forbid_text(apply_cpp, "bool userRelevantPoint = (expectedOffsetkHz != 0) && (actualMHz >= 500);",
                 "no first-batch boost tally judging typed points by offset")
     # Linux: a composed offset lives in the VF deltas, so a stale NVML

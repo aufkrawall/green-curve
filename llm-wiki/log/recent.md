@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Windows exact authoring targets and correction
+
+- The Windows Apply path consumes the shared compiler's physical-Hz targets.
+  Corrections preserve captured values and unowned preimages across memory
+  changes, recheck the reviewed write set, and avoid the legacy MHz classifier.
+- Cases 8810-8827 execute the production builder, writer and repeated correction
+  path with fake driver calls, including exact verification boundaries and
+  zero-write refusals. Existing runtime gates remain closed pending route,
+  transition and client integration. See
+  [profile-document.md](../profile-document.md#windows-authoring-targets-and-corrections-2026-11-13).
+
 ## 2026-11-13: Shared exact targets and Linux authoring compilation
 
 - A shared compiler keeps physical offsets and absolute frequency targets in

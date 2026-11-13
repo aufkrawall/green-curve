@@ -23,6 +23,32 @@
 
 #include "curve_point_offset_policy.h"
 
+static void apply_format_curve_request_plan(const DesiredSettings* desired,
+    int currentAppliedGpuOffsetMHz, bool gpuOffsetValid, bool shouldApplyGpuOffset,
+    bool gpuPolicyViaCurveBatch, int desiredExclude, int currentExclude,
+    bool shouldApplyMemOffset, bool userCurveRequest, bool curveRequest,
+    bool hasLock, int lockCi, unsigned int lockMhz, bool preserveCurveAcrossMem,
+    const bool* explicitCurveMask, const bool* lockedTailMask) {
+    bool explicitNonTailMask[VF_NUM_POINTS]{};
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
+        explicitNonTailMask[ci] = explicitCurveMask[ci] && !lockedTailMask[ci];
+    char explicitPoints[256]{}, tailPoints[256]{};
+    build_point_list_from_flags(explicitNonTailMask, explicitPoints, sizeof(explicitPoints));
+    build_point_list_from_flags(lockedTailMask, tailPoints, sizeof(tailPoints));
+    StringCchPrintfA(g_lastOperationPlan, sizeof(g_lastOperationPlan),
+        "GPU offset apply: requested=%d valid=%d shouldApply=%d viaCurve=%d desiredSelective=%d currentSelective=%d\r\n"
+        "Memory offset apply: requested=%d shouldApply=%d\r\n"
+        "Curve plan: userCurveRequest=%d curveRequest=%d hasLock=%d lockCi=%d lockMHz=%u lockTracksAnchor=%d preserveAcrossMem=%d\r\n"
+        "Explicit curve points: %s\r\nLocked tail points: %s\r\n",
+        desired->hasGpuOffset ? desired->gpuOffsetMHz : currentAppliedGpuOffsetMHz,
+        gpuOffsetValid ? 1 : 0, shouldApplyGpuOffset ? 1 : 0, gpuPolicyViaCurveBatch ? 1 : 0,
+        desiredExclude, currentExclude,
+        desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz),
+        shouldApplyMemOffset ? 1 : 0, userCurveRequest ? 1 : 0, curveRequest ? 1 : 0,
+        hasLock ? 1 : 0, lockCi, lockMhz, desired->lockTracksAnchor ? 1 : 0,
+        preserveCurveAcrossMem ? 1 : 0, explicitPoints, tailPoints);
+}
+
 static void apply_log_post_apply_curve_diagnostics(
     const DesiredSettings* verifyDesiredIn, const bool* originalCurvePopulated,
     const unsigned int* originalCurveVoltUv, const bool* lockedTailMask,
