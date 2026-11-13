@@ -62,6 +62,20 @@ int run_writable_point_cases() {
         if (l) ++listed;
     }
     if (listed != 87) return 7804;
+    // Listing is presentation. A fixed floor remains read-only even where the
+    // historic voltage rule keeps it visible (including the 725 mV point).
+    if (!vf_point_listed(binding.floor, warm.curve, 44) ||
+        vf_point_target_status(binding.floor, warm.curve, 44) != VF_POINT_TARGET_FLOOR) return 8691;
+    DesiredSettings floorLock = flatten_request(44, 180);
+    CurvePlanResult floorPlan = plan_windows(warm, floorLock,
+        CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE, nvml_range(-1000, 1000));
+    if (floorPlan.disposition != CURVE_PLAN_REFUSED ||
+        !find_issue(floorPlan, CURVE_PLAN_REASON_FLOOR_POINT)) return 8692;
+    floorLock = {}; floorLock.hasCurvePoint[44] = 1; floorLock.curvePointMHz[44] = 180;
+    floorPlan = plan_windows(warm, floorLock, CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE, nvml_range(-1000, 1000));
+    if (floorPlan.disposition != CURVE_PLAN_REFUSED ||
+        !find_issue(floorPlan, CURVE_PLAN_REASON_FLOOR_POINT)) return 8693;
+    if (vf_point_target_status(binding.floor, warm.curve, 45) != VF_POINT_TARGET_OK) return 8694;
 
     // 7805-7808: Pascal lists every rising point, 22 (662.5 mV) included;
     // the anchor check accepts it.

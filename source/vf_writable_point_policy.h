@@ -150,6 +150,9 @@ static inline VfPointTargetStatus vf_point_target_status(
         return curve[ci].freq_kHz != 0 ? VF_POINT_TARGET_FOREIGN_DOMAIN
                                        : VF_POINT_TARGET_UNPOPULATED;
     if (curve[ci].freq_kHz == 0) return VF_POINT_TARGET_UNPOPULATED;
+    // The historic visibility rule keeps some floor points listed above
+    // 700 mV. Listing never grants write or lock-anchor authority.
+    if (vf_point_in_flat_floor(t, curve, ci)) return VF_POINT_TARGET_FLOOR;
     if (!vf_point_listed(t, curve, ci)) return VF_POINT_TARGET_FLOOR;
     return VF_POINT_TARGET_OK;
 }

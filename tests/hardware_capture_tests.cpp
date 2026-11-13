@@ -10,6 +10,7 @@ struct Driver {
     int reads[3]{}, unexpectedQueries = 0, refused = -1, malformed = -1;
     int changingControls = 0, frequencyTick = 0;
     bool badMask = false, rangeFails = false, defaultFails = false;
+    bool fixedFloor = false;
 };
 static Driver* active = nullptr;
 static int table(void* handle, void* buffer, int kind) {
@@ -26,16 +27,17 @@ static int table(void* handle, void* buffer, int kind) {
     memset(bytes, 0, sizes[kind]);
     if (d.malformed == kind) version ^= 1u << 16;
     memcpy(bytes, &version, 4);
-    bytes[masks[kind]] = kind && d.badMask ? 1 : 7;
-    for (unsigned int i = 0; i < 3; ++i) {
+    bytes[masks[kind]] = kind && d.badMask ? 1 : d.fixedFloor ? 31 : 7;
+    for (unsigned int i = 0; i < (d.fixedFloor ? 5u : 3u); ++i) {
         if (kind == 1) {
             const unsigned int at = b.statusEntriesOffset + i * b.statusEntryStride;
-            const unsigned int freq = 2000001 + i * 30000 + (unsigned int)d.frequencyTick++;
-            const unsigned int voltage = 650000 + i * 6250;
+            const unsigned int freq = d.fixedFloor ? (i < 4 ? 360000 : 400000) :
+                2000001 + i * 30000 + (unsigned int)d.frequencyTick++;
+            const unsigned int voltage = (d.fixedFloor ? 700000 : 650000) + i * 6250;
             memcpy(bytes + at, &freq, 4); memcpy(bytes + at + 4, &voltage, 4);
         } else if (kind == 2) {
             const unsigned int at = b.controlEntryBaseOffset + i * b.controlEntryStride + b.controlEntryDeltaOffset;
-            const int offset = i == 0 ? 30001 + (d.changingControls ? d.reads[2] : 0) : i == 1 ? -30001 : 0;
+            const int offset = d.fixedFloor ? 0 : i == 0 ? 30001 + (d.changingControls ? d.reads[2] : 0) : i == 1 ? -30001 : 0;
             memcpy(bytes + at, &offset, 4);
         }
     }
@@ -205,5 +207,16 @@ int run_hardware_capture_tests() {
     if (validate_service_response_for_ipc(response.get()) || service_response_payload_is_absent(response.get())) return 8512;
     response->capture = stable;
     if (validate_service_response_for_ipc(response.get())) return 8513;
+    driver = {}; driver.fixedFloor = true; c = context(driver, api);
+    const auto floorRead = [&](auto& o, char* reason, size_t size) {
+        return collect(c, PROFILE_DOMAIN_VF_CURVE, o, reason, size);
+    };
+    if (!hardware_capture_consistent(floorRead, *observation, why, sizeof(why)) || observation->pointCount != 5 ||
+        !hardware_capture_to_document(*observation, *document, why, sizeof(why))) return 8695;
+    for (int i = 0; i < 4; ++i) if (observation->points[i].writableState != 2 ||
+        document->points[i].kind != PROFILE_POINT_ABSENT) return 8696;
+    if (observation->points[4].writableState != 1 ||
+        document->points[4].kind != PROFILE_POINT_CAPTURED_OFFSET || document->points[4].capturedOffsetHz ||
+        driver.unexpectedQueries) return 8697;
     return 0;
 }

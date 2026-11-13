@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Visible fixed floors remain read-only
+
+- The shared target-status rule now distinguishes listed floor entries from
+  writable points at every voltage. Both planners refuse explicit floor targets
+  and anchors; passive Capture retains their observations without writable
+  authority. Existing listing and supported rising points remain available.
+- Cases 8691-8697 cover the planner and real getter boundary. The new Capture
+  case failed before the correction; the full native suite passes afterward.
+  Installer rollback fixture failures also report numeric operation/result
+  fields without paths. See [gpu-backend.md](../gpu-backend.md).
+
 ## 2026-11-13: Runtime voltage identity binding
 
 - Both scoped Apply planners remap bound incoming and outgoing authority before

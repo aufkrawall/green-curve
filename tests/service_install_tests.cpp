@@ -373,9 +373,15 @@ int run_install_file_rollback_tests() {
     StringCchPrintfW(restoreTemporary, MAX_PATH, L"%ls.gcrestore", destination);
     if (!writeOne(restoreTemporary, 'R')) return finish(6239);
     discarded = false;
-    bool restoreRecovered = SUCCEEDED(gc_restore_previous_install_file(backup, destination,
-        &discarded)) && discarded && readOne(destination, 'O') &&
-        GetFileAttributesW(restoreTemporary) == INVALID_FILE_ATTRIBUTES;
+    HRESULT restoreResult = gc_restore_previous_install_file(backup, destination, &discarded);
+    DWORD restoreError = GetLastError();
+    bool restoredContents = SUCCEEDED(restoreResult) && discarded && readOne(destination, 'O');
+    DWORD temporaryAttributes = GetFileAttributesW(restoreTemporary);
+    bool restoreRecovered = restoredContents && temporaryAttributes == INVALID_FILE_ATTRIBUTES;
+    if (!restoreRecovered) fprintf(stderr,
+        "installer rollback fixture: hr=0x%08lx error=%lu discarded=%d content=%d temporary=0x%08lx\n",
+        (unsigned long)restoreResult, (unsigned long)restoreError, discarded ? 1 : 0,
+        restoredContents ? 1 : 0, (unsigned long)temporaryAttributes);
     DeleteFileW(restoreTemporary);
     if (!restoreRecovered) return finish(6240);
     if (FAILED(gc_replace_staged_install_file(staged, destination)) ||

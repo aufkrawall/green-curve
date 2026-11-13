@@ -34,7 +34,7 @@ Curves are checked before Apply, low-voltage points become editable, and dialogs
 ### New
 
 - **Dialog text copying:** Ctrl+C copies confirmation, warning and error dialogs.
-- **Curve points below 700 mV:** writable points appear in the editor and graph; fixed clock-floor points stay hidden.
+- **Curve points below 700 mV:** writable points appear in the editor and graph.
 - **Prepare compatible curve:** Apply can offer to lower conflicting earlier points; review the draft before applying.
 - **CLI profile transfer:** import and export saved profiles without a connected GPU; review replacements and existing assignments before confirming.
 - **CLI hardware capture:** read programmed controls without resetting the GPU, inspect omissions, and explicitly choose partial capture and exact representation before saving.
@@ -49,6 +49,7 @@ Curves are checked before Apply, low-voltage points become editable, and dialogs
 
 ### Fixed
 
+- **Fixed clock-floor points:** Apply refuses edits and locks on fixed floor entries even where displayed; Capture keeps them as observations.
 - **Linux power limits:** requests outside the board's bounds are refused before tuning changes, instead of being silently adjusted to another limit.
 - **Linux memory recovery:** fractional offsets stay exact; driver rounding or unavailable verification reports a mismatch.
 - **Clock offset readback:** missing driver ranges no longer hide valid Windows clock controls.

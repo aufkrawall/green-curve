@@ -677,7 +677,12 @@ checks, and full build 433; RTX 5080 hardware acceptance remains pending.
   points below 700 mV are therefore editable (a GTX 1080 Ti-shaped Pascal
   table lists all 80 graphics points instead of 55), while floor points at
   or above 700 mV stay listed so existing profiles keep their points (RTX 5070
-  points 40..44). Stability: the floor is computed once per topology binding
+  points 40..44). Listing grants no write authority: `vf_point_target_status()`
+  refuses every fixed floor entry, including those at or above 700 mV. Both
+  Apply planners reject explicit targets/anchors there; passive Capture retains
+  their observations without creating point intent. Cases 8691-8697 cover
+  the planner and actual read-only getter boundaries. Stability: the floor is
+  computed once per topology binding
   (`VfFloorBinding`, keyed by membership and voltages, never frequencies) and
   frozen until the topology changes, because the stock ramp start moves with
   temperature (RTX 5070: point 45 warm, 47 cold; both ends lie above 700 mV,
