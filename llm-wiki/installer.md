@@ -16,7 +16,7 @@ directory capture, and shell-API reload of the serialized shortcut's target.
 This does not change installation-folder
 ownership or the consent policy.
 
-## Exclusive temporary-file creation (verified 2026-10-01)
+## Exclusive temporary-file creation (verified 2026-11-13)
 
 Source anchors: `source/installer_transaction_files.h`,
 `source/installer_apply.cpp`, `tests/service_install_tests.cpp`.
@@ -34,10 +34,11 @@ one and renaming it (power loss, killed process) leaves exactly that name, so
 every later upgrade -- and every later ROLLBACK -- failed on it until someone
 deleted it by hand. Now `gc_discard_stale_install_temporary()` removes the
 name through a `DELETE` handle opened with `FILE_FLAG_OPEN_REPARSE_POINT |
-FILE_FLAG_BACKUP_SEMANTICS` (a planted symlink/junction is deleted itself, its
-target never opened; a hard link loses only this entry; a non-empty directory
-cannot be deleted and stays a refusal), then the exclusive create is retried
-exactly ONCE -- a name that reappears in between is refused, not raced. The
+FILE_FLAG_BACKUP_SEMANTICS`. A file symlink is opened itself and its target is
+untouched; non-empty directories, non-sharing readers and mapped images remain
+refusals. A shared reader may keep the deleted name pending, so the single
+recovery attempt uses a fresh `.gcattempt-` identifier with exclusive creation.
+No old entry is renamed and no existing fresh entry is overwritten. The
 transaction logs `discarded a leftover ... from an interrupted earlier run`.
 In the setup-created scratch folder (`gc_write_payload_file`) the folder is
 fresh per run, so no recovery is needed there.
@@ -47,6 +48,12 @@ Native tests (`run_install_file_rollback_tests`, 6222-6241): a planted regular
 backup is removed with its target untouched (runs when unelevated symlinks are
 allowed); a non-empty directory obstruction is refused with its content kept;
 a planted `.gcrestore` no longer blocks rollback.
+`tests/installer_stale_reader_cases.h` (8751-8758) checks held stale readers
+through actual replacement and rollback, old/new bytes, staging cleanup,
+non-sharing refusal and a mapped copy of the test image. Strict staging-name
+recognition accepts only known payloads and complete attempt identifiers;
+service-folder consent and nonrecursive uninstall cleanup use that predicate.
+No image-deletion bypass, timing delay or repeated retry is used.
 Parser name/log validation also refuses CONIN$/CONOUT$ and superscript COM/LPT
 DOS devices. Full elevated setup click-through was not performed.
 

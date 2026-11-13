@@ -41,6 +41,7 @@
 
 #ifndef GREEN_CURVE_SERVICE_INSTALL_LOCATION_POLICY_H
 #define GREEN_CURVE_SERVICE_INSTALL_LOCATION_POLICY_H
+#include "installer_temporary_names.h"
 
 // Why a location was refused.  Separate from GcServiceAdminReason because the
 // caller maps all of these onto GC_SVC_ADMIN_LOCATION_REFUSED and only the
@@ -150,6 +151,7 @@ static inline bool gc_service_location_entry_is_ours(const wchar_t* name, size_t
                                                      bool isDirectory) {
     if (!name || length == 0) return false;
     if (isDirectory) return false;
+    if (gc_install_temporary_name(name, length)) return true;
     static const wchar_t* const kOurs[] = {
         L"greencurve.exe", L"greencurve-service.exe", L"README.md", L"LICENSE",
         L"greencurve-uninstall.exe", L"uninstall.exe",

@@ -22,6 +22,7 @@
 #endif
 #include <cstring>
 #include <cwchar>
+#include <cstdio>
 
 #include "service_acl.h"
 #include "service_admin_reason_policy.h"
@@ -29,6 +30,7 @@
 #include "service_scm_wait_policy.h"
 #include "installer_transaction_files.h"
 #include "shortcut_file_writer.h"
+#include "installer_stale_reader_cases.h"
 
 namespace {
 
@@ -90,6 +92,14 @@ int run_location_content_policy_tests() {
         return 5735;
     if (!ours(L"greencurve-service.exe.gcnew", false) || !ours(L"desktop.ini", false) ||
         !ours(L"machine.ini", false)) return 5736;
+    if (!ours(L"greencurve.exe.gcrestore", false) ||
+        !ours(L"greencurve.exe.gcnew.gcattempt-0123456789abcdef0123456789abcdef", false) ||
+        !ours(L"LICENSE.gcrestore.gcattempt-0123456789abcdef0123456789abcdef", false)) return 8755;
+    if (ours(L"notes.txt.gcnew.gcattempt-0123456789abcdef0123456789abcdef", false) ||
+        ours(L"greencurve.exe.gcnew.gcattempt-0123456789abcdef0123456789abcdeg", false) ||
+        ours(L"greencurve.exe.gcnew.gcattempt-0123456789abcdef0123456789abcde", false) ||
+        ours(L"greencurve.exe.gcnew.gcattempt-0123456789abcdef0123456789abcdefZ", false) ||
+        ours(L"greencurve.exe.gcnew.gcattempt-0123456789abcdef0123456789abcdef", true)) return 8756;
     // Anything else -- a prefix, a suffix, a user's file, ANY folder -- is foreign.
     if (ours(L"greencurve.ex", false) || ours(L"greencurve.exe.bak", false) ||
         ours(L"notes.txt", false) || ours(L"LICENSE", true) || ours(L"", false)) return 5737;
@@ -388,6 +398,7 @@ int run_install_file_rollback_tests() {
         !readOne(destination, 'N')) return finish(6241);
     if (FAILED(gc_restore_previous_install_file(backup, destination)) ||
         !readOne(destination, 'O')) return finish(6123);
+    if (int failure = installer_stale_reader_cases(directory, staged, backup, destination)) return finish(failure);
     // An extraction failure must leave the last complete file untouched.
     char ignored[160] = {};
     if (release_service_hardening(staged, GC_SERVICE_ACL_BINARY, ignored,

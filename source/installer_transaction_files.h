@@ -7,6 +7,7 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <strsafe.h>
+#include <objbase.h>
 #include "installer_cli_policy.h"
 
 // Remove a leftover fixed-name temporary (".gcnew"/".gcrestore") so setup can
@@ -19,8 +20,8 @@
 // so a planted symlink or junction is deleted itself and its target is never
 // opened, and a planted hard link loses only this directory entry.  A non-empty
 // directory cannot be deleted and the caller's exclusive create then still
-// refuses.  Callers retry their CREATE_NEW exactly once afterwards: a name that
-// reappears in between is refused, not raced in a loop.
+// refuses. Callers make one exclusive creation attempt at a fresh staging name
+// afterwards, without waiting for old readers or overwriting another entry.
 static inline bool gc_discard_stale_install_temporary(const WCHAR* path) {
     HANDLE stale = CreateFileW(path, DELETE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
@@ -32,6 +33,23 @@ static inline bool gc_discard_stale_install_temporary(const WCHAR* path) {
                                               &disposition, sizeof(disposition)) != FALSE;
     CloseHandle(stale);
     return deleted;
+}
+
+// A deleted leaf can remain name-pending while another reader holds it. Never
+// reuse that name for the one recovery attempt; create a fresh exclusive leaf.
+static inline bool gc_install_fresh_attempt_name(WCHAR* temporary, size_t capacity) {
+    GUID identity = {};
+    if (FAILED(CoCreateGuid(&identity))) { SetLastError(ERROR_GEN_FAILURE); return false; }
+    WCHAR original[GC_INSTALLER_MAX_PATH_CHARS] = {};
+    if (FAILED(StringCchCopyW(original, GC_INSTALLER_MAX_PATH_CHARS, temporary)) ||
+        FAILED(StringCchPrintfW(temporary, capacity,
+        L"%ls.gcattempt-%08lx%04x%04x%02x%02x%02x%02x%02x%02x%02x%02x", original,
+        identity.Data1, identity.Data2, identity.Data3, identity.Data4[0], identity.Data4[1],
+        identity.Data4[2], identity.Data4[3], identity.Data4[4], identity.Data4[5],
+        identity.Data4[6], identity.Data4[7]))) {
+        SetLastError(ERROR_FILENAME_EXCED_RANGE); return false;
+    }
+    return true;
 }
 
 static inline HRESULT gc_replace_staged_install_file(const WCHAR* staged,
@@ -59,8 +77,9 @@ static inline HRESULT gc_replace_staged_install_file(const WCHAR* staged,
         (GetLastError() == ERROR_FILE_EXISTS || GetLastError() == ERROR_ALREADY_EXISTS) &&
         gc_discard_stale_install_temporary(temporary)) {
         if (discardedStale) *discardedStale = true;
-        output = CreateFileW(temporary, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
-            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (gc_install_fresh_attempt_name(temporary, GC_INSTALLER_MAX_PATH_CHARS))
+            output = CreateFileW(temporary, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     }
     if (output == INVALID_HANDLE_VALUE) {
         DWORD error = GetLastError();
@@ -116,7 +135,8 @@ static inline HRESULT gc_restore_previous_install_file(const WCHAR* backup,
         (GetLastError() == ERROR_FILE_EXISTS || GetLastError() == ERROR_ALREADY_EXISTS) &&
         gc_discard_stale_install_temporary(temporary)) {
         if (discardedStale) *discardedStale = true;
-        copied = CopyFileW(backup, temporary, TRUE);
+        if (gc_install_fresh_attempt_name(temporary, GC_INSTALLER_MAX_PATH_CHARS))
+            copied = CopyFileW(backup, temporary, TRUE);
     }
     if (!copied) {
         DWORD error = GetLastError();

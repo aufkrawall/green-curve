@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Stale installer names and shared readers
+
+- Stale transaction leaves are discarded through the existing no-follow
+  handle. The single recovery attempt uses a fresh exclusive staging name,
+  avoiding names kept pending by shared readers. No stale entry is renamed;
+  target replacement and backup metadata preservation are unchanged.
+- Native cases 8751-8758 cover shared-reader recovery, staging cleanup,
+  strict owned names, non-sharing refusal and mapped-image refusal. Folder
+  consent and uninstall cleanup recognize only complete payload staging names.
+  No image-deletion bypass or delayed retry is introduced. See
+  [installer.md](../installer.md#exclusive-temporary-file-creation-verified-2026-11-13).
+
 ## 2026-11-13: Passive constraints and partial-profile authority
 
 - Protocol 35 carries capture schema 2 with explicit VF grid, range provenance

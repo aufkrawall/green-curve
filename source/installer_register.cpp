@@ -15,6 +15,7 @@
 
 #include "installer_common.h"
 #include "installer_move_cleanup.h"
+#include "installer_temporary_names.h"
 
 #define GC_SHORTCUT_FILE_NAME L"Green Curve.lnk"
 
@@ -162,6 +163,27 @@ static void gc_delete_installed_files(const WCHAR* installDirectory, bool* ownFi
             if (ownFilesLeftForRestart) *ownFilesLeftForRestart = true;
         }
     }
+    // Stale transaction leaves are ours too. Enumerate only this directory and
+    // require a complete payload staging name; never descend into a directory.
+    WCHAR pattern[GC_INSTALLER_MAX_PATH_CHARS] = {};
+    if (!gc_join_path(installDirectory, L"*", pattern, GC_ARRAY_COUNT(pattern))) return;
+    WIN32_FIND_DATAW entry = {};
+    HANDLE search = FindFirstFileW(pattern, &entry);
+    if (search == INVALID_HANDLE_VALUE) return;
+    do {
+        if ((entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+            !gc_install_temporary_name(entry.cFileName, wcslen(entry.cFileName))) continue;
+        WCHAR path[GC_INSTALLER_MAX_PATH_CHARS] = {};
+        if (!gc_join_path(installDirectory, entry.cFileName, path, GC_ARRAY_COUNT(path))) continue;
+        if (DeleteFileW(path)) gc_log_step("uninstall: removed transaction temporary");
+        else {
+            DWORD error = GetLastError();
+            gc_log_step("uninstall: transaction temporary deletion refused (error %lu)", error);
+            if (MoveFileExW(path, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT) && ownFilesLeftForRestart)
+                *ownFilesLeftForRestart = true;
+        }
+    } while (FindNextFileW(search, &entry));
+    FindClose(search);
 }
 
 bool gc_uninstall_execute(const WCHAR* installDirectory, bool* folderLeftForRestart,
