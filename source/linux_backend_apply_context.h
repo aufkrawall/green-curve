@@ -7,6 +7,7 @@
 #ifndef GREEN_CURVE_LINUX_BACKEND_APPLY_CONTEXT_H
 #define GREEN_CURVE_LINUX_BACKEND_APPLY_CONTEXT_H
 #include "curve_feasibility_message.h"
+#include "scalar_curve_submission_policy.h"
 
 struct LinuxApplyTransactionContext {
     LinuxGpuState* gpu;
@@ -32,6 +33,7 @@ struct LinuxApplyTransactionContext {
     int graphicsRouteOverride; // 0=legacy inference, 1=independent scalar, 2=VF component
     // The build the phase plan was made from; a rebuild must keep its shape.
     LinuxCurveTargetBuildResult plannedBuild;
+    ScalarCurveSubmissionReview scalarReview{};
 };
 
 // The curve targets for this transaction: the replacement-aware build when

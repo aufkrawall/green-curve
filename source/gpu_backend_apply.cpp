@@ -109,9 +109,10 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         set_last_apply_phase("apply: refused (curve plan)");
         return false;
     }
+    ScalarCurveSubmissionReview scalarReview{};
     if (!apply_authoring_precheck_before_writes(desired, desired->authoring.graphicsPrecise
             ? desired->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT
-            : apply_curve_plan_pre_write_route(desired).offsetInVfTable, result, resultSize)) return false;
+            : apply_curve_plan_pre_write_route(desired).offsetInVfTable, result, resultSize, &scalarReview)) return false;
 #ifdef GREEN_CURVE_SERVICE_BINARY
     bool proofInvalidatedForWrite = false;
 #endif
@@ -123,7 +124,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         set_message(result, resultSize, "This driver's VF offset range cannot flatten the curve");
         return false;
     }
-    ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling);
+    ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired);
     // Records the measured clock and the live load across the whole apply, and
     // ends with the one line the next under-load test needs: did the clamp hold.
     // Destroyed after the guard is declared, so the verdict is emitted before
@@ -508,14 +509,13 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     const ApplyScalarShiftSnapshot preScalar(originalCurveFreqkHz, originalCurveOffsets, originalCurveVoltUv);
     const bool scalarBeforeKnownZero = desired->resetOcBeforeApply && desired->hasGpuOffset &&
         g_app.readback.gpuOffset && g_app.gpuClockOffsetkHz == 0;
-    // Apply GPU offset first via dedicated path (handles uniform offset reliably).
-    // When combined with lock/curve edits, applying the GPU offset separately avoids
-    // sending highly non-uniform offsets for all curve points in a single batch,
-    // which can fail. After this, the curve batch only needs to adjust the lock tail.
+    // A separate scalar precedes the VF batch; its reviewed guard, when needed,
+    // must remain installed through curve verification.
     if (gpuOffsetValid && shouldApplyGpuOffset) {
         set_last_apply_phase("apply: dedicated GPU offset write");
         if (desired_named_graphics_surface(*desired)
-            ? nvapi_set_gpu_offset_precise(desired_graphics_hz(*desired), desired_named_graphics_surface(*desired))
+            ? nvapi_set_gpu_offset_precise_checked(desired_graphics_hz(*desired), desired_named_graphics_surface(*desired),
+                false, scalarReview.beforeValid ? &scalarReview : nullptr)
             : nvapi_set_gpu_offset(targetGpuOffsetkHz)) {
             successCount++;
             gpuApplied = true;
@@ -527,6 +527,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 return apply_recover_clock_failure(clockCeiling, "Fresh curve readback failed", result, resultSize);
             }
         } else {
+            if (scalarReview.refusedWithoutWrite && !desired->resetOcBeforeApply)
+                return apply_authoring_scalar_review_refusal(clockCeiling, result, resultSize, hardwareWriteAttemptedOut);
             failCount++;
             partialApplyRisk = true;
             append_failure("GPU offset %d MHz was not accepted by the driver", desired->gpuOffsetMHz);

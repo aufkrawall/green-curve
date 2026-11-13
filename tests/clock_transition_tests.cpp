@@ -60,14 +60,14 @@ struct LinuxGpuState {
  int freqOffsets[VF_NUM_POINTS]{};
  int powerLimitCurrentmW{},powerLimitDefaultmW{};
 };
-static unsigned int cap=0, resets=0;
+static unsigned int cap=0, resets=0, armCalls=0;
 static bool refuseReset=false;
 static bool refuseArm=false;
 // Which refusal the fake driver gives back. 1 is a generic error (a clamp this
 // GPU can hold, declined this time); NVML_ERROR_NOT_SUPPORTED is a GPU that has
 // no locked-clock control at all, which the two cases must not be confused.
 static int armRefusalCode=1;
-static int setCap(int,unsigned int,unsigned int hi){if(refuseArm)return armRefusalCode;cap=hi;return 0;}
+static int setCap(int,unsigned int,unsigned int hi){++armCalls;if(refuseArm)return armRefusalCode;cap=hi;return 0;}
 static int resetCap(int){++resets;if(refuseReset)return NVML_ERROR_NOT_SUPPORTED;cap=0;return 0;}
 enum ServiceMutationDomain : gc_u32 {
     SERVICE_MUTATION_DOMAIN_RESET_BASELINE = 1u << 0,
@@ -900,6 +900,24 @@ static int run(){
  // The next apply uses a retained cap even when intent/curve markers changed.
  g_app.lockMode=LOCK_MODE_NONE;g_app.curve[0].freq_kHz=3600000;
  CHECK(apply_outgoing_ceiling_mhz()==2500);
+ {
+   DesiredSettings split{};split.hasLock=true;split.lockMode=LOCK_MODE_FLATTEN;split.lockMHz=1000;
+   g_app={};g_app.gpuFamily=GPU_FAMILY_UNKNOWN;
+   g={};g.family=GPU_FAMILY_UNKNOWN;g.nvml.setGpuLockedClocks=setCap;g.nvml.resetGpuLockedClocks=resetCap;
+   g_nvml_api=g.nvml;cap=0;refuseArm=true;armRefusalCode=NVML_ERROR_NOT_SUPPORTED;
+   const auto before=armCalls;
+   {ApplyClockCeilingGuard guarded(&split,false,true);guarded.arm();
+    CHECK(guarded.must_refuse_transition());CHECK(!guarded.armed);}
+   CHECK(armCalls==before+2&&cap==0);
+   linux_apply_ceiling_reset_state();
+   CHECK(!linux_apply_arm_transition_ceiling(&g,&split,nullptr,true));
+   CHECK(!g_linuxCeilingArmed&&armCalls==before+4&&cap==0);
+   {ApplyClockCeilingGuard historical(&split);historical.arm();CHECK(!historical.must_refuse_transition());}
+   linux_apply_ceiling_reset_state();CHECK(linux_apply_arm_transition_ceiling(&g,&split,nullptr));
+   refuseArm=false;
+   {ApplyClockCeilingGuard guarded(&split,false,true);guarded.arm();CHECK(!guarded.must_refuse_transition());guarded.adopt("fixture");}
+   CHECK(cap==1000);cap=0;
+ }
  for(const auto range:{vf_offset_range_from_probe(true,0,500000),
                       vf_offset_range_from_probe(true,-400000,250000),
                       vf_offset_range_from_probe(true,INT_MIN,INT_MAX),

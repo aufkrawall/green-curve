@@ -142,12 +142,12 @@ static bool linux_snapshot_curve_needs_a_pin(const LinuxHardwareSnapshot* s) {
 // and curve phases run.
 static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
                                                const DesiredSettings* d,
-                                               const DesiredSettings* committed) {
+                                               const DesiredSettings* committed, bool installedGuardRequired = false) {
     // Transaction entry already initialized state and recorded outgoing ownership.
     ApplyClockCeilingPlan plan = linux_apply_clock_ceiling_plan(g, d, committed);
     g_linuxCeilingPlan = plan;
     if (!plan.arm) {
-        if (!plan.required) return true;
+        if (!plan.required && !installedGuardRequired) return true;
         // No entry points at all is a fact about the driver, not about this
         // attempt.  A plan with no defensible ceiling value is neither, and
         // stays UNAVAILABLE so it keeps refusing.
@@ -155,7 +155,7 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
             ? APPLY_CEILING_ARM_UNSUPPORTED
             : APPLY_CEILING_ARM_UNAVAILABLE;
         const bool refuse = apply_clock_ceiling_transition_must_refuse(
-            plan.required, g_linuxCeilingArmResult, plan.reason);
+            plan.required, g_linuxCeilingArmResult, plan.reason, installedGuardRequired);
         // Two different facts reach this branch and they need different words:
         // missing entry points really are "no control on this driver", while a
         // plan with no defensible ceiling value has everything it needs except
@@ -219,7 +219,7 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
     g_linuxCeilingArmResult = unsupported ? APPLY_CEILING_ARM_UNSUPPORTED
                                           : APPLY_CEILING_ARM_REFUSED;
     const bool refuse = apply_clock_ceiling_transition_must_refuse(
-        plan.required, g_linuxCeilingArmResult, plan.reason);
+        plan.required, g_linuxCeilingArmResult, plan.reason, installedGuardRequired);
     lb_log("apply: COULD NOT ARM transition clock ceiling at %u MHz (symmetric"
            " fallback %s, armResult=%s); protection was %s\n",
            plan.ceilingMHz,

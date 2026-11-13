@@ -16,7 +16,14 @@ struct Driver {
     bool layoutValid;
     bool badRange, globalRangeFails;
     bool narrowRange, failReadAfterWrite;
+    int capWrites;
 };
+static nvmlReturn_t scalar_guard_set(nvmlDevice_t device, unsigned int, unsigned int) {
+    ++reinterpret_cast<Driver*>(device)->capWrites; return NVML_SUCCESS;
+}
+static nvmlReturn_t scalar_guard_reset(nvmlDevice_t device) {
+    ++reinterpret_cast<Driver*>(device)->capWrites; return NVML_SUCCESS;
+}
 static Driver* driver(nvmlDevice_t device) { return reinterpret_cast<Driver*>(device); }
 static nvmlReturn_t set_p0(nvmlDevice_t device, nvmlClockOffset_t* info) {
     Driver* d = driver(device);
@@ -116,6 +123,61 @@ static int graphics_control_cases() {
 }
 
 int run_linux_clock_offset_tests() {
+    {
+        Driver state{}; LinuxGpuState g{}; initialize(&state, &g);
+        g.vfOffsetsHzValid = true;
+        DesiredSettings request{}; request.hasGpuOffset = 1; request.gpuOffsetMHz = 100;
+        request.authoring.graphicsPrecise = request.authoring.topologyBound = 1;
+        request.authoring.topologyCount = 1; request.authoring.voltageUv[0] = 650000;
+        request.authoring.graphicsSurface = DESIRED_GRAPHICS_P0; request.authoring.graphicsOffsetHz = 100000000;
+        request.curvePointCaptured[0] = 1; request.curvePointCapturedOffsetHz[0] = -500;
+        LinuxHardwareSnapshot snapshot{}; snapshot.gpuOffsetValid = snapshot.gpuOffsetExact = true;
+        snapshot.gpuOffsetSurface = CLOCK_OFFSET_SURFACE_P0;
+        ScalarCurveSubmissionReview review{}; review.installedGuardRequired = true; char why[256]{};
+        if (linux_authoring_scalar_transition_precheck(&g, &request, snapshot, review, why, sizeof(why)) || review.installedGuardRequired ||
+            state.p0Writes || state.globalWrites || state.capWrites) return 8970;
+        request.hasLock = 1; request.lockMode = LOCK_MODE_FLATTEN; request.lockMHz = 1000;
+        if (linux_authoring_scalar_transition_precheck(&g, &request, snapshot, review, why, sizeof(why)) || review.installedGuardRequired ||
+            state.p0Writes || state.globalWrites || state.capWrites) return 8971;
+        g.nvml.setGpuLockedClocks = scalar_guard_set; g.nvml.resetGpuLockedClocks = scalar_guard_reset;
+        if (!linux_authoring_scalar_transition_precheck(&g, &request, snapshot, review, why, sizeof(why)) || !review.installedGuardRequired ||
+            state.p0Writes || state.globalWrites || state.capWrites) return 8972;
+        snapshot.gpuOffsetExact = false;
+        if (linux_authoring_scalar_transition_precheck(&g, &request, snapshot, review, why, sizeof(why)) || review.installedGuardRequired ||
+            state.p0Writes || state.globalWrites || state.capWrites) return 8973;
+        snapshot.gpuOffsetExact = true;
+        if (!linux_authoring_scalar_transition_precheck(&g, &request, snapshot, review, why, sizeof(why))) return 8977;
+        state.p0Value = -100;
+        if (linux_apply_named_graphics_offset(&g, &request, &review) || !review.refusedWithoutWrite ||
+            state.p0Writes || state.globalWrites || state.capWrites) return 8978;
+        struct Context { LinuxGpuState* gpu; DesiredSettings* desired; ScalarCurveSubmissionReview* review; int rollbacks; };
+        Context context{&g, &request, &review, 0};
+        const auto step = [](void* raw, unsigned phase) {
+            auto& c = *static_cast<Context*>(raw);
+            return phase == LINUX_MUTATION_LOCK_CEILING
+                ? c.gpu->nvml.setGpuLockedClocks(c.gpu->nvmlDevice, 0, 1000) == NVML_SUCCESS
+                : linux_apply_named_graphics_offset(c.gpu, c.desired, c.review);
+        };
+        const auto rollback = [](void* raw, unsigned phases) {
+            auto& c = *static_cast<Context*>(raw);
+            phases = scalar_curve_rollback_phases(*c.review, phases, LINUX_MUTATION_GPU_OFFSET);
+            if (!phases) return true;
+            ++c.rollbacks;
+            return phases == LINUX_MUTATION_LOCK_CEILING &&
+                c.gpu->nvml.resetGpuLockedClocks(c.gpu->nvmlDevice) == NVML_SUCCESS;
+        };
+        auto mutation = linux_execute_transaction(LINUX_MUTATION_GPU_OFFSET, step, rollback, &context);
+        scalar_curve_finalize_write_evidence(review, LINUX_MUTATION_GPU_OFFSET, mutation);
+        if (mutation.success || mutation.anyWrite || mutation.rollbackAttempted || context.rollbacks ||
+            state.p0Writes || state.globalWrites || state.capWrites) return 8979;
+        mutation = linux_execute_transaction(LINUX_MUTATION_LOCK_CEILING | LINUX_MUTATION_GPU_OFFSET, step, rollback, &context);
+        scalar_curve_finalize_write_evidence(review, LINUX_MUTATION_GPU_OFFSET, mutation);
+        if (mutation.success || !mutation.anyWrite || !mutation.rollbackSucceeded || context.rollbacks != 1 ||
+            state.p0Writes || state.globalWrites || state.capWrites != 2) return 8980;
+        snapshot.gpuOffsetSurface = CLOCK_OFFSET_SURFACE_GLOBAL;
+        if (linux_authoring_scalar_transition_precheck(&g, &request, snapshot, review, why, sizeof(why)) ||
+            review.installedGuardRequired || review.beforeValid || state.p0Writes || state.globalWrites || state.capWrites != 2) return 8982;
+    }
     if (int failure = graphics_control_cases()) return failure;
     Driver d{}; LinuxGpuState g{};
     initialize(&d, &g); d.snap = true;

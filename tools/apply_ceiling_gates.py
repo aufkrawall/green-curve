@@ -38,6 +38,20 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     transaction_h = _p(ctx, "linux_transaction.h")
     linux_mutation_cpp = _p(ctx, "linux_backend_mutation.cpp")
     linux_ceiling_h = _p(ctx, "linux_apply_ceiling.h")
+    require_text(apply_cpp, "scalarReview.installedGuardRequired",
+                 "Windows scalar-to-curve review reaches the actual ceiling guard")
+    require_text(guard_h, "plan.reason, installedGuardRequired",
+                 "strict Windows protection cannot use the unsupported-clamp exception")
+    require_text(linux_mutation_cpp, "context->scalarReview.installedGuardRequired",
+                 "Linux scalar-to-curve review reaches the actual ceiling phase")
+    require_text(linux_ceiling_h, "plan.reason, installedGuardRequired",
+                 "strict Linux protection cannot use the unsupported-clamp exception")
+    require_text(linux_mutation_cpp, "scalar_curve_rollback_phases(context->scalarReview",
+                 "a read-only scalar refusal cannot reset that untouched control during rollback")
+    require_text(linux_mutation_cpp, "scalar_curve_finalize_write_evidence(context.scalarReview",
+                 "Linux no-write refusals preserve accurate mutation evidence")
+    require_text(apply_cpp, "apply_authoring_scalar_review_refusal(clockCeiling",
+                 "Windows preserves untouched VF controls after a submission review refusal")
     require_order_in_operation(
         apply_cpp, "static bool apply_desired_settings_service(const DesiredSettings* desired",
         "apply_curve_preservation_precheck(desired, result, resultSize)", "ApplyClockCeilingGuard clockCeiling",
@@ -90,7 +104,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # hardware write, and must be adopted by the final lock step in both modes.
     require_text(guard_h, "struct ApplyClockCeilingGuard",
                  "the Windows apply owns a scope-bound transition clamp")
-    require_text(apply_cpp, "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling);",
+    require_text(apply_cpp, "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired);",
                  "the Windows apply declares the clamp before its first write")
     require_order_in_operation(
         apply_cpp,
@@ -152,7 +166,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         apply_cpp,
         "static bool apply_desired_settings_service(const DesiredSettings* desired",
         "if (!apply_curve_plan_anchor_is_writable(desired, result, resultSize)) return false;",
-        "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling);",
+        "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired);",
         "the writable-anchor refusal precedes the transition clamp")
     # The Linux daemon refuses a proven curve-plan failure before its
     # transaction can run any phase.
@@ -306,7 +320,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "baseline failure reaches guarded recovery")
     require_text(linux_mutation_cpp, "linux_apply_clock_ceiling_plan(g, d, previousIntent)",
                  "Linux plans protection from the actual previous intent")
-    require_text(linux_mutation_cpp, "linux_apply_arm_transition_ceiling(g, d, context->previousIntent)",
+    require_text(linux_mutation_cpp, "linux_apply_arm_transition_ceiling(g, d, context->previousIntent, context->scalarReview.installedGuardRequired)",
                  "Linux arming receives the previous intent too")
     require_text(linux_mutation_cpp, "if (d->hasLock || (requested & LINUX_MUTATION_LOCK_CEILING))",
                  "temporary protection always receives final disposition")
@@ -511,7 +525,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                                "bound exact target preflight runs before the first transition setter")
     require_text(apply_cpp, "offsetRouting = windows_graphics_offset_route(*desired, offsetRouting);",
                  "sub-MHz and explicit-zero graphics requests keep their reviewed route")
-    require_text(apply_cpp, "? nvapi_set_gpu_offset_precise(desired_graphics_hz(*desired), desired_named_graphics_surface(*desired))",
+    require_text(apply_cpp, "? nvapi_set_gpu_offset_precise_checked(desired_graphics_hz(*desired), desired_named_graphics_surface(*desired),",
                  "named graphics writes retain physical units and their selected surface")
     require_order_in_operation(_p(ctx, "gpu_backend_graphics_offset.h"), "static bool nvapi_write_named_gpu_offset(",
                                "g_app.gpuOffsetUncertainSurface = surface;", "nvml_exact_clock_write(g_nvml_api,",
@@ -635,7 +649,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "a no-reset composed Linux apply schedules the stale NVML offset clear")
     require_text(linux_mutation_cpp, "context->composedGpuOffset ? 0 : d->gpuOffsetMHz);",
                  "the Linux GPU_OFFSET phase writes 0 for a composed offset")
-    require_text(linux_mutation_cpp, "if (desired_named_graphics_surface(*d)) return linux_apply_named_graphics_offset(g, d);",
+    require_text(linux_mutation_cpp, "if (desired_named_graphics_surface(*d)) return linux_apply_named_graphics_offset(g, d,",
                  "named Linux graphics scalars bypass legacy surface fallback")
     require_order_in_operation(linux_mutation_cpp,
                                "LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings* d,",
@@ -1009,7 +1023,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         apply_cpp,
         "static bool apply_desired_settings_service(const DesiredSettings* desired,",
         "if (!apply_curve_plan_precheck_before_writes(desired, result, resultSize)) {",
-        "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling);",
+        "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired);",
         "the curve-plan refusal runs before the first clock write")
     require_order_in_operation(
         apply_cpp,

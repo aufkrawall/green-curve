@@ -192,6 +192,16 @@ static int run_precise_graphics_tests() {
     initialize(false); p0BadMetadata = true;
     if (nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_P0, false) || p0Writes ||
         g_app.gpuOffsetUncertainSurface) return 8860;
+    initialize(false); preciseReadback = true;
+    ScalarCurveSubmissionReview review{}; review.beforeValid = true; review.beforeHz = -1000000;
+    if (nvapi_set_gpu_offset_precise_checked(247000000, CLOCK_OFFSET_SURFACE_P0, false, &review) ||
+        !review.refusedWithoutWrite || p0Writes || writes || g_app.gpuOffsetUncertainSurface) return 8974;
+    review.beforeHz = 0;
+    if (!nvapi_set_gpu_offset_precise_checked(247000000, CLOCK_OFFSET_SURFACE_P0, false, &review) ||
+        review.refusedWithoutWrite || p0Writes != 1 || writes) return 8975;
+    if (nvapi_set_gpu_offset_precise_checked(100000000, CLOCK_OFFSET_SURFACE_P0, false, &review) ||
+        !review.refusedWithoutWrite || p0Writes != 1 || writes ||
+        g_app.gpuOffsetOwnedSurface != CLOCK_OFFSET_SURFACE_P0 || g_app.gpuOffsetUncertainSurface) return 8976;
     return 0;
 }
 

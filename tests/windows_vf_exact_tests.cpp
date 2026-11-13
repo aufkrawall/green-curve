@@ -19,6 +19,8 @@ using NvApiFunc = int (*)(void*, void*);
 struct App {
     const VfBackendSpec* vfBackend = &g_vfBackendPascal;
     void* gpuHandle = nullptr;
+    nvmlDevice_t nvmlDevice = nullptr;
+    gc_u32 gpuOffsetOwnedSurface = 0;
     unsigned char vfMask[32]{};
     VFCurvePoint curve[VF_NUM_POINTS]{};
     int freqOffsets[VF_NUM_POINTS]{};
@@ -27,6 +29,7 @@ struct App {
     bool vfFrequenciesHzValid = true;
     bool vfOffsetsHzValid = true, loaded = true;
 } g_app;
+static NvmlApi g_nvml_api{};
 struct Driver {
     int raw[VF_NUM_POINTS]{};
     int gets = 0, sets = 0, rebuilds = 0;
@@ -35,7 +38,15 @@ struct Driver {
     bool modelFrequency = false;
     gc_i64 baseHz[VF_NUM_POINTS]{};
     gc_i64 shiftAfterWriteHz = 0;
+    int scalarMHz = 0, scalarReads = 0, scalarWrites = 0, capWrites = 0;
 } driver;
+static nvmlReturn_t scalar_get(nvmlDevice_t, nvmlClockOffset_t* info) {
+    ++driver.scalarReads; info->clockOffsetMHz = driver.scalarMHz;
+    info->minClockOffsetMHz = -1000; info->maxClockOffsetMHz = 1000; return NVML_SUCCESS;
+}
+static nvmlReturn_t scalar_set(nvmlDevice_t, nvmlClockOffset_t*) { ++driver.scalarWrites; return NVML_SUCCESS; }
+static nvmlReturn_t cap_set(nvmlDevice_t, unsigned int, unsigned int) { ++driver.capWrites; return NVML_SUCCESS; }
+static nvmlReturn_t cap_reset(nvmlDevice_t) { ++driver.capWrites; return NVML_SUCCESS; }
 static void debug_log(const char*, ...) {}
 static void set_last_apply_phase(const char*) {}
 static void set_message(char* out, size_t size, const char* format, ...) {
@@ -112,12 +123,57 @@ static bool read_live_curve_snapshot_settled(int, int, bool* offsetsOk) {
 #include "gpu_backend_apply_authoring.h"
 static void initialize() {
     driver = {}; g_app = {}; g_app.gpuHandle = &driver;
+    g_nvml_api = {};
     for (int i = 0; i < 8; ++i) {
         g_app.vfMask[i / 8] |= (unsigned char)(1u << (i % 8));
         g_app.curve[i] = {1500000, 650000u + (unsigned int)i * 6250};
     }
     driver.raw[7] = 30001;
     nvapi_read_offsets();
+}
+static int windows_scalar_curve_submission_cases() {
+    initialize(); driver.modelFrequency = true;
+    for (int i = 0; i < 8; ++i) driver.baseHz[i] = 900000500LL + i * 100000000LL;
+    nvapi_read_curve();
+    g_nvml_api.getClockOffsets = scalar_get; g_nvml_api.setClockOffsets = scalar_set;
+    DesiredSettings d{}; d.applicationScope = DESIRED_SCOPE_UPDATE_INCLUDED;
+    d.authoring.topologyBound = 1; d.authoring.topologyCount = 8;
+    for (int i = 0; i < 8; ++i) d.authoring.voltageUv[i] = g_app.curve[i].volt_uV;
+    d.hasGpuOffset = 1; d.gpuOffsetMHz = 100; d.authoring.graphicsPrecise = 1;
+    d.authoring.graphicsSurface = DESIRED_GRAPHICS_P0; d.authoring.graphicsOffsetHz = 100000000;
+    d.curvePointCaptured[0] = 1; d.curvePointCapturedOffsetHz[0] = -500;
+    ScalarCurveSubmissionReview review{}; review.installedGuardRequired = true; char why[256]{};
+    if (apply_authoring_precheck_before_writes(&d, false, why, sizeof(why), &review) || review.installedGuardRequired ||
+        !strstr(why, "pin evidence") || driver.sets || driver.scalarWrites || driver.capWrites) return 8965;
+    d.curvePointCapturedOffsetHz[0] = 500;
+    if (!apply_authoring_precheck_before_writes(&d, false, why, sizeof(why), &review) ||
+        review.installedGuardRequired || !review.beforeValid || review.beforeHz || driver.sets) return 8966;
+    d.curvePointCapturedOffsetHz[0] = -500; d.hasLock = 1; d.lockCi = 4; d.lockMode = LOCK_MODE_FLATTEN;
+    d.lockMHz = 1600; d.authoring.lockPrecise = 1; d.authoring.lockFrequencyHz = 1600000000;
+    if (apply_authoring_precheck_before_writes(&d, false, why, sizeof(why), &review) || review.installedGuardRequired ||
+        !strstr(why, "available clock ceiling") || driver.sets || driver.scalarWrites || driver.capWrites) return 8967;
+    g_nvml_api.setGpuLockedClocks = cap_set; g_nvml_api.resetGpuLockedClocks = cap_reset;
+    if (!apply_authoring_precheck_before_writes(&d, false, why, sizeof(why), &review) || !review.installedGuardRequired ||
+        driver.sets || driver.scalarWrites || driver.capWrites) return 8968;
+    driver.scalarMHz = 200;
+    if (!apply_authoring_precheck_before_writes(&d, false, why, sizeof(why), &review) || review.installedGuardRequired ||
+        driver.sets || driver.scalarWrites || driver.capWrites) return 8969;
+    struct Guard {
+        bool armed = false, writeAttempted = false;
+        int retained = 0;
+        void retain(const char*) { ++retained; }
+    } guard;
+    bool attempted = true;
+    if (apply_authoring_scalar_review_refusal(guard, why, sizeof(why), &attempted) || attempted ||
+        guard.retained || driver.sets || driver.scalarWrites || driver.capWrites) return 8983;
+    guard.armed = guard.writeAttempted = attempted = true;
+    if (apply_authoring_scalar_review_refusal(guard, why, sizeof(why), &attempted) || !attempted ||
+        guard.retained != 1 || !strstr(why, "installed transition ceiling remains") ||
+        driver.sets || driver.scalarWrites || driver.capWrites) return 8984;
+    guard.armed = false;
+    if (apply_authoring_scalar_review_refusal(guard, why, sizeof(why), &attempted) || !attempted ||
+        guard.retained != 1 || driver.sets || driver.scalarWrites || driver.capWrites) return 8985;
+    return 0;
 }
 static int windows_authoring_cases() {
     DesiredSettings routeRequest{};
@@ -247,6 +303,7 @@ static int windows_authoring_cases() {
 }
 
 int run_windows_vf_exact_tests() {
+    if (int failure = windows_scalar_curve_submission_cases()) return failure;
     if (int failure = windows_authoring_cases()) return failure;
     gc_i64 hz[VF_NUM_POINTS]{}; bool mask[VF_NUM_POINTS]{};
     initialize(); mask[0] = mask[1] = mask[2] = true;

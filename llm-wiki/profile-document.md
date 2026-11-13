@@ -852,3 +852,44 @@ results remain conditional. Removing this rule fails fixture 8919. Legacy
 projection provenance rules are unchanged. Fixtures also cover signed raw
 remainders, grid/range refusals, physical power conversion, missing evidence,
 fixed floors, stale bindings, truncated issue lists and unchanged CLI files.
+
+## Named scalar submission protection (2026-11-13)
+
+Source anchors: `source/scalar_curve_submission_policy.h`,
+`source/gpu_backend_apply_authoring.h`, `source/gpu_backend_apply_ceiling.h`,
+`source/gpu_backend_graphics_offset.h`, `source/linux_graphics_offset_control.h`,
+`source/linux_backend_mutation.cpp`, `tests/scalar_curve_submission_tests.cpp`
+(8948-8964, 8981), `tests/windows_vf_exact_tests.cpp` (8965-8969, 8983-8985),
+`tests/linux_clock_offset_tests.cpp` (8970-8973, 8977-8980, 8982),
+`tests/memory_recovery_tests.cpp` (8974-8976),
+`tests/clock_transition_tests.cpp` (executing guard fixtures).
+
+New bound named scalars are classified against exact current controls before
+mutation. A scalar increase followed by lower captured controls or an absolute
+rebase requires installed protection. A Windows owned-surface handback also
+requires it when combined with curve authority. Missing current evidence or
+guard capability refuses before setters. Non-increasing scalars and non-lowering
+raw controls retain their ordinary path; no family allowlist is added.
+
+A declared clock target supplies the existing intent ceiling. For these split
+transitions, both platform guards require actual installation: unsupported
+FLATTEN protection no longer grants permission to continue unprotected. Legacy
+strategies retain their existing exception. Lockless splits remain unavailable
+without a proven composition/transition model and pin evidence; sampled curve
+MHz never supplies a guessed clamp over an unreadable external pin. Full
+lockless modeled-peak and durable route recovery remain activation prerequisites.
+
+The selected scalar is checked again at submission against the reviewed value.
+A changed current refuses before that setter. Windows preserves VF controls
+and retains an already installed ceiling; without earlier writes it reports a
+read-only refusal. Linux excludes the untouched scalar from
+rollback and reports no write when that was its only phase. Previously installed
+ceiling phases remain in rollback evidence. Surface handback keeps normal
+recovery when it already wrote a control.
+
+Diagnostics emit one bounded `scalar-curve:` classification and a fixed
+`graphics-offset:` reason on changed current. Fake-driver fixtures count actual
+scalar, VF and ceiling calls, execute both guards, verify current-value binding,
+and drive the real transaction dispatcher through zero-write and guarded
+refusals. Removing the rollback phase filter fails fixture 8979. Authoring replay
+remains gated; these checks do not exercise hardware.

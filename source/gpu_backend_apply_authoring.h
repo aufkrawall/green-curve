@@ -5,6 +5,20 @@
 #include "desired_graphics_surface.h"
 #include "windows_graphics_offset_route.h"
 #include "vf_control_write_policy.h"
+#include "scalar_curve_submission_policy.h"
+#include "graphics_offset_control.h"
+
+template <class Guard>
+static bool apply_authoring_scalar_review_refusal(Guard& guard, char* why, size_t size,
+    bool* writeAttempted) {
+    const bool retained = guard.armed;
+    if (retained) guard.retain("the reviewed scalar changed before submission; VF controls remain untouched");
+    if (!guard.writeAttempted && writeAttempted) *writeAttempted = false;
+    set_message(why, size, "Reviewed graphics control changed; capture and review again."
+        " No graphics scalar or VF curve write was attempted.%s",
+        retained ? " The installed transition ceiling remains until recovery." : "");
+    return false;
+}
 
 // Included after the Windows planner and exact writer. Frozen originals are
 // used before memory writes; corrections use fresh paired samples but retain
@@ -50,7 +64,8 @@ static bool apply_verify_authoring_curve_targets(const CurveAuthoringTargets& ta
 }
 
 static bool apply_authoring_precheck_before_writes(const DesiredSettings* d, bool composeGraphics,
-    char* why, size_t whySize) {
+    char* why, size_t whySize, ScalarCurveSubmissionReview* review = nullptr) {
+    if (review) *review = {};
     if (!curve_authoring_needs_exact_targets(d)) return true;
     bool offsetsOk = false;
     if (!read_live_curve_snapshot_settled(1, 0, &offsetsOk) || !offsetsOk ||
@@ -80,6 +95,24 @@ static bool apply_authoring_precheck_before_writes(const DesiredSettings* d, boo
         set_message(why, whySize, "Exact curve preflight could not resolve point %d. Review its voltage, writable state and exact target. Nothing was changed.", issue.ci);
         debug_log("curve-authoring: pre-write target refusal status=%d ci=%d targetHz=%lld\n",
             (int)issue.status, issue.ci, issue.requestedHz); return false;
+    }
+    if (desired_named_graphics_surface(*d)) {
+        const auto scalar = graphics_offset_control_plan(*d, g_nvml_api, g_app.nvmlDevice);
+        const auto transition = scalar_curve_submission_plan(*d, graphics_offset_control_ready(scalar),
+            (long long)scalar.before.value * 1000000, in.programmedOffsetsHz, true,
+            g_nvml_api.setGpuLockedClocks && g_nvml_api.resetGpuLockedClocks,
+            g_app.gpuOffsetOwnedSurface && g_app.gpuOffsetOwnedSurface != scalar.surface);
+        debug_log("scalar-curve: preflight status=%d loweredCaptured=%d baselineDependent=%d\n",
+            (int)transition.status, transition.loweredCaptured, transition.baselineDependent ? 1 : 0);
+        if (!scalar_curve_submission_allowed(transition)) {
+            set_message(why, whySize, "Curve transition: %s. Nothing was changed.", scalar_curve_submission_reason(transition.status));
+            return false;
+        }
+        if (review) {
+            review->installedGuardRequired = transition.status == SCALAR_CURVE_INSTALL_GUARD;
+            review->beforeValid = graphics_offset_control_ready(scalar);
+            review->beforeHz = (long long)scalar.before.value * 1000000;
+        }
     }
     return true;
 }

@@ -76,8 +76,10 @@ struct ApplyClockCeilingGuard {
     // the stability proof stays invalidated.
     bool writeAttempted = false;
     ApplyClockCeilingArmResult armResult = APPLY_CEILING_ARM_NOT_NEEDED;
+    bool installedGuardRequired = false;
 
-    explicit ApplyClockCeilingGuard(const DesiredSettings* desired, bool releasesCurveCeiling = false) {
+    explicit ApplyClockCeilingGuard(const DesiredSettings* desired, bool releasesCurveCeiling = false,
+        bool strictScalarGuard = false) : installedGuardRequired(strictScalarGuard) {
         if (!desired) return;
         // Resolve lazy NVML initialisation BEFORE reading the entry points.
         // A null pointer that only means "NVML has not been loaded yet" used
@@ -213,7 +215,7 @@ struct ApplyClockCeilingGuard {
     // transition is never an absence in the log.
     void log_unprotected_if_proceeding() const {
         if (!apply_clock_ceiling_proceeds_unprotected(plan.required, armResult,
-                                                      plan.reason))
+                                                      plan.reason, installedGuardRequired))
             return;
         // Says what was actually established, not more. The driver rejected
         // every clamp form this request is PERMITTED to use as NOT_SUPPORTED --
@@ -239,7 +241,7 @@ struct ApplyClockCeilingGuard {
     // Whether this apply must stop before mutating anything.
     bool must_refuse_transition() const {
         return apply_clock_ceiling_transition_must_refuse(plan.required, armResult,
-                                                          plan.reason);
+                                                          plan.reason, installedGuardRequired);
     }
 
     // What to tell the user.  Names the specific transition and the specific
@@ -248,15 +250,12 @@ struct ApplyClockCeilingGuard {
     // still works: fan, memory, power and any request that does not raise a
     // clock past the outgoing envelope are unaffected.
     void refusal_message(char* out, size_t outSize) const {
-        // The strong wording IS earned on this path, unlike in the log line
-        // above: UNSUPPORTED only reaches a refusal for a HARD pin, where the
-        // symmetric form is permitted -- so
-        // both forms were tried and both answered NOT_SUPPORTED (or the entry
-        // points were missing outright).
+        // Unsupported describes the forms this request may use, including
+        // strict scalar-to-curve transitions; it is not a family diagnosis.
         const char* why = (armResult == APPLY_CEILING_ARM_REFUSED)
             ? "the driver refused it"
             : (armResult == APPLY_CEILING_ARM_UNSUPPORTED)
-                ? "this GPU has no locked-clock control"
+                ? "no permitted clamp form was supported for this transition"
                 : "this driver exposes no usable locked-clock control";
         set_message(out, outSize,
             "This profile switch needs a temporary %u MHz clock cap while the VF"

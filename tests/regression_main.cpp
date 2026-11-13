@@ -1045,6 +1045,7 @@ int run_hardware_capture_tests();
 int run_hardware_capture_service_tests();
 int run_service_control_review_tests();
 int run_profile_control_feasibility_tests();
+int run_scalar_curve_submission_tests();
 int run_windows_vf_exact_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
@@ -2742,6 +2743,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int controlPlanFailure = run_profile_control_feasibility_tests()) {
         fprintf(stderr, "profile control feasibility regression failed: %d\n", controlPlanFailure);
         return controlPlanFailure;
+    }
+    if (int scalarTransitionFailure = run_scalar_curve_submission_tests()) {
+        fprintf(stderr, "scalar curve submission regression failed: %d\n", scalarTransitionFailure);
+        return scalarTransitionFailure;
     }
     if (int contractFailure = run_profile_document_contract_tests()) {
         fprintf(stderr, "profile document contract regression failed: %d\n", contractFailure);

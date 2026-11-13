@@ -266,9 +266,11 @@ enum ApplyClockCeilingArmResult {
 // that hardware. The caller logs the unprotected transition at full volume.
 static inline bool apply_clock_ceiling_transition_must_refuse(
     bool required, ApplyClockCeilingArmResult result,
-    ApplyClockCeilingReason reason = APPLY_CEILING_REASON_REQUESTED_LOCK) {
-    if (!required) return false;
+    ApplyClockCeilingReason reason = APPLY_CEILING_REASON_REQUESTED_LOCK,
+    bool installedGuardRequired = false) {
+    if (!required && !installedGuardRequired) return false;
     if (result == APPLY_CEILING_ARM_INSTALLED) return false;
+    if (installedGuardRequired) return true;
     if (result == APPLY_CEILING_ARM_UNSUPPORTED &&
         (reason == APPLY_CEILING_REASON_RESET_DROPS_CAP ||
          reason == APPLY_CEILING_REASON_REQUESTED_FLATTEN))
@@ -300,10 +302,10 @@ static inline bool apply_clock_requires_unavailable_scalar_guard(
 // the rule that allows it.
 static inline bool apply_clock_ceiling_proceeds_unprotected(
     bool required, ApplyClockCeilingArmResult result,
-    ApplyClockCeilingReason reason) {
+    ApplyClockCeilingReason reason, bool installedGuardRequired = false) {
     if (!required) return false;
     if (result == APPLY_CEILING_ARM_INSTALLED) return false;
-    return !apply_clock_ceiling_transition_must_refuse(required, result, reason);
+    return !apply_clock_ceiling_transition_must_refuse(required, result, reason, installedGuardRequired);
 }
 
 static inline const char* apply_clock_ceiling_arm_result_name(

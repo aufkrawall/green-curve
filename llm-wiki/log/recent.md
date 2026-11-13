@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Named scalar submission protection
+
+- Bound scalar-to-curve requests classify raising submissions before mutation.
+  Risky splits require an actually installed guard; unreadable lockless pin or
+  composition evidence cannot become a guessed clamp.
+- Both guards preserve strict refusal, and submission rechecks the selected
+  scalar. A refusal before any write skips scalar/VF recovery; already
+  installed ceilings retain recovery ownership. Cases 8948-8985 and production
+  guard fixtures count driver calls, including retained-cap refusals. Removing
+  the rollback phase filter fails 8979. Replay remains gated; see
+  [profile-document.md](../profile-document.md#named-scalar-submission-protection-2026-11-13).
+
 ## 2026-11-13: Passive profile control feasibility
 
 - Profile checking now evaluates exact curve constraints and scalar grids/ranges

@@ -50,6 +50,7 @@ REGRESSION_SOURCES = (
     'hardware_capture_service_tests.cpp',
     'service_control_review_tests.cpp',
     'profile_control_feasibility_tests.cpp',
+    'scalar_curve_submission_tests.cpp',
     'captured_schema_tests.cpp',
     'captured_intent_runtime_tests.cpp',
     'scoped_apply_tests.cpp',

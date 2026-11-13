@@ -299,11 +299,12 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
     const DesiredSettings* d = context->desired;
     switch (phase) {
         case LINUX_MUTATION_LOCK_CEILING:
-            return linux_apply_arm_transition_ceiling(g, d, context->previousIntent);
+            return linux_apply_arm_transition_ceiling(g, d, context->previousIntent, context->scalarReview.installedGuardRequired);
         case LINUX_MUTATION_RESET_BASELINE:
             return linux_apply_reset_baseline(g, d);
         case LINUX_MUTATION_GPU_OFFSET:
-            if (desired_named_graphics_surface(*d)) return linux_apply_named_graphics_offset(g, d);
+            if (desired_named_graphics_surface(*d)) return linux_apply_named_graphics_offset(g, d,
+                context->scalarReview.beforeValid ? &context->scalarReview : nullptr);
             return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS,
                 context->composedGpuOffset ? 0 : d->gpuOffsetMHz);
         case LINUX_MUTATION_MEM_OFFSET: {
@@ -377,6 +378,8 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
 static bool linux_apply_transaction_rollback(void* opaque, unsigned int phases) {
     LinuxApplyTransactionContext* context = (LinuxApplyTransactionContext*)opaque;
     char rollback[256] = {};
+    phases = scalar_curve_rollback_phases(context->scalarReview, phases, LINUX_MUTATION_GPU_OFFSET);
+    if (!phases) return true;
     return linux_backend_restore_snapshot(context->gpu, context->snapshot, phases,
                                           rollback, sizeof(rollback));
 }
@@ -433,7 +436,9 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         if (result) gc_strlcpy(result, resultSize, preflight);
         return mutation;
     }
-    if (!linux_backend_preflight(g, d, &snapshot, preflight, sizeof(preflight), graphicsRouteOverride)) {
+    ScalarCurveSubmissionReview scalarReview{};
+    if (!linux_authoring_scalar_transition_precheck(g, d, snapshot, scalarReview, preflight, sizeof(preflight)) ||
+        !linux_backend_preflight(g, d, &snapshot, preflight, sizeof(preflight), graphicsRouteOverride)) {
         LinuxMutationResult mutation = {};
         if (result) gc_strlcpy(result, resultSize, preflight[0] ? preflight : "Apply preflight failed");
         return mutation;
@@ -442,6 +447,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     g_linuxOutgoingCeilingMHz = linux_outgoing_ceiling_mhz(g, previousIntent);
     LinuxApplyTransactionContext context = {g, d, &snapshot, committedIntent,
         previousIntent, {}, {}, d->fanPercent, false, false, false, false, graphicsRouteOverride, {}};
+    context.scalarReview = scalarReview;
     gc_u32 requestedDomains = service_desired_mutation_domains(d);
     int cleanupPointCount = 0;
     context.transitionBuild =
@@ -569,6 +575,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     if (d->hasVideoClkOffsetKhz) requested |= LINUX_MUTATION_VIDEO_CLK;
     LinuxMutationResult mutation = linux_execute_transaction(
         requested, linux_apply_transaction_step, linux_apply_transaction_rollback, &context);
+    scalar_curve_finalize_write_evidence(context.scalarReview, LINUX_MUTATION_GPU_OFFSET, mutation);
     char msg[512] = {};
     gc_snprintf(msg, sizeof(msg), "%s: %d phase(s), %d failed%s%s",
                 mutation.success ? "Applied" : "Apply failed",

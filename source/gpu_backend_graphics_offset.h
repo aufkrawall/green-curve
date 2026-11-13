@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "graphics_offset_control.h"
+#include "scalar_curve_submission_policy.h"
 
 static bool nvapi_write_named_gpu_offset(int targetMHz, gc_u32 surface) {
     g_applyScalarShiftEvidence.clear();
@@ -23,7 +24,8 @@ static bool nvapi_write_named_gpu_offset(int targetMHz, gc_u32 surface) {
     return written.verified;
 }
 
-static bool nvapi_set_gpu_offset_precise(gc_i64 offsetHz, gc_u32 surface, bool forceWrite) {
+static bool nvapi_set_gpu_offset_precise_checked(gc_i64 offsetHz, gc_u32 surface, bool forceWrite, ScalarCurveSubmissionReview* review) {
+    if (review) review->refusedWithoutWrite = false;
     if (offsetHz < -1000000000LL || offsetHz > 1000000000LL) return false;
     DesiredSettings request{}; request.hasGpuOffset = 1;
     request.gpuOffsetMHz = (int)(offsetHz / 1000000);
@@ -37,6 +39,11 @@ static bool nvapi_set_gpu_offset_precise(gc_i64 offsetHz, gc_u32 surface, bool f
             (int)plan.status, (unsigned)surface, offsetHz, (unsigned)g_app.gpuOffsetUncertainSurface);
         return false;
     }
+    if (review && review->beforeValid && (gc_i64)plan.before.value * 1000000 != review->beforeHz) {
+        review->refusedWithoutWrite = true;
+        debug_log("graphics-offset: reviewed current changed surface=%u; refusing before scalar submission\n", (unsigned)surface);
+        return false;
+    }
     const gc_u32 previous = g_app.gpuOffsetOwnedSurface;
     if (previous && previous != surface) {
         if (!nvml_exact_clock_surface_available(g_nvml_api, NVML_CLOCK_GRAPHICS, previous) ||
@@ -45,6 +52,13 @@ static bool nvapi_set_gpu_offset_precise(gc_i64 offsetHz, gc_u32 surface, bool f
             return false;
         }
         if (!nvapi_write_named_gpu_offset(0, previous)) return false;
+        if (review && review->beforeValid) {
+            const auto current = nvml_exact_clock_read(g_nvml_api, g_app.nvmlDevice, NVML_CLOCK_GRAPHICS, surface);
+            if (!current.valid || (gc_i64)current.value * 1000000 != review->beforeHz) {
+                debug_log("graphics-offset: reviewed current changed during owned-surface handback; refusing target submission\n");
+                return false;
+            }
+        }
     }
     if (!forceWrite && !g_app.gpuOffsetUncertainSurface && plan.status == GRAPHICS_OFFSET_INERT &&
         (!previous || previous == surface)) {
@@ -55,6 +69,9 @@ static bool nvapi_set_gpu_offset_precise(gc_i64 offsetHz, gc_u32 surface, bool f
     return nvapi_write_named_gpu_offset(plan.targetMHz, surface);
 }
 
+static bool nvapi_set_gpu_offset_precise(gc_i64 offsetHz, gc_u32 surface, bool forceWrite) {
+    return nvapi_set_gpu_offset_precise_checked(offsetHz, surface, forceWrite, nullptr);
+}
 // Reset/rollback repair the actual named surface before any VF baseline can
 // remove its protection. A VF-global backend must not subtract a flatten floor
 // as though it were a separate scalar; its next phase resets the curve itself.
