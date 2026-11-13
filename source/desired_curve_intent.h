@@ -80,7 +80,9 @@ static inline bool desired_curve_point_offset_from_base_hz(const Settings* d, in
         // Both operands are nonnegative signed values, so subtraction is safe.
         value = target - baseHz;
     } else return false;
-    if (value < -2147483648000LL || value > 2147483647000LL) return false;
+    // Absolute offsets are derived math, possibly awaiting a fresh baseline;
+    // their destination range/raw conversion is checked by the target planner.
+    if (kind != DESIRED_CURVE_ABSOLUTE && (value < -2147483648000LL || value > 2147483647000LL)) return false;
     *out = value;
     return true;
 }

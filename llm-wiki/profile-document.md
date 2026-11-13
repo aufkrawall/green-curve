@@ -574,9 +574,10 @@ integer-MHz NVML surface. Projection components preserve exact graphics intent
 and identity-based exclusions independently of display MHz.
 
 Captured and projected controls remain offset authority, including zero. The
-checked exact-baseline adapter preserves output on failure and rejects values
-outside the physical signed-control envelope. Absolute intent uses the exact
-sampled base. Range excesses keep the existing nearest-bin proof rule, and
+checked exact-baseline adapter preserves output on failure. Captured/projected
+controls retain the signed physical envelope; absolute compilation keeps checked
+64-bit differences until destination range/grid validation. Absolute intent uses
+the exact sampled base. Range excesses keep the existing nearest-bin proof rule, and
 legacy prefix/tail verification keeps its established display-bin semantics;
 precise authority does not acquire a new display-rounding tolerance. First and
 worst issues retain exact target/base/adjustment/limit values, with bounded
@@ -614,3 +615,43 @@ Fake-driver cases cover positive/negative half-kHz controls, owned zero, an
 absolute correction and untouched raw remainders, plus zero-write refusals for
 unsupported fractions and ranges. The builder fixture fails before the fix.
 Runtime replay remains gated pending transition and full authoring integration.
+
+## Shared exact target compiler and Linux adapter (2026-11-13)
+
+Source anchors: `source/curve_authoring_targets.h`,
+`source/linux_curve_authoring_targets.h`, `source/linux_backend_curve_build.h`,
+`source/linux_backend_curve_plan.h`, `source/linux_backend_apply_context.h`,
+`source/linux_curve_targets.h`, `source/curve_point_verify_policy.h`,
+`tests/curve_authoring_target_cases.h`, `tests/linux_authoring_factory_cases.h`
+(8783-8809).
+
+The shared compiler retains physical-Hz offsets and absolute targets in separate
+channels. It requires matching exact samples, the complete destination voltage
+binding, writable membership, a resolved graphics route and representable raw
+controls. Captured zero remains owned; typed points override the graphics
+component; identity exclusions affect only that component. Lock tails retain
+platform strategy and precedence. Failure leaves the caller's output unchanged.
+Unknown-family default write support remains available through its backend.
+
+Only an explicitly authorized baseline reset may defer a baseline-dependent
+range failure over a shaped estimate. Deferred results carry write shape and
+absolute intent, with placeholder offsets that are never ready for writing.
+Direct offset/grid failures refuse. A verified transaction baseline must either
+compile fully representable targets or fail; the compiler does not clamp.
+
+Linux uses the exact compiler for authoring point-table work, with separate
+precision masks for submitted offsets and frequency verification. Scalar-only
+named graphics intent stays a separate surface. Rebuilds recheck full feasibility
+against the fresh baseline, retain the same topology/write shape, and replace
+both targets and exact verification metadata. Failed/deferred targets cannot
+reach the writer. Readbacks compare exact physical frequencies under the existing
+quantization tolerance, without adding display rounding. Legacy replacement
+cleanup rebinds owned voltage identities and clears released controls exactly.
+
+The focused fixtures execute the production Linux factory and rebuild helper
+without a driver. Removing the metadata assignment fails at 8800. Coverage also
+checks output preservation, signed remainders, missing samples, exclusions,
+lock strategies, fixed floors, unknown-family fallback, deferred versus proven
+range failure, exact tolerance edges and zero-write failed rebuilds. The Windows
+authoring adapter, runtime replay and transition review remain pending; existing
+runtime authoring gates stay closed.

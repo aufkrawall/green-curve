@@ -471,8 +471,14 @@ int run_ui_cases() {
 
 }  // namespace
 
+// Isolate platform SDK macros from the host-neutral cases above.
+#include "curve_authoring_target_cases.h"
+#include "linux_authoring_factory_cases.h"
+
 int run_curve_plan_tests() {
     if (int failure = curve_plan_precision_cases()) return failure;
+    if (int failure = curve_authoring_target_cases()) return failure;
+    if (int failure = linux_authoring_factory_cases()) return failure;
     if (int failure = run_writable_point_cases()) return failure;
     if (int failure = run_detect_cases()) return failure;
     if (int failure = run_planner_cases()) return failure;

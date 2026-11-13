@@ -6,6 +6,7 @@
 // from the position it occupied, so the amalgamated ordering is unchanged.
 #ifndef GREEN_CURVE_LINUX_BACKEND_APPLY_CONTEXT_H
 #define GREEN_CURVE_LINUX_BACKEND_APPLY_CONTEXT_H
+#include "curve_feasibility_message.h"
 
 struct LinuxApplyTransactionContext {
     LinuxGpuState* gpu;
@@ -36,14 +37,14 @@ struct LinuxApplyTransactionContext {
 // The curve targets for this transaction: the replacement-aware build when
 // the request owns the VF domain and a committed intent exists, else plain.
 static LinuxCurveTargetBuildResult linux_apply_build_curve(
-    LinuxApplyTransactionContext* context, int* cleanupPointCountOut) {
+    LinuxApplyTransactionContext* context, int* cleanupPointCountOut, bool rebuilding = false) {
     if (cleanupPointCountOut) *cleanupPointCountOut = 0;
     if (context->transitionBuild)
         return build_curve_transition_targets(context->gpu, context->previousIntent,
             context->committedIntent, context->curveTargets, context->curveMask,
-            cleanupPointCountOut);
+            cleanupPointCountOut, rebuilding);
     return build_curve_targets(context->gpu, context->desired,
-        context->curveTargets, context->curveMask, context->graphicsRouteOverride);
+        context->curveTargets, context->curveMask, context->graphicsRouteOverride, rebuilding);
 }
 
 // Curve targets are built before any phase runs.  When an earlier phase
@@ -59,7 +60,11 @@ static bool linux_apply_rebuild_curve_targets(LinuxApplyTransactionContext* cont
     }
     int cleanup = 0;
     LinuxCurveTargetBuildResult rebuilt =
-        linux_apply_build_curve(context, &cleanup);
+        linux_apply_build_curve(context, &cleanup, true);
+    if (rebuilt.failed || rebuilt.deferred) {
+        lb_log("curve-authoring: fresh target compilation remains unresolved; refusing VF write\n");
+        return false;
+    }
     const LinuxCurveTargetBuildResult& planned = context->plannedBuild;
     if (!linux_curve_rebuild_keeps_shape(planned, rebuilt)) {
         const int ci = linux_curve_rebuild_first_changed_point(planned, rebuilt);
@@ -75,9 +80,32 @@ static bool linux_apply_rebuild_curve_targets(LinuxApplyTransactionContext* cont
                ci >= 0 ? rebuilt.pointVoltageUv[ci] : 0u);
         return false;
     }
+    const DesiredSettings* intended = context->transitionBuild ? context->committedIntent : context->desired;
+    if (curve_authoring_needs_exact_targets(intended)) {
+        DesiredSettings rebound{}; char why[160]{};
+        if (!desired_rebind_topology(*intended, g->curve, g->vfFloor.floor, &rebound, why, sizeof(why))) {
+            lb_log("curve-authoring: rebuilt intent binding refused (%s)\n", why); return false;
+        }
+        int componentKHz[VF_NUM_POINTS]{};
+        gc_i64 componentHz[VF_NUM_POINTS]{};
+        bool stockMask[VF_NUM_POINTS]{};
+        auto in = linux_backend_curve_plan_input(g, &rebound, context->snapshot,
+            context->curveTargets, context->curveMask, componentKHz, componentHz, stockMask);
+        if (context->desired->resetOcBeforeApply) {
+            in.evidence = CURVE_PLAN_EVIDENCE_TRANSACTION_BASELINE;
+            const bool vfComponent = !intended->authoring.graphicsPrecise ||
+                intended->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT;
+            in.provenanceMode = apply_lock_pretail_provenance_mode(vfComponent, true);
+        }
+        const CurvePlanResult checked = curve_plan_evaluate(in);
+        curve_plan_log(checked, "post-baseline", [](const char* line) { lb_log("%s", line); });
+        if (checked.disposition == CURVE_PLAN_REFUSED || checked.disposition == CURVE_PLAN_UNAVAILABLE || rebuilt.deferred)
+            return false;
+    }
     lb_log("apply: curve targets rebuilt after NVML offset clear"
            " (points=%d cleanup=%d composed=%d)\n",
            rebuilt.pointCount, cleanup, rebuilt.composedGpuOffset ? 1 : 0);
+    context->plannedBuild = rebuilt;
     return true;
 }
 
@@ -124,7 +152,7 @@ static bool linux_apply_verify_curve_write(LinuxApplyTransactionContext* context
     }
     char detail[160] = {};
     bool ok = linux_verify_curve_absolute_targets(g->curve, context->plannedBuild,
-        detail, sizeof(detail)) &&
+        detail, sizeof(detail), g->curveFrequencyHz, g->vfFrequenciesHzValid) &&
         linux_verify_curve_captured_targets(g->freqOffsetsHz,
             context->plannedBuild, detail, sizeof(detail), g->vfOffsetsHzValid);
     if (!ok) lb_log("curve verify: %s\n", detail);

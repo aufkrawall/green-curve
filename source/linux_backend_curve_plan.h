@@ -39,9 +39,9 @@ static CurvePlanRange linux_curve_plan_range(LinuxGpuState* g) {
 
 // `planned` is the request the curve targets were built from (the committed
 // intent for a replacement), `targets`/`mask` the transaction's own build.
-static CurvePlanResult linux_backend_curve_plan(LinuxGpuState* g,
+static CurvePlanInput linux_backend_curve_plan_input(LinuxGpuState* g,
     const DesiredSettings* planned, const LinuxHardwareSnapshot* snapshot,
-    const int* targets, const bool* mask) {
+    const int* targets, const bool* mask, int* componentKHz, gc_i64* componentHz, bool* stockMask) {
     if (vf_floor_binding_update(&g->vfFloor, g->curve, g->freqOffsets,
                                 VF_NUM_POINTS, 0)) {
         const VfFloorTopology& floor = g->vfFloor.floor;
@@ -49,19 +49,21 @@ static CurvePlanResult linux_backend_curve_plan(LinuxGpuState* g,
                " floorRun=%d floorMHz=%d\n", g->vfFloor.topologyKey, floor.graphicsEnd,
                floor.firstPopulated, floor.floorEnd, floor.floorRun, floor.floorMHz);
     }
-    int componentKHz[VF_NUM_POINTS] = {};
-    gc_i64 componentHz[VF_NUM_POINTS] = {};
-    bool stockMask[VF_NUM_POINTS] = {};
+    for (int i = 0; i < VF_NUM_POINTS; ++i) {
+        componentKHz[i] = 0; componentHz[i] = 0; stockMask[i] = false;
+    }
     int exclude = planned->gpuOffsetExcludeLowCount;
     if (exclude < 0) exclude = 0;
+    const bool independentScalar = planned->authoring.graphicsPrecise &&
+        (planned->authoring.graphicsSurface == DESIRED_GRAPHICS_P0 || planned->authoring.graphicsSurface == DESIRED_GRAPHICS_GLOBAL);
     int ordinal = 0;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         if (g->curve[ci].freq_kHz == 0) continue;
-        if (planned->hasGpuOffset && ordinal >= exclude)
+        if (planned->hasGpuOffset && ordinal >= exclude && !independentScalar)
             componentKHz[ci] = planned->gpuOffsetMHz * 1000;
         const bool excluded = planned->authoring.identityExclusions
             ? planned->authoring.graphicsExcluded[ci] != 0 : ordinal < exclude;
-        if (planned->hasGpuOffset && !excluded) componentHz[ci] = desired_graphics_hz(*planned);
+        if (planned->hasGpuOffset && !excluded && !independentScalar) componentHz[ci] = desired_graphics_hz(*planned);
         ++ordinal;
         // A point the request does not own keeps its live offset, unless the
         // transaction releases it with a zero offset (replacement cleanup).
@@ -80,7 +82,7 @@ static CurvePlanResult linux_backend_curve_plan(LinuxGpuState* g,
         ? CURVE_PLAN_TAIL_ABSOLUTE_TARGET : CURVE_PLAN_TAIL_UNIFORM_MIN_OFFSET;
     // Linux offset points always hold their component in the VF table; the
     // base is stock only when nothing is programmed.
-    in.provenanceMode = apply_lock_pretail_provenance_mode(true,
+    in.provenanceMode = apply_lock_pretail_provenance_mode(!independentScalar,
         in.evidence == CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE);
     in.unownedAtStock = false;
     in.unownedStockMask = stockMask;
@@ -94,6 +96,17 @@ static CurvePlanResult linux_backend_curve_plan(LinuxGpuState* g,
     }
     in.lockGridHz = 1000000;
     in.offsetGridHz = vf_graphics_offset_grid_hz(g->backend);
+    return in;
+}
+
+static CurvePlanResult linux_backend_curve_plan(LinuxGpuState* g,
+    const DesiredSettings* planned, const LinuxHardwareSnapshot* snapshot,
+    const int* targets, const bool* mask) {
+    int componentKHz[VF_NUM_POINTS]{};
+    gc_i64 componentHz[VF_NUM_POINTS]{};
+    bool stockMask[VF_NUM_POINTS]{};
+    const CurvePlanInput in = linux_backend_curve_plan_input(g, planned, snapshot,
+        targets, mask, componentKHz, componentHz, stockMask);
     CurvePlanResult plan = curve_plan_evaluate(in);
     curve_plan_log(plan, "pre-write", linux_curve_plan_log_line);
     return plan;

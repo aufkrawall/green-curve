@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Shared exact targets and Linux authoring compilation
+
+- A shared compiler keeps physical offsets and absolute frequency targets in
+  separate channels, with full voltage binding, writable membership and raw-grid
+  checks. Linux consumes its exact metadata through construction, baseline
+  rebuild, driver submission and readback verification.
+- Authorized baseline preparation can defer a shaped-estimate range failure;
+  unresolved placeholders never reach a writer. Rebuilds recheck feasibility
+  and publish matching exact metadata. Cases 8783-8809 include a production
+  factory/rebuild fixture; removing the metadata assignment fails at 8800.
+- Target factories moved into a focused header to keep the Linux mutation shard
+  within its size gate. Runtime replay remains gated pending Windows authoring
+  and transition integration. See
+  [profile-document.md](../profile-document.md#shared-exact-target-compiler-and-linux-adapter-2026-11-13).
+
 ## 2026-11-13: Captured precision in Windows curve corrections
 
 - Windows target construction retains captured physical-Hz authority beside

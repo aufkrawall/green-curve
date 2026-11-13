@@ -1,5 +1,18 @@
 # Linux Backend
 
+## Exact authoring curve targets (2026-11-13)
+
+Source anchors: `source/linux_backend_curve_build.h`,
+`source/linux_curve_authoring_targets.h`, `source/linux_backend_apply_context.h`.
+
+The transaction selects the shared exact-Hz compiler for authored point-table
+work and retains the legacy builder for older intent. Rebuilds replace exact
+verification metadata as well as target arrays, and failed/deferred results
+cannot reach a VF write. Focused native fixtures and Linux cross-compiles cover
+this path; native Linux execution remains separate. Runtime authoring replay is
+still gated pending the remaining writer and transition integration. See
+[profile-document.md](profile-document.md#shared-exact-target-compiler-and-linux-adapter-2026-11-13).
+
 ## Apply baseline memory ownership (2026-11-12)
 
 Source anchors: `source/linux_apply_baseline.h`,
@@ -462,7 +475,8 @@ once, stamped by `[meta] linux_mem_migrated`:
   its Reset includes only advanced domains whose exact readback and writable
   surface are both proven. A readable-but-unwritable or unknown optional
   schema cannot make core Reset fail.
-- `linux_curve_targets.h` composes the requested curve before any write.
+- `linux_backend_curve_build.h` selects exact authoring compilation or the legacy
+  `linux_curve_targets.h` composition before any write.
   Explicit point targets win at those points; selective GPU offset covers the
   remaining eligible populated pre-lock points; exclusion counts populated
   points rather than sparse array indices; flatten/hard-lock owns the tail.

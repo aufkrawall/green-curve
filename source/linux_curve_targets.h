@@ -31,6 +31,12 @@ struct LinuxCurveTargetBuildResult {
     unsigned int pointTargetMHz[VF_NUM_POINTS];
     bool pointCapturedIntent[VF_NUM_POINTS];
     gc_i64 pointCapturedOffsetHz[VF_NUM_POINTS];
+    bool failed;
+    bool deferred;
+    bool pointExactOffset[VF_NUM_POINTS];
+    gc_i64 pointExactOffsetHz[VF_NUM_POINTS];
+    bool pointFrequencyPrecise[VF_NUM_POINTS];
+    gc_i64 pointTargetHz[VF_NUM_POINTS];
 };
 
 // Compose the complete Linux VF target in one pass.  Absolute explicit points
@@ -150,8 +156,8 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
 // the pre-write sample the targets were built from.
 static inline bool linux_verify_curve_absolute_targets(
     const VFCurvePoint* curve, const LinuxCurveTargetBuildResult& build,
-    char* detail, size_t detailSize) {
-    if (!curve) return false;
+    char* detail, size_t detailSize, const gc_i64* frequencyHz = nullptr, bool frequencyExact = false) {
+    if (!curve || build.failed || build.deferred) return false;
     auto freqAt = [&](int ci) { return curve[ci].freq_kHz; };
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (!build.pointMask[ci] || !build.pointAbsoluteIntent[ci]) continue;
@@ -160,7 +166,15 @@ static inline bool linux_verify_curve_absolute_targets(
                 "VF point %d has no fresh readback", ci);
             return false;
         }
-        if (!curve_point_absolute_target_verified_over(freqAt, ci, VF_NUM_POINTS,
+        if (build.pointFrequencyPrecise[ci]) {
+            if (!frequencyExact || !frequencyHz ||
+                !curve_point_absolute_target_verified_hz_over(freqAt,
+                    [&](int i) { return frequencyHz[i]; }, ci, VF_NUM_POINTS, build.pointTargetHz[ci])) {
+                if (detail) gc_snprintf(detail, detailSize,
+                    "VF point %d exact frequency did not verify against %lld Hz", ci, build.pointTargetHz[ci]);
+                return false;
+            }
+        } else if (!curve_point_absolute_target_verified_over(freqAt, ci, VF_NUM_POINTS,
                 build.pointTargetMHz[ci])) {
             unsigned int actualMHz = curve_display_mhz_from_khz(curve[ci].freq_kHz);
             if (detail) gc_snprintf(detail, detailSize,
@@ -175,17 +189,18 @@ static inline bool linux_verify_curve_absolute_targets(
 static inline bool linux_verify_curve_captured_targets(const gc_i64* offsetsHz,
     const LinuxCurveTargetBuildResult& build, char* detail, size_t detailSize,
     bool exactReadbackValid = true) {
-    if (!offsetsHz) return false;
+    if (!offsetsHz || build.failed || build.deferred) return false;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
-        if (!build.pointCapturedIntent[ci]) continue;
+        if (!build.pointCapturedIntent[ci] && !build.pointExactOffset[ci]) continue;
         if (!exactReadbackValid) {
-            if (detail) gc_snprintf(detail, detailSize, "Captured VF offset readback is unavailable");
+            if (detail) gc_snprintf(detail, detailSize, "Exact VF offset readback is unavailable");
             return false;
         }
-        if (offsetsHz[ci] != build.pointCapturedOffsetHz[ci]) {
+        const gc_i64 expected = build.pointExactOffset[ci] ? build.pointExactOffsetHz[ci] : build.pointCapturedOffsetHz[ci];
+        if (offsetsHz[ci] != expected) {
             if (detail) gc_snprintf(detail, detailSize,
-                "Captured VF point %d offset is %lld Hz, requested %lld Hz",
-                ci, offsetsHz[ci], build.pointCapturedOffsetHz[ci]);
+                "VF point %d offset is %lld Hz, requested %lld Hz",
+                ci, offsetsHz[ci], expected);
             return false;
         }
     }
@@ -230,7 +245,7 @@ static inline int linux_curve_rebuild_first_changed_point(
 
 static inline bool linux_curve_rebuild_keeps_shape(const LinuxCurveTargetBuildResult& planned,
                                                    const LinuxCurveTargetBuildResult& rebuilt) {
-    return rebuilt.pointCount > 0 && rebuilt.pointCount == planned.pointCount &&
+    return !planned.failed && !rebuilt.failed && rebuilt.pointCount > 0 && rebuilt.pointCount == planned.pointCount &&
         rebuilt.composedGpuOffset == planned.composedGpuOffset &&
         rebuilt.lockTail == planned.lockTail &&
         linux_curve_rebuild_first_changed_point(planned, rebuilt) < 0;

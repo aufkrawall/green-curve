@@ -286,32 +286,7 @@ static bool linux_power_request_is_inert(const DesiredSettings* d,
 
 #include "linux_backend_preflight.h"
 #include "linux_memory_curve_preservation.h"
-
-// Build per-point absolute-target curve offsets from a DesiredSettings request.
-// offset_kHz = targetMHz*1000 - stockFreq_kHz  (mirrors the Windows correction
-// loop's `targetMHz*1000 - liveFreq`).  Handles FLATTEN lock by applying a
-// uniform floor offset (range minimum) to tail points beyond the lock index
-// (the Build-109 uniform-tail-floor approach).
-static LinuxCurveTargetBuildResult build_curve_targets(LinuxGpuState* g,
-    const DesiredSettings* d, int* targetOffsets, bool* pointMask, int graphicsRouteOverride = 0) {
-    int mn = 0, mx = 0;
-    curve_offset_range_khz(g, &mn, &mx);
-    (void)mx;
-    return linux_build_curve_targets(g->curve, g->freqOffsets, d, mn,
-        targetOffsets, pointMask, graphicsRouteOverride);
-}
-
-static LinuxCurveTargetBuildResult build_curve_transition_targets(
-    LinuxGpuState* g, const DesiredSettings* previousIntent,
-    const DesiredSettings* committedIntent, int* targetOffsets,
-    bool* pointMask, int* cleanupPointCountOut) {
-    int mn = 0, mx = 0;
-    curve_offset_range_khz(g, &mn, &mx);
-    (void)mx;
-    return linux_build_curve_transition_targets(
-        g->curve, g->freqOffsets, previousIntent, committedIntent, mn,
-        targetOffsets, pointMask, cleanupPointCountOut);
-}
+#include "linux_backend_curve_build.h"
 
 #include "linux_backend_apply_context.h"
 #include "linux_apply_baseline.h"
@@ -352,9 +327,18 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
         }
         case LINUX_MUTATION_CURVE: {
             if (!linux_apply_rebuild_curve_targets(context)) return false;
+            if (context->plannedBuild.failed || context->plannedBuild.deferred) {
+                lb_log("curve-authoring: refusing unresolved targets before VF write\n");
+                return false;
+            }
+            gc_i64 targetsHz[VF_NUM_POINTS]{}; bool exactMask[VF_NUM_POINTS]{};
+            for (int i = 0; i < VF_NUM_POINTS; ++i) {
+                const auto& built = context->plannedBuild;
+                exactMask[i] = built.pointExactOffset[i] || built.pointCapturedIntent[i];
+                targetsHz[i] = built.pointExactOffset[i] ? built.pointExactOffsetHz[i] : built.pointCapturedOffsetHz[i];
+            }
             bool curveOk = apply_curve_offsets_verified(g, context->curveTargets,
-                context->curveMask, 25, context->plannedBuild.pointCapturedOffsetHz,
-                context->plannedBuild.pointCapturedIntent) &&
+                context->curveMask, 25, targetsHz, exactMask) &&
                 linux_apply_verify_curve_write(context);
             // The curve is now at its new (raised) shape and LINUX_MUTATION_LOCK
             // has not run: this is the instant that was uncapped before
@@ -457,6 +441,11 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     LinuxCurveTargetBuildResult curveBuild =
         linux_apply_build_curve(&context, &cleanupPointCount);
     context.plannedBuild = curveBuild;
+    if (curveBuild.failed) {
+        LinuxMutationResult mutation{};
+        if (result) gc_strlcpy(result, resultSize, "Exact VF targets could not be resolved. Nothing was changed.");
+        return mutation;
+    }
     // A curve request the shared planner PROVES infeasible (a flatten below a
     // pre-tail point, an anchor or tail beyond the range, a floor or foreign
     // point) is refused here, before any phase can write.

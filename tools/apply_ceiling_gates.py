@@ -591,6 +591,17 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(_p(ctx, "linux_backend_apply_context.h"),
                  "if (!linux_curve_rebuild_keeps_shape(planned, rebuilt)) {",
                  "a Linux curve rebuild that changed the plan's shape is refused, not written")
+    require_text(_p(ctx, "linux_backend_apply_context.h"), "context->plannedBuild = rebuilt;",
+                 "Linux exact offset metadata is refreshed with rebuilt targets")
+    require_text(linux_mutation_cpp, "if (context->plannedBuild.failed || context->plannedBuild.deferred)",
+                 "unresolved exact targets cannot reach the Linux VF writer")
+    require_order_in_operation(linux_mutation_cpp, "case LINUX_MUTATION_CURVE:",
+                 "if (context->plannedBuild.failed || context->plannedBuild.deferred)",
+                 "bool curveOk = apply_curve_offsets_verified(",
+                 "Linux rejects deferred compilation before submitting a VF write")
+    require_text(linux_mutation_cpp,
+                 "exactMask[i] = built.pointExactOffset[i] || built.pointCapturedIntent[i];",
+                 "Linux submits exact compiled offsets as well as captured controls")
     require_text(linux_mutation_cpp, "context.plannedBuild = curveBuild;",
                  "the Linux rebuild is compared with the build the phase plan used")
     require_text(_p(ctx, "linux_curve_targets.h"),

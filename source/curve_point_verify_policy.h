@@ -68,4 +68,15 @@ static inline bool curve_point_absolute_target_verified_over(
     return delta <= toleranceMHz;
 }
 
+template <typename FreqAt, typename ExactFreqAt>
+static inline bool curve_point_absolute_target_verified_hz_over(
+    FreqAt freqKHzAt, ExactFreqAt frequencyHzAt, int pointIndex, int numPoints, long long targetHz) {
+    const long long actualHz = frequencyHzAt(pointIndex);
+    if (targetHz <= 0 || actualHz <= 0 || !freqKHzAt(pointIndex)) return false;
+    const long long toleranceHz = (long long)curve_point_verify_tolerance_mhz_over(
+        freqKHzAt, pointIndex, numPoints) * 1000000;
+    const long long deltaHz = actualHz > targetHz ? actualHz - targetHz : targetHz - actualHz;
+    return deltaHz <= toleranceHz;
+}
+
 #endif // GREEN_CURVE_CURVE_POINT_VERIFY_POLICY_H
