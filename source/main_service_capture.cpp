@@ -1,16 +1,13 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
-#include "hardware_capture_runtime.h"
+#include "service_control_review.h"
 #include "hardware_capture_aux.h"
 static void* nvapi_qi_passive(unsigned int id);
 
-static void service_handle_capture_request(const ServiceRequest* request, ServiceResponse* response) {
-    ULONGLONG waitMs = 0;
-    response->status = SERVICE_STATUS_ERROR;
-    if (!service_state_read_lock_runtime("capture", &waitMs)) {
-        StringCchCopyA(response->message, ARRAY_COUNT(response->message), "capture: GPU runtime is busy");
-        return;
-    }
+// Caller holds the runtime lock. Reuse the passive collector at the mutation
+// boundary without acquiring that lock recursively or waking recovery.
+static bool service_collect_capture_locked(const GpuAdapterInfo& target, gc_u32 domains,
+    HardwareCaptureObservation& output, char* why, size_t size) {
     const auto read = [&](HardwareCaptureObservation& out, char* why, size_t size) {
         HardwareCaptureContext c{};
         EnterCriticalSection(&g_appLock);
@@ -19,7 +16,7 @@ static void service_handle_capture_request(const ServiceRequest* request, Servic
             !nvml_crash_recovery_active() && phase != SERVICE_GPU_PHASE_STARTING &&
             phase != SERVICE_GPU_PHASE_DEVICE_MISSING && phase != SERVICE_GPU_PHASE_RECOVERING &&
             phase != SERVICE_GPU_PHASE_REAPPLYING &&
-            hardware_capture_target_matches(request->targetGpu, g_app.selectedGpu);
+            hardware_capture_target_matches(target, g_app.selectedGpu);
         c.gpuHandle = g_app.gpuHandle; c.query = nvapi_qi_passive; c.backend = g_app.vfBackend;
         c.nvmlUsable = g_app.nvmlReady; c.nvml = &g_nvml_api; c.nvmlDevice = g_app.nvmlDevice;
         c.binding = hardware_capture_binding(g_app.selectedGpu);
@@ -29,9 +26,32 @@ static void service_handle_capture_request(const ServiceRequest* request, Servic
         memcpy(c.driverVersion, driver.text, sizeof(driver.text));
         c.ownedFanIntent = g_serviceHasActiveDesired ? &g_serviceActiveDesired : nullptr;
         LeaveCriticalSection(&g_appLock);
-        return hardware_capture_collect(c, request->captureDomains, hardware_capture_aux, out, why, size);
+        return hardware_capture_collect(c, domains, hardware_capture_aux, out, why, size);
     };
-    const bool ok = hardware_capture_consistent(read, response->capture, response->message, sizeof(response->message));
+    if (!hardware_capture_consistent(read, output, why, size)) return false;
+    service_control_review_stamp(output, g_serviceHasActiveDesired ? &g_serviceActiveDesired : nullptr);
+    return true;
+}
+
+static bool service_control_preconditions_match_locked(const ServiceRequest* request, char* why, size_t size) {
+    const auto read = [&](HardwareCaptureObservation& out, char* detail, size_t count) {
+        return service_collect_capture_locked(request->targetGpu, request->expectedControlDomains, out, detail, count);
+    };
+    const bool ok = service_control_review_matches(*request,
+        g_serviceHasActiveDesired ? &g_serviceActiveDesired : nullptr, read, why, size);
+    if (!ok) debug_log("service APPLY control review refused: %s\n", why);
+    return ok;
+}
+
+static void service_handle_capture_request(const ServiceRequest* request, ServiceResponse* response) {
+    ULONGLONG waitMs = 0;
+    response->status = SERVICE_STATUS_ERROR;
+    if (!service_state_read_lock_runtime("capture", &waitMs)) {
+        StringCchCopyA(response->message, ARRAY_COUNT(response->message), "capture: GPU runtime is busy");
+        return;
+    }
+    const bool ok = service_collect_capture_locked(request->targetGpu, request->captureDomains,
+        response->capture, response->message, sizeof(response->message));
     if (ok) {
         response->status = SERVICE_STATUS_OK;
         hardware_capture_summary(response->capture, response->message, sizeof(response->message));

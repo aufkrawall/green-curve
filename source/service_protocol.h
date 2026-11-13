@@ -86,7 +86,8 @@ enum {
     // GUI can tell the user instead of leaving a silent lockout.
     // v30 preserves independent signed-Hz captured VF offsets, including zero.
     // v31 defines explicit update/replacement/release and VF point-set semantics.
-    SERVICE_PROTOCOL_VERSION = 35,
+    // v36 binds reviewed Apply to passive controls and outgoing ownership.
+    SERVICE_PROTOCOL_VERSION = 36,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply; on a state read it
@@ -682,7 +683,7 @@ struct ServiceRequest {
     char source[64];
     char path[GC_REQUEST_PATH_MAX];
     gc_u32 captureDomains; // Getter-only command; zero for every other verb.
-    gc_u64 expectedControlFingerprint;
+    gc_u64 expectedControlFingerprint; // Opaque service capture.revision, not the portable physical fingerprint.
     gc_u32 expectedControlDomains;
 };
 

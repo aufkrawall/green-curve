@@ -755,7 +755,8 @@ Executing preflight cases assert zero setters for changed topology and off-grid
 captured values, plus authorized versus unauthorized baseline deferral. Route
 fixtures cover a signed half-kHz component and owned zero. Runtime authoring
 remains gated pending transition/ownership review, durable recovery coverage,
-control preconditions and client integration; these tests do not verify hardware.
+client integration; these tests do not verify hardware. Fresh-control review
+preconditions are described below.
 
 ## Explicit VF submission limits (2026-11-13)
 
@@ -784,3 +785,39 @@ points; correction suppression; and the future-family backend. Removing the
 single-batch early exit fails case 8870. These are submission limits, not a
 completed transition policy: scalar ordering, baseline/recovery protection and
 unknown external pin handling still require review before replay activation.
+
+## Fresh controls and ownership review (2026-11-13)
+
+Source anchors: `source/service_control_review.h`,
+`source/service_protocol_validation.h`, `source/main_service_capture.cpp`,
+`source/main_service_pipe_switch.cpp`, `source/main_service_request_policy.cpp`,
+`source/linux_daemon_capture.h`, `source/linux_daemon_snapshot_runtime.cpp`,
+`tests/service_control_review_tests.cpp` (8884-8904, 8913-8914),
+`tests/hardware_capture_service_tests.cpp` (8905-8912).
+
+Protocol 36 activates the reserved control preconditions for explicit,
+interactive, scoped Apply. A review covers all nine domains, including omissions,
+so outgoing ownership cleanup cannot escape a partial-domain token. A partial
+hardware capture can still be reviewed: unavailable getters remain unknown and
+the token grants no write capability. Authoring and captured-replay gates remain.
+
+The capture's physical fingerprint excludes moving observed frequencies. Its
+service revision additionally binds outgoing owned intent, fieldwise without
+padding. Owned zero differs from absent authority even when driver controls
+match. Apply sends this opaque revision in `expectedControlFingerprint`;
+portable observations continue to use the physical `fingerprint` separately.
+
+Under the runtime lock, reviewed Apply repeats the bounded passive capture and
+checks domains, fingerprint integrity, generation, exact binding and owned
+intent. Refusal precedes Linux mutation refresh and Windows automatic-work
+supersession. Reviewed shared targets resolve from cached adapters; neither
+platform may initialize or select another GPU after the comparison. Windows
+still checks the published envelope and write epoch. Scalar-only review need
+not invent a VF topology signature. Legacy requests retain their old path.
+
+Diagnostics report one refusal with a stable service/daemon prefix and a reason
+to capture and review again. Fixtures cover changed controls, owned zero,
+padding independence, moving clocks, malformed tokens, wrong domains, stale
+bindings/generations, unavailable sessions and untouched daemon ownership.
+Source-order gates cover the production dispatch boundaries. Client review and
+full transition/recovery integration remain pending; no hardware is exercised.

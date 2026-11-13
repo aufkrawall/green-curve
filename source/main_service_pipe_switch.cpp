@@ -173,6 +173,21 @@ switch (request->command) {
             unlock_service_runtime();
             break;
         }
+        if (request->expectedControlFingerprint) {
+            GpuAdapterInfo publishedTarget{};
+            const bool bindingMatches = !enforcePublishedGpuBinding ||
+                (service_resolve_configured_gpu_target(&publishedGpuBinding, &publishedTarget,
+                    result, sizeof(result), true) &&
+                 hardware_capture_target_matches(publishedTarget, request->targetGpu));
+            if (!bindingMatches || !service_prepare_requested_gpu(request, result, sizeof(result)) ||
+                !service_control_preconditions_match_locked(request, result, sizeof(result))) {
+                response->status = SERVICE_STATUS_STALE_STATE;
+                StringCchCopyA(response->message, ARRAY_COUNT(response->message),
+                    bindingMatches ? result : "Published profile GPU binding changed; capture and review again before Apply");
+                unlock_service_runtime();
+                break;
+            }
+        }
         if (explicitUserApply) {
             // Serialize supersession with lifecycle writes. If an
             // automatic write already owns the runtime lock it is
@@ -236,7 +251,7 @@ switch (request->command) {
             }
         }
         bool ok = true;
-        if (enforcePublishedGpuBinding) {
+        if (enforcePublishedGpuBinding && !request->expectedControlFingerprint) {
             GpuAdapterInfo publishedTarget = {};
             ok = service_resolve_configured_gpu_target(
                 &publishedGpuBinding, &publishedTarget,

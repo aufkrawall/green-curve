@@ -272,7 +272,8 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
              (unsigned long long)req->expectedTopologySignature, reason);
     } else if ((req->command == SERVICE_CMD_APPLY ||
                 req->command == SERVICE_CMD_RESET) &&
-               !mutation_preconditions_match(req, resp)) {
+               (!daemon_control_preconditions_match(req, resp) ||
+                !mutation_preconditions_match(req, resp))) {
         // State and message were filled by the fail-closed precondition gate.
     } else switch (req->command) {
         case SERVICE_CMD_PING:

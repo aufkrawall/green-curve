@@ -272,14 +272,14 @@ static bool service_verify_written_file_path(const char* path, char* err, size_t
 
 static bool service_resolve_configured_gpu_target(
     const ConfiguredGpuSelection* configured, GpuAdapterInfo* targetOut,
-    char* err, size_t errSize) {
+    char* err, size_t errSize, bool existingSessionOnly = false) {
     if (targetOut) memset(targetOut, 0, sizeof(*targetOut));
     if (!configured || !targetOut) {
         set_message(err, errSize, "Published GPU binding is missing");
         return false;
     }
     char initDetail[256] = {};
-    if (!hardware_initialize(initDetail, sizeof(initDetail))) {
+    if (!existingSessionOnly && !hardware_initialize(initDetail, sizeof(initDetail))) {
         set_message(err, errSize, "%s", initDetail[0] ? initDetail :
             "Hardware initialization failed while resolving the published GPU");
         return false;
@@ -426,6 +426,11 @@ static bool service_prepare_requested_gpu(const ServiceRequest* request, char* e
         set_message(err, errSize, "Missing service request");
         return false;
     }
+    if (request->expectedControlFingerprint &&
+        (!request->targetGpu.valid || !g_app.gpuHandle || !g_app.loaded || !g_app.vfBackend)) {
+        set_message(err, errSize, "Reviewed GPU session is unavailable; Refresh and review again before Apply");
+        return false;
+    }
     if (!request->targetGpu.valid) {
         char currentDetail[256] = {};
         if (!hardware_initialize(currentDetail, sizeof(currentDetail))) {
@@ -442,7 +447,7 @@ static bool service_prepare_requested_gpu(const ServiceRequest* request, char* e
     }
 
     char initDetail[256] = {};
-    if (!hardware_initialize(initDetail, sizeof(initDetail))) {
+    if (!request->expectedControlFingerprint && !hardware_initialize(initDetail, sizeof(initDetail))) {
         set_message(err, errSize, "%s", initDetail[0] ? initDetail : "Hardware initialization failed");
         return false;
     }
@@ -486,6 +491,10 @@ static bool service_prepare_requested_gpu(const ServiceRequest* request, char* e
     bool change = !g_app.selectedGpuIdentityValid ||
         g_app.selectedGpuIndex != live.nvapiIndex ||
         (haveStrongIdentity && !gpu_adapter_has_same_pci_identity(&g_app.selectedGpu, &live));
+    if (request->expectedControlFingerprint && change) {
+        set_message(err, errSize, "Reviewed GPU session changed; capture and review again before Apply");
+        return false;
+    }
     if (change) {
         debug_log("service gpu target: selecting validated nvapi=%u nvml=%u identity=%s name=%s\n",
             live.nvapiIndex,

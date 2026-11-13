@@ -1043,6 +1043,7 @@ int run_profile_mapping_tests();
 int run_profile_conversion_tests();
 int run_hardware_capture_tests();
 int run_hardware_capture_service_tests();
+int run_service_control_review_tests();
 int run_windows_vf_exact_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
@@ -2732,6 +2733,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int captureServiceFailure = run_hardware_capture_service_tests()) {
         fprintf(stderr, "capture service regression failed: %d\n", captureServiceFailure);
         return captureServiceFailure;
+    }
+    if (int reviewFailure = run_service_control_review_tests()) {
+        fprintf(stderr, "service control review regression failed: %d\n", reviewFailure);
+        return reviewFailure;
     }
     if (int contractFailure = run_profile_document_contract_tests()) {
         fprintf(stderr, "profile document contract regression failed: %d\n", contractFailure);
@@ -4521,7 +4526,7 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 35) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 36) return 81;
         // These are release gates, not incidental layout observations. A field
         // addition that changes a fixed-size IPC structure must bump the wire
         // version; otherwise mixed old/new peers pass the header handshake and

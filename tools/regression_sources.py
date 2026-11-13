@@ -48,6 +48,7 @@ REGRESSION_SOURCES = (
     'profile_conversion_tests.cpp',
     'hardware_capture_tests.cpp',
     'hardware_capture_service_tests.cpp',
+    'service_control_review_tests.cpp',
     'captured_schema_tests.cpp',
     'captured_intent_runtime_tests.cpp',
     'scoped_apply_tests.cpp',

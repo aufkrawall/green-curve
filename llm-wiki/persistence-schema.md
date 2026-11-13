@@ -93,10 +93,10 @@ inactive payloads and reserved bytes. Copy, clear, projection and sparse merge
 preserve the new authority fieldwise. Historical wideners initialize it to zero.
 
 Protocol 34 introduced 5096-byte requests and 19440-byte responses. It reserves a fresh
-control fingerprint and domain mask for reviewed Apply. Nonzero authoring
-extensions and control preconditions are currently refused with an explicit
-reason at IPC and both backend preflights until destination review and exact
-adapters are activated. Storage capacity does not enable rounded replay.
+control fingerprint and domain mask for reviewed Apply. At that migration,
+nonzero authoring extensions and control preconditions were refused with an
+explicit reason until destination review and exact adapters were activated.
+Storage capacity does not enable rounded replay.
 The compiler checks current and frozen sizes; the native suite checks exact
 round trips, old-byte migration, checksum corruption, malformed tags, fan-only
 retention and omission cleanup. No physical replay is claimed.
@@ -107,6 +107,13 @@ grid, range provenance and backend write support. Reported graphics bounds and
 the application fallback remain distinct. These facts join the normalized
 control fingerprint; mixed protocol/schema peers refuse rather than guessing.
 DesiredSettings and the durable disk layouts remain unchanged.
+
+Protocol 36 activates the reserved request control-precondition fields without
+changing those sizes. The service capture revision binds physical controls and
+outgoing owned intent, while its physical fingerprint stays separate. Reviewed
+Apply requires all-domain passive evidence and an explicit interactive scope;
+authoring/captured replay remains gated. See
+[profile-document.md](profile-document.md#fresh-controls-and-ownership-review-2026-11-13).
 
 ## Captured-offset capacity (2026-11-12)
 

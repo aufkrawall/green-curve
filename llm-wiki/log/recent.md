@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Fresh controls and ownership review
+
+- Protocol 36 binds explicit scoped Apply to a fresh passive all-domain capture
+  and outgoing owned intent, including zero. Physical observation fingerprints
+  remain separate from the service review revision.
+- Refusal precedes refresh and automatic-work supersession. Reviewed paths keep
+  the existing GPU session; shared binding resolution uses cached adapters.
+  Cases 8884-8914 cover tokens, controls, ownership and actual daemon handling;
+  replay and client integration remain gated. See
+  [profile-document.md](../profile-document.md#fresh-controls-and-ownership-review-2026-11-13).
+
 ## 2026-11-13: Bounded authoring VF submission
 
 - An explicit single-batch policy caps unprotected authoring submissions at one

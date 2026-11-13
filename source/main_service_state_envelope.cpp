@@ -248,7 +248,8 @@ static bool service_mutation_preconditions_match(const ServiceRequest* request,
         request->expectedGpuGeneration || request->expectedTopologySignature;
     if (!any) return true;
     if (!request->expectedServiceInstanceId ||
-        !request->expectedGpuGeneration || !request->expectedTopologySignature) {
+        !request->expectedGpuGeneration ||
+        (!request->expectedTopologySignature && !request->expectedControlFingerprint)) {
         set_message(err, errSize,
             "Mutation has an incomplete reconnect-safety precondition");
         return false;
@@ -284,8 +285,8 @@ static bool service_mutation_preconditions_match(const ServiceRequest* request,
         published.state.gpuGeneration != request->expectedGpuGeneration ||
         published.state.gpuPhase != SERVICE_GPU_PHASE_READY ||
         !selectedIdentityMatches ||
-        published.state.topologySignature !=
-            request->expectedTopologySignature) {
+        (request->expectedTopologySignature && published.state.topologySignature !=
+            request->expectedTopologySignature)) {
         set_message(err, errSize,
             "Selected GPU identity, topology, or recovery state changed while the operation was queued; refresh and retry");
         return false;

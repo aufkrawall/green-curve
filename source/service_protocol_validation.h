@@ -18,6 +18,18 @@
 #include "hardware_capture_wire_validation.h"
 static inline bool service_desired_settings_is_zero(const DesiredSettings& desired);
 
+static inline const char* service_control_preconditions_reject_reason(const ServiceRequest& r) {
+    if (!r.expectedControlFingerprint && !r.expectedControlDomains) return nullptr;
+    if (!r.expectedControlFingerprint || r.expectedControlDomains != 511u)
+        return "control preconditions require a complete review token and all domains";
+    if (r.command != SERVICE_CMD_APPLY || r.desired.applicationScope == DESIRED_SCOPE_LEGACY ||
+        !service_apply_origin_is_explicit((ServiceApplyOrigin)r.applyOrigin) ||
+        !(r.flags & SERVICE_REQUEST_FLAG_INTERACTIVE) || !r.targetGpu.valid ||
+        !r.expectedServiceInstanceId || !r.expectedGpuGeneration || !r.operationId)
+        return "control preconditions require an explicitly reviewed scoped Apply";
+    return nullptr;
+}
+
 // Why a request is refused, or nullptr when it is well formed.
 //
 // This IS the rule set; validate_service_request_for_ipc() below is exactly
@@ -31,8 +43,7 @@ static inline const char* service_request_reject_reason(
     if (!r) return "no request";
     if (r->magic != SERVICE_PROTOCOL_MAGIC) return "wrong protocol magic";
     if (r->version != SERVICE_PROTOCOL_VERSION) return "wrong protocol version";
-    if (r->expectedControlFingerprint || r->expectedControlDomains)
-        return "control preconditions require reviewed profile Apply";
+    if (const char* reason = service_control_preconditions_reject_reason(*r)) return reason;
     if (r->command < SERVICE_CMD_PING ||
         r->command > SERVICE_CMD_CAPTURE_CURRENT)
         return "unknown command";

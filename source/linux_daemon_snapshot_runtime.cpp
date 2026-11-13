@@ -296,6 +296,14 @@ static bool daemon_retry_backend_for_read(bool explicitRefresh) {
 }
 
 static bool select_request_gpu(const ServiceRequest* req, char* err, size_t errSize) {
+    if (req && req->expectedControlFingerprint) {
+        if (g_gpuReady && g_gpu.writeIdentityResolved && req->targetGpu.valid &&
+            req->targetGpu.nvapiIndex == g_gpu.selectedGpu.nvapiIndex &&
+            req->targetGpu.nvmlIndex == g_gpu.selectedGpu.nvmlIndex &&
+            linux_gpu_identity_matches(&req->targetGpu, &g_gpu.selectedGpu)) return true;
+        gc_strlcpy(err, errSize, "Reviewed GPU session changed; capture and review again before Apply");
+        return false;
+    }
     if (g_gpu.adapterCount == 1 && (!req || !req->targetGpu.valid)) {
         if (!g_gpu.writeIdentityResolved) {
             gc_strlcpy(err, errSize, "single GPU identity is not safe for writes");
@@ -369,7 +377,7 @@ static bool mutation_preconditions_match(const ServiceRequest* req,
     if (!req->expectedServiceInstanceId && !req->expectedGpuGeneration &&
         !req->expectedTopologySignature) return true;
 
-    if (g_gpuReady) linux_backend_refresh(&g_gpu);
+    if (g_gpuReady && !req->expectedControlFingerprint) linux_backend_refresh(&g_gpu);
     ServiceSnapshot current = {};
     ControlState controls = {};
     populate_snapshot(&current, &controls);
