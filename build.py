@@ -1162,6 +1162,8 @@ def _verify_windows_artifact(temp_output, pdb_path, arch, service):
     verify_release_binary(temp_output, "windows", arch, "-g" in COMMON_FLAGS,
                           build_state.WINDOWS_BINARY_IDENTITIES[service][2])
     verify_windows_private_symbols(pdb_path, arch)
+    if not service:
+        security_gates.run_profile_commands_fixture(_gate_ctx(), temp_output, "windows", arch)
 
 
 def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_TEMP_OUTPUT_EXE, backup_path=WINDOWS_BACKUP_EXE, finalize=True, arch="x64", jobs=1, limiter=None, variant=None):
@@ -1319,6 +1321,7 @@ def compile_linux_binary(output_path=LINUX_OUTPUT_BIN, temp_output=LINUX_TEMP_OU
             # runs against the exact bytes that ship.
             crash_artifacts.extract_linux_symbols(_gate_ctx(), temp_output, arch)
             verify_release_binary(temp_output, "linux", arch, "-g" in COMMON_FLAGS)
+            security_gates.run_profile_commands_fixture(_gate_ctx(), temp_output, "linux", arch)
     except (OSError, RuntimeError) as exc:
         print(f"ERROR: {exc}")
         returncode = 1

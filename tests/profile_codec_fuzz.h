@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 #include "profile_codec_fixture.h"
+#include "profile_slot_codec.h"
 
 static void profile_codec_fuzz_round_trip(const ProfileBank& input) {
     std::string first, second;
@@ -42,5 +43,14 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     d.applicationScope = (ProfileApplicationScope)(in.byte() % 3);
     d.pointSetPolicy = (ProfilePointSetPolicy)(in.byte() % 2);
     profile_codec_fuzz_round_trip(*bank);
+    std::string slot;
+    auto stored = std::make_unique<ProfileDocument>();
+    bool found = false;
+    GC_FUZZ_CHECK(profile_slot_encode(d, 1, slot), "valid document could not be stored");
+    GC_FUZZ_CHECK(profile_slot_decode(std::string_view(slot).substr(slot.find('\n') + 1), *stored, found) && found &&
+        profile_document_semantically_equal(d, *stored), "local storage changed document meaning");
+    stored->memoryOffsetHz = 17;
+    if (!profile_slot_decode(std::string_view((const char*)data, size), *stored, found))
+        GC_FUZZ_CHECK(stored->memoryOffsetHz == 17, "failed local parse published partial state");
     return 0;
 }

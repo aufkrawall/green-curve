@@ -12,7 +12,10 @@ import bisect
 import glob
 import io
 import itertools
+import importlib.util
 import os
+from pathlib import Path
+import platform
 import re
 import shutil
 import struct
@@ -508,6 +511,24 @@ def run_windows_pipe_fixture(ctx, tmp_dir, extra_flags):
         sys.exit(result.returncode)
     import windows_loader_tests
     windows_loader_tests.run(ctx, tmp_dir)
+
+
+def run_profile_commands_fixture(ctx, built_exe, os_name, arch):
+    """Exercise the actual native client before temporary build outputs vanish."""
+    host_os = "windows" if sys.platform == "win32" else "linux" if sys.platform.startswith("linux") else "other"
+    host_arch = {"amd64": "x64", "x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}.get(platform.machine().lower())
+    if os_name != host_os or arch != host_arch:
+        return
+    path = Path(ctx.SCRIPT_DIR) / "tests" / "profile_commands_cli_tests.py"
+    spec = importlib.util.spec_from_file_location("profile_commands_cli_fixture", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Offline profile CLI fixture could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        module.verify(Path(built_exe).resolve(), Path(ctx.SCRIPT_DIR))
+    except (AssertionError, OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Offline profile CLI fixture failed: {exc}") from exc
 
 
 def run_cli_console_fixture(ctx, built_exe=None):

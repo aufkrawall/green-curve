@@ -12,6 +12,7 @@
 #include "linux_terminal_launch.h"
 #include "linux_startup_sync.h"
 #include "linux_asset_escaping_policy.h"  // F-03-003
+#include "profile_commands_linux.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -420,6 +421,7 @@ bool write_linux_assets(const char* outputDir, const char* execPath, const char*
 }
 
 static int linux_main_impl(int argc, char** argv) {
+    int profileExit = 0; if (profile_commands_linux(argc, argv, profileExit)) return profileExit;
     // Installed before any parsing or driver work so an early failure is still
     // diagnosable.  Writes a journal breadcrumb and then re-raises; it never
     // suppresses the crash.

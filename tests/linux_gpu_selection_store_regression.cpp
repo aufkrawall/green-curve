@@ -17,6 +17,7 @@
 #include "linux_port_internal.h"
 #include "posix_test_environment.h"
 #include "linux_output_directory.h"
+#include "linux_config_lock.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -317,10 +318,33 @@ bool make_root() {
     return gc_test_make_temp_dir(g_root, sizeof(g_root), "gc-gpu-selection", 0) != nullptr;
 }
 
+void test_config_storage_lock() {
+    const std::string path = path_in_root("lock-proof.ini");
+    const std::string lockPath = path + ".lock";
+    char why[160]{};
+    int probe = -1;
+    {
+        LinuxConfigLock lock(path.c_str(), why, sizeof(why));
+        expect(lock.locked(), "configuration lock acquired");
+        probe = open(lockPath.c_str(), O_RDWR | O_CLOEXEC);
+        expect(probe >= 0, "configuration lock probe opened");
+        if (probe >= 0) expect(flock(probe, LOCK_EX | LOCK_NB) != 0 &&
+            (errno == EWOULDBLOCK || errno == EAGAIN), "a separate writer cannot acquire a held lock");
+    }
+    if (probe >= 0) {
+        expect(flock(probe, LOCK_EX | LOCK_NB) == 0, "configuration lock released by its owner");
+        close(probe);
+    }
+    unlink(lockPath.c_str());
+}
+
 void remove_root() {
     const char* names[] = {"missing.ini", "profiles.ini", "oversized.ini",
                            "locked.ini", "bring-up.ini"};
-    for (const char* name : names) unlink(path_in_root(name).c_str());
+    for (const char* name : names) {
+        unlink(path_in_root(name).c_str());
+        unlink((path_in_root(name) + ".lock").c_str());
+    }
     rmdir(g_root);
 }
 
@@ -337,6 +361,7 @@ int main() {
     test_unreadable_permissions_are_not_overwritten();
     test_backend_bring_up_on_read();
     test_output_directory_walk();
+    test_config_storage_lock();
     remove_root();
     if (g_failures != 0) {
         fprintf(stderr, "Linux GPU selection store regression FAILED (%d)\n",

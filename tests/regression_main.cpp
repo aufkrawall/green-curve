@@ -1036,6 +1036,8 @@ int run_power_ratio_control_tests();
 int run_precise_scalar_schema_tests();
 int run_profile_document_contract_tests();
 int run_profile_codec_tests();
+int run_profile_slot_codec_tests();
+int run_profile_commands_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2692,6 +2694,14 @@ static int run_all_tests(int argc, char** argv) {
     if (int codecFailure = run_profile_codec_tests()) {
         fprintf(stderr, "portable profile codec regression failed: %d\n", codecFailure);
         return codecFailure;
+    }
+    if (int storageFailure = run_profile_slot_codec_tests()) {
+        fprintf(stderr, "local profile document regression failed: %d\n", storageFailure);
+        return storageFailure;
+    }
+    if (int commandFailure = run_profile_commands_tests()) {
+        fprintf(stderr, "profile command regression failed: %d\n", commandFailure);
+        return commandFailure;
     }
     if (int contractFailure = run_profile_document_contract_tests()) {
         fprintf(stderr, "profile document contract regression failed: %d\n", contractFailure);

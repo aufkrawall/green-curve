@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Flat local document storage and offline CLI transfer
+
+- Added flat per-slot document serialization with exact numbers and encoded
+  UTF-8 text; offline fixtures retain hidden points, infeasible values, metadata
+  and observations through full-bank replacement and subsequent export.
+- Both clients prepare/confirm atomic profile import and export before driver
+  initialization. Assignments are reported and retained, stale bank revisions
+  and failed writes leave prior contents intact, and import never applies tuning.
+- Windows historical Save/Clear preserves other document sections raw. Linux
+  profile/GPU writers share a stable lock across read-modify-write. Historical
+  Apply readers require destination review for new records rather than treating
+  them as defaults; GUI/TUI mapping and capture remain pending.
+- See [config-profiles.md](../config-profiles.md#portable-documents-and-offline-transfer-2026-11-13).
+
 ## 2026-11-13: Shared bounded portable-profile codec
 
 - Implemented the published v1 table with atomic parse/encode results, checked

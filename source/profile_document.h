@@ -20,7 +20,7 @@
 #define GREEN_CURVE_PROFILE_DOCUMENT_H
 
 #include "gpu_core.h"            // VF_NUM_POINTS, LockMode, FanCurveConfig
-#include "fan_curve.h"           // fan_curve_equals()
+#include "fan_curve_api.h"       // pure fan contracts; no UI state dependency
 #include "profile_point_intent.h"
 #include "tuning_units.h"
 

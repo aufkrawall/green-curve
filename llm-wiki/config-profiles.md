@@ -21,6 +21,55 @@
 
 ## Config access
 
+### Portable documents and offline transfer (2026-11-13)
+
+Source anchors: `source/profile_slot_codec.h`, `source/profile_bank_edit.h`,
+`source/profile_commands.h`, `source/profile_commands_windows.h`,
+`source/profile_commands_linux.h`, `source/profile_file_read.h`,
+`source/profile_config_windows.h`, `source/profile_legacy_document.h`,
+`tests/profile_slot_codec_tests.cpp` (8370-8383),
+`tests/profile_commands_tests.cpp` (8400-8411),
+`tests/profile_commands_cli_tests.py`, `tools/security_gates.py`
+(`run_profile_commands_fixture`), `build.py` (native artifact verification).
+
+New documents use flat `document.*` keys inside the existing `profileN` section.
+Exact numeric fields remain decimal. Only quoted text is encoded as UTF-8 hex,
+so INI quote removal and the Windows code page cannot change names/metadata.
+Reading raw bounded sections bypasses INI enumeration limits; a document marker
+never falls back to historical repair. Historical Save/Clear preserves other
+new documents through raw sections. The Windows whole-file buffer is 1 MiB,
+with full five-slot and slot-1-mirror capacity checked by regression fixtures.
+
+Both clients recognize `--export-profiles FILE [--slots all|1,2]` and
+`--import-profiles FILE --slots 1,2 [--confirm-import]`, with optional `--config`.
+They run before GPU/service initialization. Export uses stored intent only;
+historical records retain unresolved indices instead of borrowing live voltages.
+Import prints controls, scope, destinations and assignment references, then
+requires the literal `IMPORT` after review when confirmation was requested.
+Without confirmation it exits in the decision-required category without writing.
+
+The prepared edit retains the complete original configuration generation. Under
+the existing Windows cross-session lock, or the Linux stable side-file lock,
+commit re-reads and compares those bytes before one atomic replacement. It
+preserves preferences and assignments, never applies hardware, and flushes the
+Windows INI cache after success. Native deterministic seams cover stale review,
+cancelled review, write failure, one replacement and offline load/export fidelity.
+The Linux writer lock spans profile Save/Clear and selected-GPU updates too;
+the native POSIX fixture checks lock exclusion and release without timing waits.
+Production build/check verifies the freshly linked native client through bounded
+subprocess workflows before temporary artifacts are removed: preview/cancel,
+exact zero/fraction/ratio transfer, five-slot restart/export, UTF-8 paths and
+malformed input. Both Windows x64 variants ran this fixture. Linux x64/ARM64
+production and lock-fixture link checks passed; native Linux execution remains
+unverified on this Windows host.
+
+GUI/TUI document mapping remains pending. Historical Apply readers deliberately
+refuse these new records until destination review exists; they cannot silently
+read a new document as an empty/default legacy profile. Shared publication and
+the updater's richer-intent handoff still require their document integration.
+
+### Existing access helpers
+
 - Cross-session mutex-protected via `enter_config_storage_lock()` /
   `leave_config_storage_lock()`. The mutex lives in the `Global\\` namespace so
   the interactive GUI and session-0 service share the same lock. Its protected

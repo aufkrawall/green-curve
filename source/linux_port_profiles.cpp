@@ -6,6 +6,8 @@
 #include "linux_profile_mem_migration.h"
 #include "profile_persistence_policy.h"
 #include "linux_profile_curve_codec.h"
+#include "linux_config_lock.h"
+#include "profile_slot_codec.h"
 
 #include <string>
 #include <vector>
@@ -212,6 +214,10 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
     char* err,
     size_t errSize) {
     if (!doc || !controlsSection || !curveSection || !fanCurveSection || !desired) return false;
+    for (const auto& s : doc->sections) if (s.name == controlsSection) for (const auto& e : s.entries)
+        if (profile_slot::ascii_equal(std::string_view(e.key).substr(0, 9), "document.")) {
+            set_message(err, errSize, "This profile retains portable source intent; review its destination mapping before Apply"); return false;
+        }
 
     initialize_desired_settings_defaults(desired);
     char fanBuffer[64] = {};
@@ -662,6 +668,8 @@ bool save_profile_to_config_path(const char* path, int slot, const DesiredSettin
         return false;
     }
 
+    LinuxConfigLock storageLock(path, err, errSize);
+    if (!storageLock.locked()) return false;
     IniDocument doc;
     if (!load_ini_document(path, &doc, err, errSize)) return false;
 
@@ -739,6 +747,8 @@ bool clear_profile_from_config_path(const char* path, int slot,
         set_message(err, errSize, "Invalid profile clear arguments");
         return false;
     }
+    LinuxConfigLock storageLock(path, err, errSize);
+    if (!storageLock.locked()) return false;
     IniDocument doc;
     if (!load_ini_document(path, &doc, err, errSize)) return false;
     char controls[32] = {}, curve[32] = {}, fan[32] = {};

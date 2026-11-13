@@ -13,6 +13,8 @@ void print_linux_help() {
     puts("  greencurve                       Launch terminal UI");
     puts("  greencurve --tui                 Launch terminal UI");
     puts("  greencurve --dump | --json       Dump selected profile (text / JSON)");
+    puts("  greencurve --export-profiles file [--slots all|1,2] [--config path]  Export saved intent without a GPU");
+    puts("  greencurve --import-profiles file --slots 1,2 [--confirm-import] [--config path]  Review and import saved intent");
     puts("  greencurve --dump-live | --json-live  Dump all live VF values from daemon");
     puts("  greencurve --probe [--probe-output path]   Probe driver + GPU control surfaces");
     puts("  greencurve --self-test           Read-only validation of the NvAPI/NVML apply path");

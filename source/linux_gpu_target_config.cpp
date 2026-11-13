@@ -21,6 +21,7 @@
 #include "linux_gpu_selection.h"
 #include "linux_port.h"
 #include "linux_port_internal.h"
+#include "linux_config_lock.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -91,6 +92,8 @@ bool save_linux_gpu_selection(const char* path, const GpuAdapterInfo* target,
         set_message(err, errSize, "valid GPU selection required");
         return false;
     }
+    LinuxConfigLock storageLock(path, err, errSize);
+    if (!storageLock.locked()) return false;
     // A missing config.ini loads as an empty document.  One that exists but
     // cannot be read (permissions, over the INI limits) is left alone: writing
     // the selection into an empty document would replace every profile in it,

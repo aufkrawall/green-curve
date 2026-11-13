@@ -41,6 +41,8 @@ REGRESSION_SOURCES = (
     'profile_document_tests.cpp',
     'profile_document_contract_tests.cpp',
     'profile_codec_tests.cpp',
+    'profile_slot_codec_tests.cpp',
+    'profile_commands_tests.cpp',
     'captured_schema_tests.cpp',
     'captured_intent_runtime_tests.cpp',
     'scoped_apply_tests.cpp',

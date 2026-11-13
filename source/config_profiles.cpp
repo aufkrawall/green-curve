@@ -5,7 +5,7 @@
 // Profile Slot I/O
 // ============================================================================
 
-#define CFG_BUFFER_SIZE 131072
+#define CFG_BUFFER_SIZE (1024ULL * 1024ULL)
 
 // Whole-file profile rewrites are read/modify/write transactions.  Holding only
 // g_configLock protects threads in this process, and acquiring the named mutex
@@ -27,6 +27,7 @@ struct ConfigStorageLockGuard {
 };
 
 #include "config_profile_xbar_io.h"
+#include "profile_config_windows.h"
 
 static void infer_profile_lock_from_curve(const DesiredSettings* desired, int* lockCiOut, unsigned int* lockMHzOut);
 static void resolve_profile_gpu_offset_state_for_save(const DesiredSettings* desired, int* gpuOffsetMHzOut, int* excludeLowCountOut);
@@ -54,6 +55,15 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
     if (!storageLock.locked()) {
         set_message(err, errSize,
             "Failed to acquire the cross-session config lock for profile load");
+        return false;
+    }
+
+    std::string documentBody; bool documentFound = false;
+    const std::string documentSection = "profile" + std::to_string(slot);
+    if (!profile_windows_document_section(path, documentSection.c_str(), documentBody, documentFound, err, errSize)) return false;
+    if (!documentFound && slot == 1 && !profile_windows_document_section(path, "controls", documentBody, documentFound, err, errSize)) return false;
+    if (documentFound) {
+        set_message(err, errSize, "This profile retains portable source intent; review its destination mapping before Apply");
         return false;
     }
 
@@ -626,6 +636,11 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
             }
             if (!skip) {
                 appendf("[%s]\r\n", p);
+                std::string documentBody; bool documentFound = false;
+                if (!profile_windows_document_section(path, p, documentBody, documentFound, err, errSize)) {
+                    free(cfg); free(existingBuf); return false;
+                }
+                if (documentFound) { appendf("%s\r\n", documentBody.c_str()); p += strlen(p) + 1; continue; }
                 char keys[16384] = {};
                 char val[4096] = {};
                 EnterCriticalSection(&g_configLock);
@@ -837,6 +852,11 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
                  (slot == 1 && (_stricmp(p, "controls") == 0 || _stricmp(p, "curve") == 0 || _stricmp(p, "fan_curve") == 0)));
         if (!skip) {
             appendf("[%s]\r\n", p);
+            std::string documentBody; bool documentFound = false;
+            if (!profile_windows_document_section(path, p, documentBody, documentFound, err, errSize)) {
+                free(cfg); free(existingBuf); return false;
+            }
+            if (documentFound) { appendf("%s\r\n", documentBody.c_str()); p += strlen(p) + 1; continue; }
             char keys[16384] = {};
             char val[4096] = {};
             EnterCriticalSection(&g_configLock);

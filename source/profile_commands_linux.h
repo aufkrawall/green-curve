@@ -1,0 +1,88 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-License-Identifier: MIT
+#ifndef GREEN_CURVE_PROFILE_COMMANDS_LINUX_H
+#define GREEN_CURVE_PROFILE_COMMANDS_LINUX_H
+#include "profile_commands.h"
+#include "profile_legacy_document.h"
+#include "profile_file_read.h"
+#include "linux_config_lock.h"
+#include <stdlib.h>
+
+struct LinuxProfileCommands {
+    bool distinct(const std::string& config, const std::string& file, ProfileCodecError& error) {
+        const auto resolved = [](const std::string& path) {
+            char* full = realpath(path.c_str(), nullptr);
+            if (full) { std::string value(full); free(full); return value; }
+            const size_t slash = path.find_last_of('/');
+            const std::string parent = slash == std::string::npos ? "." : path.substr(0, slash + 1);
+            full = realpath(parent.c_str(), nullptr);
+            if (!full) return std::string{};
+            std::string value(full); free(full);
+            return value + "/" + path.substr(slash == std::string::npos ? 0 : slash + 1);
+        };
+        const std::string a = resolved(config), b = resolved(file);
+        if ((!a.empty() && a == b) || (a.empty() && b.empty()))
+            return profile_codec::fail(&error, 0, "profile file must have a distinct valid destination path");
+        return true;
+    }
+    bool read(const std::string& path, std::string& bytes, size_t maximum, bool missing, ProfileCodecError& error) {
+        const size_t bound = maximum > (size_t)LINUX_INI_MAX_BYTES ? (size_t)LINUX_INI_MAX_BYTES : maximum;
+        return profile_file_read(path.c_str(), bytes, bound, missing, error);
+    }
+    bool write(const std::string& path, const std::string& bytes, ProfileCodecError& error) {
+        return write_text_file_atomic(path.c_str(), bytes, error.message, sizeof(error.message));
+    }
+    bool legacy(const std::string& path, int slot, ProfileDocument& document, bool& found, ProfileCodecError& error) {
+        IniDocument ini;
+        if (!load_ini_document(path.c_str(), &ini, error.message, sizeof(error.message))) return false;
+        const std::string root = "profile" + std::to_string(slot);
+        found = section_has_keys(&ini, root.c_str()) || section_has_keys(&ini, (root + "_curve").c_str()) ||
+            section_has_keys(&ini, (root + "_fan_curve").c_str()) || (slot == 1 &&
+            (section_has_keys(&ini, "controls") || section_has_keys(&ini, "curve") || section_has_keys(&ini, "fan_curve")));
+        if (!found) return true;
+        DesiredSettings desired{};
+        return load_profile_from_config_path(path.c_str(), slot, &desired, error.message, sizeof(error.message)) &&
+            profile_document_from_legacy_desired(desired, document, error.message, sizeof(error.message));
+    }
+    bool commit(const std::string& path, const ProfileBankEdit& edit, ProfileCodecError& error) {
+        if (edit.replacement.size() > (size_t)LINUX_INI_MAX_BYTES)
+            return profile_codec::fail(&error, 0, "updated profile bank exceeds configuration size limit");
+        LinuxConfigLock lock(path.c_str(), error.message, sizeof(error.message));
+        if (!lock.locked()) return false;
+        return profile_bank_commit_edit(edit,
+            [&](std::string& bytes) { return read(path, bytes, profile_slot::MAX_CONFIG_BYTES, true, error); },
+            [&](const std::string& bytes) { return write(path, bytes, error); }, &error);
+    }
+    void message(const std::string& text) { fputs(text.c_str(), stdout); fflush(stdout); }
+    bool confirm() {
+        message("Type IMPORT to commit, or anything else to cancel: ");
+        char answer[16]{};
+        if (!fgets(answer, sizeof(answer), stdin)) return false;
+        return !strcmp(answer, "IMPORT\n") || !strcmp(answer, "IMPORT\r\n");
+    }
+};
+
+static bool profile_commands_linux(int argc, char** argv, int& exitCode) {
+    bool transfer = false, exporting = false;
+    for (int i = 1; i < argc; ++i) {
+        exporting |= !strcmp(argv[i], "--export-profiles");
+        transfer |= exporting || !strcmp(argv[i], "--import-profiles");
+    }
+    if (!transfer) return false;
+    char defaultConfig[LINUX_PATH_MAX]{};
+    if (!default_linux_config_path(defaultConfig, sizeof(defaultConfig))) snprintf(defaultConfig, sizeof(defaultConfig), "config.ini");
+    std::vector<std::string> args;
+    for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+    LinuxProfileCommands io;
+    if (exporting) {
+        ProfileCommand command; ProfileCodecError error; bool handled = false;
+        if (!profile_command_parse(args, defaultConfig, command, handled, &error)) {
+            io.message(std::string(error.message) + "\n"); exitCode = PROFILE_COMMAND_INVALID; return true;
+        }
+        LinuxConfigLock lock(command.config.c_str(), error.message, sizeof(error.message));
+        if (!lock.locked()) { io.message(std::string(error.message) + "\n"); exitCode = PROFILE_COMMAND_IO; return true; }
+        return profile_commands_run(args, defaultConfig, io, exitCode);
+    }
+    return profile_commands_run(args, defaultConfig, io, exitCode);
+}
+#endif

@@ -13,11 +13,10 @@ model": tuning intent that must survive capture, editing, slot storage,
 process restart and export **without a connected GPU**, and stay a valid,
 inspectable document even when it currently conflicts with hardware (an
 unreachable target, a point outside the live range, a GPU that is absent or
-does not match). Nothing in the runtime or IPC layer produces or consumes
-one yet -- this is intentionally a from-scratch, GPU-free type, separate
-from the live wire `DesiredSettings` (`gpu_core.h`), not a widening of it.
-Migrating the runtime/IPC/disk schema onto this intent is a separate,
-later piece of work; see "Open questions / stale-risk" below.
+does not match). Offline CLI import/export and flat local-slot storage consume
+this type independently of the live wire `DesiredSettings` (`gpu_core.h`).
+The service keeps its separate resolved runtime representation; GUI/TUI draft,
+destination resolution and capture integration remain pending below.
 
 - `ProfilePointIntent` (`profile_point_intent.h`): one VF point's authoritative
   meaning. Four mutually exclusive kinds -- `PROFILE_POINT_ABSENT`,
@@ -257,7 +256,8 @@ cases 8070-8086 and the production Linux rollback fixture cover these contracts.
 
 The exhaustive version-1 key/section contract is published beside the tests:
 [profile_format_v1.md](../tests/profile_format_v1.md). The shared codec implements
-this table; local storage and product entry points remain pending.
+this table. Local flat-slot storage and offline CLI transfer use the same document;
+GUI/TUI draft and capture integration remain pending.
 
 The document now carries an independent VF point-set policy, source topology
 completeness versus unresolved legacy indices, identity-based exclusions,
@@ -276,7 +276,7 @@ compare semantically equal; moving observations remain excluded. Unit cases
 
 ## Invariants
 
-- No field, constructor or function in these three headers reads `g_app`,
+- No authoring-model or codec operation reads `g_app`,
   `LinuxGpuState`, or calls a driver. A document must stay constructible,
   comparable and exportable with no GPU selected at all.
 - Structural validity and hardware feasibility are different questions
@@ -294,10 +294,10 @@ compare semantically equal; moving observations remain excluded. Unit cases
 
 ## Open questions / stale-risk
 
-- **No authoring-document producer yet.** Runtime fields/backends implement
-  captured points, explicit scopes and exact memory/power intent. GUI/TUI,
-  local-slot and portable product producers still do not build or consume a
-  `ProfileDocument`; that authoring pipeline remains pending.
+- **Editor integration pending.** Offline import/export and local records consume
+  documents; the historical adapter retains unresolved source indices. GUI/TUI
+  draft integration remains pending. The historical Apply loader refuses a new
+  document requiring destination review rather than interpreting it as defaults.
 - **Destination mapping remains pending.** New graphics exclusions name source
   topology identities. Historical counts and index-only topology carry explicit
   unresolved markers; neither may acquire destination voltages by assumption.
@@ -305,8 +305,9 @@ compare semantically equal; moving observations remain excluded. Unit cases
   and per-point observed offsets can survive review/storage independently of
   lock or point authority. Their presence alone never establishes a getter or
   authorizes Apply; pin knowledge defaults to unknown.
-- **Integration pending.** Legacy adapters, destination mapping and file/storage
-  entry points remain pending. The codec never substitutes destination data.
+- **Mapping pending.** Destination mapping and complete legacy-format coverage
+  remain pending. The historical decoded-intent adapter and offline file/storage
+  commands never substitute destination data.
 
 ## Portable codec
 

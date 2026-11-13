@@ -23,6 +23,8 @@ static void cli_print_help(FILE* out) {
     HELP_LOG("  greencurve.exe              Launch GUI\n");
     HELP_LOG("  greencurve.exe --dump       Write VF curve to greencurve_vf_dump.txt\n");
     HELP_LOG("  greencurve.exe --json       Write VF curve to greencurve_curve.json\n");
+    HELP_LOG("  greencurve.exe --export-profiles <file> [--slots all|1,2] [--config <path>]  Export saved intent without a GPU\n");
+    HELP_LOG("  greencurve.exe --import-profiles <file> --slots 1,2 [--confirm-import] [--config <path>]  Review and import saved intent\n");
     HELP_LOG("  greencurve.exe --probe [--probe-output <path>]  Probe NvAPI/NVML/VF support and write a report\n");
     HELP_LOG("  greencurve.exe --self-test  Read-only driver/arch pre-flight, no service needed (run elevated)\n");
     HELP_LOG("  greencurve.exe --clk-domain-probe  Identify ClkDomains entries by briefly writing +50 MHz offsets, then restoring (run elevated)\n");

@@ -14,6 +14,12 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+// Set the target Windows version above before any CRT header, and load C++
+// headers before strsafe installs its C-runtime replacement macros.
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
 #include <windows.h>
 
 #include <commctrl.h>

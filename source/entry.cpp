@@ -4,6 +4,7 @@
 #include "log_redaction_policy.h"
 #include "single_instance_ready.h"
 #include "logon_handoff_status.h"
+#include "profile_commands_windows.h"
 
 // ============================================================================
 // Entry Point
@@ -448,6 +449,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     install_crash_handlers(false);
 
     set_default_config_path();
+    int profileExit = 0;
+    if (profile_commands_windows(wCmdLine, profileExit)) { debug_log_writer_stop(); return profileExit; }
     char pathErr[256] = {};
     resolve_data_paths(pathErr, sizeof(pathErr));
     // Bound the GUI's own crash artifacts.  Runs after path resolution so it
