@@ -4,6 +4,7 @@
 import argparse
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 
@@ -111,10 +112,25 @@ def verify(executable: Path, workspace: Path) -> None:
                          "point22_mv=650\npoint22_visible=0\n").encode("utf-16"))
         run(["--import-profiles", old, "--legacy-format", "windows-ini", "--slots", "2",
              "--config", config, "--confirm-import"], answer="IMPORT\n")
-        run(["--export-profiles", incoming, "--slots", "1", "--config", old])
+        run(["--export-profiles", incoming, "--slots", "1", "--config", old,
+             "--legacy-format", "windows-ini"])
         windows_legacy = incoming.read_text(encoding="utf-8")
         assert "offset_hz=-1001000000" in windows_legacy and "voltage_uv=0" in windows_legacy
         assert old.read_bytes().startswith(b"\xff\xfe")
+        if sys.platform == "win32":
+            # Native source format is known for an ordinary local-bank export.
+            run(["--export-profiles", incoming, "--slots", "1", "--config", old])
+            assert incoming.read_text(encoding="utf-8") == windows_legacy
+        elif sys.platform.startswith("linux"):
+            native_old = folder / "native-legacy.ini"
+            native_export = folder / "native-legacy.gcprofile"
+            native_bytes = (b"[meta]\nlinux_mem_migrated=1\n[profile1]\nmem_offset_mhz=-1001\n"
+                            b"[profile1_curve]\ncurve_semantics=absolute_with_origin\npoint22=1000\n")
+            native_old.write_bytes(native_bytes)
+            run(["--export-profiles", native_export, "--slots", "1", "--config", native_old])
+            native_saved = native_export.read_text(encoding="utf-8")
+            assert "offset_hz=-1001000000" in native_saved and "target_hz=1000000000" in native_saved
+            assert "legacy_indices_unresolved=1" in native_saved and native_old.read_bytes() == native_bytes
         saved = config.read_bytes()
         unicode_bank = folder / "unicode.ini"
         unicode_text = "[profiles]\r\nlogon_slot=3\r\n[preferences]\r\nopaque=\u66f2\U0001f600\r\n"

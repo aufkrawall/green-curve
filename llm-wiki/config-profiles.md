@@ -73,7 +73,13 @@ exact zero/fraction/ratio transfer, five-slot restart/export, UTF-8 paths and
 malformed input. Both Windows x64 variants ran this fixture. Linux x64/ARM64
 production link checks passed; native Linux unit/store fixtures now pass under
 WSL, as recorded in [testing.md](testing.md#windows-hosted-native-linux-execution-2026-11-13).
-Linux production-client subprocess execution remains a separate check.
+Native Linux x64 production-client subprocess workflows also passed under WSL
+(2026-11-14), using the verified ELF and native temporary storage. They cover
+one/five-slot transfer, source choices, exact values, Unicode-bank preservation,
+cancel/refusal and native legacy export. Foreign INI export explicitly selects
+its source format; ordinary local legacy export exercises each platform's own
+layout. This is client-file-operation evidence, separate from driver replay,
+daemon deployment and native ARM64 execution.
 
 ### Explicit legacy transfer (2026-11-13)
 

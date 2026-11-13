@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Native Linux production profile-transfer verification
+
+- The verified production ELF passed the complete offline transfer fixture in
+  native Linux scratch storage under WSL, including Unicode-bank replacement
+  and exact restart/export. Each client invocation is bounded; temporary files
+  are removed, and no GPU is accessed.
+- The fixture now explicitly selects Windows format for foreign INI export
+  and separately checks each platform's native legacy layout. The previous
+  platform assumption failed on Linux; the corrected workflow passes. See
+  [config-profiles.md](../config-profiles.md#portable-documents-and-offline-transfer-2026-11-13).
+
 ## 2026-11-13: Durable Windows named graphics-control recovery
 
 - The ownership marker freezes its 216-byte predecessor and adds validated
