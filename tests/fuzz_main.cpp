@@ -321,9 +321,17 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         response.state.serviceInstanceId = response.state.stateRevision = response.state.gpuGeneration = 1;
         response.state.gpuPhase = SERVICE_GPU_PHASE_DEGRADED;
         auto& c = response.capture;
-        c.valid = 1; c.schemaVersion = 1; c.gpuGeneration = 1; c.binding.valid = 1;
+        c.valid = 1; c.schemaVersion = HARDWARE_CAPTURE_SCHEMA_CURRENT; c.gpuGeneration = 1; c.binding.valid = 1;
         c.requestedDomains = c.capturedDomains = PROFILE_DOMAIN_MEMORY; c.domainStatus[2] = CAPTURE_COMPLETE;
         c.memory.valid = 1; c.memory.surface = CLOCK_OFFSET_SURFACE_P0;
+        if (mode & 0x40) {
+            c.topologyComplete = 1;
+            c.vfLimits.valid = c.vfLimits.gridValid = 1;
+            c.vfLimits.minimumHz = -1000000000; c.vfLimits.maximumHz = 1000000000;
+            c.vfLimits.gridHz = size > 2 && (data[2] & 1) ? 500 : 1000;
+            c.vfLimits.backendWritable = size > 3 ? data[3] : 0;
+            if (size > 4) c.vfLimits.rangeReported = data[4];
+        }
         if (size > 1) memcpy(&c.memory.value, data + 1, size - 1 < sizeof(c.memory.value) ? size - 1 : sizeof(c.memory.value));
         if ((mode & 0x20) && size > 2) c.reserved[0] = data[2];
     }

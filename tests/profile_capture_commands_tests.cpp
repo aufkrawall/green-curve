@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include "profile_capture_commands.h"
 #include "profile_check_commands.h"
+#include "service_scoped_apply_policy.h"
 #include <map>
 
 namespace {
@@ -28,7 +29,7 @@ struct CaptureIO {
     bool capture(gc_u32 domains, HardwareCaptureObservation& out, ProfileCodecError& error) {
         ++captures;
         if (failCapture) return profile_codec::fail(&error, 0, "fixture session unavailable");
-        out = {}; out.valid = 1; out.schemaVersion = 1; out.gpuGeneration = 3;
+        out = {}; out.valid = 1; out.schemaVersion = HARDWARE_CAPTURE_SCHEMA_CURRENT; out.gpuGeneration = 3;
         out.binding.valid = 1; out.requestedDomains = domains; out.revision = out.fingerprint = 7;
         for (int i = 0; i < 9; ++i) if (domains & (1u << i))
             hardware_capture_domain(out, 1 << i, CAPTURE_UNSUPPORTED, -100001);

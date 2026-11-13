@@ -90,7 +90,6 @@ static inline bool hardware_capture_to_document(const HardwareCaptureObservation
             d.domains |= PROFILE_DOMAIN_VF_CURVE;
         }
     }
-    if ((o.capturedDomains & PROFILE_DOMAIN_VF_CURVE) && !d.domains) d.domains |= PROFILE_DOMAIN_VF_CURVE;
     if (o.graphics.valid) {
         d.graphicsOffset.hasObservedOffset = true; d.graphicsOffset.observedOffsetHz = o.graphics.value;
         d.graphicsOffset.observedSurface = o.graphics.surface; d.graphicsOffset.observedComposition = (int)o.composition;

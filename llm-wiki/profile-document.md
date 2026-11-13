@@ -509,3 +509,27 @@ adapters are complete. Native fixtures cover file preservation, bank selection,
 read-only destinations, exact values, exclusions and missing sessions. The
 portable-codec fuzz target also checks exact runtime resolution, source
 immutability and unchanged output on refusal. Hardware replay remains unverified.
+
+## Passive constraint provenance and omitted curve authority (2026-11-13)
+
+Source anchors: `source/hardware_capture_types.h`,
+`source/hardware_capture_getters.h`, `source/hardware_capture_wire_validation.h`,
+`source/hardware_capture_runtime.h`, `source/profile_runtime_resolution.h`,
+`source/profile_mapping.h`, `tests/hardware_capture_constraints_cases.h`
+(8720-8731, 8735-8737), `tests/profile_check_commands_cases.h` (8732-8734).
+
+Capture schema 2 carries the backend's exact physical-Hz VF offset grid and
+write-support trait. Fresh NVML graphics bounds are labeled as reported graphics
+evidence; unavailable ranges use the existing application policy with distinct
+provenance. This is not a dedicated per-point driver-range getter or setter
+availability proof. All new fields participate in coherent read comparison and
+fingerprinting. Wire validation checks flags, inactive payloads and provenance;
+the bounded Capture summary prints ranges and grid with their source.
+
+A read-only backend contributes point observations without writable intent.
+Domain membership requires authoritative writable points, independently of the
+captured observation mask. Point-set replacement is active only when the document
+includes the VF domain: a memory-only or observation-only capture cannot clear
+retained curve authority. Semantic equality and mapping/planning requirements
+also ignore the inactive point-set policy. The production scoped-plan fixture
+checks that omitted curve points survive scalar-only runtime resolution.

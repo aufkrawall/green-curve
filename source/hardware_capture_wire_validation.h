@@ -20,7 +20,7 @@ static inline bool hardware_capture_scalar_valid(const HardwareCaptureScalar& s)
 static inline bool hardware_capture_observation_valid(const HardwareCaptureObservation& o) {
     if (o.valid > 1) return false;
     if (!o.valid) return hardware_capture_bytes_zero(&o, sizeof(o));
-    if (o.schemaVersion != 1 || o.topologyComplete > 1 || o.pinGetterValid > 1 || o.pinPresent > 1 ||
+    if (o.schemaVersion != HARDWARE_CAPTURE_SCHEMA_CURRENT || o.topologyComplete > 1 || o.pinGetterValid > 1 || o.pinPresent > 1 ||
         !o.requestedDomains || (o.requestedDomains & ~511u) || o.pointCount > 128 || !o.gpuGeneration ||
         !hardware_capture_bytes_zero(o.reserved, sizeof(o.reserved)) ||
         !hardware_capture_bytes_zero(o.textReserved, sizeof(o.textReserved)) ||
@@ -41,6 +41,13 @@ static inline bool hardware_capture_observation_valid(const HardwareCaptureObser
         if (status == CAPTURE_UNSUPPORTED) unavailable |= bit;
     }
     if (captured != o.capturedDomains || omitted != o.omittedDomains || unavailable != o.unavailableDomains) return false;
+    const auto& vf = o.vfLimits;
+    if (vf.valid > 1 || vf.rangeReported > 1 || vf.gridValid > 1 || vf.backendWritable > 1) return false;
+    if (!vf.valid) {
+        if (!hardware_capture_bytes_zero(&vf, sizeof(vf))) return false;
+    } else if (!o.topologyComplete || vf.rangeSource > VF_OFFSET_RANGE_SOURCE_PSTATE ||
+        vf.rangeReported != (vf.rangeSource != VF_OFFSET_RANGE_SOURCE_FALLBACK) ||
+        vf.minimumHz > vf.maximumHz || (vf.gridValid ? (vf.gridHz <= 0 || vf.gridHz > 1000) : vf.gridHz != 0)) return false;
     const HardwareCaptureScalar* scalars[] = {&o.graphics, &o.memory, &o.xbarClock, &o.xbarVoltage, &o.systemClock, &o.videoClock};
     for (const auto* scalar : scalars) if (!hardware_capture_scalar_valid(*scalar)) return false;
     if (o.graphics.surface > CLOCK_OFFSET_SURFACE_GLOBAL || o.memory.surface > CLOCK_OFFSET_SURFACE_GLOBAL) return false;
@@ -61,6 +68,7 @@ static inline bool hardware_capture_observation_valid(const HardwareCaptureObser
             (point.offsetValid ? false : point.offsetHz != 0) ||
             (point.frequencyValid ? point.frequencyHz <= 0 : point.frequencyHz != 0) ||
             ((o.capturedDomains & PROFILE_DOMAIN_VF_CURVE) && point.writableState == 1 && !point.offsetValid)) return false;
+        if (vf.valid && !vf.backendWritable && point.writableState == 1) return false;
         indices[point.index] = true;
     }
     if ((o.capturedDomains & PROFILE_DOMAIN_VF_CURVE) && (!o.topologyComplete || !o.pointCount)) return false;

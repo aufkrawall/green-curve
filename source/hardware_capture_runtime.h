@@ -21,9 +21,16 @@ static inline bool hardware_capture_target_matches(const GpuAdapterInfo& request
         gpu_adapter_info_equal(&requested, &selected);
 }
 static inline void hardware_capture_summary(const HardwareCaptureObservation& o, char* text, size_t size) {
+    if (!text || !size) return;
     snprintf(text, size, "capture: requested=0x%03x captured=0x%03x omitted=0x%03x unavailable=0x%03x points=%u attempts=%u composition=%u pin=%s",
         (unsigned)o.requestedDomains, (unsigned)o.capturedDomains, (unsigned)o.omittedDomains,
         (unsigned)o.unavailableDomains, (unsigned)o.pointCount, (unsigned)o.readAttempts, (unsigned)o.composition,
         !o.pinGetterValid ? "unknown" : o.pinPresent ? "present" : "absent");
+    const size_t used = strlen(text);
+    if (o.vfLimits.valid && used < size) snprintf(text + used, size - used,
+        "; VF offsets=%lld..%lld Hz (%s), grid=%lld Hz%s",
+        o.vfLimits.minimumHz, o.vfLimits.maximumHz,
+        o.vfLimits.rangeReported ? "reported graphics bounds" : "application policy",
+        o.vfLimits.gridHz, o.vfLimits.gridValid ? "" : " (unknown)");
 }
 #endif

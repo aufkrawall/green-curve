@@ -92,7 +92,7 @@ Structural checks reject inconsistent tags/previews, missing bound identities,
 inactive payloads and reserved bytes. Copy, clear, projection and sparse merge
 preserve the new authority fieldwise. Historical wideners initialize it to zero.
 
-Protocol 34 uses 5096-byte requests and 19440-byte responses. It reserves a fresh
+Protocol 34 introduced 5096-byte requests and 19440-byte responses. It reserves a fresh
 control fingerprint and domain mask for reviewed Apply. Nonzero authoring
 extensions and control preconditions are currently refused with an explicit
 reason at IPC and both backend preflights until destination review and exact
@@ -100,6 +100,13 @@ adapters are activated. Storage capacity does not enable rounded replay.
 The compiler checks current and frozen sizes; the native suite checks exact
 round trips, old-byte migration, checksum corruption, malformed tags, fan-only
 retention and omission cleanup. No physical replay is claimed.
+
+Protocol 35 keeps 5096-byte requests and uses 19472-byte responses. Capture
+schema 2 grows to 4864 bytes with explicit 32-byte VF constraints: exact offset
+grid, range provenance and backend write support. Reported graphics bounds and
+the application fallback remain distinct. These facts join the normalized
+control fingerprint; mixed protocol/schema peers refuse rather than guessing.
+DesiredSettings and the durable disk layouts remain unchanged.
 
 ## Captured-offset capacity (2026-11-12)
 

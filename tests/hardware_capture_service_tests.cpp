@@ -19,7 +19,7 @@ static bool fake_capture(const LinuxGpuState* gpu, gc_u64 generation, gc_u32 dom
     argumentsValid &= gpu == &g_gpu && generation == g_daemonGpuGeneration && domains == PROFILE_DOMAIN_MEMORY &&
         owned == (g_hasActiveDesired ? &g_activeDesired : nullptr);
     if (!accepted) { snprintf(why, size, "%s", "fixture control changed"); return false; }
-    *output = {}; output->valid = 1; output->schemaVersion = 1;
+    *output = {}; output->valid = 1; output->schemaVersion = HARDWARE_CAPTURE_SCHEMA_CURRENT;
     output->gpuGeneration = generation; output->requestedDomains = domains;
     output->binding = hardware_capture_binding(gpu->selectedGpu);
     output->memory.valid = 1; output->memory.surface = CLOCK_OFFSET_SURFACE_P0; output->memory.value = -500000;

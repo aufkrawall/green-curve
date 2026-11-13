@@ -97,7 +97,7 @@ static inline ProfileMappingReport profile_map_topology(const ProfileDocument& s
     report.gpuGeneration = destination.gpuGeneration;
     report.destinationRevision = destination.revision;
     report.needsCompleteCurvePlan = source.lock.present || source.graphicsOffset.present ||
-        (source.domains & PROFILE_DOMAIN_VF_CURVE) || source.pointSetPolicy == PROFILE_POINTS_REPLACE;
+        (source.domains & PROFILE_DOMAIN_VF_CURVE);
     int unavailable = source.domains & destination.knownUnavailableDomains;
     if ((unavailable & PROFILE_DOMAIN_POWER) && source.power.present &&
         tuning_power_ratio_equal(source.power.ratio, {1, 1}) && source.applicationScope != PROFILE_SCOPE_EXPLICIT_RELEASE) {

@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Passive constraints and partial-profile authority
+
+- Protocol 35 carries capture schema 2 with explicit VF grid, range provenance
+  and backend write-support facts in the normalized control fingerprint. Capture
+  summaries distinguish reported graphics bounds from application fallback.
+- Read-only point observations cannot grant a curve domain. Point replacement,
+  semantic equality and mapping requirements respect omitted VF domains, keeping
+  scalar-only captures from clearing retained points. Cases 8720-8737 cover
+  wire boundaries, fresh fallback provenance, read-only capture and the actual
+  scoped-plan handoff. See [profile-document.md](../profile-document.md#passive-constraint-provenance-and-omitted-curve-authority-2026-11-13).
+
 ## 2026-11-13: Exact runtime resolution and mapping preview
 
 - Both CLI clients expose passive `--check-profile` mapping review. Parsing and

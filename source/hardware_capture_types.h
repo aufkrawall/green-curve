@@ -4,8 +4,11 @@
 #define GREEN_CURVE_HARDWARE_CAPTURE_TYPES_H
 #include "gpu_wire_types.h"
 #include "profile_domain_mask.h"
+#include "vf_offset_range_policy.h"
 
-// Fixed version-one observation layout. It contains no pointers, C++ bool,
+enum { HARDWARE_CAPTURE_SCHEMA_CURRENT = 2 };
+
+// Fixed wire observation layout. It contains no pointers, C++ bool,
 // ownership claim, file path, permission or automatic-restore acknowledgment.
 enum HardwareCaptureStatus : gc_u32 {
     CAPTURE_NOT_REQUESTED, CAPTURE_COMPLETE, CAPTURE_UNSUPPORTED, CAPTURE_READ_FAILED,
@@ -48,6 +51,11 @@ struct HardwareCaptureFan {
     gc_u32 mode, dutyPct, pollIntervalMs, hysteresisC, zeroRpmHysteresisC;
     HardwareCaptureFanPoint points[8];
 };
+struct HardwareCaptureVfLimits {
+    gc_bool8 valid, rangeReported, gridValid, backendWritable;
+    gc_u32 rangeSource;
+    gc_i64 minimumHz, maximumHz, gridHz;
+};
 struct HardwareCaptureObservation {
     gc_bool8 valid, topologyComplete, pinGetterValid, pinPresent;
     gc_u8 reserved[4];
@@ -67,11 +75,13 @@ struct HardwareCaptureObservation {
     gc_u32 readAttempts;
     HardwareCaptureFan fan;
     HardwareCapturePoint points[128];
+    HardwareCaptureVfLimits vfLimits;
 };
+static_assert(sizeof(HardwareCaptureVfLimits) == 32, "capture VF constraints layout changed");
 static_assert(sizeof(HardwareCapturePoint) == 32, "capture point wire layout changed");
 static_assert(sizeof(HardwareCaptureScalar) == 48, "capture scalar wire layout changed");
 static_assert(sizeof(HardwareCapturePower) == 56, "capture power wire layout changed");
 static_assert(sizeof(HardwareCaptureFan) == 120, "capture fan wire layout changed");
 static_assert(sizeof(HardwareCaptureBinding) == 36, "capture binding wire layout changed");
-static_assert(sizeof(HardwareCaptureObservation) == 4832, "capture observation wire layout changed");
+static_assert(sizeof(HardwareCaptureObservation) == 4864, "capture observation wire layout changed");
 #endif

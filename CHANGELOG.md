@@ -37,25 +37,26 @@ Curves are checked before Apply, low-voltage points become editable, and dialogs
 - **Curve points below 700 mV:** writable points appear in the editor and graph.
 - **Prepare compatible curve:** Apply can offer to lower conflicting earlier points; review the draft before applying.
 - **CLI profile transfer:** import and export saved profiles offline; review replacements and assignments before confirming.
-- **CLI hardware capture:** read programmed controls without resetting; review omissions, partial capture and exact representation before saving.
+- **CLI hardware capture:** read controls without resetting; review omissions, source ranges and exact or partial capture before saving.
 - **CLI mapping preview:** inspect portable profiles against the current GPU without applying settings; unresolved checks stay explicit.
 
 ### Improved
 
 - **Curve checks before Apply:** proven conflicts are refused before tuning changes, with voltage, clock and range details.
 - **Saving over another tool's curve:** Save identifies a curve that Green Curve does not own and the slot omits.
-- **Linux profile switching:** leftover curve points are cleared first, matching Windows; flatten and lock verification checks the resulting frequency after Apply.
+- **Linux profile switching:** leftover curve points are cleared first; flatten and lock results are verified after Apply.
 - **Linux memory clocks:** curve-only changes preserve memory tuning; failed baseline preparation restores the prior curve.
 - **Profile matching:** exact offsets and power ratios stay matched despite changing previews.
 
 ### Fixed
 
 - **Fixed clock-floor points:** Apply refuses fixed floor edits and locks, even where displayed; Capture retains observations.
-- **Linux power limits:** requests outside the board's bounds are refused before tuning changes, instead of being silently adjusted to another limit.
+- **Linux power limits:** out-of-range requests are refused before tuning changes.
+- **Partial profiles:** point replacement requires included curve controls; scalar captures retain omitted curves.
 - **Linux memory recovery:** fractional offsets stay exact; driver rounding or unavailable verification reports a mismatch.
 - **Clock offset readback:** missing driver ranges no longer hide valid Windows clock controls.
 - **Windows memory precision:** fractional tuning is verified through the control that was written; failed writes cannot switch controls.
-- **Memory changes:** preserve exact curve offsets on Windows and Linux; unavailable preservation is reported before tuning changes.
+- **Memory changes:** preserve exact curve offsets on both platforms; unavailable preservation is reported before tuning changes.
 - **Precise curve recovery:** Linux restores fractional curve offsets exactly, and Reset checks the programmed value before treating a curve point as zero.
 - **VF curve flatten editing:** retyping the target frequency in a ticked flatten point's edit box preserves normal left-to-right typing order without caret resets.
 - **Flatten detection:** plateau detection selects the real starting point, including hidden low-voltage points.

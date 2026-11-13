@@ -51,7 +51,8 @@ static inline bool profile_resolve_runtime(const ProfileDocument& source,
     DesiredSettings next{}; next.lockCi = -1;
     next.applicationScope = source.applicationScope == PROFILE_SCOPE_REPLACE_PROFILE ? DESIRED_SCOPE_REPLACE_PROFILE :
         source.applicationScope == PROFILE_SCOPE_EXPLICIT_RELEASE ? DESIRED_SCOPE_EXPLICIT_RELEASE : DESIRED_SCOPE_UPDATE_INCLUDED;
-    if (source.pointSetPolicy == PROFILE_POINTS_REPLACE && source.applicationScope == PROFILE_SCOPE_UPDATE_INCLUDED)
+    if ((source.domains & PROFILE_DOMAIN_VF_CURVE) && source.pointSetPolicy == PROFILE_POINTS_REPLACE &&
+        source.applicationScope == PROFILE_SCOPE_UPDATE_INCLUDED)
         next.applicationScope |= DESIRED_SCOPE_REPLACE_VF_POINTS;
     const bool bound = source.lock.present || (source.domains & PROFILE_DOMAIN_VF_CURVE) ||
         (source.graphicsOffset.present && (source.graphicsOffset.exclusionPolicy == PROFILE_EXCLUDE_IDENTITIES ||

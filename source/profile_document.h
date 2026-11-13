@@ -246,7 +246,8 @@ static inline bool profile_fan_intent_semantically_equal(const ProfileFanIntent&
 static inline bool profile_document_semantically_equal(const ProfileDocument& a,
     const ProfileDocument& b) {
     if (a.domains != b.domains || a.applicationScope != b.applicationScope ||
-        a.pointSetPolicy != b.pointSetPolicy || a.sourceTopologyComplete != b.sourceTopologyComplete ||
+        ((a.domains & PROFILE_DOMAIN_VF_CURVE) && a.pointSetPolicy != b.pointSetPolicy) ||
+        a.sourceTopologyComplete != b.sourceTopologyComplete ||
         a.legacyIndicesUnresolved != b.legacyIndicesUnresolved)
         return false;
     if (a.topologyCount != b.topologyCount) return false;

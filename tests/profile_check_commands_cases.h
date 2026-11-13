@@ -72,5 +72,16 @@ static int profile_check_commands_cases() {
     io.failCapture = true;
     if (!profile_check_commands_run({"--check-profile", "review.gcprofile"}, io, code) || code != PROFILE_COMMAND_IO ||
         io.files != unchanged || io.writes != 1) return 8717;
+    auto memory = profile_document_make_empty(); memory.domains = PROFILE_DOMAIN_MEMORY;
+    memory.hasMemoryOffset = true; memory.memoryOffsetHz = -500000; memory.pointSetPolicy = PROFILE_POINTS_REPLACE;
+    if (!profile_resolve_runtime(memory, destination, 2, {}, runtime, mapping, error.message, sizeof(error.message)) ||
+        (runtime.applicationScope & DESIRED_SCOPE_REPLACE_VF_POINTS) || mapping.needsCompleteCurvePlan) return 8732;
+    auto equivalent = memory; equivalent.pointSetPolicy = PROFILE_POINTS_MERGE;
+    if (!profile_document_semantically_equal(memory, equivalent)) return 8733;
+    DesiredSettings previous{}; previous.applicationScope = DESIRED_SCOPE_UPDATE_INCLUDED;
+    previous.curvePointCaptured[22] = 1; previous.curvePointCapturedOffsetHz[22] = -500;
+    ServiceScopedApplyPlan scoped{};
+    if (!service_build_scoped_apply_plan(&previous, runtime, nullptr, {}, false, &scoped, error.message, sizeof(error.message)) ||
+        !scoped.owned.curvePointCaptured[22] || scoped.hardware.curvePointCaptured[22] || scoped.cleanupPoints) return 8734;
     return 0;
 }

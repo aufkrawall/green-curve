@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Production capture getters with no driver loading, initialization or setters.
 #include "hardware_capture_getters.h"
+#include "hardware_capture_runtime.h"
 #include "profile_codec.h"
 #include "vf_backends.h"
 
@@ -85,8 +86,10 @@ static bool collect(const HardwareCaptureContext& c, gc_u32 requested,
 }
 }
 
+#include "hardware_capture_constraints_cases.h"
 int run_hardware_capture_tests() {
-    static_assert(sizeof(HardwareCaptureObservation) == 4832, "capture wire size changed");
+    if (int failure = hardware_capture_constraints_cases()) return failure;
+    static_assert(sizeof(HardwareCaptureObservation) == 4864, "capture wire size changed");
     Driver driver{};
     NvmlApi api{}; api.getClockOffsets = clock; api.getPowerLimit = power;
     api.getPowerDefaultLimit = baseline; api.getPowerConstraints = constraints;

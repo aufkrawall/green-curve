@@ -126,7 +126,7 @@ static inline bool hardware_capture_read_vf(Query query, void* handle, const VfB
         auto& p = points[count++];
         p.index = (gc_u32)i; p.voltageUv = curve[i].volt_uV;
         p.offsetValid = p.frequencyValid = 1; p.offsetHz = exactOffset[i]; p.frequencyHz = exactFrequency[i];
-        const bool writable = (mask[i / 8] & (1u << (i % 8))) &&
+        const bool writable = backend->writeSupported && (mask[i / 8] & (1u << (i % 8))) &&
             vf_point_target_status(floor, curve, i) == VF_POINT_TARGET_OK;
         p.writableState = writable ? 1 : 2;
     }
@@ -175,7 +175,7 @@ static inline bool hardware_capture_collect(const HardwareCaptureContext& contex
         return false;
     }
     memset(&out, 0, sizeof(out));
-    out.valid = 1; out.schemaVersion = 1; out.requestedDomains = requested;
+    out.valid = 1; out.schemaVersion = HARDWARE_CAPTURE_SCHEMA_CURRENT; out.requestedDomains = requested;
     out.binding = context.binding; out.gpuGeneration = context.gpuGeneration;
     out.osFamily = context.osFamily; out.backendFamily = context.backendFamily; out.composition = context.composition;
     memcpy(out.driverVersion, context.driverVersion, sizeof(out.driverVersion));
@@ -196,6 +196,17 @@ static inline bool hardware_capture_collect(const HardwareCaptureContext& contex
     } else {
         out.graphics.status = out.memory.status = NVML_ERROR_NOT_SUPPORTED;
         out.power.currentStatus = out.power.defaultStatus = NVML_ERROR_NOT_SUPPORTED;
+    }
+    if (out.topologyComplete && context.backend) {
+        auto& vf = out.vfLimits;
+        const auto fallback = vf_offset_range_fallback();
+        vf.valid = vf.gridValid = 1;
+        vf.backendWritable = gc_bool8_from_bool(context.backend->writeSupported);
+        vf.gridHz = vf_graphics_offset_grid_hz(context.backend);
+        vf.rangeReported = out.graphics.rangeValid;
+        vf.rangeSource = vf.rangeReported ? VF_OFFSET_RANGE_SOURCE_NVML_GRAPHICS : VF_OFFSET_RANGE_SOURCE_FALLBACK;
+        vf.minimumHz = vf.rangeReported ? out.graphics.minimum : (gc_i64)fallback.minKHz * 1000;
+        vf.maximumHz = vf.rangeReported ? out.graphics.maximum : (gc_i64)fallback.maxKHz * 1000;
     }
     if (requested & PROFILE_DOMAIN_GRAPHICS_OFFSET) {
         const bool represented = out.graphics.valid && (out.composition == CAPTURE_COMPOSITION_INDEPENDENT ||
