@@ -332,14 +332,17 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
                 lb_log("curve-authoring: refusing unresolved targets before VF write\n");
                 return false;
             }
-            gc_i64 targetsHz[VF_NUM_POINTS]{}; bool exactMask[VF_NUM_POINTS]{};
+            gc_i64 targetsHz[VF_NUM_POINTS]{}; bool exactMask[VF_NUM_POINTS]{}; bool authoringReplay = false;
             for (int i = 0; i < VF_NUM_POINTS; ++i) {
                 const auto& built = context->plannedBuild;
                 exactMask[i] = built.pointExactOffset[i] || built.pointCapturedIntent[i];
+                authoringReplay |= built.pointExactOffset[i];
                 targetsHz[i] = built.pointExactOffset[i] ? built.pointExactOffsetHz[i] : built.pointCapturedOffsetHz[i];
             }
+            const auto policy = authoringReplay && !g_linuxCeilingArmed
+                ? VF_WRITE_SINGLE_BATCH : VF_WRITE_EXISTING_STRATEGY;
             bool curveOk = apply_curve_offsets_verified(g, context->curveTargets,
-                context->curveMask, 25, targetsHz, exactMask) &&
+                context->curveMask, 25, targetsHz, exactMask, policy) &&
                 linux_apply_verify_curve_write(context);
             // The curve is now at its new (raised) shape and LINUX_MUTATION_LOCK
             // has not run: this is the instant that was uncapped before

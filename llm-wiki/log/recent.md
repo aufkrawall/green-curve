@@ -5,6 +5,16 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Bounded authoring VF submission
+
+- An explicit single-batch policy caps unprotected authoring submissions at one
+  setter and prevents per-point fallback or later Windows correction writes.
+  Exact Linux membership loss refuses before writing; legacy strategies remain.
+- Cases 8870-8883 count actual production writer calls, including partial/ignored
+  batches, missing points and the unknown-family backend. Removing the policy
+  exit fails 8870. Full transition/recovery review still gates replay; see
+  [profile-document.md](../profile-document.md#explicit-vf-submission-limits-2026-11-13).
+
 ## 2026-11-13: Windows named graphics routing and repair
 
 - Reviewed graphics routes retain physical units, including sub-MHz VF

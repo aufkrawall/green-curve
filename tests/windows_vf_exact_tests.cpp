@@ -170,6 +170,10 @@ static int windows_authoring_cases() {
         driver.raw[0] != 1 || driver.raw[1] != -1 || driver.raw[7] != 30001) return 8811;
     driver.baseHz[2] += 20000000; nvapi_read_curve();
     if (apply_verify_authoring_curve_targets(targets, LOCK_MODE_NONE, -1, why, sizeof(why))) return 8812;
+    const int priorSets = driver.sets, priorGets = driver.gets;
+    if (apply_correct_authoring_curve_targets(d, LOCK_MODE_NONE, false, true, targets, 0, 0,
+            why, sizeof(why), VF_WRITE_SINGLE_BATCH) || driver.sets != priorSets || driver.gets != priorGets)
+        return 8876;
     // A second shift requires another correction. Every pass keeps captured
     // raw controls and the original unowned preimage, with no MHz rewrite.
     driver.raw[7] = 0; nvapi_read_offsets(); nvapi_read_curve(); driver.shiftAfterWriteHz = 10000000;
@@ -252,6 +256,19 @@ int run_windows_vf_exact_tests() {
     if (!apply_curve_offsets_exact_hz(hz, mask, 2, 0) || driver.sets != 1) return 8581;
     initialize(); driver.one = true; hz[2] = 1000000;
     if (!apply_curve_offsets_exact_hz(hz, mask, 1, 0) || driver.sets != 3 || !driver.untouched || driver.raw[2] != 2000) return 8582;
+    initialize(); driver.one = true;
+    if (apply_curve_offsets_exact_hz(hz, mask, 25, 0, nullptr, VF_WRITE_SINGLE_BATCH) || driver.sets != 1 ||
+        driver.raw[0] != 30001 || driver.raw[1] || driver.raw[2] || !driver.untouched) return 8870;
+    initialize();
+    if (!apply_curve_offsets_exact_hz(hz, mask, 25, 0, nullptr, VF_WRITE_SINGLE_BATCH) || driver.sets != 1 ||
+        driver.raw[0] != 30001 || driver.raw[1] != -30001 || driver.raw[2] != 2000) return 8871;
+    if (!apply_curve_offsets_exact_hz(hz, mask, 25, 0, nullptr, VF_WRITE_SINGLE_BATCH) || driver.sets != 1) return 8872;
+    initialize(); driver.ignore = true;
+    if (apply_curve_offsets_exact_hz(hz, mask, 25, 0, nullptr, VF_WRITE_SINGLE_BATCH) || driver.sets != 1) return 8873;
+    initialize();
+    if (apply_curve_offsets_exact_hz(hz, mask, 25, 49, nullptr, VF_WRITE_SINGLE_BATCH) || driver.sets) return 8874;
+    initialize();
+    if (apply_curve_offsets_exact_hz(hz, mask, 25, 0, nullptr, (VfControlWritePolicy)19) || driver.sets || driver.gets) return 8875;
     initialize(); hz[0] = 15000501;
     if (apply_curve_offsets_exact_hz(hz, mask, 2, 0) || driver.sets) return 8583;
     hz[0] = 15000500; driver.metadataBad = true;

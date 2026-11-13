@@ -602,6 +602,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         desired->hasGpuOffset ? desired->gpuOffsetMHz : 0,
         desiredActiveGpuOffsetExcludeLowCount, gpuPolicyViaCurveBatch ? 1 : 0);
     CurveAuthoringTargets authoringTargets;
+    const VfControlWritePolicy authoringWritePolicy = clockCeiling.armed ? VF_WRITE_EXISTING_STRATEGY : VF_WRITE_SINGLE_BATCH;
     if (authoringCurveWrite) {
         VFCurvePoint originalCurve[VF_NUM_POINTS]{};
         for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
@@ -810,7 +811,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 maxAbsOffsetCi,
                 maxAbsOffsetKHz);
             if (exactCurveWrite) curveBatchOk = apply_curve_offsets_exact_hz(exactCurveTargetsHz, targetCurveMask,
-                hasLock ? 3 : 2, correctionDeadlineTickMs, originalCurveVoltUv);
+                hasLock ? 3 : 2, correctionDeadlineTickMs, originalCurveVoltUv,
+                authoringCurveWrite ? authoringWritePolicy : VF_WRITE_EXISTING_STRATEGY);
             else curveBatchOk = apply_curve_offsets_verified(targetCurveOffsets, targetCurveMask, hasLock ? 3 : 2,
                 correctionDeadlineTickMs);
             // THE critical sample. The curve is now at its new (raised) shape and
@@ -919,7 +921,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 if (!curveRequestOk && authoringCurveWrite)
                     curveRequestOk = apply_correct_authoring_curve_targets(*desired, lockMode, authoringComposed,
                         preserveCurveAcrossMem, authoringTargets, applyStartTickMs, correctionDeadlineTickMs,
-                        curveVerifyDetail, sizeof(curveVerifyDetail));
+                        curveVerifyDetail, sizeof(curveVerifyDetail), authoringWritePolicy);
                 if (!curveRequestOk && !authoringCurveWrite) {
                     // Use generous correction passes because writing large tail offsets
                     // can shift the base frequency of adjacent non-tail points (observed on

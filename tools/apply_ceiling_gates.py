@@ -48,7 +48,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         "exact preservation targets are prepared before the memory setter")
     require_text(apply_cpp, "if (exactCurveWrite) curveBatchOk = apply_curve_offsets_exact_hz(exactCurveTargetsHz",
                  "memory preservation uses exact raw control replay")
-    require_text(apply_cpp, "hasLock ? 3 : 2, correctionDeadlineTickMs, originalCurveVoltUv);",
+    require_text(apply_cpp, "hasLock ? 3 : 2, correctionDeadlineTickMs, originalCurveVoltUv,",
                  "exact control replay keeps the deadline and original voltage binding")
     require_text(apply_cpp, "curve_control_nonzero(originalCurveOffsets[ci], originalCurveExact, originalCurveOffsetsHz[ci])",
                  "half-kHz controls cannot disappear through a zero kHz preview")
@@ -497,8 +497,15 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                                "every authoring target build rechecks full feasibility")
     require_text(authoring_h, "windows_authoring_curve_shape_matches(*original, next)",
                  "corrections retain the reviewed write set and fixed controls")
-    require_text(authoring_h, "desired.hasLock ? 3 : 2, deadline, next.voltageUv);",
+    require_text(authoring_h, "desired.hasLock ? 3 : 2, deadline, next.voltageUv, policy);",
                  "exact corrections keep the deadline and destination voltage precondition")
+    require_order_in_operation(authoring_h, "static bool apply_correct_authoring_curve_targets(",
+                               "if (policy == VF_WRITE_SINGLE_BATCH)", "apply_run_correction_loop(",
+                               "a single-batch submission cannot enter a later correction strategy")
+    require_text(apply_cpp, "authoringCurveWrite ? authoringWritePolicy : VF_WRITE_EXISTING_STRATEGY);",
+                 "authoring curve submission carries its transaction write policy")
+    require_text(_p(ctx, "vf_exact_control_write.h"), "r.strategyRestricted = r.firstCi >= 0;",
+                 "the exact writer reports a mismatch when further writes are prohibited")
     require_order_in_operation(apply_cpp, "static bool apply_desired_settings_service(const DesiredSettings* desired",
                                "apply_authoring_precheck_before_writes(desired,", "clockCeiling.arm();",
                                "bound exact target preflight runs before the first transition setter")
@@ -649,6 +656,10 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "Linux exact offset metadata is refreshed with rebuilt targets")
     require_text(linux_mutation_cpp, "if (context->plannedBuild.failed || context->plannedBuild.deferred)",
                  "unresolved exact targets cannot reach the Linux VF writer")
+    require_text(linux_mutation_cpp, "authoringReplay && !g_linuxCeilingArmed",
+                 "Linux authoring without an installed ceiling chooses a single batch")
+    require_text(_p(ctx, "linux_backend_vf_write.h"), "if (policy == VF_WRITE_SINGLE_BATCH) maxBatchPasses = 1;",
+                 "the Linux writer enforces the selected batch limit")
     require_order_in_operation(linux_mutation_cpp, "case LINUX_MUTATION_CURVE:",
                  "if (context->plannedBuild.failed || context->plannedBuild.deferred)",
                  "bool curveOk = apply_curve_offsets_verified(",

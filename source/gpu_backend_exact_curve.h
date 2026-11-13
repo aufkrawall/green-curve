@@ -34,7 +34,9 @@ static bool apply_curve_preservation_precheck(const DesiredSettings* desired, ch
 }
 
 static bool apply_curve_offsets_exact_hz(const gc_i64* targets, const bool* mask,
-    int passes, ULONGLONG deadline, const unsigned int* expectedVoltageUv = nullptr) {
+    int passes, ULONGLONG deadline, const unsigned int* expectedVoltageUv = nullptr,
+    VfControlWritePolicy policy = VF_WRITE_EXISTING_STRATEGY) {
+    if (!vf_control_write_policy_valid(policy)) return false;
     const auto* b = g_app.vfBackend;
     if (!b) return false;
     if (expectedVoltageUv) {
@@ -55,9 +57,9 @@ static bool apply_curve_offsets_exact_hz(const gc_i64* targets, const bool* mask
         bool mayWrite() { return apply_fallback_write_may_start(GetTickCount64(), deadline); }
     } io{(NvApiFunc)nvapi_qi(b->getControlId), (NvApiFunc)nvapi_qi(b->setControlId), deadline};
     if (!io.get || !io.set) return false;
-    const auto r = vf_exact_control_write(b, g_app.vfMask, mask, targets, passes, io);
-    debug_log("curve-exact: status=%d points=%d writes=%d batch=%d single=%d firstCi=%d targetHz=%lld actualHz=%lld\n",
-        (int)r.status, r.points, r.writes, r.batchWrites, r.pointWrites, r.firstCi, r.targetHz, r.actualHz);
+    const auto r = vf_exact_control_write(b, g_app.vfMask, mask, targets, passes, io, policy);
+    debug_log("curve-exact: status=%d points=%d writes=%d batch=%d single=%d firstCi=%d targetHz=%lld actualHz=%lld restricted=%d\n",
+        (int)r.status, r.points, r.writes, r.batchWrites, r.pointWrites, r.firstCi, r.targetHz, r.actualHz, r.strategyRestricted ? 1 : 0);
     if (r.status != VF_EXACT_VERIFIED) return false;
     const bool refreshed = nvapi_read_offsets() && g_app.vfOffsetsHzValid && nvapi_read_curve();
     if (refreshed) rebuild_visible_map();

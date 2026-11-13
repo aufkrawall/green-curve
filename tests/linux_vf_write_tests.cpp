@@ -181,7 +181,42 @@ static int run_linux_memory_curve_tests() {
     return 0;
 }
 
+static int run_single_batch_cases() {
+    Driver d{}; LinuxGpuState g{};
+    int targets[VF_NUM_POINTS]{}; bool mask[VF_NUM_POINTS]{}, exact[VF_NUM_POINTS]{};
+    gc_i64 hz[VF_NUM_POINTS]{}; hz[0] = 500; hz[1] = -500;
+    for (int i = 0; i < 3; ++i) mask[i] = exact[i] = true;
+    initialize(&d, &g, &g_vfBackendPascal); d.raw[2] = 2; d.onePointPerCall = true;
+    if (apply_curve_offsets_verified(&g, targets, mask, 25, hz, exact, VF_WRITE_SINGLE_BATCH) ||
+        d.setCalls != 1 || d.raw[0] != 1 || d.raw[1] || d.raw[2] != 2 || !d.bufferValid) return 8877;
+    initialize(&d, &g, &g_vfBackendPascal); d.raw[2] = 2;
+    if (!apply_curve_offsets_verified(&g, targets, mask, 25, hz, exact, VF_WRITE_SINGLE_BATCH) ||
+        d.setCalls != 1 || d.raw[0] != 1 || d.raw[1] != -1 || d.raw[2] || !d.bufferValid) return 8878;
+    initialize(&d, &g, &g_vfBackendFuture); hz[0] = 1000; hz[1] = -1000;
+    if (!apply_curve_offsets_verified(&g, targets, mask, 25, hz, exact, VF_WRITE_SINGLE_BATCH) ||
+        d.setCalls != 1 || d.raw[0] != 1 || d.raw[1] != -1) return 8879;
+    initialize(&d, &g, &g_vfBackendPascal); g.vfMask[0] &= (unsigned char)~2u;
+    if (apply_curve_offsets_verified(&g, targets, mask, 25, hz, exact, VF_WRITE_SINGLE_BATCH) || d.setCalls) return 8880;
+    initialize(&d, &g, &g_vfBackendPascal); g.curve[1] = {};
+    if (apply_curve_offsets_verified(&g, targets, mask, 25, hz, exact) || d.setCalls) return 8881;
+    initialize(&d, &g, &g_vfBackendPascal);
+    if (apply_curve_offsets_verified(&g, targets, mask, 25, hz, exact, (VfControlWritePolicy)19) || d.setCalls) return 8882;
+    initialize(&d, &g, &g_vfBackendPascal); d.onePointPerCall = true;
+    struct IO {
+        Driver* d;
+        bool read(unsigned char* bytes, size_t) { return read_control(d, bytes) == 0; }
+        bool write(unsigned char* bytes, size_t) { return set_control(d, bytes) == 0; }
+        bool mayWrite() { return true; }
+    } io{&d};
+    hz[0] = 500; hz[1] = -500;
+    const auto result = vf_exact_control_write(g.backend, g.vfMask, mask, hz, 25, io, VF_WRITE_SINGLE_BATCH);
+    if (result.status != VF_EXACT_MISMATCH || !result.strategyRestricted || result.writes != 1 ||
+        result.batchWrites != 1 || result.pointWrites || result.firstCi != 1 || result.targetHz != -500) return 8883;
+    return 0;
+}
+
 int run_linux_vf_write_tests() {
+    if (int failure = run_single_batch_cases()) return failure;
     Driver d = {};
     LinuxGpuState g = {};
     int targets[VF_NUM_POINTS] = {};

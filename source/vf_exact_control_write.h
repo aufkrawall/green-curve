@@ -4,6 +4,7 @@
 #define GREEN_CURVE_VF_EXACT_CONTROL_WRITE_H
 #include "gpu_core.h"
 #include "vf_curve_units.h"
+#include "vf_control_write_policy.h"
 #include <memory>
 #include <string.h>
 
@@ -13,6 +14,7 @@ struct VfExactWriteResult {
     VfExactWriteStatus status = VF_EXACT_INVALID;
     int points = 0, writes = 0, batchWrites = 0, pointWrites = 0, firstCi = -1;
     gc_i64 targetHz = 0, actualHz = 0;
+    bool strategyRestricted = false;
 };
 
 // Exact control replay: no frequency samples, unit rounding, clamping or benign
@@ -22,9 +24,9 @@ struct VfExactWriteResult {
 template <class IO>
 static inline VfExactWriteResult vf_exact_control_write(const VfBackendSpec* backend,
     const unsigned char* membership, const bool* mask, const gc_i64* targetHz,
-    int batchPasses, IO& io) {
+    int batchPasses, IO& io, VfControlWritePolicy policy = VF_WRITE_EXISTING_STRATEGY) {
     VfExactWriteResult r;
-    if (!backend || !backend->writeSupported || !membership || !mask || !targetHz ||
+    if (!vf_control_write_policy_valid(policy) || !backend || !backend->writeSupported || !membership || !mask || !targetHz ||
         backend->controlBufferSize < 36 || backend->controlBufferSize > 0x4000 ||
         backend->controlMaskOffset > backend->controlBufferSize - 32 || backend->controlEntryStride < 4) return r;
     const unsigned int size = backend->controlBufferSize;
@@ -79,9 +81,15 @@ static inline VfExactWriteResult vf_exact_control_write(const VfBackendSpec* bac
     if (!read()) return r;
     if (batchPasses < 1) batchPasses = 1;
     if (batchPasses > 3) batchPasses = 3;
+    if (policy == VF_WRITE_SINGLE_BATCH) batchPasses = 1;
     for (int pass = 0; pass < batchPasses && r.firstCi >= 0; ++pass) {
         if (!io.mayWrite()) { r.status = VF_EXACT_BUDGET_EXHAUSTED; return r; }
         if (!write(-1) || !read()) return r;
+    }
+    if (policy == VF_WRITE_SINGLE_BATCH) {
+        r.strategyRestricted = r.firstCi >= 0;
+        r.status = r.strategyRestricted ? VF_EXACT_MISMATCH : VF_EXACT_VERIFIED;
+        return r;
     }
     // Some drivers honor one changed point per control call. The fallback is
     // bounded by the same caller deadline, with immediate exact verification.

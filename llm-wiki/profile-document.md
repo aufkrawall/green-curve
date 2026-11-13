@@ -756,3 +756,31 @@ captured values, plus authorized versus unauthorized baseline deferral. Route
 fixtures cover a signed half-kHz component and owned zero. Runtime authoring
 remains gated pending transition/ownership review, durable recovery coverage,
 control preconditions and client integration; these tests do not verify hardware.
+
+## Explicit VF submission limits (2026-11-13)
+
+Source anchors: `source/vf_control_write_policy.h`,
+`source/vf_exact_control_write.h`, `source/gpu_backend_exact_curve.h`,
+`source/gpu_backend_apply_authoring.h`, `source/linux_backend_vf_write.h`,
+`source/linux_backend_mutation.cpp`, `tests/windows_vf_exact_tests.cpp`
+(8870-8876), `tests/linux_vf_write_tests.cpp` (8877-8883).
+
+The shared exact writer supports an explicit single-batch policy. It permits
+one setter at most, verifies the result and reports a restricted mismatch;
+neither repeated batches nor per-point fallback may follow it. Windows authoring
+also suppresses frequency correction writes under this policy. A matching raw
+readback needs no setter. Invalid policies refuse before writing, and caller
+deadlines still apply.
+
+Windows authoring chooses this limit without an installed transition ceiling.
+Linux selects it from the compiled exact metadata, including transition cleanup,
+and caps its existing batch loop at one. Exact Linux points disappearing from
+membership or the populated table refuse before any setter. Historical requests
+retain their established strategy. Unknown-family backend support is unchanged.
+
+Counted fake drivers cover complete, partial and ignored batches; no-op and
+deadline behavior; invalid policies; exact zero and signed remainders; missing
+points; correction suppression; and the future-family backend. Removing the
+single-batch early exit fails case 8870. These are submission limits, not a
+completed transition policy: scalar ordering, baseline/recovery protection and
+unknown external pin handling still require review before replay activation.

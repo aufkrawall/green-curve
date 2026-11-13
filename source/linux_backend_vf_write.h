@@ -5,6 +5,7 @@
 
 #ifndef GREEN_CURVE_LINUX_BACKEND_VF_WRITE_H
 #define GREEN_CURVE_LINUX_BACKEND_VF_WRITE_H
+#include "vf_control_write_policy.h"
 
 // Write verification needs a fresh CONTROL table before the full status read
 // performed at transaction completion.
@@ -39,9 +40,10 @@ static void curve_offset_range_khz(LinuxGpuState* g, int* minKHz, int* maxKHz) {
 // repeated single-changed-point passes.
 static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffsets,
     const bool* pointMask, int maxBatchPasses, const gc_i64* exactHz = nullptr,
-    const bool* exactMask = nullptr) {
+    const bool* exactMask = nullptr, VfControlWritePolicy policy = VF_WRITE_EXISTING_STRATEGY) {
     const VfBackendSpec* b = g->backend;
-    if (!b || !b->writeSupported || !targetOffsets || !pointMask) return false;
+    if (!vf_control_write_policy_valid(policy) || !b || !b->writeSupported || !targetOffsets || !pointMask) return false;
+    if (policy == VF_WRITE_SINGLE_BATCH) maxBatchPasses = 1;
 
     bool desiredMask[VF_NUM_POINTS] = {};
     int desiredOffsets[VF_NUM_POINTS] = {};
@@ -53,8 +55,12 @@ static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffs
     int rangeMinKHz = 0, rangeMaxKHz = 0;
     curve_offset_range_khz(g, &rangeMinKHz, &rangeMaxKHz);
     for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (!pointMask[i] || g->curve[i].freq_kHz == 0) continue;
-        if (!(g->vfMask[i / 8] & (1u << (i % 8)))) {
+        if (!pointMask[i]) continue;
+        const bool precise = exactMask && exactMask[i];
+        if (g->curve[i].freq_kHz == 0 || !(g->vfMask[i / 8] & (1u << (i % 8)))) {
+            if (precise || policy == VF_WRITE_SINGLE_BATCH) {
+                lb_log("curve: requested exact point is unavailable; ci=%d\n", i); return false;
+            }
             lb_log("curve: point %d not in vfMask, skipping\n", i);
             continue;
         }
@@ -62,7 +68,6 @@ static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffs
         // before any setter ran; silently clamping an out-of-range value
         // here would hide a mismatch between that proof and the write
         // surface's own range instead of surfacing it (contract 12).
-        const bool precise = exactMask && exactMask[i];
         if (precise && !exactHz) return false;
         desiredHz[i] = precise ? exactHz[i] : (gc_i64)targetOffsets[i] * 1000;
         if (desiredHz[i] < (gc_i64)rangeMinKHz * 1000 ||
@@ -176,6 +181,7 @@ static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffs
     }
     free(baseControl);
     free(batchBuf);
+    if (!ok && policy == VF_WRITE_SINGLE_BATCH) lb_log("curve: single-batch policy prevents further writes\n");
     return ok;
 }
 

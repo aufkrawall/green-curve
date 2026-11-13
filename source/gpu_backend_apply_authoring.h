@@ -4,6 +4,7 @@
 #include "windows_curve_authoring_targets.h"
 #include "desired_graphics_surface.h"
 #include "windows_graphics_offset_route.h"
+#include "vf_control_write_policy.h"
 
 // Included after the Windows planner and exact writer. Frozen originals are
 // used before memory writes; corrections use fresh paired samples but retain
@@ -85,7 +86,13 @@ static bool apply_authoring_precheck_before_writes(const DesiredSettings* d, boo
 
 static bool apply_correct_authoring_curve_targets(const DesiredSettings& desired,
     LockMode mode, bool composeGraphics, bool preserveUnowned, CurveAuthoringTargets& targets,
-    ULONGLONG applyStart, ULONGLONG deadline, char* why, size_t whySize) {
+    ULONGLONG applyStart, ULONGLONG deadline, char* why, size_t whySize,
+    VfControlWritePolicy policy = VF_WRITE_EXISTING_STRATEGY) {
+    if (!vf_control_write_policy_valid(policy)) return false;
+    if (policy == VF_WRITE_SINGLE_BATCH) {
+        debug_log("curve-authoring: correction suppressed by single-batch policy\n");
+        return apply_verify_authoring_curve_targets(targets, mode, desired.lockCi, why, whySize);
+    }
     const CurveAuthoringTargets original = targets;
     ULONGLONG passStart = 0, previousPassMs = 0;
     bool compileFailed = false, unchanged = false;
@@ -110,7 +117,7 @@ static bool apply_correct_authoring_curve_targets(const DesiredSettings& desired
                 if (next.mask[i] && next.offsetHz[i] != targets.offsetHz[i]) unchanged = false;
             if (unchanged) return false;
             const bool written = apply_curve_offsets_exact_hz(next.offsetHz, next.mask,
-                desired.hasLock ? 3 : 2, deadline, next.voltageUv);
+                desired.hasLock ? 3 : 2, deadline, next.voltageUv, policy);
             targets = next;
             bool offsetsOk = false;
             if (!read_live_curve_snapshot_settled(6, 25, &offsetsOk) || !offsetsOk) {
