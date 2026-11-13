@@ -37,7 +37,8 @@ static inline bool curve_authoring_needs_exact_targets(const DesiredSettings* d)
         d->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT)) return true;
     for (int i = 0; i < VF_NUM_POINTS; ++i)
         if (d->authoring.pointFrequencyPrecise[i] ||
-            (d->authoring.topologyBound && d->curvePointCaptured[i])) return true;
+            (d->authoring.topologyBound && desired_curve_point_present(d, i))) return true;
+    if (d->authoring.topologyBound && d->hasLock && d->lockMode != LOCK_MODE_NONE) return true;
     return false;
 }
 

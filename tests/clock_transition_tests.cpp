@@ -177,6 +177,7 @@ struct App {
  GpuFamily gpuFamily{};
  unsigned int appliedLockFreq{},lockedFreq{},transitionClockCapMHz{}; bool transitionClockCapActive{};
  int readback{}; bool powerLimitWriteUncertain{},memOffsetWriteUncertain{};
+ unsigned int gpuOffsetOwnedSurface{},gpuOffsetUncertainSurface{};
 };
 static App g_app;
 static Api g_nvml_api;

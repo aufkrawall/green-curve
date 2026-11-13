@@ -21,13 +21,17 @@ static bool setterClaimsMatch;
 static gc_u32 preciseSurface;
 static int p0HardwareMHz, p0Writes;
 static bool p0SetFails, p0ReadFails, p0BadMetadata, p0ConservativeRange;
+static bool p0ReadFailsAfterSet;
+static bool vfGlobal = true;
+static int graphicsLegacyWrites;
+static struct { void clear() {} } g_applyScalarShiftEvidence;
 static void debug_log(const char*, ...) {}
 static void set_last_apply_phase(const char*) {}
 static void Sleep(unsigned long) {}
 static bool nvml_ensure_ready() { return true; }
 static const char* nvml_err_name(int) { return "fixture"; }
-static bool vf_curve_global_gpu_offset_supported() { return true; }
-static bool nvapi_set_gpu_offset(int, bool) { return !coreFails; }
+static bool vf_curve_global_gpu_offset_supported() { return vfGlobal; }
+static bool nvapi_set_gpu_offset(int, bool) { ++graphicsLegacyWrites; return !coreFails; }
 static bool nvapi_read_curve() { g_app.curve[0].freq_kHz = 2000000; return true; }
 static bool apply_curve_offsets_verified(const int*, const bool*, int) { return !coreFails; }
 static bool nvml_set_clock_offset_domain(unsigned int, int value, bool* exact, char*, size_t) {
@@ -62,6 +66,7 @@ static void detect_clock_offsets() {
     }
 }
 #include "gpu_backend_memory_offset.h"
+#include "gpu_backend_graphics_offset.h"
 static bool nvapi_set_power_limit(int, bool = false) { return true; }
 static void stop_fan_curve_runtime() {}
 static bool app_is_service_process() { return true; }
@@ -107,8 +112,8 @@ static void initialize(bool canVerifyReset) {
         info->clockOffsetMHz = p0HardwareMHz;
         info->minClockOffsetMHz = -10000; info->maxClockOffsetMHz = 10000;
         if (p0ConservativeRange) info->minClockOffsetMHz = info->maxClockOffsetMHz = 0;
-        if (p0BadMetadata) info->type = NVML_CLOCK_GRAPHICS;
-        return p0ReadFails ? NVML_ERROR_NOT_SUPPORTED : NVML_SUCCESS;
+        if (p0BadMetadata) info->type = info->type == NVML_CLOCK_GRAPHICS ? NVML_CLOCK_MEM : NVML_CLOCK_GRAPHICS;
+        return p0ReadFails || (p0ReadFailsAfterSet && p0Writes) ? NVML_ERROR_NOT_SUPPORTED : NVML_SUCCESS;
     };
     g_nvml_api.setClockOffsets = [](nvmlDevice_t, nvmlClockOffset_t* info) -> nvmlReturn_t {
         ++p0Writes;
@@ -124,6 +129,70 @@ static void initialize(bool canVerifyReset) {
     preciseSurface = CLOCK_OFFSET_SURFACE_GLOBAL;
     p0HardwareMHz = p0Writes = 0;
     p0SetFails = p0ReadFails = p0BadMetadata = p0ConservativeRange = false;
+    p0ReadFailsAfterSet = false;
+    vfGlobal = true; graphicsLegacyWrites = 0;
+}
+
+static int run_precise_graphics_tests() {
+    initialize(false); preciseReadback = true;
+    g_nvml_api.getGpcClkVfOffset = g_nvml_api.getMemClkVfOffset;
+    g_nvml_api.setGpcClkVfOffset = g_nvml_api.setMemClkVfOffset;
+    if (!nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_P0, false) || p0HardwareMHz != 247 ||
+        p0Writes != 1 || writes || !g_app.readback.gpuOffset || g_app.gpuOffsetUncertainSurface ||
+        g_app.gpuOffsetOwnedSurface != CLOCK_OFFSET_SURFACE_P0 || g_app.gpuClockOffsetkHz != 247000) return 8843;
+    if (!nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_P0, false) || p0Writes != 1) return 8844;
+    if (!nvapi_set_gpu_offset_precise(-247000000, CLOCK_OFFSET_SURFACE_GLOBAL, false) ||
+        p0Writes != 2 || p0HardwareMHz || writes != 1 || hardwareMHz != -247 ||
+        g_app.gpuOffsetOwnedSurface != CLOCK_OFFSET_SURFACE_GLOBAL) return 8845;
+    if (nvapi_set_gpu_offset_precise(-247000500, CLOCK_OFFSET_SURFACE_GLOBAL, false) || writes != 1 || p0Writes != 2 ||
+        g_app.gpuOffsetOwnedSurface != CLOCK_OFFSET_SURFACE_GLOBAL) return 8846;
+    if (!nvapi_reset_graphics_scalar_controls() || hardwareMHz || g_app.gpuOffsetOwnedSurface ||
+        g_app.gpuOffsetUncertainSurface || graphicsLegacyWrites || writes != 2) return 8847;
+    initialize(false); p0SetFails = true;
+    if (nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_P0, false) ||
+        p0Writes != 1 || p0HardwareMHz != 247 || writes || g_app.readback.gpuOffset ||
+        g_app.gpuOffsetUncertainSurface != CLOCK_OFFSET_SURFACE_P0) return 8848;
+    DesiredSettings fan{}, repair{}; fan.hasFan = 1; repair.hasGpuOffset = 1;
+    repair.authoring.graphicsPrecise = 1; repair.authoring.graphicsSurface = DESIRED_GRAPHICS_P0;
+    char why[256]{};
+    if (apply_write_uncertainty_precheck(&fan, why, sizeof(why)) || !std::strstr(why, "graphics-offset") ||
+        !apply_write_uncertainty_precheck(&repair, why, sizeof(why))) return 8849;
+    auto recovered = rollback_to_safe_defaults();
+    if (recovered.gpuOffset.verified || recovered.curve.attempted || releases ||
+        g_app.gpuOffsetUncertainSurface != CLOCK_OFFSET_SURFACE_P0 || graphicsLegacyWrites) return 8850;
+    p0SetFails = false; recovered = rollback_to_safe_defaults();
+    if (!recovered.gpuOffset.verified || !recovered.curve.verified || !recovered.restrictionReleased ||
+        p0HardwareMHz || g_app.gpuOffsetUncertainSurface || graphicsLegacyWrites || releases != 1) return 8851;
+    initialize(false); p0ConservativeRange = true;
+    if (nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_P0, false) ||
+        p0Writes || g_app.gpuOffsetUncertainSurface) return 8852;
+    initialize(false); preciseReadback = true;
+    g_nvml_api.getGpcClkVfOffset = g_nvml_api.getMemClkVfOffset;
+    g_nvml_api.setGpcClkVfOffset = g_nvml_api.setMemClkVfOffset;
+    g_app.gpuOffsetOwnedSurface = CLOCK_OFFSET_SURFACE_P0;
+    g_nvml_api.getClockOffsets = nullptr;
+    if (nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_GLOBAL, false) || p0Writes || writes ||
+        g_app.gpuOffsetOwnedSurface != CLOCK_OFFSET_SURFACE_P0) return 8853;
+    g_app.gpuOffsetUncertainSurface = CLOCK_OFFSET_SURFACE_P0;
+    if (nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_GLOBAL, false) || p0Writes || writes) return 8854;
+    reset_selected_gpu_write_evidence(&g_app);
+    if (g_app.gpuOffsetOwnedSurface || g_app.gpuOffsetUncertainSurface) return 8855;
+    initialize(false); p0ReadFailsAfterSet = true;
+    if (nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_P0, false) || p0Writes != 1 ||
+        g_app.gpuOffsetUncertainSurface != CLOCK_OFFSET_SURFACE_P0 || g_app.readback.gpuOffset) return 8856;
+    p0ReadFailsAfterSet = false;
+    if (!nvapi_reset_graphics_scalar_controls() || p0HardwareMHz || p0Writes != 2 ||
+        g_app.gpuOffsetUncertainSurface || graphicsLegacyWrites) return 8857;
+    initialize(false); preciseReadback = setterLeavesUnchanged = true;
+    g_nvml_api.getGpcClkVfOffset = g_nvml_api.getMemClkVfOffset;
+    g_nvml_api.setGpcClkVfOffset = g_nvml_api.setMemClkVfOffset;
+    if (nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_GLOBAL, false) || hardwareMHz ||
+        writes != 1 || g_app.gpuOffsetUncertainSurface != CLOCK_OFFSET_SURFACE_GLOBAL) return 8858;
+    if (!nvapi_reset_graphics_scalar_controls() || writes != 2 || g_app.gpuOffsetUncertainSurface) return 8859;
+    initialize(false); p0BadMetadata = true;
+    if (nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_P0, false) || p0Writes ||
+        g_app.gpuOffsetUncertainSurface) return 8860;
+    return 0;
 }
 
 static int run_precise_memory_tests() {
@@ -336,7 +405,8 @@ static int run() {
 } // namespace memory_recovery_fixture
 
 int run_memory_recovery_tests() {
-    int result = memory_recovery_fixture::run_precise_memory_tests();
+    int result = memory_recovery_fixture::run_precise_graphics_tests();
+    if (!result) result = memory_recovery_fixture::run_precise_memory_tests();
     if (!result) result = memory_recovery_fixture::run();
     if (result) std::fprintf(stderr, "regression assertion failed: %d\n", result);
     return result;

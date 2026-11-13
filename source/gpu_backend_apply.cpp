@@ -25,6 +25,7 @@
 // Lock below a pre-tail point: refused before the reset, not after it.
 #include "gpu_backend_apply_lock_pretail.h"
 #include "gpu_backend_apply_authoring.h"
+#include "gpu_backend_graphics_offset.h"
 
 static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool interactive, char* result, size_t resultSize,
@@ -66,7 +67,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     // reset-before-apply path can run.  The later routing branch is far below
     // the reset, and a plan computed from invalid input could otherwise clear a
     // still-active uniform offset before the apply ultimately failed.
-    if (!curve_point_gpu_offset_request_in_range(
+    if (!desired->authoring.graphicsPrecise && !curve_point_gpu_offset_request_in_range(
             desired->hasGpuOffset != 0, desired->gpuOffsetMHz,
             g_app.gpuOffsetRangeKnown, g_app.gpuClockOffsetMinMHz,
             g_app.gpuClockOffsetMaxMHz)) {
@@ -108,6 +109,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         set_last_apply_phase("apply: refused (curve plan)");
         return false;
     }
+    if (!apply_authoring_precheck_before_writes(desired, desired->authoring.graphicsPrecise
+            ? desired->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT
+            : apply_curve_plan_pre_write_route(desired).offsetInVfTable, result, resultSize)) return false;
 #ifdef GREEN_CURVE_SERVICE_BINARY
     bool proofInvalidatedForWrite = false;
 #endif
@@ -384,8 +388,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         vf_curve_global_gpu_offset_supported(), desired->hasGpuOffset != 0,
         desired->gpuOffsetMHz, desired->gpuOffsetExcludeLowCount,
         currentAppliedGpuOffsetMHz, currentActiveGpuOffsetExcludeLowCount);
+    offsetRouting = windows_graphics_offset_route(*desired, offsetRouting);
     if (desired->hasGpuOffset) {
-        if (curve_point_gpu_offset_request_in_range(
+        if (desired->authoring.graphicsPrecise || curve_point_gpu_offset_request_in_range(
                 true, desired->gpuOffsetMHz, g_app.gpuOffsetRangeKnown,
                 g_app.gpuClockOffsetMinMHz, g_app.gpuClockOffsetMaxMHz)) {
             desiredActiveGpuOffsetExcludeLowCount = offsetRouting.activeDesiredExcludeLowCount;
@@ -409,7 +414,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 desired->gpuOffsetMHz, g_app.gpuClockOffsetMinMHz, g_app.gpuClockOffsetMaxMHz);
         }
     }
-    const bool offsetInVfTable = curve_point_apply_uses_vf_table_offset(
+    const bool offsetInVfTable = desired->authoring.graphicsPrecise
+        ? desired->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT : curve_point_apply_uses_vf_table_offset(
         vf_curve_global_gpu_offset_supported(), desired->hasGpuOffset != 0,
         desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount,
         currentAppliedGpuOffsetMHz, currentActiveGpuOffsetExcludeLowCount);
@@ -508,7 +514,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     // which can fail. After this, the curve batch only needs to adjust the lock tail.
     if (gpuOffsetValid && shouldApplyGpuOffset) {
         set_last_apply_phase("apply: dedicated GPU offset write");
-        if (nvapi_set_gpu_offset(targetGpuOffsetkHz)) {
+        if (desired_named_graphics_surface(*desired)
+            ? nvapi_set_gpu_offset_precise(desired_graphics_hz(*desired), desired_named_graphics_surface(*desired))
+            : nvapi_set_gpu_offset(targetGpuOffsetkHz)) {
             successCount++;
             gpuApplied = true;
             g_app.appliedGpuOffsetMHz = desired->gpuOffsetMHz;

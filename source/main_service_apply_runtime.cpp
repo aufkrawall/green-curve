@@ -324,8 +324,8 @@ static bool service_reset_all(char* result, size_t resultSize,
         resetMask[ci] = true;
     }
     ApplyRecoveryResult recovery = reset_core_clock_controls(
-        vf_curve_global_gpu_offset_supported(), true,
-        [&]() { return nvapi_set_gpu_offset(0, true); },
+        vf_curve_global_gpu_offset_supported() && !g_app.gpuOffsetOwnedSurface && !g_app.gpuOffsetUncertainSurface, true,
+        [&]() { return nvapi_reset_graphics_scalar_controls(); },
         [&]() { return apply_curve_offsets_verified(resetOffsets, resetMask, 2); });
     if (apply_recovery_permits_release(recovery)) {
         successCount++;

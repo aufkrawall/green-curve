@@ -4370,9 +4370,6 @@ def run_source_regression_checks():
     require_text(reset_baseline_cpp,
         "if (!apply_curve_offsets_verified(resetOffsets, resetMask, 2))",
         "F-APPLY-SPEED: the VF-curve reset-to-zero always runs when the previous profile had curve offsets")
-    require_text(reset_baseline_cpp,
-        "desired->hasGpuOffset && !vf_curve_global_gpu_offset_supported()",
-        "F-APPLY-SPEED: an owned GPU-offset transition resets that offset before the VF curve")
 
     # F-NO-INJECT: the auto-profile subsystem observes other processes/windows
     # strictly read-only (foreground/window-metadata query + a toolhelp process

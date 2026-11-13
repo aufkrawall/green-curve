@@ -12,7 +12,7 @@ static inline bool linux_bind_graphics_snapshot(LinuxGpuState* g, const DesiredS
         d->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT) return true;
     const auto p = graphics_offset_control_plan(*d, g->nvml, g->nvmlDevice);
     if (!graphics_offset_control_ready(p)) {
-        if (why && whySize) snprintf(why, whySize, "Named graphics control preflight refused (status %d)", (int)p.status);
+        if (why && whySize) snprintf(why, whySize, "Graphics offset: %s", graphics_offset_control_status_text(p.status));
         lb_log("graphics-offset: preflight refused status=%d surface=%u targetHz=%lld\n",
             (int)p.status, (unsigned)p.surface, desired_graphics_hz(*d));
         return false;

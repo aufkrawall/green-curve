@@ -684,8 +684,8 @@ correction path. They check signed half-kHz offsets, owned zero, independent
 base shifts, preservation after a memory clobber, exact tolerance edges,
 unwritable preservation, stale samples, changed topology and fixed-point exit.
 Replacing the saved unowned preimage with current controls fails case 8813.
-Replay gates remain closed: named graphics routing, transition protection,
-fresh-control preconditions and client authoring integration are still pending.
+Replay gates remain closed: transition/ownership review, fresh-control
+preconditions and client authoring integration are still pending.
 
 ## Named Linux graphics controls (2026-11-13)
 
@@ -714,5 +714,45 @@ readback, signed targets, failed and rounded writes, post-write getter failure,
 missing getters/setters, invalid metadata, sub-MHz refusal, reported bounds and
 missing ranges. The transition fixture executes the actual baseline/rollback
 helpers and checks their surface arguments and refusal without surface evidence.
-These adapters remain behind the existing authoring replay gate. Windows named
-routing, transition protection and client integration remain pending.
+These adapters remain behind the existing authoring replay gate. Cross-platform
+transition/ownership review and client integration remain pending.
+
+## Windows graphics routing and scalar repair (2026-11-13)
+
+Source anchors: `source/windows_graphics_offset_route.h`,
+`source/gpu_backend_graphics_offset.h`, `source/gpu_backend_apply_precise_scalar.h`,
+`source/gpu_backend_apply_authoring.h`, `source/gpu_backend_apply.cpp`,
+`source/main_gpu_rollback.h`, `source/main_service_apply_runtime.cpp`,
+`source/gpu_selection_write_evidence.h`, `tests/memory_recovery_tests.cpp`
+(8843-8860), `tests/windows_vf_exact_tests.cpp` (8861-8869).
+
+Explicit VF components, including sub-MHz values and zero, use the exact curve
+batch rather than deriving their setter from an integer preview. Explicit named
+graphics scalars use their selected getter, bounds and exact setter/readback;
+they contribute no invented VF component. Historical routing remains unchanged.
+An existing owned named surface is cleared before switching to another named
+surface. The new surface is validated before that handback begins.
+
+Named Windows writes record their repair surface before mutation. Verified
+nonzero controls retain their owned surface for later Reset or rollback; an
+uncertain write cannot be repaired through another API or an unrelated Apply.
+Reset and rollback clear known named controls before removing VF protection,
+including on backends whose ordinary graphics offset uses the VF table. A
+failed repair prevents curve reset and restriction release. GPU selection clears
+this session-specific evidence. Repeated matching requests skip only after a
+fresh read; forced repair still invokes the setter.
+
+Bound curve authority gets fresh exact target compilation before the first
+transition setter, checking voltage bindings, membership, grids and ranges.
+Only an authorized baseline reset may defer a shaped-estimate range failure.
+The passive read does not prove that a separate scalar is absent. Complete
+authoring bindings also route whole-MHz points through the exact compiler.
+
+Fake drivers exercise named writes, surface switches, mutating failures, ignored
+writes, failed readback, retained protection, repair and selection invalidation.
+Restoring the old VF-global scalar-reset bypass fails at 8850.
+Executing preflight cases assert zero setters for changed topology and off-grid
+captured values, plus authorized versus unauthorized baseline deferral. Route
+fixtures cover a signed half-kHz component and owned zero. Runtime authoring
+remains gated pending transition/ownership review, durable recovery coverage,
+control preconditions and client integration; these tests do not verify hardware.

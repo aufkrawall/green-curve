@@ -31,8 +31,10 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
     // points snap to factory base frequencies (~3300+ MHz on modern GPUs) while
     // the GPU offset from the previous profile is still active — that spike
     // (e.g. 3300 base + 475 old offset = 3775 MHz effective) causes TDR/crashes.
-    if (desired && desired->hasGpuOffset && !vf_curve_global_gpu_offset_supported()
-        && !nvapi_set_gpu_offset(0, true)) {
+    const gc_u32 namedSurface = desired ? desired_named_graphics_surface(*desired) : 0;
+    if (desired && desired->hasGpuOffset &&
+        (namedSurface ? !nvapi_set_gpu_offset_precise(0, namedSurface, true)
+            : !vf_curve_global_gpu_offset_supported() && !nvapi_set_gpu_offset(0, true))) {
         set_message(result, resultSize, "GPU offset did not reset before curve reset");
         return false;
     }

@@ -315,8 +315,18 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(reset_cpp, "0, 0, ownsXbar, ownsMsvdd)",
                  "baseline preserves independently unowned XBAR siblings")
 
-    require_text(rollback_h, "reset_core_clock_controls(vf_curve_global_gpu_offset_supported(), true,",
-                 "rollback uses backend-aware reset sequencing")
+    require_text(rollback_h, "reset_core_clock_controls(vf_curve_global_gpu_offset_supported() &&",
+                 "rollback retains backend-aware reset sequencing")
+    require_text(rollback_h, "!g_app.gpuOffsetOwnedSurface && !g_app.gpuOffsetUncertainSurface, true,",
+                 "named scalar state requires its own verified reset even on VF-global backends")
+    require_text(rollback_h, "return nvapi_reset_graphics_scalar_controls();",
+                 "rollback repairs the selected graphics scalar before resetting the curve")
+    require_text(reset_cpp, "if (desired && desired->hasGpuOffset &&",
+                 "baseline reset owns the requested GPU-offset domain")
+    require_order_in_operation(reset_cpp, "static bool reset_oc_before_gui_apply(",
+                               "nvapi_set_gpu_offset_precise(0, namedSurface, true)",
+                               "if (!apply_curve_offsets_verified(resetOffsets, resetMask, 2))",
+                               "a named GPU-offset reset precedes the VF reset")
 
     # The 2026-09-17 under-load profile switch (profile 3 -> 4 at 99% util).
     # Nothing here is about the ceiling itself -- it armed correctly and held
@@ -425,7 +435,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         apply_cpp,
         "static bool apply_desired_settings_service(const DesiredSettings* desired",
         "const ApplyScalarShiftSnapshot preScalar(originalCurveFreqkHz,",
-        "if (nvapi_set_gpu_offset(targetGpuOffsetkHz)) {",
+        ": nvapi_set_gpu_offset(targetGpuOffsetkHz)) {",
         "the NVML-free sample is taken before the NVML write")
     # The deferral is only temporary if field logs can answer it: the apply
     # logs NVML/VF composition evidence on the separate NVML route.
@@ -489,6 +499,16 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "corrections retain the reviewed write set and fixed controls")
     require_text(authoring_h, "desired.hasLock ? 3 : 2, deadline, next.voltageUv);",
                  "exact corrections keep the deadline and destination voltage precondition")
+    require_order_in_operation(apply_cpp, "static bool apply_desired_settings_service(const DesiredSettings* desired",
+                               "apply_authoring_precheck_before_writes(desired,", "clockCeiling.arm();",
+                               "bound exact target preflight runs before the first transition setter")
+    require_text(apply_cpp, "offsetRouting = windows_graphics_offset_route(*desired, offsetRouting);",
+                 "sub-MHz and explicit-zero graphics requests keep their reviewed route")
+    require_text(apply_cpp, "? nvapi_set_gpu_offset_precise(desired_graphics_hz(*desired), desired_named_graphics_surface(*desired))",
+                 "named graphics writes retain physical units and their selected surface")
+    require_order_in_operation(_p(ctx, "gpu_backend_graphics_offset.h"), "static bool nvapi_write_named_gpu_offset(",
+                               "g_app.gpuOffsetUncertainSurface = surface;", "nvml_exact_clock_write(g_nvml_api,",
+                               "a failed named scalar records its repair surface before mutation")
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
                  "in.desired = desired;",
                  "the pre-reset plan judges the request itself")
@@ -557,8 +577,11 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         forbid_text(_p(ctx, "ui_curve_prepare.cpp"), writer,
                     "Prepare compatible curve changes only the editor draft")
     require_text(apply_cpp,
-                 "const bool offsetInVfTable = curve_point_apply_uses_vf_table_offset(",
-                 "the apply computes its effective VF-table offset route")
+                 "const bool offsetInVfTable = desired->authoring.graphicsPrecise",
+                 "reviewed graphics routing keeps its explicit destination surface")
+    require_text(apply_cpp,
+                 "DESIRED_GRAPHICS_VF_COMPONENT : curve_point_apply_uses_vf_table_offset(",
+                 "legacy requests keep the existing VF-table route decision")
     require_text(apply_cpp,
                  "currentAppliedGpuOffsetMHz, currentActiveGpuOffsetExcludeLowCount);",
                  "the apply supplies the retained offset state to the route decision")

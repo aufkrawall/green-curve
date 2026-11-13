@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Windows named graphics routing and repair
+
+- Reviewed graphics routes retain physical units, including sub-MHz VF
+  components and zero. Named scalar writes retain the selected control surface,
+  record uncertainty before mutation, and repair that surface before VF reset.
+- Exact bound curve targets are compiled before the first transition setter;
+  only an authorized baseline reset may defer a shaped-estimate range failure.
+  Cases 8843-8869 cover production setters, rollback, preflight and routing.
+  Runtime authoring remains gated pending transition, durable recovery and
+  client integration; see
+  [profile-document.md](../profile-document.md#windows-graphics-routing-and-scalar-repair-2026-11-13).
+
 ## 2026-11-13: Named Linux graphics replay and rollback
 
 - A shared control plan distinguishes named scalars, VF components and unresolved

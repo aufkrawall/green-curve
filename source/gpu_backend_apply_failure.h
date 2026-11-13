@@ -4,6 +4,7 @@
 #define GREEN_CURVE_GPU_BACKEND_APPLY_FAILURE_H
 
 #include "apply_recovery_text.h"
+#include "desired_graphics_surface.h"
 
 // An unverified memory or power write is repaired only by a request that owns
 // that domain (or Reset). Any other Apply would succeed while the GPU keeps a
@@ -11,6 +12,11 @@
 static bool apply_write_uncertainty_precheck(const DesiredSettings* desired,
     char* result, size_t resultSize) {
     if (!desired) return true;
+    if (g_app.gpuOffsetUncertainSurface && desired_named_graphics_surface(*desired) != g_app.gpuOffsetUncertainSurface) {
+        set_message(result, resultSize, "A previous graphics-offset write is still unverified. Run Reset or repair the same graphics control.");
+        debug_log("graphics-offset: unrelated Apply refused; uncertain surface=%u\n", (unsigned)g_app.gpuOffsetUncertainSurface);
+        return false;
+    }
     const bool power = g_app.powerLimitWriteUncertain && !desired->hasPowerLimit;
     const bool memory = g_app.memOffsetWriteUncertain && !desired->hasMemOffset;
     if (!power && !memory) return true;

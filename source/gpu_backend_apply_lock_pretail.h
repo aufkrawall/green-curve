@@ -45,21 +45,24 @@ static LockMode apply_curve_plan_lock_mode(const DesiredSettings* desired) {
 
 static void apply_curve_plan_components(const DesiredSettings* desired,
     int excludeLow, int* componentKHz, gc_i64* componentHz) {
+    const bool independentScalar = desired_named_graphics_surface(*desired) != 0;
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        componentKHz[ci] = desired->hasGpuOffset
+        componentKHz[ci] = desired->hasGpuOffset && !independentScalar
             ? gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz, excludeLow) * 1000
             : 0;
         if (componentHz) {
             const bool excluded = desired->authoring.identityExclusions
                 ? desired->authoring.graphicsExcluded[ci] != 0
                 : gpu_offset_component_mhz_for_point(ci, 1, excludeLow) == 0;
-            componentHz[ci] = !desired->hasGpuOffset || excluded ? 0 : desired_graphics_hz(*desired);
+            componentHz[ci] = !desired->hasGpuOffset || excluded || independentScalar ? 0 : desired_graphics_hz(*desired);
         }
     }
 }
 
 static bool apply_curve_plan_has_curve_work(const DesiredSettings* desired) {
     if (!desired) return false;
+    if (desired->hasGpuOffset && desired->authoring.graphicsPrecise &&
+        desired->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT) return true;
     if (desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0) return true;
     for (int ci = 0; ci < VF_NUM_POINTS; ci++)
         if (desired_curve_point_present(desired, ci)) return true;

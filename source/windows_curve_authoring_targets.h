@@ -12,9 +12,9 @@
 static inline bool windows_build_authoring_curve_targets(const CurvePlanInput& in,
     const VfBackendSpec* backend, const unsigned char* membership, bool composeGraphics,
     bool preserveUnowned, const CurveAuthoringTargets* original,
-    CurveAuthoringTargets& output, CurveAuthoringTargetIssue& issue) {
+    CurveAuthoringTargets& output, CurveAuthoringTargetIssue& issue, bool allowDeferredBaseline = false) {
     CurveAuthoringTargets next;
-    if (!curve_authoring_build_targets(in, backend, membership, composeGraphics, next, issue)) return false;
+    if (!curve_authoring_build_targets(in, backend, membership, composeGraphics, next, issue, allowDeferredBaseline)) return false;
     if (preserveUnowned) for (int i = 0; i < VF_NUM_POINTS && i < in.floor.graphicsEnd; ++i) {
         if (!in.curve[i].freq_kHz || next.mask[i]) continue;
         const gc_i64 hz = original && original->preservedMask[i]

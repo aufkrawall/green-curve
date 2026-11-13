@@ -33,8 +33,9 @@ static ApplyRecoveryResult rollback_to_safe_defaults() {
         debug_log("rollback: %s did not reset after %d attempts\n", label, maxRetries);
         return false;
     };
-    recovery = reset_core_clock_controls(vf_curve_global_gpu_offset_supported(), true,
-        [&]() { return nvapi_set_gpu_offset(0, true); },
+    recovery = reset_core_clock_controls(vf_curve_global_gpu_offset_supported() &&
+        !g_app.gpuOffsetOwnedSurface && !g_app.gpuOffsetUncertainSurface, true,
+        [&]() { return nvapi_reset_graphics_scalar_controls(); },
         [&]() {
             if (!nvapi_read_curve()) return false;
             int zeros[VF_NUM_POINTS] = {};

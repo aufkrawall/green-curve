@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "windows_curve_authoring_targets.h"
+#include "desired_graphics_surface.h"
+#include "windows_graphics_offset_route.h"
 
 // Included after the Windows planner and exact writer. Frozen originals are
 // used before memory writes; corrections use fresh paired samples but retain
@@ -44,6 +46,41 @@ static bool apply_verify_authoring_curve_targets(const CurveAuthoringTargets& ta
     return windows_verify_authoring_curve_targets(g_app.curve, g_app.curveFrequencyHz,
         g_app.freqOffsetsHz, g_app.vfFrequenciesHzValid, g_app.vfOffsetsHzValid,
         targets, mode, lockCi, why, whySize);
+}
+
+static bool apply_authoring_precheck_before_writes(const DesiredSettings* d, bool composeGraphics,
+    char* why, size_t whySize) {
+    if (!curve_authoring_needs_exact_targets(d)) return true;
+    bool offsetsOk = false;
+    if (!read_live_curve_snapshot_settled(1, 0, &offsetsOk) || !offsetsOk ||
+        !g_app.vfFrequenciesHzValid || !g_app.vfOffsetsHzValid) {
+        set_message(why, whySize, "Fresh exact curve samples are unavailable. Nothing was changed."); return false;
+    }
+    int componentKHz[VF_NUM_POINTS]{}; gc_i64 componentHz[VF_NUM_POINTS]{};
+    auto in = apply_curve_plan_input(d, d->hasLock ? d->lockMode : LOCK_MODE_NONE,
+        g_app.curve, g_app.freqOffsets, CURVE_PLAN_EVIDENCE_LIVE_SHAPED_ESTIMATE,
+        apply_lock_pretail_provenance_mode(composeGraphics, false), d->resetOcBeforeApply != 0,
+        d->gpuOffsetExcludeLowCount, componentKHz, componentHz);
+    in.frequencyHz = g_app.curveFrequencyHz; in.programmedOffsetsHz = g_app.freqOffsetsHz;
+    // This read does not establish the absence of a separate scalar. Keep
+    // baseline-derived failures conditional until authorized preparation.
+    in.evidence = curve_plan_classify_pre_write_evidence(in.curve, in.programmedOffsetsKHz,
+        in.floor, false, in.programmedOffsetsHz);
+    const auto plan = curve_plan_evaluate(in);
+    curve_plan_log(plan, "windows-authoring-pre-write", apply_curve_plan_log_line);
+    if (plan.disposition == CURVE_PLAN_REFUSED || plan.disposition == CURVE_PLAN_UNAVAILABLE) {
+        curve_plan_format_message(plan, true, why, whySize); return false;
+    }
+    CurveAuthoringTargets preview; CurveAuthoringTargetIssue issue;
+    const bool preserve = d->hasMemOffset && !d->resetOcBeforeApply &&
+        apply_plan_mem_offset_write(g_app, (int)(desired_memory_hz(*d) / 1000));
+    if (!windows_build_authoring_curve_targets(in, g_app.vfBackend, g_app.vfMask, composeGraphics,
+            preserve, nullptr, preview, issue, d->resetOcBeforeApply != 0)) {
+        set_message(why, whySize, "Exact curve preflight could not resolve point %d. Review its voltage, writable state and exact target. Nothing was changed.", issue.ci);
+        debug_log("curve-authoring: pre-write target refusal status=%d ci=%d targetHz=%lld\n",
+            (int)issue.status, issue.ci, issue.requestedHz); return false;
+    }
+    return true;
 }
 
 static bool apply_correct_authoring_curve_targets(const DesiredSettings& desired,

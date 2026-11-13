@@ -120,6 +120,24 @@ static void initialize() {
     nvapi_read_offsets();
 }
 static int windows_authoring_cases() {
+    DesiredSettings routeRequest{};
+    const auto legacyRoute = curve_point_plan_gpu_offset_routing(true, true, 47, 3, 100, 0);
+    const auto retained = windows_graphics_offset_route(routeRequest, legacyRoute);
+    if (retained.gpuPolicyViaCurveBatch != legacyRoute.gpuPolicyViaCurveBatch ||
+        retained.zeroPriorScalarBeforeCurveBatch != legacyRoute.zeroPriorScalarBeforeCurveBatch ||
+        retained.curveBatchGpuOffsetMHz != 47) return 8866;
+    routeRequest.hasGpuOffset = 1; routeRequest.authoring.graphicsPrecise = 1;
+    routeRequest.authoring.graphicsSurface = DESIRED_GRAPHICS_VF_COMPONENT;
+    routeRequest.authoring.graphicsOffsetHz = -500;
+    auto route = windows_graphics_offset_route(routeRequest, legacyRoute);
+    if (!route.gpuPolicyViaCurveBatch || route.shouldApplyGpuOffset || !route.lastApplyUsedGpuOffset ||
+        route.zeroPriorScalarBeforeCurveBatch || route.curveBatchGpuOffsetMHz) return 8867;
+    routeRequest.authoring.graphicsOffsetHz = 0;
+    route = windows_graphics_offset_route(routeRequest, legacyRoute);
+    if (!route.gpuPolicyViaCurveBatch || route.shouldApplyGpuOffset || route.lastApplyUsedGpuOffset) return 8868;
+    routeRequest.authoring.graphicsSurface = DESIRED_GRAPHICS_GLOBAL;
+    route = windows_graphics_offset_route(routeRequest, legacyRoute);
+    if (route.gpuPolicyViaCurveBatch || !route.shouldApplyGpuOffset || route.zeroPriorScalarBeforeCurveBatch) return 8869;
     initialize(); driver.modelFrequency = true;
     for (int i = 0; i < 8; ++i) driver.baseHz[i] = 600000500LL + i * 100000000LL;
     nvapi_read_curve();
@@ -135,6 +153,17 @@ static int windows_authoring_cases() {
             nullptr, targets, why, sizeof(why)) || targets.offsetHz[2] != 20000500 ||
         !targets.preservedMask[7] || targets.offsetHz[7] != 15000500 || targets.capturedMask[7]) return 8810;
     const auto original = targets;
+    if (!apply_authoring_precheck_before_writes(&d, false, why, sizeof(why)) || driver.sets) return 8861;
+    ++d.authoring.voltageUv[7];
+    if (apply_authoring_precheck_before_writes(&d, false, why, sizeof(why)) || driver.sets) return 8862;
+    --d.authoring.voltageUv[7]; d.curvePointCapturedOffsetHz[0] = 250;
+    if (apply_authoring_precheck_before_writes(&d, false, why, sizeof(why)) || driver.sets) return 8863;
+    d.curvePointCapturedOffsetHz[0] = 500;
+    d.authoring.pointFrequencyHz[2] = 2000000000; d.curvePointMHz[2] = 2000; d.resetOcBeforeApply = 1;
+    if (!apply_authoring_precheck_before_writes(&d, false, why, sizeof(why)) || driver.sets) return 8864;
+    d.resetOcBeforeApply = 0;
+    if (apply_authoring_precheck_before_writes(&d, false, why, sizeof(why)) || driver.sets) return 8865;
+    d.authoring.pointFrequencyHz[2] = 820001000; d.curvePointMHz[2] = 820;
     driver.raw[7] = 0; // The memory setter cleared an unowned remainder.
     if (!apply_curve_offsets_exact_hz(targets.offsetHz, targets.mask, 2, 0, targets.voltageUv) ||
         !apply_verify_authoring_curve_targets(targets, LOCK_MODE_NONE, -1, why, sizeof(why)) ||

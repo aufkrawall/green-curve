@@ -15,6 +15,19 @@ struct GraphicsOffsetControlPlan {
     int targetMHz = 0;
     NvmlExactClockRead before{};
 };
+static inline const char* graphics_offset_control_status_text(GraphicsOffsetControlStatus status) {
+    switch (status) {
+        case GRAPHICS_OFFSET_LEGACY: return "historical graphics routing";
+        case GRAPHICS_OFFSET_VF_COMPONENT: return "offset belongs to the VF curve";
+        case GRAPHICS_OFFSET_READY: return "ready";
+        case GRAPHICS_OFFSET_INERT: return "already matches";
+        case GRAPHICS_OFFSET_INVALID: return "graphics control selection is unresolved or invalid";
+        case GRAPHICS_OFFSET_UNAVAILABLE: return "the selected graphics control cannot be read and written";
+        case GRAPHICS_OFFSET_OFF_GRID: return "the selected graphics control requires whole-MHz offsets";
+        case GRAPHICS_OFFSET_OUT_OF_RANGE: return "the offset is outside the selected control's reported range";
+    }
+    return "unknown graphics control status";
+}
 
 static inline bool graphics_offset_control_ready(const GraphicsOffsetControlPlan& p) {
     return p.status == GRAPHICS_OFFSET_READY || p.status == GRAPHICS_OFFSET_INERT;
