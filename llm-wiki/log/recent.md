@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Exact Windows curve preservation across memory writes
+
+- Memory preservation now recognizes sub-kHz controls and retains exact outgoing
+  values through target construction. Fresh evidence and representability checks
+  run before mutation; replay verifies raw controls with the original voltages.
+- The bounded exact writer preserves unselected entries and uses the existing
+  deadline. Cases 8580-8600 execute production precheck/writer helpers, including
+  a memory-clobbered 500 Hz control, with no driver loading or physical writes.
+- All declared production targets compile. General precise document compilation
+  and Linux memory-triggered preservation remain pending. See
+  [profile-document.md](../profile-document.md#windows-vf-preservation-across-memory-writes-2026-11-13).
+
 ## 2026-11-13: Reviewed CLI capture to portable intent
 
 - Both clients report domain completeness and pin/composition knowledge before

@@ -1043,6 +1043,7 @@ int run_profile_mapping_tests();
 int run_profile_conversion_tests();
 int run_hardware_capture_tests();
 int run_hardware_capture_service_tests();
+int run_windows_vf_exact_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2719,6 +2720,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int conversionFailure = run_profile_conversion_tests()) {
         fprintf(stderr, "profile conversion regression failed: %d\n", conversionFailure);
         return conversionFailure;
+    }
+    if (int exactVfFailure = run_windows_vf_exact_tests()) {
+        fprintf(stderr, "Windows exact VF regression failed: %d\n", exactVfFailure);
+        return exactVfFailure;
     }
     if (int captureFailure = run_hardware_capture_tests()) {
         fprintf(stderr, "hardware capture regression failed: %d\n", captureFailure);

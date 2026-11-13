@@ -190,13 +190,38 @@ excesses, independently of a sampled MHz preview.
 
 Linux recovery snapshots retain exact controls. Baseline reset, explicit reset
 and ownership cleanup clear raw fractional values to exact zero. Windows raw
-no-op comparisons and convergence use exact controls when available; captured
-verification requires fresh exact evidence, while its kHz-only write contract
-still refuses half-kHz targets. Exact failures log a bounded per-pass summary.
+no-op comparisons and convergence use exact controls when available. Its exact
+memory-preservation route now retains sub-kHz controls; the general captured
+target adapter and IPC replay remain pending. Captured verification requires
+fresh exact evidence. Exact failures log a bounded summary.
 The production fake-driver and rollback fixtures cover positive/negative half
 steps, ignored writes, no-op detection, range/grid refusal without setters and
 untouched fractional controls. Native Linux and physical GPU replay remain
 unverified.
+
+## Windows VF preservation across memory writes (2026-11-13)
+
+Source anchors: `source/vf_exact_control_write.h`,
+`source/curve_preservation_precision.h`, `source/gpu_backend_exact_curve.h`,
+`source/gpu_backend_apply.cpp`, `tests/windows_vf_exact_tests.cpp` (8580-8600).
+
+Fresh exact controls are checked before a memory mutation when a VF curve is
+loaded. A 500 Hz offset is nonzero even when its kHz preview is zero. Outgoing
+snapshots retain exact Hz through reset/scalar refreshes; unowned residuals survive
+target construction, while explicit point and lock-tail authority overrides them.
+Unavailable exact evidence, read-only nonzero controls and unrepresentable
+preservation refuse before the first transition write. An unavailable VF surface
+does not prevent an independent memory-only operation when no curve is loaded.
+
+The exact writer converts all targets before its first setter, validates fresh
+control templates, preserves unselected raw entries and verifies selected raw
+controls directly. It uses bounded batch/per-point fallback under the existing
+deadline, without sleeps or placeholder acceptance. Fresh voltages must match
+the original topology before replay. One `curve-exact:` line summarizes its
+result; `curve-preserve:` identifies pre-mutation refusals. Fake-driver fixtures
+exercise memory-clobbered half steps, owned zero, one-point driver behavior,
+failed/ignored writes, stale topology, grid refusal and deadline exhaustion.
+No hardware replay is claimed.
 
 ## Precise memory and bounded arithmetic (2026-11-12)
 

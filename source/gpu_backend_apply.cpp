@@ -7,6 +7,7 @@
 
 #include "gpu_backend_apply_ceiling.h"
 #include "gpu_backend_apply_failure.h"
+#include "gpu_backend_exact_curve.h"
 // What the VF table actually looks like after the batch, for post-mortems.
 #include "gpu_backend_apply_diagnostics.h"
 // Intent plus a fresh live curve -> the per-point control offsets to write.
@@ -41,6 +42,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     unsigned int precisePowerDefaultMw = 0;
     gc_u32 preciseMemSurface = 0;
     if (!apply_precise_scalar_precheck(desired, &precisePowerDefaultMw, &preciseMemSurface, result, resultSize)) return false;
+    if (!apply_curve_preservation_precheck(desired, result, resultSize)) return false;
     // Every VF write below measures itself against this, so the apply cannot
     // outrun the budget its client deadline is derived from.
     const ULONGLONG applyStartTickMs = GetTickCount64();
@@ -233,6 +235,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool gpuPolicyViaCurveBatch = false;
     bool partialApplyRisk = false;
     int originalCurveOffsets[VF_NUM_POINTS] = {};
+    gc_i64 originalCurveOffsetsHz[VF_NUM_POINTS] = {}, exactCurveTargetsHz[VF_NUM_POINTS] = {};
+    bool originalCurveExact = g_app.vfOffsetsHzValid;
     int originalCurveFreqkHz[VF_NUM_POINTS] = {};
     unsigned int originalCurveVoltUv[VF_NUM_POINTS] = {};
     bool originalCurvePopulated[VF_NUM_POINTS] = {};
@@ -243,10 +247,12 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool haveNonZeroCurveOffsets = false;
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         originalCurveOffsets[ci] = g_app.freqOffsets[ci];
+        originalCurveOffsetsHz[ci] = g_app.freqOffsetsHz[ci];
+        originalCurveExact = g_app.vfOffsetsHzValid;
         originalCurveFreqkHz[ci] = (int)g_app.curve[ci].freq_kHz;
         originalCurveVoltUv[ci] = g_app.curve[ci].volt_uV;
         originalCurvePopulated[ci] = g_app.curve[ci].freq_kHz > 0;
-        if (originalCurveOffsets[ci] != 0) haveNonZeroCurveOffsets = true;
+        if (originalCurvePopulated[ci] && curve_control_nonzero(originalCurveOffsets[ci], originalCurveExact, originalCurveOffsetsHz[ci])) haveNonZeroCurveOffsets = true;
         if (desired_curve_point_present(desired, ci)) {
             hasCurveEdits = true;
             // EXPLICIT means "the user typed this absolute MHz", which is what
@@ -268,6 +274,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     if (desired->resetOcBeforeApply) {
         for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
             originalCurveOffsets[ci] = g_app.freqOffsets[ci];
+            originalCurveOffsetsHz[ci] = g_app.freqOffsetsHz[ci];
+            originalCurveExact = g_app.vfOffsetsHzValid;
             originalCurveFreqkHz[ci] = (int)g_app.curve[ci].freq_kHz;
             originalCurveVoltUv[ci] = g_app.curve[ci].volt_uV;
             originalCurvePopulated[ci] = g_app.curve[ci].freq_kHz > 0;
@@ -509,6 +517,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     if (gpuApplied) {
         for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
             originalCurveOffsets[ci] = g_app.freqOffsets[ci];
+            originalCurveOffsetsHz[ci] = g_app.freqOffsetsHz[ci];
+            originalCurveExact = g_app.vfOffsetsHzValid;
             originalCurveFreqkHz[ci] = (int)g_app.curve[ci].freq_kHz;
             originalCurveVoltUv[ci] = g_app.curve[ci].volt_uV;
             originalCurvePopulated[ci] = g_app.curve[ci].freq_kHz > 0;
@@ -527,6 +537,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             g_app.appliedGpuOffsetExcludeLowCount = 0;
             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                 originalCurveOffsets[ci] = g_app.freqOffsets[ci];
+                originalCurveOffsetsHz[ci] = g_app.freqOffsetsHz[ci];
+                originalCurveExact = g_app.vfOffsetsHzValid;
                 originalCurveFreqkHz[ci] = (int)g_app.curve[ci].freq_kHz;
                 originalCurveVoltUv[ci] = g_app.curve[ci].volt_uV;
             }
@@ -599,6 +611,16 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         provenanceShiftMeasured ? provenanceScalarShiftKHz : nullptr))
         return apply_recover_clock_failure(clockCeiling,
             "A requested curve target is missing or outside the driver range", result, resultSize);
+    bool exactCurveWrite = preserveCurveAcrossMem;
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        exactCurveWrite |= desired->curvePointCaptured[ci] != 0;
+        if (preserveCurveAcrossMem && !(g_app.vfMask[ci / 8] & (1u << (ci % 8))) &&
+            !desired_curve_point_present(desired, ci) && !lockedTailMask[ci]) targetCurveMask[ci] = false;
+    }
+    if (exactCurveWrite && (!curve_preservation_targets(*desired, targetCurveMask, lockedTailMask,
+        targetCurveOffsets, originalCurveOffsets, originalCurveOffsetsHz, originalCurveExact, exactCurveTargetsHz) ||
+        !curve_exact_targets_representable(g_app.vfBackend, vf_offset_range_current(), targetCurveMask, exactCurveTargetsHz, nullptr)))
+        return apply_recover_clock_failure(clockCeiling, "Exact VF preservation targets cannot be represented", result, resultSize);
     if (desired->hasMemOffset) {
         if (shouldApplyMemOffset) {
             set_last_apply_phase("apply: memory offset write");
@@ -770,7 +792,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 highOffsetWarnings,
                 maxAbsOffsetCi,
                 maxAbsOffsetKHz);
-            curveBatchOk = apply_curve_offsets_verified(targetCurveOffsets, targetCurveMask, hasLock ? 3 : 2,
+            if (exactCurveWrite) curveBatchOk = apply_curve_offsets_exact_hz(exactCurveTargetsHz, targetCurveMask,
+                hasLock ? 3 : 2, correctionDeadlineTickMs, originalCurveVoltUv);
+            else curveBatchOk = apply_curve_offsets_verified(targetCurveOffsets, targetCurveMask, hasLock ? 3 : 2,
                 correctionDeadlineTickMs);
             // THE critical sample. The curve is now at its new (raised) shape and
             // the final lock step has not run; this is the exact instant that was

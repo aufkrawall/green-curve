@@ -45,7 +45,7 @@ Curves are checked before Apply, low-voltage points become editable, and dialogs
 - **Saving over another tool's curve:** Save identifies a curve that Green Curve does not own and the slot omits.
 - **Linux profile switching:** leftover curve points are cleared first, matching Windows; flatten and lock verification checks the resulting frequency after Apply.
 - **Linux memory clocks:** curve-only changes preserve memory tuning; failed baseline preparation restores the prior curve.
-- **Profile matching:** exact offsets and power ratios are compared directly, keeping rounded or temperature-dependent previews from changing the match.
+- **Profile matching:** exact offsets and power ratios stay matched despite rounded or changing clock previews.
 
 ### Fixed
 
@@ -53,6 +53,7 @@ Curves are checked before Apply, low-voltage points become editable, and dialogs
 - **Linux memory recovery:** fractional offsets stay exact; driver rounding or unavailable verification reports a mismatch.
 - **Clock offset readback:** missing driver ranges no longer hide valid Windows clock controls.
 - **Windows memory precision:** fractional memory tuning is verified through the same control that was written; failed writes cannot silently switch to another control.
+- **Windows memory changes:** preserve fractional curve offsets exactly; unavailable preservation is reported before tuning changes.
 - **Precise curve recovery:** Linux restores fractional curve offsets exactly, and Reset checks the programmed value before treating a curve point as zero.
 - **VF curve flatten editing:** retyping the target frequency in a ticked flatten point's edit box preserves normal left-to-right typing order without caret resets.
 - **Flatten detection:** plateau detection selects the real starting point, including hidden low-voltage points.

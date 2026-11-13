@@ -38,6 +38,20 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     transaction_h = _p(ctx, "linux_transaction.h")
     linux_mutation_cpp = _p(ctx, "linux_backend_mutation.cpp")
     linux_ceiling_h = _p(ctx, "linux_apply_ceiling.h")
+    require_order_in_operation(
+        apply_cpp, "static bool apply_desired_settings_service(const DesiredSettings* desired",
+        "apply_curve_preservation_precheck(desired, result, resultSize)", "ApplyClockCeilingGuard clockCeiling",
+        "memory curve preservation is proven before the first transition write")
+    require_order_in_operation(
+        apply_cpp, "static bool apply_desired_settings_service(const DesiredSettings* desired",
+        "curve_preservation_targets(*desired", "nvapi_set_mem_offset_precise(targetMemkHz",
+        "exact preservation targets are prepared before the memory setter")
+    require_text(apply_cpp, "if (exactCurveWrite) curveBatchOk = apply_curve_offsets_exact_hz(exactCurveTargetsHz",
+                 "memory preservation uses exact raw control replay")
+    require_text(apply_cpp, "hasLock ? 3 : 2, correctionDeadlineTickMs, originalCurveVoltUv);",
+                 "exact control replay keeps the deadline and original voltage binding")
+    require_text(apply_cpp, "curve_control_nonzero(originalCurveOffsets[ci], originalCurveExact, originalCurveOffsetsHz[ci])",
+                 "half-kHz controls cannot disappear through a zero kHz preview")
 
     require_order_in_operation(
         apply_cpp, "static bool apply_desired_settings_service(const DesiredSettings* desired",
