@@ -4,6 +4,7 @@
 #define GREEN_CURVE_SERVICE_SCOPED_APPLY_POLICY_H
 
 #include "vf_writable_point_policy.h"
+#include "desired_topology_binding.h"
 #include <stdio.h>
 
 // The hardware transition includes cleanup and retained graphics dependencies.
@@ -15,6 +16,7 @@ struct ServiceScopedApplyPlan {
     bool retainedLock;
     bool releasesCurveCeiling;
     bool graphicsOffsetViaVf;
+    int remappedPoints;
 };
 
 static inline void service_upgrade_legacy_scalar_scope(const DesiredSettings* previous,
@@ -62,11 +64,14 @@ static inline bool service_scoped_point_owned(const DesiredSettings& d, int ci,
     int ordinal, bool gpuOffsetInVf) {
     return desired_curve_point_present(&d, ci) ||
         (d.hasLock && d.lockMode != LOCK_MODE_NONE && d.lockCi >= 0 && ci >= d.lockCi) ||
-        (gpuOffsetInVf && d.hasGpuOffset && ordinal >= d.gpuOffsetExcludeLowCount);
+        (gpuOffsetInVf && d.hasGpuOffset && (d.authoring.identityExclusions ?
+            !d.authoring.graphicsExcluded[ci] : ordinal >= d.gpuOffsetExcludeLowCount));
 }
 
 static inline bool service_scoped_graphics_offset_in_vf(const DesiredSettings& d,
     bool uniformViaVf, bool composeWithCurve) {
+    if (d.authoring.graphicsPrecise && d.authoring.graphicsSurface != DESIRED_GRAPHICS_AUTO)
+        return d.hasGpuOffset && d.authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT;
     bool points = false;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) points |= desired_curve_point_present(&d, ci);
     return d.hasGpuOffset && (uniformViaVf || d.gpuOffsetExcludeLowCount > 0 ||
@@ -88,7 +93,7 @@ static inline bool service_scoped_graphics_work(const DesiredSettings* old,
         (desired_application_scope_kind(request.applicationScope) == DESIRED_SCOPE_REPLACE_PROFILE && oldGraph);
 }
 
-static inline bool service_build_scoped_apply_plan(const DesiredSettings* previous,
+static inline bool service_build_scoped_apply_plan_bound(const DesiredSettings* previous,
     const DesiredSettings& requested, const VFCurvePoint* curve,
     const VfFloorTopology& floor, bool uniformGpuOffsetInVf,
     ServiceScopedApplyPlan* out, char* why, size_t whySize, bool composeGpuWithCurve = false) {
@@ -192,6 +197,7 @@ static inline bool service_build_scoped_apply_plan(const DesiredSettings* previo
         hardware.hasGpuOffset = true; hardware.gpuOffsetMHz = 0; hardware.gpuOffsetExcludeLowCount = 0;
         desired_graphics_precision_copy(&hardware, old);
         hardware.authoring.graphicsOffsetHz = 0;
+        if (old.authoring.topologyBound) desired_topology_copy(&hardware, old);
     }
     if ((old.hasMemOffset && !owned.hasMemOffset) || (release && requested.hasMemOffset)) {
         hardware.hasMemOffset = true; hardware.memOffsetMHz = 0; desired_memory_precision_clear(&hardware);
@@ -248,6 +254,7 @@ static inline bool service_build_scoped_apply_plan(const DesiredSettings* previo
         (!owned.hasLock || owned.lockMode == LOCK_MODE_NONE);
     if (graphWork) {
         if (owned.authoring.topologyBound) desired_topology_copy(&hardware, owned);
+        else if (old.authoring.topologyBound) desired_topology_copy(&hardware, old);
         // Reapply retained point/lock intent so a dependent graphics write
         // cannot overwrite it. Scalar domains outside that dependency stay omitted.
         for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
@@ -289,7 +296,30 @@ static inline bool service_build_scoped_apply_plan(const DesiredSettings* previo
             ++result.cleanupPoints;
         }
     }
-    if (!desired_curve_intent_valid(&hardware)) return fail("Scoped hardware transition has contradictory intent");
+    if (!desired_curve_intent_valid(&hardware) || !desired_authoring_valid(&hardware))
+        return fail("Scoped hardware transition has contradictory intent");
+    *out = result;
+    return true;
+}
+
+static inline bool service_build_scoped_apply_plan(const DesiredSettings* previous,
+    const DesiredSettings& requested, const VFCurvePoint* curve,
+    const VfFloorTopology& floor, bool uniformGpuOffsetInVf,
+    ServiceScopedApplyPlan* out, char* why, size_t whySize, bool composeGpuWithCurve = false) {
+    const bool graphWork = service_scoped_graphics_work(previous, requested,
+        uniformGpuOffsetInVf, composeGpuWithCurve);
+    if (!graphWork || (!requested.authoring.topologyBound && (!previous || !previous->authoring.topologyBound)))
+        return service_build_scoped_apply_plan_bound(previous, requested, curve, floor,
+            uniformGpuOffsetInVf, out, why, whySize, composeGpuWithCurve);
+    DesiredSettings reboundRequest{}, reboundPrevious{};
+    int movedRequest = 0, movedPrevious = 0;
+    if (!desired_rebind_topology(requested, curve, floor, &reboundRequest, why, whySize, &movedRequest)) return false;
+    if (previous && !desired_rebind_topology(*previous, curve, floor, &reboundPrevious, why, whySize, &movedPrevious)) return false;
+    ServiceScopedApplyPlan result{};
+    if (!service_build_scoped_apply_plan_bound(previous ? &reboundPrevious : nullptr,
+            reboundRequest, curve, floor, uniformGpuOffsetInVf, &result, why, whySize, composeGpuWithCurve)) return false;
+    result.remappedPoints = movedRequest + movedPrevious;
+    if (!out) return false;
     *out = result;
     return true;
 }

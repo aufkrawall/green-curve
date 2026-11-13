@@ -136,8 +136,8 @@ static bool linux_apply_resolve_scope(LinuxGpuState* g, const DesiredSettings* d
     vf_floor_binding_update(&g->vfFloor, g->curve, g->freqOffsets, VF_NUM_POINTS, 0);
     if (!service_build_scoped_apply_plan(previous, *d, g->curve, g->vfFloor.floor,
             false, plan, why, whySize, true)) return false;
-    lb_log("apply-scope: scope=%u cleanupPoints=%d retainedLock=%d releasesCurveCeiling=%d domains=0x%X\n",
-        (unsigned)d->applicationScope, plan->cleanupPoints, plan->retainedLock ? 1 : 0,
+    lb_log("apply-scope: scope=%u cleanupPoints=%d retainedLock=%d remapped=%d releasesCurveCeiling=%d domains=0x%X\n",
+        (unsigned)d->applicationScope, plan->cleanupPoints, plan->retainedLock ? 1 : 0, plan->remappedPoints,
         plan->releasesCurveCeiling ? 1 : 0, (unsigned)service_desired_mutation_domains(&plan->hardware));
     return true;
 }

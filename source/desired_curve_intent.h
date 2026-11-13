@@ -107,14 +107,18 @@ static inline void desired_curve_point_clear(Settings* d, int ci) {
 }
 
 template <class Settings>
+static inline void desired_curve_point_copy_to(Settings* dst, int to, const Settings* src, int from) {
+    dst->hasCurvePoint[to] = src->hasCurvePoint[from];
+    dst->curvePointMHz[to] = src->curvePointMHz[from];
+    dst->curvePointFromGpuOffset[to] = src->curvePointFromGpuOffset[from];
+    dst->curvePointCaptured[to] = src->curvePointCaptured[from];
+    dst->curvePointCapturedOffsetHz[to] = src->curvePointCapturedOffsetHz[from];
+    dst->authoring.pointFrequencyPrecise[to] = src->authoring.pointFrequencyPrecise[from];
+    dst->authoring.pointFrequencyHz[to] = src->authoring.pointFrequencyHz[from];
+}
+template <class Settings>
 static inline void desired_curve_point_copy(Settings* dst, const Settings* src, int ci) {
-    dst->hasCurvePoint[ci] = src->hasCurvePoint[ci];
-    dst->curvePointMHz[ci] = src->curvePointMHz[ci];
-    dst->curvePointFromGpuOffset[ci] = src->curvePointFromGpuOffset[ci];
-    dst->curvePointCaptured[ci] = src->curvePointCaptured[ci];
-    dst->curvePointCapturedOffsetHz[ci] = src->curvePointCapturedOffsetHz[ci];
-    dst->authoring.pointFrequencyPrecise[ci] = src->authoring.pointFrequencyPrecise[ci];
-    dst->authoring.pointFrequencyHz[ci] = src->authoring.pointFrequencyHz[ci];
+    desired_curve_point_copy_to(dst, ci, src, ci);
 }
 
 // Structural checks are independent of destination feasibility and grid.

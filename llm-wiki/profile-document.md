@@ -452,3 +452,29 @@ semantic values survive acceptance. Product callers and fresh destination
 observation collection remain pending; these helpers perform no I/O or setters.
 
 Last verified: 2026-11-13.
+
+## Runtime topology binding during scoped Apply (2026-11-13)
+
+Source anchors: `source/desired_topology_binding.h`,
+`source/service_scoped_apply_policy.h`, `source/main_service_apply_runtime.cpp`,
+`source/linux_backend_apply_context.h`, `tests/desired_topology_binding_cases.h`
+(8680-8690).
+
+The shared scoped planner resolves bound incoming and outgoing graphics intent
+before merge or cleanup. An identical complete voltage table preserves indices,
+including distinct identities at equal voltages. Otherwise each authoritative
+point, anchor or exclusion requires one unique exact destination voltage.
+Missing/ambiguous identities, duplicate destinations and non-writable targets
+refuse before publishing a plan. Remapping preserves exact point payloads,
+captured zero, exclusions and lock identity, then stamps the full current table.
+Both platform Apply summaries include the number of remapped identities.
+
+Cleanup uses the remapped outgoing identity set and retains its topology binding.
+Explicit independent graphics surfaces stay independent of VF ownership; identity
+exclusions replace ordinal exclusions for bound VF components. Fan-only updates
+do not require a fresh VF observation and retain dormant graphics authority.
+These checks do not enable runtime authoring replay: the capacity guard described
+in `persistence-schema.md` still requires reviewed destination adapters.
+Native regression fixtures cover shifted tables, overlapping index moves,
+full-match duplicate voltages, missing/ambiguous matches, fixed floors and scoped
+replacement. No physical or native Linux replay is claimed.

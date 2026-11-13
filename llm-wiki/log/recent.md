@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Runtime voltage identity binding
+
+- Both scoped Apply planners remap bound incoming and outgoing authority before
+  merge/cleanup, retaining exact values and exclusions. Full-table identity is
+  required to disambiguate equal voltages; otherwise matching is unique by exact
+  voltage. Refusals publish no partial plan, and summaries count remapped entries.
+- Native cases 8680-8690 cover shifted tables, overlapping moves, ambiguity,
+  missing/non-writable targets, replacement cleanup and fan-only retention.
+  Runtime authoring replay still awaits destination review and exact adapters.
+  See [profile-document.md](../profile-document.md#runtime-topology-binding-during-scoped-apply-2026-11-13).
+
 ## 2026-11-13: Bound authoring runtime migration
 
 - Schema 5 and protocol 34 retain exact graphics/point/lock values, identity

@@ -6,8 +6,10 @@
 #include "service_lifecycle_policy.h"
 #include "linux_curve_targets.h"
 #include <cstring>
+#include "desired_topology_binding_cases.h"
 
 int run_scoped_apply_tests() {
+    if (int failure = desired_topology_binding_cases()) return failure;
     VFCurvePoint curve[VF_NUM_POINTS]{};
     int offsets[VF_NUM_POINTS]{};
     for (int ci = 0; ci < 8; ++ci)

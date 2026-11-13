@@ -103,8 +103,8 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
             if (!g_app.readback.memOffset || !service_bind_scoped_memory_surface(
                     &scopedPlan, g_app.memOffsetSurface, result, resultSize)) return false;
         }
-        debug_log("apply-scope: scope=%lu cleanupPoints=%d retainedLock=%d domains=0x%lX\n",
-            desired->applicationScope, scopedPlan.cleanupPoints, scopedPlan.retainedLock ? 1 : 0,
+        debug_log("apply-scope: scope=%lu cleanupPoints=%d retainedLock=%d remapped=%d domains=0x%lX\n",
+            desired->applicationScope, scopedPlan.cleanupPoints, scopedPlan.retainedLock ? 1 : 0, scopedPlan.remappedPoints,
             service_desired_mutation_domains(&scopedPlan.hardware));
         desired = &scopedPlan.hardware;
         replaceActiveIntent = true;
