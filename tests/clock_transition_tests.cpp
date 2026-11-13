@@ -465,6 +465,20 @@ static int run(){
    CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,-1,0,false,0,0,0,
      populated,offsets,freq,tail,target,mask,d.gpuOffsetMHz,shift));
    CHECK(mask[1]&&mask[2]&&target[1]==0&&target[2]==-15000);
+   d.curvePointCapturedOffsetHz[2]=-15000500;
+   CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,-1,0,false,0,0,0,
+     populated,offsets,freq,tail,target,mask,d.gpuOffsetMHz,shift));
+   CHECK(mask[2]&&target[2]==-15000&&d.curvePointCapturedOffsetHz[2]==-15000500);
+   d.curvePointCapturedOffsetHz[2]=15000500;
+   CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,-1,0,false,0,0,0,
+     populated,offsets,freq,tail,target,mask,d.gpuOffsetMHz,shift));
+   CHECK(target[2]==15000&&d.curvePointCapturedOffsetHz[2]==15000500);
+   for(const long long outside:{-1000000500LL,1000000500LL}){
+     d.curvePointCapturedOffsetHz[2]=outside;
+     CHECK(!apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,-1,0,false,0,0,0,
+       populated,offsets,freq,tail,target,mask,d.gpuOffsetMHz,shift));
+   }
+   d.curvePointCapturedOffsetHz[2]=-15000000;
    g_app.curve[1].freq_kHz=2000000;g_app.curve[2].freq_kHz=2100000;
    g_app.freqOffsets[1]=0;g_app.freqOffsets[2]=-15000;
    g_app.vfOffsetsHzValid=true;g_app.freqOffsetsHz[1]=0;g_app.freqOffsetsHz[2]=-15000000;

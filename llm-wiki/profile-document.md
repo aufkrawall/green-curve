@@ -590,3 +590,27 @@ conditional range evidence, zero-preview projections, exact prefix ordering,
 hard-pin grids and checked-output failures. Existing curve-plan cases still
 pass. Runtime authoring/replay remains gated pending the complete writer and
 transition-protection integration; CLI preview does not yet claim feasibility.
+
+## Captured remainders through Windows corrections (2026-11-13)
+
+Source anchors: `source/gpu_backend_apply_targets.h`,
+`source/gpu_backend_exact_curve.h`, `source/gpu_backend_apply.cpp`,
+`tests/clock_transition_tests.cpp`, `tests/windows_vf_exact_tests.cpp` (8780-8782),
+`tools/apply_ceiling_gates.py`.
+
+The Windows target builder accepts physical-Hz captured offsets independently
+of legacy kHz projections, checking the physical range before projection. The
+original DesiredSettings remains authoritative; the initial exact writer overlays
+those controls before backend-grid validation and mutation. Scalar-shift
+compensation still applies only to projected intent, never captured controls.
+The diagnostic counts captured points and sub-kHz values without dumping tables.
+
+If another absolute point requires a correction pass, exact-mode transactions
+rebuild physical targets through the same capture-preserving overlay and exact
+writer. A correction cannot erase a captured remainder merely because the
+legacy correction plan contains a kHz preview. Grid/range and topology checks
+precede that write; membership and unrelated raw controls remain untouched.
+Fake-driver cases cover positive/negative half-kHz controls, owned zero, an
+absolute correction and untouched raw remainders, plus zero-write refusals for
+unsupported fractions and ranges. The builder fixture fails before the fix.
+Runtime replay remains gated pending transition and full authoring integration.

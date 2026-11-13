@@ -977,8 +977,13 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                                 g_app.freqOffsets[75],
                                 correctedCurveOffsets[75]);
                             set_last_apply_phase("apply: VF curve correction write");
-                            bool correctionOk = apply_curve_offsets_verified(correctedCurveOffsets,
-                                correctedCurveMask, hasLock ? 3 : 2, correctionDeadlineTickMs);
+                            bool correctionOk = exactCurveWrite
+                                ? apply_curve_correction_exact_hz(verifyDesired, correctedCurveOffsets,
+                                    correctedCurveMask, lockedTailMask, originalCurveOffsets,
+                                    originalCurveOffsetsHz, originalCurveExact, hasLock ? 3 : 2,
+                                    correctionDeadlineTickMs, originalCurveVoltUv)
+                                : apply_curve_offsets_verified(correctedCurveOffsets,
+                                    correctedCurveMask, hasLock ? 3 : 2, correctionDeadlineTickMs);
                             previousPassMs = GetTickCount64() - passStartTickMs;
                             if (!correctionOk) {
                                 debug_log("curve correction pass %d had an offset verification mismatch\n", correctionPass + 1);

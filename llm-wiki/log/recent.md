@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Captured precision in Windows curve corrections
+
+- Windows target construction retains captured physical-Hz authority beside
+  legacy projections and checks exact range bounds. Exact-mode correction passes
+  use the capture-preserving overlay and exact writer, so correcting another
+  absolute point cannot round away a captured remainder.
+- Fake-driver cases 8780-8782 check signed half-kHz offsets, owned zero, an
+  absolute correction, untouched controls and zero-write refusals. The target
+  builder regression fails before the correction. Runtime replay remains gated.
+  See [profile-document.md](../profile-document.md#captured-remainders-through-windows-corrections-2026-11-13).
+
 ## 2026-11-13: Exact-Hz feasibility planning
 
 - The shared planner uses exact physical baselines and components for precise

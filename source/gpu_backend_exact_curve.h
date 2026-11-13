@@ -63,4 +63,21 @@ static bool apply_curve_offsets_exact_hz(const gc_i64* targets, const bool* mask
     if (refreshed) rebuild_visible_map();
     return refreshed;
 }
+
+// Correction may be needed for another absolute point after the first batch.
+// Reapply captured controls through their exact channel in every such pass;
+// feeding their kHz preview to the legacy writer would erase a remainder.
+static bool apply_curve_correction_exact_hz(const DesiredSettings& desired,
+    const int* targetsKhz, const bool* mask, const bool* lockTail,
+    const int* originalKhz, const gc_i64* originalHz, bool originalExact,
+    int passes, ULONGLONG deadline, const unsigned int* voltageUv) {
+    gc_i64 targetsHz[VF_NUM_POINTS]{};
+    if (!curve_preservation_targets(desired, mask, lockTail, targetsKhz,
+            originalKhz, originalHz, originalExact, targetsHz) ||
+        !curve_exact_targets_representable(g_app.vfBackend, vf_offset_range_current(), mask, targetsHz, nullptr)) {
+        debug_log("curve-exact: correction targets unavailable or unrepresentable\n");
+        return false;
+    }
+    return apply_curve_offsets_exact_hz(targetsHz, mask, passes, deadline, voltageUv);
+}
 #endif

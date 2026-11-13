@@ -145,5 +145,26 @@ int run_windows_vf_exact_tests() {
     for (int i = 0; i < VF_NUM_POINTS; ++i) voltages[i] = g_app.curve[i].volt_uV;
     g_app.curve[0].volt_uV += 1250;
     if (apply_curve_offsets_exact_hz(hz, mask, 2, 0, voltages) || driver.sets) return 8600;
+    // An absolute point can trigger correction after the first exact batch.
+    // Every captured point must keep its original Hz authority in that pass.
+    initialize(); desired = {};
+    for (int i = 0; i < VF_NUM_POINTS; ++i) {
+        mask[i] = i < 4; tail[i] = false;
+        old[i] = g_app.freqOffsets[i]; original[i] = g_app.freqOffsetsHz[i];
+        target[i] = 19000; voltages[i] = g_app.curve[i].volt_uV;
+    }
+    desired.curvePointCaptured[0] = desired.curvePointCaptured[1] = desired.curvePointCaptured[3] = 1;
+    desired.curvePointCapturedOffsetHz[0] = 500; desired.curvePointCapturedOffsetHz[1] = -500;
+    desired.hasCurvePoint[2] = 1; desired.curvePointMHz[2] = 1500;
+    driver.raw[3] = 1;
+    if (!apply_curve_correction_exact_hz(desired, target, mask, tail, old, original, true, 2, 0, voltages) ||
+        driver.raw[0] != 1 || driver.raw[1] != -1 || driver.raw[2] != 38000 || driver.raw[3] ||
+        driver.raw[7] != 30001 || !driver.untouched) return 8780;
+    initialize(); desired.curvePointCapturedOffsetHz[0] = 250;
+    if (apply_curve_correction_exact_hz(desired, target, mask, tail, old, original, true, 2, 0, voltages) ||
+        driver.sets || driver.raw[0] || driver.raw[7] != 30001) return 8781;
+    desired.curvePointCapturedOffsetHz[0] = 1000000500;
+    if (apply_curve_correction_exact_hz(desired, target, mask, tail, old, original, true, 2, 0, voltages) ||
+        driver.sets) return 8782;
     return 0;
 }

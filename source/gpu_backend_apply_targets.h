@@ -71,11 +71,14 @@ static bool apply_build_curve_targets(
     // scalar needs compensation. Subtracted from provenance points only.
     const int* provenanceScalarShiftKHz) {
     if (!desired_curve_intent_valid(desired)) return false;
-    int capturedCount = 0;
+    int capturedCount = 0, fractionalCount = 0;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
-        if (desired->curvePointCaptured[ci]) ++capturedCount;
-    if (capturedCount) debug_log("curve target intent: captured=%d; programmed offsets own the targets\n",
-        capturedCount);
+        if (desired->curvePointCaptured[ci]) {
+            ++capturedCount;
+            if (desired->curvePointCapturedOffsetHz[ci] % 1000) ++fractionalCount;
+        }
+    if (capturedCount) debug_log("curve target intent: captured=%d subKHz=%d; programmed Hz offsets own the targets\n",
+        capturedCount, fractionalCount);
     const VfOffsetRange range = vf_offset_range_current();
     if (hasLock && lockMode == LOCK_MODE_FLATTEN &&
         !vf_offset_range_supports_flatten(range)) return false;
@@ -112,7 +115,14 @@ static bool apply_build_curve_targets(
         // offset never sets it at all, but neither point is less projected.
         if (desired_curve_point_present(desired, ci) && !tail) {
             const bool projected = desired_curve_point_kind(desired, ci) == DESIRED_CURVE_PROJECTED;
-            if (!desired_curve_point_offset_khz(desired, ci,
+            if (desired->curvePointCaptured[ci]) {
+                long long hz = 0;
+                if (!desired_curve_point_offset_hz(desired, ci, 0, 0, &hz) ||
+                    hz < (long long)range.minKHz * 1000 || hz > (long long)range.maxKHz * 1000) return false;
+                // This array is the legacy correction/display projection. The
+                // exact writer takes captured authority from DesiredSettings.
+                offset = hz / 1000;
+            } else if (!desired_curve_point_offset_khz(desired, ci,
                     curve_point_stock_base_khz(originalCurveFreqkHz[ci], originalCurveOffsets[ci]),
                     gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz,
                         desiredActiveGpuOffsetExcludeLowCount) * 1000, &offset)) return false;

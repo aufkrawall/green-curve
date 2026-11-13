@@ -470,6 +470,11 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "legacy baselines preserve the established VF-offset derivation")
     require_text(precision_h, "in.programmedOffsetsHz[i] / 1000 != in.programmedOffsetsKHz[i]",
                  "exact samples must agree with the corresponding display projection")
+    require_text(apply_cpp, "? apply_curve_correction_exact_hz(verifyDesired, correctedCurveOffsets,",
+                 "exact VF correction passes retain captured Hz authority")
+    require_text(_p(ctx, "gpu_backend_exact_curve.h"),
+                 "curve_preservation_targets(desired, mask, lockTail, targetsKhz,",
+                 "exact correction overlays authoritative controls before the driver write")
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
                  "in.desired = desired;",
                  "the pre-reset plan judges the request itself")
