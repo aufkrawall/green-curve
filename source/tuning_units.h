@@ -169,6 +169,9 @@ static inline TuningPowerRatioResolution tuning_power_ratio_resolve(
 }
 
 static inline bool tuning_power_ratio_equal(TuningPowerRatio a, TuningPowerRatio b) {
+    if (!tuning_power_ratio_valid(a) || !tuning_power_ratio_valid(b)) return false;
+    a = tuning_power_ratio_reduce(a.numerator, a.denominator);
+    b = tuning_power_ratio_reduce(b.numerator, b.denominator);
     return a.numerator == b.numerator && a.denominator == b.denominator;
 }
 

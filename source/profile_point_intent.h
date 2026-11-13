@@ -57,6 +57,8 @@ struct ProfilePointIntent {
     // required payload; never compared or persisted as if authoritative.
     bool hasObservedFrequency;
     long long observedFrequencyHz;
+    bool hasObservedOffset;
+    long long observedOffsetHz; // provenance after a reviewed flatten conversion
 };
 
 // A kind's own required payload must actually be present; this rejects a
@@ -67,11 +69,11 @@ static inline bool profile_point_intent_structurally_valid(const ProfilePointInt
     switch (p.kind) {
         case PROFILE_POINT_ABSENT:
         case PROFILE_POINT_PROJECTION:
-            return true;
+            return p.absoluteFrequencyHz == 0 && p.capturedOffsetHz == 0;
         case PROFILE_POINT_ABSOLUTE_FREQUENCY:
-            return p.absoluteFrequencyHz > 0;
+            return p.absoluteFrequencyHz > 0 && p.capturedOffsetHz == 0;
         case PROFILE_POINT_CAPTURED_OFFSET:
-            return true; // any signed value, including 0, is a valid owned offset
+            return p.absoluteFrequencyHz == 0; // signed offset zero is owned
         default:
             return false; // an unrecognized kind is never structurally valid
     }
@@ -83,10 +85,8 @@ static inline bool profile_point_intent_structurally_valid(const ProfilePointInt
 static inline ProfilePointIntent profile_point_intent_canonical(ProfilePointIntent p) {
     if (p.kind != PROFILE_POINT_ABSOLUTE_FREQUENCY) p.absoluteFrequencyHz = 0;
     if (p.kind != PROFILE_POINT_CAPTURED_OFFSET) p.capturedOffsetHz = 0;
-    if (p.kind == PROFILE_POINT_ABSENT) {
-        p.hasObservedFrequency = false;
-        p.observedFrequencyHz = 0;
-    }
+    if (!p.hasObservedFrequency) p.observedFrequencyHz = 0;
+    if (!p.hasObservedOffset) p.observedOffsetHz = 0;
     return p;
 }
 
@@ -102,8 +102,11 @@ static inline bool profile_point_intent_semantically_equal(
             return a.absoluteFrequencyHz == b.absoluteFrequencyHz;
         case PROFILE_POINT_CAPTURED_OFFSET:
             return a.capturedOffsetHz == b.capturedOffsetHz;
-        default:
+        case PROFILE_POINT_ABSENT:
+        case PROFILE_POINT_PROJECTION:
             return true; // ABSENT / PROJECTION carry no per-point payload
+        default:
+            return false;
     }
 }
 

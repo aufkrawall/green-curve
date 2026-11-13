@@ -1,7 +1,9 @@
 # Profile document (authoring model)
 
 Source anchors: `source/profile_document.h`, `source/profile_point_intent.h`,
-`source/tuning_units.h`, `tests/profile_document_tests.cpp` (7960-8000).
+`source/tuning_units.h`, `source/profile_document_validation.h`,
+`source/profile_text_validation.h`, `tests/profile_document_tests.cpp` (7960-8000),
+`tests/profile_document_contract_tests.cpp` (8280-8321).
 
 ## Summary
 
@@ -251,6 +253,27 @@ without constructing an overflowing product, so an exactly representable ratio
 is not refused merely because its intermediate product exceeds 64 bits. Unit
 cases 8070-8086 and the production Linux rollback fixture cover these contracts.
 
+## Transfer document contract (2026-11-13)
+
+The exhaustive version-1 key/section contract is published beside the tests:
+[profile_format_v1.md](../tests/profile_format_v1.md). Parser implementation and
+local storage remain pending; this table fixes field meaning before fixtures.
+
+The document now carries an independent VF point-set policy, source topology
+completeness versus unresolved legacy indices, identity-based exclusions,
+exact memory-surface intent, complete optional fan configuration, source
+capture omissions and pin knowledge, and bounded lock-recognition evidence.
+Former captured tail offsets can remain observations on absent points after a
+reviewed representation change. Those observations never become authority.
+
+The pure validator checks version/enums, strict bounded UTF-8 text, domain
+membership, every topology reference, projection dependencies, exclusion
+identity uniqueness, lock metadata and the existing fan limits. Hardware
+bounds remain outside structural validation: even signed-64-bit extremes are
+retained for inspection. Equivalent power ratios and reordered exclusion sets
+compare semantically equal; moving observations remain excluded. Unit cases
+8280-8321 execute these boundaries. No authoring struct is persisted as bytes.
+
 ## Invariants
 
 - No field, constructor or function in these three headers reads `g_app`,
@@ -275,17 +298,13 @@ cases 8070-8086 and the production Linux rollback fixture cover these contracts.
   captured points, explicit scopes and exact memory/power intent. GUI/TUI,
   local-slot and portable producers still do not build or consume a
   `ProfileDocument`; that authoring pipeline remains pending.
-- **Graphics-offset exclusion identity is simplified.** `ProfileGraphicsOffset::excludeLowCount`
-  is a count, matching the live runtime's `gpuOffsetExcludeLowCount`
-  exactly, not yet the per-topology-identity exclusion set the plan's §5.4/§9.1
-  ask for once a destination can have different additional/missing points.
-  Revisit when destination mapping (topology-identity resolution across a
-  different GPU) is actually implemented.
-- **Lock recognition evidence is not modeled yet.** `ProfileLockIntent`
-  carries mode/anchor/target/tracking/provenance only; the bounded
-  recognition evidence (anchor voltage, plateau, tolerance, tail count) a
-  flatten/pin capture will need is deferred until that capture work exists,
-  to avoid guessing its shape now.
+- **Destination mapping remains pending.** New graphics exclusions name source
+  topology identities. Historical counts and index-only topology carry explicit
+  unresolved markers; neither may acquire destination voltages by assumption.
+- **Capture producers remain pending.** Bounded recognition/pin observations
+  and per-point observed offsets can survive review/storage independently of
+  lock or point authority. Their presence alone never establishes a getter or
+  authorizes Apply; pin knowledge defaults to unknown.
 - **No codec.** The portable `.gcprofile` format, bounded parser, legacy
   adapters and destination mapping remain pending. The document will carry
   their durable intent independently of live destination observations.

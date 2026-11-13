@@ -161,6 +161,8 @@ static int run_profile_document_tests() {
     d.points[1].kind = PROFILE_POINT_ABSOLUTE_FREQUENCY;
     d.points[1].absoluteFrequencyHz = 1700000000LL;
     d.points[2].kind = PROFILE_POINT_PROJECTION;
+    d.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_GRAPHICS_OFFSET;
+    d.graphicsOffset.present = true;
     if (!profile_document_structurally_valid(d, why, sizeof(why))) return 7991;
 
     // DOC-04: a document outside current hardware limits (an absurd
@@ -178,6 +180,7 @@ static int run_profile_document_tests() {
     // A lock anchor must reference a real topology point in this document.
     ProfileDocument badLock = d;
     badLock.lock.present = true;
+    badLock.domains |= PROFILE_DOMAIN_LOCK;
     badLock.lock.mode = LOCK_MODE_FLATTEN;
     badLock.lock.anchorTopologyId = 77; // not in topology[]
     badLock.lock.targetFrequencyHz = 1600000000LL;
@@ -189,6 +192,7 @@ static int run_profile_document_tests() {
     // (never an implicit 1/1).
     ProfileDocument badPower = d;
     badPower.power.present = true;
+    badPower.domains |= PROFILE_DOMAIN_POWER;
     badPower.power.ratio = TuningPowerRatio{0, 0};
     if (profile_document_structurally_valid(badPower, why, sizeof(why))) return 7996;
 
@@ -206,6 +210,7 @@ static int run_profile_document_tests() {
     // so it alone must not break equality with the pre-edit document.
     ProfileDocument fanEdited = d;
     fanEdited.fan.present = true;
+    fanEdited.domains |= PROFILE_DOMAIN_FAN;
     fanEdited.fan.fanMode = 1;
     fanEdited.fan.fanPercent = 60;
     ProfileDocument fanEditedAgain = fanEdited;

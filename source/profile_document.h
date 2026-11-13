@@ -24,8 +24,8 @@
 #include "profile_point_intent.h"
 #include "tuning_units.h"
 
-#include <cstdio>
-#include <cstring>
+#include <stdio.h>
+#include <string.h>
 
 // Which domains this document includes. A domain's absence means "no
 // opinion" for application scope UPDATE_INCLUDED (§5.5): the destination's
@@ -59,6 +59,15 @@ enum ProfileApplicationScope : int {
     PROFILE_SCOPE_EXPLICIT_RELEASE = 2,
 };
 
+enum ProfilePointSetPolicy : int { PROFILE_POINTS_MERGE = 0, PROFILE_POINTS_REPLACE = 1 };
+enum ProfileExclusionPolicy : int {
+    PROFILE_EXCLUDE_NONE = 0, PROFILE_EXCLUDE_IDENTITIES = 1,
+    PROFILE_EXCLUDE_LEGACY_COUNT = 2,
+};
+enum ProfilePinKnowledge : int {
+    PROFILE_PIN_UNKNOWN = 0, PROFILE_PIN_ABSENT = 1, PROFILE_PIN_PRESENT = 2,
+};
+
 // §9.1 [profile.N.lock] provenance: how this lock intent was established.
 enum ProfileLockProvenance : int {
     PROFILE_LOCK_PROVENANCE_USER = 0,
@@ -76,6 +85,7 @@ struct ProfileTopologyPoint {
     int topologyId;
     int sourceIndex;
     long long voltageUv;
+    int sourceWritable = 0; // 0 unknown, 1 writable, 2 read-only; provenance only
 };
 
 // §9.1 [profile.N.lock]: a coherent unit, never partially applied.
@@ -86,23 +96,26 @@ struct ProfileLockIntent {
     long long targetFrequencyHz;
     bool trackAnchor;
     ProfileLockProvenance provenance;
-    // A converted flatten's source tail offsets are stored as labeled
-    // observations elsewhere (the tail points' own ProfilePointIntent stays
-    // CAPTURED_OFFSET), never folded into this struct -- the lock owns the
-    // tail's target, not its history (§8.5).
+    bool hasRecognitionEvidence;
+    long long recognizedAnchorVoltageUv;
+    int recognizedTailCount;
+    long long recognitionToleranceHz;
+    bool hasObservedPinRange;
+    long long observedPinMinimumHz, observedPinMaximumHz;
+    // A converted flatten's former tail controls live in each point's labeled
+    // observed offset, with the former point authority removed after review.
 };
 
 // §9.1 [profile.N.graphics]: precise global/selective graphics offset.
-// Exclusion identity is a simplification for now: a count, matching the
-// live runtime's `gpuOffsetExcludeLowCount` semantics exactly, not yet the
-// per-topology-identity exclusion set §5.4/§9.1 ask for on a destination
-// with different additional/missing points. Open follow-up for step 9
-// (destination mapping), which is where an identity-based exclusion set
-// actually matters.
+// New exclusions name document topology identities. A legacy count remains
+// explicitly unresolved until destination mapping can prove equivalence.
 struct ProfileGraphicsOffset {
     bool present;
     long long offsetHz;
     int excludeLowCount;
+    ProfileExclusionPolicy exclusionPolicy;
+    int excludedCount;
+    int excludedTopologyIds[VF_NUM_POINTS];
 };
 
 struct ProfilePowerIntent {
@@ -121,6 +134,7 @@ struct ProfileFanIntent {
     bool fanAuto;
     int fanMode;
     int fanPercent;
+    bool hasCurveConfig;
     FanCurveConfig fanCurve;
 };
 
@@ -135,6 +149,9 @@ struct ProfileSourceMetadata {
     // domain's read was coherent (§8.2). A document built by Save/typing
     // rather than Capture leaves this false; it is not a defect marker.
     bool captureComplete;
+    char driverVersion[65];
+    gc_u32 capturedDomains, omittedDomains, unavailableDomains;
+    ProfilePinKnowledge pinKnowledge;
 };
 
 enum ProfileSourceOs : int {
@@ -146,10 +163,14 @@ enum ProfileSourceOs : int {
 static constexpr int PROFILE_DOCUMENT_MAX_DISPLAY_NAME = 128;
 
 struct ProfileDocument {
-    int documentVersion; // bump on any incompatible change to this struct's meaning
+    int documentVersion; // semantic format version; never persist raw struct bytes
     int domains;          // ProfileDomainMask bits
     ProfileApplicationScope applicationScope;
-    char displayName[PROFILE_DOCUMENT_MAX_DISPLAY_NAME];
+    char displayName[PROFILE_DOCUMENT_MAX_DISPLAY_NAME + 1];
+    gc_u32 documentId; // file-local identity; never a destination slot
+    ProfilePointSetPolicy pointSetPolicy;
+    bool sourceTopologyComplete;
+    bool legacyIndicesUnresolved;
 
     ProfileSourceMetadata source;
 
@@ -166,6 +187,7 @@ struct ProfileDocument {
     ProfileGraphicsOffset graphicsOffset;
     bool hasMemoryOffset;
     long long memoryOffsetHz;
+    gc_u32 memorySurface; // zero is user intent without a named source API
     ProfilePowerIntent power;
     ProfileLockIntent lock;
     ProfileFanIntent fan;
@@ -184,51 +206,16 @@ static inline ProfileDocument profile_document_make_empty() {
     ProfileDocument d{};
     d.documentVersion = 1;
     d.applicationScope = PROFILE_SCOPE_UPDATE_INCLUDED;
-    for (int i = 0; i < VF_NUM_POINTS; ++i)
+    d.documentId = 1;
+    for (int i = 0; i < VF_NUM_POINTS; ++i) {
         d.topology[i].topologyId = -1;
+        d.topology[i].sourceIndex = -1;
+    }
     d.lock.anchorTopologyId = -1;
     return d;
 }
 
-// Structural validity only -- NOT hardware feasibility (§7.2: "Unknown
-// destination GPU, currently unavailable domains, out-of-current-range
-// targets and a currently conflicting plateau may be valid documents for
-// inspection and transfer"). This never clamps, reorders or repairs; it
-// only refuses what cannot be a well-formed document at all.
-static inline bool profile_document_structurally_valid(const ProfileDocument& d,
-    char* why, size_t whySize) {
-    auto fail = [&](const char* msg) {
-        if (why && whySize) std::snprintf(why, whySize, "%s", msg);
-        return false;
-    };
-    if (d.topologyCount < 0 || d.topologyCount > VF_NUM_POINTS)
-        return fail("topology count out of range");
-    for (int i = 0; i < d.topologyCount; ++i) {
-        if (d.topology[i].topologyId < 0)
-            return fail("topology point missing its own identity");
-        for (int j = 0; j < i; ++j)
-            if (d.topology[j].topologyId == d.topology[i].topologyId)
-                return fail("duplicate topology identity");
-    }
-    for (int i = 0; i < VF_NUM_POINTS; ++i) {
-        if (!profile_point_intent_structurally_valid(d.points[i]))
-            return fail("point has an invalid or contradictory intent");
-    }
-    if (d.power.present && !tuning_power_ratio_valid(d.power.ratio))
-        return fail("power intent present without a valid ratio");
-    if (d.lock.present) {
-        bool anchorFound = false;
-        for (int i = 0; i < d.topologyCount; ++i)
-            if (d.topology[i].topologyId == d.lock.anchorTopologyId) { anchorFound = true; break; }
-        if (!anchorFound)
-            return fail("lock anchor does not reference a topology point in this document");
-        if (d.lock.mode == LOCK_MODE_NONE)
-            return fail("lock present with mode none");
-    }
-    if (d.displayName[PROFILE_DOCUMENT_MAX_DISPLAY_NAME - 1] != '\0')
-        return fail("display name not NUL-terminated");
-    return true;
-}
+#include "profile_document_validation.h"
 
 static inline bool profile_topology_point_equal(const ProfileTopologyPoint& a,
     const ProfileTopologyPoint& b) {
@@ -258,9 +245,10 @@ static inline bool profile_fan_intent_semantically_equal(const ProfileFanIntent&
     const ProfileFanIntent& b) {
     if (a.present != b.present) return false;
     if (!a.present) return true;
-    if (a.fanAuto != b.fanAuto || a.fanMode != b.fanMode || a.fanPercent != b.fanPercent)
+    if (a.fanAuto != b.fanAuto || a.fanMode != b.fanMode || a.fanPercent != b.fanPercent ||
+        a.hasCurveConfig != b.hasCurveConfig)
         return false;
-    return fan_curve_equals(&a.fanCurve, &b.fanCurve);
+    return !a.hasCurveConfig || fan_curve_equals(&a.fanCurve, &b.fanCurve);
 }
 
 // Semantic equality for dirty/applied-profile comparisons (§8.4): intent,
@@ -270,9 +258,12 @@ static inline bool profile_fan_intent_semantically_equal(const ProfileFanIntent&
 // (display name is identity, not semantics, so it is excluded too).
 static inline bool profile_document_semantically_equal(const ProfileDocument& a,
     const ProfileDocument& b) {
-    if (a.domains != b.domains || a.applicationScope != b.applicationScope)
+    if (a.domains != b.domains || a.applicationScope != b.applicationScope ||
+        a.pointSetPolicy != b.pointSetPolicy || a.sourceTopologyComplete != b.sourceTopologyComplete ||
+        a.legacyIndicesUnresolved != b.legacyIndicesUnresolved)
         return false;
     if (a.topologyCount != b.topologyCount) return false;
+    if (a.topologyCount < 0 || a.topologyCount > VF_NUM_POINTS) return false;
     for (int i = 0; i < a.topologyCount; ++i)
         if (!profile_topology_point_equal(a.topology[i], b.topology[i])) return false;
     for (int i = 0; i < VF_NUM_POINTS; ++i)
@@ -280,10 +271,23 @@ static inline bool profile_document_semantically_equal(const ProfileDocument& a,
     if (a.graphicsOffset.present != b.graphicsOffset.present) return false;
     if (a.graphicsOffset.present &&
         (a.graphicsOffset.offsetHz != b.graphicsOffset.offsetHz ||
-         a.graphicsOffset.excludeLowCount != b.graphicsOffset.excludeLowCount))
+         a.graphicsOffset.excludeLowCount != b.graphicsOffset.excludeLowCount ||
+         a.graphicsOffset.exclusionPolicy != b.graphicsOffset.exclusionPolicy ||
+         a.graphicsOffset.excludedCount != b.graphicsOffset.excludedCount))
         return false;
+    if (a.graphicsOffset.present) {
+        if (a.graphicsOffset.excludedCount < 0 || a.graphicsOffset.excludedCount > VF_NUM_POINTS) return false;
+        for (int i = 0; i < a.graphicsOffset.excludedCount; ++i) {
+            for (int j = 0; j < i; ++j)
+                if (a.graphicsOffset.excludedTopologyIds[i] == a.graphicsOffset.excludedTopologyIds[j]) return false;
+            bool found = false;
+            for (int j = 0; j < b.graphicsOffset.excludedCount; ++j)
+                found |= a.graphicsOffset.excludedTopologyIds[i] == b.graphicsOffset.excludedTopologyIds[j];
+            if (!found) return false;
+        }
+    }
     if (a.hasMemoryOffset != b.hasMemoryOffset) return false;
-    if (a.hasMemoryOffset && a.memoryOffsetHz != b.memoryOffsetHz) return false;
+    if (a.hasMemoryOffset && (a.memoryOffsetHz != b.memoryOffsetHz || a.memorySurface != b.memorySurface)) return false;
     if (!profile_power_intent_semantically_equal(a.power, b.power)) return false;
     if (!profile_lock_intent_semantically_equal(a.lock, b.lock)) return false;
     if (!profile_fan_intent_semantically_equal(a.fan, b.fan)) return false;

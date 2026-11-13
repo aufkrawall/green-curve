@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Transfer document identities and structural contract
+
+- Added point-set policy, topology evidence/unresolved legacy markers, exclusion
+  identities, memory-surface intent, complete optional fan configuration and
+  source/lock observations. Captured tail controls can become labeled
+  observations without retaining point authority after a reviewed conversion.
+- Structural validation rejects invalid domains, references, enum values,
+  projections, exclusions, fan data and bounded UTF-8 text without imposing
+  current hardware limits. Exact ratios and exclusion sets compare by meaning.
+- Published the exhaustive v1 field table beside the regression fixtures before
+  codec implementation. Cases 8280-8321 cover the model; product producers and
+  codec/storage integration remain pending. See
+  [profile-document.md](../profile-document.md).
+
 ## 2026-11-13: Independent clock-control and range observation
 
 - Windows keeps a valid programmed offset when its range is unavailable,

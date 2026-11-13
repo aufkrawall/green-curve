@@ -39,6 +39,7 @@ REGRESSION_SOURCES = (
     'curve_plan_tests.cpp',
     'curve_prefix_repair_tests.cpp',
     'profile_document_tests.cpp',
+    'profile_document_contract_tests.cpp',
     'captured_schema_tests.cpp',
     'captured_intent_runtime_tests.cpp',
     'scoped_apply_tests.cpp',
