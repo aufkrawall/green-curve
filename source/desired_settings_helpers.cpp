@@ -54,6 +54,11 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
         return false;
     }
 
+    if (!desired_authoring_equal(profile->authoring, active->authoring)) {
+        set_message(detail, detailSize, "exact graphics, lock or topology binding differs");
+        return false;
+    }
+
     if (!desired_bool_equal(profile->hasGpuOffset, active->hasGpuOffset)) {
         set_message(detail, detailSize, "gpu offset ownership differs profile=%d active=%d", profile->hasGpuOffset ? 1 : 0, active->hasGpuOffset ? 1 : 0);
         return false;

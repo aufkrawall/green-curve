@@ -456,6 +456,7 @@ struct GpuAdapterInfo {
 
 #include "configured_gpu_selection.h"
 
+#include "desired_authoring_types.h"
 struct DesiredSettings {
     gc_bool8 hasCurvePoint[VF_NUM_POINTS];
     unsigned int curvePointMHz[VF_NUM_POINTS];
@@ -506,8 +507,10 @@ struct DesiredSettings {
     gc_i64 memOffsetHz;
     gc_i64 powerRatioNumerator;
     gc_i64 powerRatioDenominator;
+    DesiredAuthoringFields authoring;
 };
 
+#include "desired_authoring_intent.h"
 #include "desired_curve_intent.h"
 #include "desired_scalar_intent.h"
 

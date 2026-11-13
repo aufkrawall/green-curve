@@ -38,6 +38,10 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         set_message(result, resultSize, "No desired settings");
         return false;
     }
+    if (!desired_authoring_valid(desired) || !desired_authoring_runtime_ready(desired)) {
+        set_message(result, resultSize, "Bound authoring replay requires destination review");
+        debug_log("apply-authoring: refused before writes (destination review required)\n"); return false;
+    }
     if (!apply_write_uncertainty_precheck(desired, result, resultSize)) return false;
     unsigned int precisePowerDefaultMw = 0;
     gc_u32 preciseMemSurface = 0;

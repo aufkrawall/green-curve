@@ -37,7 +37,8 @@ template <class Settings>
 static inline bool desired_curve_point_has_target(const Settings* d, int ci) {
     const DesiredCurvePointKind kind = desired_curve_point_kind(d, ci);
     return kind == DESIRED_CURVE_CAPTURED || kind == DESIRED_CURVE_PROJECTED ||
-        (kind == DESIRED_CURVE_ABSOLUTE && d->curvePointMHz[ci] > 0);
+        (kind == DESIRED_CURVE_ABSOLUTE &&
+            (d->authoring.pointFrequencyPrecise[ci] ? d->authoring.pointFrequencyHz[ci] > 0 : d->curvePointMHz[ci] > 0));
 }
 
 template <class Settings>
@@ -46,6 +47,9 @@ static inline bool desired_curve_point_offset_khz(const Settings* d, int ci,
     if (!out) return false;
     const DesiredCurvePointKind kind = desired_curve_point_kind(d, ci);
     if (kind == DESIRED_CURVE_INVALID || kind == DESIRED_CURVE_ABSENT) return false;
+    // This adapter has only a kHz baseline. Exact absolute authority needs an
+    // exact baseline and must never be silently projected through whole MHz.
+    if (kind == DESIRED_CURVE_ABSOLUTE && d->authoring.pointFrequencyPrecise[ci]) return false;
     if (kind == DESIRED_CURVE_CAPTURED) {
         const long long hz = d->curvePointCapturedOffsetHz[ci];
         if (hz % 1000 || hz / 1000 < INT_MIN || hz / 1000 > INT_MAX) return false;
@@ -85,7 +89,9 @@ static inline bool desired_curve_point_semantically_equal(
     if (kind == DESIRED_CURVE_INVALID || kind != desired_curve_point_kind(b, ci)) return false;
     if (kind == DESIRED_CURVE_CAPTURED)
         return a->curvePointCapturedOffsetHz[ci] == b->curvePointCapturedOffsetHz[ci];
-    if (kind == DESIRED_CURVE_ABSOLUTE) return a->curvePointMHz[ci] == b->curvePointMHz[ci];
+    if (kind == DESIRED_CURVE_ABSOLUTE)
+        return (a->authoring.pointFrequencyPrecise[ci] ? a->authoring.pointFrequencyHz[ci] : (long long)a->curvePointMHz[ci] * 1000000) ==
+            (b->authoring.pointFrequencyPrecise[ci] ? b->authoring.pointFrequencyHz[ci] : (long long)b->curvePointMHz[ci] * 1000000);
     return true; // projected MHz is an observation, absent payload is inactive
 }
 
@@ -96,6 +102,8 @@ static inline void desired_curve_point_clear(Settings* d, int ci) {
     d->curvePointFromGpuOffset[ci] = 0;
     d->curvePointCaptured[ci] = 0;
     d->curvePointCapturedOffsetHz[ci] = 0;
+    d->authoring.pointFrequencyPrecise[ci] = 0;
+    d->authoring.pointFrequencyHz[ci] = 0;
 }
 
 template <class Settings>
@@ -105,6 +113,8 @@ static inline void desired_curve_point_copy(Settings* dst, const Settings* src, 
     dst->curvePointFromGpuOffset[ci] = src->curvePointFromGpuOffset[ci];
     dst->curvePointCaptured[ci] = src->curvePointCaptured[ci];
     dst->curvePointCapturedOffsetHz[ci] = src->curvePointCapturedOffsetHz[ci];
+    dst->authoring.pointFrequencyPrecise[ci] = src->authoring.pointFrequencyPrecise[ci];
+    dst->authoring.pointFrequencyHz[ci] = src->authoring.pointFrequencyHz[ci];
 }
 
 // Structural checks are independent of destination feasibility and grid.

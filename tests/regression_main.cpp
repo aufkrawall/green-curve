@@ -4521,16 +4521,16 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 33) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 34) return 81;
         // These are release gates, not incidental layout observations. A field
         // addition that changes a fixed-size IPC structure must bump the wire
         // version; otherwise mixed old/new peers pass the header handshake and
         // then disagree on the number of body bytes to read.
-        if (sizeof(ServiceRequest) != 2744 ||
+        if (sizeof(ServiceRequest) != 5096 ||
             sizeof(ControlState) != 188 ||
-            sizeof(DesiredSettings) != 2152 ||
+            sizeof(DesiredSettings) != 4488 ||
             sizeof(ServiceSnapshot) != 4440 ||
-            sizeof(ServiceResponse) != 14768) return 4521;
+            sizeof(ServiceResponse) != 19440) return 4521;
         if (offsetof(ServiceRequest, expectedServiceInstanceId) <=
             offsetof(ServiceRequest, operationId) ||
             offsetof(ServiceResponse, state) <=

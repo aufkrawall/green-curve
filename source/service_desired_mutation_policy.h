@@ -77,6 +77,7 @@ static inline void service_project_desired_to_available_domains(
         desired->videoClkOffsetKhz = 0;
     }
     desired_scalar_intent_canonicalize(desired);
+    desired_authoring_canonicalize(desired);
 }
 
 // Successful sparse Apply operations update only the requested domains of the
@@ -93,6 +94,7 @@ static inline DesiredSettings service_merge_desired_after_mutation(
         merged.hasGpuOffset = false;
         merged.gpuOffsetMHz = 0;
         merged.gpuOffsetExcludeLowCount = 0;
+        merged.authoring = {};
         // Baseline preparation leaves memory untouched, including ownership.
         for (int i = 0; i < VF_NUM_POINTS; ++i) {
             merged.hasCurvePoint[i] = false;
@@ -120,6 +122,7 @@ static inline DesiredSettings service_merge_desired_after_mutation(
         merged.gpuOffsetMHz = requested->gpuOffsetMHz;
         merged.gpuOffsetExcludeLowCount =
             requested->gpuOffsetExcludeLowCount;
+        desired_graphics_precision_copy(&merged, *requested);
     }
     if (domains & SERVICE_MUTATION_DOMAIN_MEM_OFFSET) {
         merged.hasMemOffset = requested->hasMemOffset;
@@ -141,6 +144,8 @@ static inline DesiredSettings service_merge_desired_after_mutation(
             merged.curvePointFromGpuOffset[i] = requested->curvePointFromGpuOffset[i];
             merged.curvePointCaptured[i] = requested->curvePointCaptured[i];
             merged.curvePointCapturedOffsetHz[i] = requested->curvePointCapturedOffsetHz[i];
+            merged.authoring.pointFrequencyPrecise[i] = requested->authoring.pointFrequencyPrecise[i];
+            merged.authoring.pointFrequencyHz[i] = requested->authoring.pointFrequencyHz[i];
         }
     }
     if (domains & SERVICE_MUTATION_DOMAIN_LOCK) {
@@ -149,6 +154,7 @@ static inline DesiredSettings service_merge_desired_after_mutation(
         merged.lockMHz = requested->lockMHz;
         merged.lockMode = requested->lockMode;
         merged.lockTracksAnchor = requested->lockTracksAnchor;
+        desired_lock_precision_copy(&merged, *requested);
     }
     if (domains & SERVICE_MUTATION_DOMAIN_FAN) {
         merged.hasFan = requested->hasFan;
@@ -173,6 +179,7 @@ static inline DesiredSettings service_merge_desired_after_mutation(
     }
     // This is a one-shot transaction instruction, never durable intent.
     merged.resetOcBeforeApply = false;
+    if (requested->authoring.topologyBound) desired_topology_copy(&merged, *requested);
     return merged;
 }
 

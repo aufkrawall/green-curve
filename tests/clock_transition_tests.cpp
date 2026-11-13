@@ -10,6 +10,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cstdarg>
+#include "desired_authoring_types.h"
 namespace clock_transition_fixture {
 constexpr int VF_NUM_POINTS=128, MAX_GPU_FANS=4;
 using gc_u32=unsigned int;
@@ -30,6 +31,7 @@ struct DesiredSettings {
  bool curvePointFromGpuOffset[VF_NUM_POINTS]{};
  unsigned char curvePointCaptured[VF_NUM_POINTS]{};
  long long curvePointCapturedOffsetHz[VF_NUM_POINTS]{};
+ ::DesiredAuthoringFields authoring{};
 };
 static bool service_request_replaces_lock_domain(const DesiredSettings* d) {
  return d->hasLock||d->hasGpuOffset||d->resetOcBeforeApply;

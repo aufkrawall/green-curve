@@ -50,6 +50,7 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
         d->videoClkOffsetKhz = d->videoClkOffsetKhz < -1000000 ? -1000000 : 1000000;
     }
     desired_scalar_intent_canonicalize(d);
+    desired_authoring_canonicalize(d);
     validate_fan_curve_flags_for_ipc(&d->fanCurve);
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (d->curvePointMHz[ci] > 5000u) d->curvePointMHz[ci] = 5000u;

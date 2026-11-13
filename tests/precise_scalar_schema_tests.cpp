@@ -178,7 +178,9 @@ static int frozen_scalar_cases() {
     return 0;
 }
 
+#include "desired_authoring_schema_cases.h"
 int run_precise_scalar_schema_tests() {
+    if (int failure = authoring_schema_cases()) return failure;
     DesiredSettings current = precise_fixture(), widened{};
     current.curvePointCaptured[20] = 1; current.curvePointCapturedOffsetHz[20] = -500;
     DesiredSettingsSchema4 frozen{};
@@ -195,7 +197,7 @@ int run_precise_scalar_schema_tests() {
     old.checksum = linux_daemon_record_hash_bytes(&old, offsetof(LinuxDaemonStateRecordSchema6, checksum));
     LinuxDaemonStateRecord record{};
     if (!linux_daemon_state_record_widen_schema6(&record, &old) || !desired_settings_equal(&record.desired, &current) ||
-        sizeof(old) != sizeof(record)) return 8641;
+        sizeof(old) != 2472 || sizeof(record) != 4808) return 8641;
     old.checksum ^= 1;
     if (linux_daemon_state_record_widen_schema6(&record, &old)) return 8642;
     LinuxDaemonStartupRecordSchema6 startup{};
@@ -205,12 +207,12 @@ int run_precise_scalar_schema_tests() {
     startup.checksum = linux_daemon_record_hash_bytes(&startup, offsetof(LinuxDaemonStartupRecordSchema6, checksum));
     LinuxDaemonStartupRecord restored{};
     if (!linux_daemon_startup_widen_schema6(&restored, &startup) || !desired_settings_equal(&restored.desired, &current) ||
-        sizeof(startup) != sizeof(restored)) return 8643;
+        sizeof(startup) != 2528 || sizeof(restored) != 4864) return 8643;
 #ifdef _WIN32
     ServiceRestartReapplySnapshotSchema4 restart{}; restart.desired = frozen;
     restart.targetGpu = old.targetGpu; restart.activeProfileSlot = 2;
     ServiceRestartReapplySnapshot replay{}; service_restart_snapshot_widen_schema4(&replay, &restart);
-    if (sizeof(restart) != sizeof(replay) || replay.activeProfileSlot != 2 ||
+    if (sizeof(restart) != 2352 || sizeof(replay) != 4688 || replay.activeProfileSlot != 2 ||
         !desired_settings_equal(&replay.desired, &current)) return 8644;
 #endif
     int result = scalar_intent_cases();

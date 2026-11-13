@@ -548,7 +548,7 @@ def check_startup_policy(ctx, require_text, forbid_text):
     daemon_cpp = _p(ctx, "linux_daemon.cpp")
     policy_h = _p(ctx, "linux_startup_policy.h")
     cli_cpp = _p(ctx, "linux_cli_options.cpp")
-    require_text(protocol_h, "SERVICE_PROTOCOL_VERSION = 33",
+    require_text(protocol_h, "SERVICE_PROTOCOL_VERSION = 34",
                  "the startup-policy, readback-validity, outcome-severity and "
                  "update-state/XBAR fields each moved the protocol version with "
                  "them")
@@ -1129,9 +1129,9 @@ def check_mem_offset_migration(ctx, require_text, forbid_text, require_order):
                  "the committed restore-last record converts pre-parity mem units")
     require_text(state_h, "linux_daemon_migrate_desired_mem_units_to_display(&widened",
                  "the widening path is where the halving happens, once")
-    require_text(state_h, "LINUX_DAEMON_STARTUP_VERSION = 8",
+    require_text(state_h, "LINUX_DAEMON_STARTUP_VERSION = 9",
                  "the startup record generation moved with the layout change")
-    require_text(state_h, "LINUX_DAEMON_RECORD_VERSION = 9",
+    require_text(state_h, "LINUX_DAEMON_RECORD_VERSION = 10",
                  "the committed record generation moved with the layout change")
     require_text(state_h, "LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION = 1",
                  "the pre-parity startup generation is still recognized")

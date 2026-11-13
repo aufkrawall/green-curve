@@ -74,6 +74,7 @@ static inline void normalize_desired_settings_for_ui(DesiredSettings* desired) {
 static inline bool desired_settings_equal(const DesiredSettings* left,
                                           const DesiredSettings* right) {
     if (!left || !right) return left == right;
+    if (!desired_authoring_equal(left->authoring, right->authoring)) return false;
     if (left->applicationScope != right->applicationScope ||
         left->memOffsetPrecise != right->memOffsetPrecise || left->memOffsetHz != right->memOffsetHz ||
         left->memOffsetSurface != right->memOffsetSurface || left->powerLimitRatio != right->powerLimitRatio ||

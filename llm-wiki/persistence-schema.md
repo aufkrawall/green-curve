@@ -8,9 +8,9 @@ changed underneath them**:
 
 | File | Record | Current version | Frozen predecessor |
 |------|--------|-----------------|--------------------|
-| Linux `active.bin` | `LinuxDaemonStateRecord` (2472 B) | `LINUX_DAEMON_RECORD_VERSION = 9` | schema 5 (2440 B, v8), schema 4 (1280 B, v7), `LinuxDaemonStateRecordSchema3` (1184 B, versions 5-6), `LinuxDaemonStateRecordSchema2` (1176 B, version 4), `LinuxDaemonStateRecordSchema1` (1048 B, versions 2-3), `LinuxDaemonStateRecordSchema1V1` (1036 B, version 1) |
-| Linux `startup.bin` | `LinuxDaemonStartupRecord` (2528 B) | `LINUX_DAEMON_STARTUP_VERSION = 8` | schema 5 (2496 B, v7), schema 4 (1336 B, v6), `LinuxDaemonStartupRecordSchema3` (1240 B, versions 4-5), `LinuxDaemonStartupRecordSchema2` (1236 B, version 3), `LinuxDaemonStartupRecordSchema1` (1108 B, versions 1-2) |
-| Windows restart snapshot | `ServiceRestartReapplySnapshot` (2352 B) | `SERVICE_ACTIVE_DESIRED_VERSION = 8u` | schema 3 (2320 B, v7), schema 2 (1160 B, v6), `ServiceRestartReapplySnapshotSchema1` (1032 B, version 5) |
+| Linux `active.bin` | `LinuxDaemonStateRecord` (4808 B) | `LINUX_DAEMON_RECORD_VERSION = 10` | schema 6 (2472 B, v9), schema 5 (2440 B, v8), schema 4 (1280 B, v7), `LinuxDaemonStateRecordSchema3` (1184 B, versions 5-6), `LinuxDaemonStateRecordSchema2` (1176 B, version 4), `LinuxDaemonStateRecordSchema1` (1048 B, versions 2-3), `LinuxDaemonStateRecordSchema1V1` (1036 B, version 1) |
+| Linux `startup.bin` | `LinuxDaemonStartupRecord` (4864 B) | `LINUX_DAEMON_STARTUP_VERSION = 9` | schema 6 (2528 B, v8), schema 5 (2496 B, v7), schema 4 (1336 B, v6), `LinuxDaemonStartupRecordSchema3` (1240 B, versions 4-5), `LinuxDaemonStartupRecordSchema2` (1236 B, version 3), `LinuxDaemonStartupRecordSchema1` (1108 B, versions 1-2) |
+| Windows restart snapshot | `ServiceRestartReapplySnapshot` (4688 B) | `SERVICE_ACTIVE_DESIRED_VERSION = 9u` | schema 4 (2352 B, v8), schema 3 (2320 B, v7), schema 2 (1160 B, v6), `ServiceRestartReapplySnapshotSchema1` (1032 B, version 5) |
 
 Every loader admitted a file only when its byte size equalled the **current**
 struct. That had two consequences, and the second is the nastier one:
@@ -73,8 +73,33 @@ fieldwise widening/narrowing, including exact memory and rational power fields.
 `source/linux_daemon_authoring_schema.h` freezes its 2472-byte active and
 2528-byte startup records; the restart schema header freezes its 2352-byte
 payload. Cases 8640-8644 check offsets, scalar/captured preservation and original
-checksum validation. These explicit predecessors prepare the next extension;
-the current live layout/version and disk dispatch remain unchanged.
+checksum validation. Each file loader dispatches these original sizes before
+widening into the current authoring layout.
+
+## Bound authoring runtime capacity (2026-11-13)
+
+Source anchors: `source/desired_authoring_types.h`,
+`source/desired_authoring_intent.h`, `source/service_desired_mutation_policy.h`,
+`source/service_scoped_apply_policy.h`, `tests/desired_authoring_schema_cases.h`
+(8650-8676), and the predecessor loaders above.
+
+DesiredSettings schema 5 is 4488 bytes. Its explicit 2336-byte extension retains
+exact absolute point frequencies, graphics offsets and surface, lock frequency,
+identity exclusions and full resolved destination voltages. Tags are independent
+from display previews. Full topology belongs to runtime authority; portable
+source observations and local acknowledgments remain outside this layout.
+Structural checks reject inconsistent tags/previews, missing bound identities,
+inactive payloads and reserved bytes. Copy, clear, projection and sparse merge
+preserve the new authority fieldwise. Historical wideners initialize it to zero.
+
+Protocol 34 uses 5096-byte requests and 19440-byte responses. It reserves a fresh
+control fingerprint and domain mask for reviewed Apply. Nonzero authoring
+extensions and control preconditions are currently refused with an explicit
+reason at IPC and both backend preflights until destination review and exact
+adapters are activated. Storage capacity does not enable rounded replay.
+The compiler checks current and frozen sizes; the native suite checks exact
+round trips, old-byte migration, checksum corruption, malformed tags, fan-only
+retention and omission cleanup. No physical replay is claimed.
 
 ## Captured-offset capacity (2026-11-12)
 

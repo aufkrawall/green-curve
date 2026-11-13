@@ -31,6 +31,8 @@ static inline const char* service_request_reject_reason(
     if (!r) return "no request";
     if (r->magic != SERVICE_PROTOCOL_MAGIC) return "wrong protocol magic";
     if (r->version != SERVICE_PROTOCOL_VERSION) return "wrong protocol version";
+    if (r->expectedControlFingerprint || r->expectedControlDomains)
+        return "control preconditions require reviewed profile Apply";
     if (r->command < SERVICE_CMD_PING ||
         r->command > SERVICE_CMD_CAPTURE_CURRENT)
         return "unknown command";
@@ -75,6 +77,8 @@ static inline const char* service_request_reject_reason(
         return "non-boolean target GPU flags";
     if (!desired_scalar_intent_valid(&r->desired))
         return "invalid precise scalar intent";
+    if (!desired_authoring_valid(&r->desired)) return "invalid bound authoring intent";
+    if (!desired_authoring_runtime_ready(&r->desired)) return "bound authoring replay requires destination review";
     if (!service_desired_bool_fields_valid(&r->desired))
         return "non-boolean desired settings flags";
     if ((r->desired.memOffsetPrecise || r->desired.powerLimitRatio) &&
@@ -517,7 +521,8 @@ static inline bool service_desired_settings_is_zero(
         !service_scalar_array_is_zero(desired.curvePointCaptured) ||
         !service_scalar_array_is_zero(desired.curvePointCapturedOffsetHz))
         return false;
-    return desired.memOffsetPrecise == 0 && desired.powerLimitRatio == 0 &&
+    return desired_authoring_is_zero(desired.authoring) &&
+        desired.memOffsetPrecise == 0 && desired.powerLimitRatio == 0 &&
         desired.memOffsetSurface == 0 && desired.memOffsetHz == 0 &&
         desired.powerRatioNumerator == 0 && desired.powerRatioDenominator == 0 &&
         desired.applicationScope == 0 && desired.hasLock == 0 && desired.lockCi == 0 &&

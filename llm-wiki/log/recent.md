@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Bound authoring runtime migration
+
+- Schema 5 and protocol 34 retain exact graphics/point/lock values, identity
+  exclusions and resolved destination voltages across current durable records.
+  Real loaders now widen the frozen exact-scalar predecessors after validating
+  their original bytes. Explicit refusal prevents premature rounded replay.
+- Native regression cases 8650-8676 cover tags, precision, historical/current
+  round trips, checksum failures, projection and fan-only ownership retention.
+  Destination review and exact adapter activation remain the next work. See
+  [persistence-schema.md](../persistence-schema.md#bound-authoring-runtime-capacity-2026-11-13).
+
 ## 2026-11-13: Frozen exact-scalar runtime predecessors
 
 - Froze the current desired payload and enclosing active/startup/restart records

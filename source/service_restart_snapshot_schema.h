@@ -22,7 +22,8 @@
 // identifiable after the fact.
 
 #define SERVICE_ACTIVE_DESIRED_MAGIC   0x47434144u /* 'GCAD' */
-#define SERVICE_ACTIVE_DESIRED_VERSION 8u
+#define SERVICE_ACTIVE_DESIRED_VERSION 9u
+#define SERVICE_ACTIVE_DESIRED_SCHEMA4_VERSION 8u
 #define SERVICE_ACTIVE_DESIRED_SCHEMA3_VERSION 7u
 #define SERVICE_ACTIVE_DESIRED_SCHEMA2_VERSION 6u
 #define SERVICE_ACTIVE_DESIRED_SCHEMA1_VERSION 5u
@@ -35,7 +36,7 @@ struct ServiceRestartReapplySnapshot {
     DWORD reserved[2];
 };
 
-static_assert(sizeof(ServiceRestartReapplySnapshot) == 2352,
+static_assert(sizeof(ServiceRestartReapplySnapshot) == 4688,
               "ServiceRestartReapplySnapshot changed size: freeze the outgoing "
               "layout as ServiceRestartReapplySnapshotSchema<N>, teach the "
               "loader its size, and bump SERVICE_ACTIVE_DESIRED_VERSION "
@@ -162,6 +163,13 @@ static bool service_restart_snapshot_read_payload(unsigned int version,
         ServiceRestartReapplySnapshotSchema3 old{};
         if (!read(&old, sizeof(old))) return false;
         service_restart_snapshot_widen_schema3(out, &old);
+        return true;
+    }
+    if (version == SERVICE_ACTIVE_DESIRED_SCHEMA4_VERSION &&
+        size == sizeof(ServiceRestartReapplySnapshotSchema4)) {
+        ServiceRestartReapplySnapshotSchema4 old{};
+        if (!read(&old, sizeof(old))) return false;
+        service_restart_snapshot_widen_schema4(out, &old);
         return true;
     }
     if (version != SERVICE_ACTIVE_DESIRED_VERSION || size != sizeof(*out)) return false;

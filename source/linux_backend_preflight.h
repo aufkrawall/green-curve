@@ -18,6 +18,10 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
     if (!desired_scalar_intent_valid(d)) {
         gc_strlcpy(err, errSize, "invalid precise scalar intent"); return false;
     }
+    if (!desired_authoring_valid(d) || !desired_authoring_runtime_ready(d)) {
+        gc_strlcpy(err, errSize, "bound authoring replay requires destination review");
+        lb_log("apply-authoring: refused before writes (destination review required)\n"); return false;
+    }
     gc_u32 requestedDomains = service_desired_mutation_domains(d);
     const bool independentGpu = graphicsRouteOverride == 1 && d->hasGpuOffset;
     if (independentGpu) requestedDomains |= SERVICE_MUTATION_DOMAIN_GPU_OFFSET;

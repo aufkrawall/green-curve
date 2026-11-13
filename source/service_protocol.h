@@ -86,7 +86,7 @@ enum {
     // GUI can tell the user instead of leaving a silent lockout.
     // v30 preserves independent signed-Hz captured VF offsets, including zero.
     // v31 defines explicit update/replacement/release and VF point-set semantics.
-    SERVICE_PROTOCOL_VERSION = 33,
+    SERVICE_PROTOCOL_VERSION = 34,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply; on a state read it
@@ -682,6 +682,8 @@ struct ServiceRequest {
     char source[64];
     char path[GC_REQUEST_PATH_MAX];
     gc_u32 captureDomains; // Getter-only command; zero for every other verb.
+    gc_u64 expectedControlFingerprint;
+    gc_u32 expectedControlDomains;
 };
 
 // Static field-offset assertions: these catch accidental ABI breaks when
@@ -698,7 +700,7 @@ static_assert(sizeof(ControlState) == 188,
 // restart snapshot), and their loaders dispatch on the record's byte size.  A
 // change here that bumps only the protocol version leaves those three records
 // unreadable on upgrade -- which is exactly what 0.26.0 shipped into review.
-static_assert(sizeof(DesiredSettings) == 2152,
+static_assert(sizeof(DesiredSettings) == 4488,
               "DesiredSettings changed: bump SERVICE_PROTOCOL_VERSION *and* "
               "freeze the outgoing on-disk layout as a new "
               "DesiredSettingsSchema<N> with a widening migration, then bump "
@@ -706,7 +708,7 @@ static_assert(sizeof(DesiredSettings) == 2152,
               "SERVICE_ACTIVE_DESIRED_VERSION (see desired_settings_schema.h)");
 static_assert(sizeof(ServiceSnapshot) == 4440,
               "ServiceSnapshot changed without an IPC protocol-version bump");
-static_assert(sizeof(ServiceRequest) == 2744,
+static_assert(sizeof(ServiceRequest) == 5096,
               "ServiceRequest changed without an IPC protocol-version bump");
 
 #include "service_protocol_wire_validation.h"
@@ -779,7 +781,7 @@ struct ServiceResponse {
     char message[512];
     HardwareCaptureObservation capture;
 };
-static_assert(sizeof(ServiceResponse) == 14768,
+static_assert(sizeof(ServiceResponse) == 19440,
               "ServiceResponse changed without an IPC protocol-version bump");
 
 static_assert(offsetof(ServiceResponse, magic) == 0, "ServiceResponse.magic must be at offset 0");

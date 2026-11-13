@@ -20,7 +20,7 @@ struct ServiceScopedApplyPlan {
 static inline void service_upgrade_legacy_scalar_scope(const DesiredSettings* previous,
     DesiredSettings* requested, bool replacement = false) {
     if (!previous || !requested || requested->applicationScope != DESIRED_SCOPE_LEGACY ||
-        (!previous->memOffsetPrecise && !previous->powerLimitRatio)) return;
+        (!previous->memOffsetPrecise && !previous->powerLimitRatio && desired_authoring_is_zero(previous->authoring))) return;
     requested->applicationScope = replacement || requested->resetOcBeforeApply
         ? DESIRED_SCOPE_REPLACE_PROFILE : DESIRED_SCOPE_UPDATE_INCLUDED;
     requested->resetOcBeforeApply = false;
@@ -55,6 +55,7 @@ static inline void service_scoped_copy_lock(DesiredSettings* out, const DesiredS
     out->lockMHz = in.lockMHz;
     out->lockMode = in.lockMode;
     out->lockTracksAnchor = in.lockTracksAnchor;
+    desired_lock_precision_copy(out, in);
 }
 
 static inline bool service_scoped_point_owned(const DesiredSettings& d, int ci,
@@ -100,7 +101,8 @@ static inline bool service_build_scoped_apply_plan(const DesiredSettings* previo
         return fail("An explicit valid application scope is required");
     if (requested.resetOcBeforeApply)
         return fail("Explicit application scope cannot request a global baseline reset");
-    if (!desired_curve_intent_valid(&requested) || !desired_scalar_intent_valid(&requested)) return fail("Contradictory curve intent");
+    if (!desired_curve_intent_valid(&requested) || !desired_scalar_intent_valid(&requested) ||
+        !desired_authoring_valid(&requested)) return fail("Contradictory curve intent");
     const gc_u32 scope = desired_application_scope_kind(requested.applicationScope);
     const bool release = scope == DESIRED_SCOPE_EXPLICIT_RELEASE;
     const bool replace = scope == DESIRED_SCOPE_REPLACE_PROFILE;
@@ -110,6 +112,11 @@ static inline bool service_build_scoped_apply_plan(const DesiredSettings* previo
     if (previous) old = *previous;
     result.owned = replace ? requested : old;
     DesiredSettings& owned = result.owned;
+    if (!replace && requested.authoring.topologyBound) {
+        if (old.authoring.topologyBound && memcmp(old.authoring.voltageUv, requested.authoring.voltageUv,
+                sizeof(old.authoring.voltageUv))) return fail("Retained intent needs topology remapping before merge");
+        desired_topology_copy(&owned, requested);
+    }
     // A release is an operation, never an instruction to release remaining
     // ownership again during automatic replay.
     owned.applicationScope = release ? (gc_u32)DESIRED_SCOPE_UPDATE_INCLUDED : requested.applicationScope;
@@ -119,6 +126,8 @@ static inline bool service_build_scoped_apply_plan(const DesiredSettings* previo
             owned.hasGpuOffset = !release;
             owned.gpuOffsetMHz = release ? 0 : requested.gpuOffsetMHz;
             owned.gpuOffsetExcludeLowCount = release ? 0 : requested.gpuOffsetExcludeLowCount;
+            desired_graphics_precision_copy(&owned, requested);
+            if (release) desired_graphics_precision_clear(&owned);
         }
         if (requested.hasMemOffset) {
             desired_memory_intent_copy(&owned, &requested);
@@ -164,20 +173,25 @@ static inline bool service_build_scoped_apply_plan(const DesiredSettings* previo
             if (release || requested.lockMode == LOCK_MODE_NONE) {
                 owned.hasLock = false; owned.lockCi = -1; owned.lockMHz = 0;
                 owned.lockMode = LOCK_MODE_NONE; owned.lockTracksAnchor = false;
+                desired_lock_precision_clear(&owned);
             } else service_scoped_copy_lock(&owned, requested);
         }
     }
     if (owned.hasLock && owned.lockMode == LOCK_MODE_NONE) {
         owned.hasLock = false; owned.lockCi = -1; owned.lockMHz = 0; owned.lockTracksAnchor = false;
+        desired_lock_precision_clear(&owned);
     }
     if (!desired_curve_intent_valid(&owned))
         return fail("Requested points conflict with the retained lock; release or edit the lock explicitly");
+    if (!desired_authoring_valid(&owned)) return fail("Retained intent requires a complete destination topology binding");
     result.hardware = requested;
     DesiredSettings& hardware = result.hardware;
     hardware.resetOcBeforeApply = false;
     // Scalar cleanup is intentionally independent of the ownership declaration.
     if ((old.hasGpuOffset && !owned.hasGpuOffset) || (release && requested.hasGpuOffset)) {
         hardware.hasGpuOffset = true; hardware.gpuOffsetMHz = 0; hardware.gpuOffsetExcludeLowCount = 0;
+        desired_graphics_precision_copy(&hardware, old);
+        hardware.authoring.graphicsOffsetHz = 0;
     }
     if ((old.hasMemOffset && !owned.hasMemOffset) || (release && requested.hasMemOffset)) {
         hardware.hasMemOffset = true; hardware.memOffsetMHz = 0; desired_memory_precision_clear(&hardware);
@@ -233,6 +247,7 @@ static inline bool service_build_scoped_apply_plan(const DesiredSettings* previo
     result.releasesCurveCeiling = graphWork && old.hasLock && old.lockMode == LOCK_MODE_FLATTEN &&
         (!owned.hasLock || owned.lockMode == LOCK_MODE_NONE);
     if (graphWork) {
+        if (owned.authoring.topologyBound) desired_topology_copy(&hardware, owned);
         // Reapply retained point/lock intent so a dependent graphics write
         // cannot overwrite it. Scalar domains outside that dependency stay omitted.
         for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
@@ -245,10 +260,12 @@ static inline bool service_build_scoped_apply_plan(const DesiredSettings* previo
         if (result.graphicsOffsetViaVf && owned.hasGpuOffset) {
             hardware.hasGpuOffset = true; hardware.gpuOffsetMHz = owned.gpuOffsetMHz;
             hardware.gpuOffsetExcludeLowCount = owned.gpuOffsetExcludeLowCount;
+            desired_graphics_precision_copy(&hardware, owned);
         }
         if ((old.hasLock && !owned.hasLock) || (release && requested.hasLock)) {
             hardware.hasLock = true; hardware.lockCi = -1; hardware.lockMHz = 0;
             hardware.lockMode = LOCK_MODE_NONE; hardware.lockTracksAnchor = false;
+            desired_lock_precision_clear(&hardware);
         }
         if (!curve || !floor.valid) return fail("Fresh graphics topology is required for scoped curve work");
         int ordinal = 0;
