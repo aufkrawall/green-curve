@@ -225,6 +225,31 @@ No hardware replay is claimed.
 
 ## Precise memory and bounded arithmetic (2026-11-12)
 
+### Linux VF preservation across memory writes (2026-11-13)
+
+Source anchors: `source/linux_memory_curve_policy.h`,
+`source/linux_memory_curve_preservation.h`, `source/linux_backend_preflight.h`,
+`source/linux_backend_mutation.cpp`, `source/linux_backend_rollback.h`,
+`tests/linux_vf_write_tests.cpp` (8610-8620),
+`tests/linux_scope_preflight_tests.cpp` (8621-8623).
+
+Memory Apply preflights readable exact VF controls when that surface exists,
+then holds a fresh control image immediately before its memory setter. It
+rechecks identity, full membership and voltages before exact raw restoration,
+excluding moving frequency samples. Unknown VF surfaces leave independent memory
+support available. Explicit baseline reset intentionally releases the old curve.
+
+The shared exact writer runs under the declared hardware-write budget and
+verifies all selected controls. It neither adopts them as owned intent nor
+changes clock-pin controls. Failed memory phases include VF restoration in
+rollback even if the later curve phase never ran. The production helper and
+rollback fixtures cover half steps, precise memory surfaces, topology changes,
+ignored writes, stale preflight controls and unavailable VF. `mem-curve:` logs
+one bounded failure/result summary. Native Linux and hardware execution remain
+unverified on this Windows host.
+
+### Shared memory units and verification
+
 Source anchors: `source/memory_offset_units.h`,
 `source/gpu_backend_memory_offset.h`, `source/main_runtime_nvml.cpp`,
 `source/linux_backend_rollback.h`, `source/tuning_units.h`,
@@ -282,7 +307,7 @@ cases 8070-8086 and the production Linux rollback fixture cover these contracts.
 The exhaustive version-1 key/section contract is published beside the tests:
 [profile_format_v1.md](../tests/profile_format_v1.md). The shared codec implements
 this table. Local flat-slot storage and offline CLI transfer use the same document;
-GUI/TUI draft and capture integration remain pending.
+GUI/TUI draft and capture review remain pending.
 
 The document now carries an independent VF point-set policy, source topology
 completeness versus unresolved legacy indices, identity-based exclusions,

@@ -72,5 +72,12 @@ int run_linux_scope_preflight_tests() {
     powerDefault = 250001;
     if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8199;
     powerDefault = 250000; powerMaximum = 190000;
+    request = {}; request.hasMemOffset = 1; request.memOffsetMHz = 1;
+    snapshot.curveOffsetsExact = false;
+    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8621;
+    snapshot.curveOffsetsExact = true;
+    if (!linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8622;
+    snapshot.curveMask[4] = true; snapshot.curveOffsetsHz[4] = 500;
+    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8623;
     return 0;
 }

@@ -106,7 +106,7 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
     }
     // Baseline preparation itself writes the VF table, even when failure
     // prevents the later CURVE phase from starting.
-    if ((baseline || (phaseMask & LINUX_MUTATION_CURVE)) && snapshot->curveValid)
+    if ((baseline || (phaseMask & (LINUX_MUTATION_CURVE | LINUX_MUTATION_MEM_OFFSET))) && snapshot->curveValid)
         ok &= apply_curve_offsets_verified(g, snapshot->curveOffsets, snapshot->curveMask, 25,
             snapshot->curveOffsetsExact ? snapshot->curveOffsetsHz : nullptr,
             snapshot->curveOffsetsExact ? snapshot->curveMask : nullptr);

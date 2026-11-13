@@ -52,6 +52,17 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "exact control replay keeps the deadline and original voltage binding")
     require_text(apply_cpp, "curve_control_nonzero(originalCurveOffsets[ci], originalCurveExact, originalCurveOffsetsHz[ci])",
                  "half-kHz controls cannot disappear through a zero kHz preview")
+    require_order_in_operation(
+        _p(ctx, "linux_memory_curve_preservation.h"), "static bool linux_apply_memory_preserving_curve(",
+        "nvapi_read_vf_snapshot(g, why, sizeof(why))", "nvml_set_clock_offset(g, NVML_CLOCK_MEM",
+        "Linux captures fresh exact VF controls before the memory setter")
+    require_text(linux_mutation_cpp, "return linux_apply_memory_preserving_curve(g, d, context->snapshot,",
+                 "Linux memory phases preserve the current curve through the production helper")
+    require_text(_p(ctx, "linux_backend_preflight.h"), "linux_memory_curve_precheck(g, d, snapshot, err, errSize)",
+                 "Linux memory preservation has a zero-setter transaction preflight")
+    require_text(_p(ctx, "linux_backend_rollback.h"),
+                 "phaseMask & (LINUX_MUTATION_CURVE | LINUX_MUTATION_MEM_OFFSET)",
+                 "a failed memory setter restores its potentially changed VF controls")
 
     require_order_in_operation(
         apply_cpp, "static bool apply_desired_settings_service(const DesiredSettings* desired",

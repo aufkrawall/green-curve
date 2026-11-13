@@ -20,6 +20,9 @@ static const unsigned int LB_CONTROL_BUF_SIZE = 0x4000;
 #include "linux_backend_vf_read.h"
 #include "vf_offset_range_policy.h"
 #include "linux_backend_vf_write.h"
+#include "vf_exact_control_write.h"
+static bool nvml_set_clock_offset(LinuxGpuState*, unsigned int, int, gc_u32);
+#include "linux_memory_curve_preservation.h"
 
 namespace {
 struct Driver {
@@ -29,6 +32,9 @@ struct Driver {
     bool onePointPerCall;
     bool ignoreWrites;
     bool bufferValid;
+    bool afterMemory, moveTopology, memoryFails;
+    int memoryWrites, memoryEffective;
+    gc_u32 memorySurface;
 };
 
 static int read_control(void* handle, void* buffer) {
@@ -81,7 +87,7 @@ static int read_status(void* handle, void* buffer) {
         const unsigned int offset = b->statusEntriesOffset + i * b->statusEntryStride;
         const unsigned int frequency = (unsigned int)(
             (b->family == GPU_FAMILY_PASCAL ? 3000000 : 1500000) + d->raw[i]);
-        const unsigned int voltage = 800000u + i * 10000u;
+        const unsigned int voltage = 800000u + i * 10000u + (d->afterMemory && d->moveTopology ? 6250u : 0u);
         memcpy(bytes + offset, &frequency, sizeof(frequency));
         memcpy(bytes + offset + 4, &voltage, sizeof(voltage));
     }
@@ -116,6 +122,64 @@ static void initialize(Driver* d, LinuxGpuState* g, const VfBackendSpec* backend
     d->raw[7] = 30001; // an untouched fractional-kHz offset
 }
 } // namespace
+
+static bool nvml_set_clock_offset(LinuxGpuState* g, unsigned int domain, int value, gc_u32 surface) {
+    auto& d = *(Driver*)g->gpuHandle;
+    if (domain != NVML_CLOCK_MEM) return false;
+    ++d.memoryWrites; d.memoryEffective = value; d.memorySurface = surface; d.afterMemory = true;
+    memset(d.raw, 0, sizeof(d.raw)); // A memory setter can erase programmed VF controls.
+    return !d.memoryFails;
+}
+
+static int run_linux_memory_curve_tests() {
+    Driver d{}; LinuxGpuState g{}; LinuxHardwareSnapshot snapshot{};
+    DesiredSettings request{}; request.hasMemOffset = 1; request.memOffsetMHz = 1;
+    char why[192]{};
+    const auto prepare = [&]() {
+        initialize(&d, &g, &g_vfBackendPascal); d.raw[0] = 1; d.raw[1] = -30001;
+        if (!nvapi_read_vf_snapshot(&g, why, sizeof(why))) return false;
+        snapshot = {}; snapshot.valid = snapshot.curveValid = snapshot.curveOffsetsExact = true;
+        for (int i = 0; i < VF_NUM_POINTS; ++i) {
+            snapshot.curveMask[i] = g.curve[i].freq_kHz != 0;
+            snapshot.curveOffsets[i] = g.freqOffsets[i]; snapshot.curveOffsetsHz[i] = g.freqOffsetsHz[i];
+        }
+        return true;
+    };
+    if (!prepare() || !linux_apply_memory_preserving_curve(&g, &request, &snapshot, 0) ||
+        d.raw[0] != 1 || d.raw[1] != -30001 || d.raw[7] != 30001 || d.memoryWrites != 1 ||
+        d.memoryEffective != 2 || d.setCalls != 1 || !d.bufferValid || !g.vfOffsetsHzValid ||
+        g.freqOffsetsHz[0] != 500 || request.curvePointCaptured[0] || request.hasCurvePoint[0]) return 8610;
+    if (!prepare()) return 8611;
+    snapshot.curveOffsetsExact = false;
+    if (linux_apply_memory_preserving_curve(&g, &request, &snapshot, 0) || d.memoryWrites || d.setCalls) return 8612;
+    if (!prepare()) return 8611;
+    snapshot.curveOffsetsHz[0] = 1000000500;
+    if (linux_apply_memory_preserving_curve(&g, &request, &snapshot, 0) || d.memoryWrites || d.setCalls) return 8613;
+    if (!prepare()) return 8611;
+    g.vfMask[0] &= (unsigned char)~1u;
+    if (linux_apply_memory_preserving_curve(&g, &request, &snapshot, 0) || d.memoryWrites || d.setCalls) return 8614;
+    if (!prepare()) return 8611;
+    d.moveTopology = true;
+    if (linux_apply_memory_preserving_curve(&g, &request, &snapshot, 0) || d.memoryWrites != 1 || d.setCalls) return 8615;
+    if (!prepare()) return 8611;
+    d.raw[0] = 2000001; // Changed since the transaction snapshot: recheck before memory.
+    if (linux_apply_memory_preserving_curve(&g, &request, &snapshot, 0) || d.memoryWrites || d.setCalls) return 8616;
+    if (!prepare()) return 8611;
+    d.ignoreWrites = true;
+    if (linux_apply_memory_preserving_curve(&g, &request, &snapshot, 0) || d.memoryWrites != 1 || d.setCalls != 4) return 8617;
+    if (!prepare()) return 8611;
+    request.memOffsetPrecise = 1; request.memOffsetHz = -500000; request.memOffsetMHz = 0;
+    request.memOffsetSurface = snapshot.memOffsetSurface = CLOCK_OFFSET_SURFACE_GLOBAL;
+    if (!linux_apply_memory_preserving_curve(&g, &request, &snapshot, 0) || d.memoryEffective != -1 ||
+        d.memorySurface != CLOCK_OFFSET_SURFACE_GLOBAL || d.raw[0] != 1) return 8618;
+    if (!prepare()) return 8611;
+    snapshot.curveValid = false; g.backend = nullptr;
+    if (!linux_apply_memory_preserving_curve(&g, &request, &snapshot, 0) || d.memoryWrites != 1 || d.setCalls) return 8619;
+    if (!prepare()) return 8611;
+    d.memoryFails = true;
+    if (linux_apply_memory_preserving_curve(&g, &request, &snapshot, 0) || d.memoryWrites != 1 || d.setCalls) return 8620;
+    return 0;
+}
 
 int run_linux_vf_write_tests() {
     Driver d = {};
@@ -345,7 +409,7 @@ int run_linux_vf_write_tests() {
         !apply_curve_offsets_verified(&g, targets, mask, 2, r.pointCapturedOffsetHz, r.pointCapturedIntent) ||
         d.raw[1] || d.raw[3] || d.raw[7] || d.raw[0] != 7777 || d.raw[2] != 8889 ||
         !d.bufferValid) return 8146;
-    return 0;
+    return run_linux_memory_curve_tests();
 }
 
 #ifdef GC_VF_WRITE_TEST_MAIN

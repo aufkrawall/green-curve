@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Exact Linux curve preservation across memory writes
+
+- The Linux memory phase now holds fresh exact VF controls, verifies its binding
+  after the memory setter and restores raw values under the declared write budget.
+  No VF surface still permits independent memory tuning.
+- Transaction preflight rejects unavailable preservation without setters. Memory
+  rollback restores the prior curve even when no curve phase started. Cases
+  8610-8623 and the actual rollback fixture cover fractional and partial failures.
+- No physical GPU mutation or native Linux execution claimed. See
+  [profile-document.md](../profile-document.md#linux-vf-preservation-across-memory-writes-2026-11-13).
+
 ## 2026-11-13: Exact Windows curve preservation across memory writes
 
 - Memory preservation now recognizes sub-kHz controls and retains exact outgoing

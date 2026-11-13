@@ -285,6 +285,7 @@ static bool linux_power_request_is_inert(const DesiredSettings* d,
 }
 
 #include "linux_backend_preflight.h"
+#include "linux_memory_curve_preservation.h"
 
 // Build per-point absolute-target curve offsets from a DesiredSettings request.
 // offset_kHz = targetMHz*1000 - stockFreq_kHz  (mirrors the Windows correction
@@ -330,15 +331,8 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS,
                 context->composedGpuOffset ? 0 : d->gpuOffsetMHz);
         case LINUX_MUTATION_MEM_OFFSET: {
-            // DesiredSettings is display MHz; the NVML wire unit is effective
-            // MHz (matches Windows, which writes (offsetkHz/1000)*2).
-            int applyEffectiveMHz = nvml_mem_effective_mhz_from_display_mhz(d->memOffsetMHz);
-            if (d->memOffsetPrecise && !memory_offset_effective_mhz_from_hz(d->memOffsetHz, &applyEffectiveMHz)) return false;
-            lb_log("offset: apply domain=%u display=%d effective=%d\n",
-                   (unsigned int)NVML_CLOCK_MEM, d->memOffsetMHz,
-                   applyEffectiveMHz);
-            return nvml_set_clock_offset(g, NVML_CLOCK_MEM, applyEffectiveMHz,
-                d->memOffsetPrecise ? context->snapshot->memOffsetSurface : (gc_u32)CLOCK_OFFSET_SURFACE_UNSPECIFIED);
+            return linux_apply_memory_preserving_curve(g, d, context->snapshot,
+                pl_monotonic_ms() + GC_DAEMON_HARDWARE_WRITE_BUDGET_MS);
         }
         case LINUX_MUTATION_POWER: {
             if (d->powerLimitRatio ? !nvml_set_power_limit_ratio(g, desired_power_ratio(*d), context->snapshot->powerDefaultmW)

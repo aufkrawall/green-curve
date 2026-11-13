@@ -390,9 +390,11 @@ static int run(){
      CHECK(linux_apply_reset_baseline(&g,&request));
      CHECK(memoryOffsetWrites==oldMemoryWrites);
    }
+   oldCurveWrites=curveOffsetWrites;
    CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
      LINUX_MUTATION_MEM_OFFSET,pascalErr,sizeof(pascalErr)));
-   CHECK(memoryOffsetWrites==oldMemoryWrites+1);
+   CHECK(memoryOffsetWrites==oldMemoryWrites+1&&curveOffsetWrites==oldCurveWrites+1);
+   CHECK(lastCurveExact&&lastCurveOffsetHz==15000500);
    pascalSnapshot.memOffsetExact=true;pascalSnapshot.memOffsetEffectiveMHz=247;
    pascalSnapshot.memOffsetSurface=1;
    pascalSnapshot.memOffsetMHz=123;

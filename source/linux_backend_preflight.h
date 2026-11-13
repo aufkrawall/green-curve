@@ -6,6 +6,7 @@
 
 #include "power_ratio_control.h"
 #include "nvml_exact_clock_control.h"
+#include "linux_memory_curve_policy.h"
 
 static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
                                     const LinuxHardwareSnapshot* snapshot,
@@ -57,6 +58,7 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
         !nvml_exact_clock_surface_available(g->nvml, NVML_CLOCK_MEM, snapshot->memOffsetSurface))) {
         gc_strlcpy(err, errSize, "exact memory control surface cannot be snapshotted and written safely"); return false;
     }
+    if (!linux_memory_curve_precheck(g, d, snapshot, err, errSize)) return false;
     if (d->hasPowerLimit && !powerInert &&
         (!snapshot->powerValid || !g->nvml.setPowerLimit)) {
         gc_strlcpy(err, errSize, "power limit cannot be snapshotted and written safely"); return false;

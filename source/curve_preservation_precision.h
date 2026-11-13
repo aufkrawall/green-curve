@@ -26,6 +26,7 @@ static inline bool curve_preservation_targets(const DesiredSettings& desired, co
 }
 static inline bool curve_exact_targets_representable(const VfBackendSpec* backend, const VfOffsetRange& range,
     const bool* mask, const gc_i64* hz, int* firstBad) {
+    if (!backend || !backend->writeSupported) return false;
     for (int i = 0; i < VF_NUM_POINTS; ++i) if (mask[i]) {
         int raw = 0;
         if (hz[i] < (gc_i64)range.minKHz * 1000 || hz[i] > (gc_i64)range.maxKHz * 1000 ||
