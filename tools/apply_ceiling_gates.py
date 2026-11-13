@@ -605,6 +605,18 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "a no-reset composed Linux apply schedules the stale NVML offset clear")
     require_text(linux_mutation_cpp, "context->composedGpuOffset ? 0 : d->gpuOffsetMHz);",
                  "the Linux GPU_OFFSET phase writes 0 for a composed offset")
+    require_text(linux_mutation_cpp, "if (desired_named_graphics_surface(*d)) return linux_apply_named_graphics_offset(g, d);",
+                 "named Linux graphics scalars bypass legacy surface fallback")
+    require_order_in_operation(linux_mutation_cpp,
+                               "LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings* d,",
+                               "linux_bind_graphics_snapshot(g, d, &snapshot,", "linux_backend_preflight(g, d, &snapshot,",
+                               "the named graphics rollback preimage is bound before transaction preflight")
+    require_text(_p(ctx, "linux_apply_baseline.h"),
+                 "nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0, desired_named_graphics_surface(*d))",
+                 "baseline reset keeps the reviewed graphics scalar surface")
+    require_text(_p(ctx, "linux_backend_rollback.h"),
+                 "snapshot->gpuOffsetExact ? snapshot->gpuOffsetSurface : 0",
+                 "rollback restores exact graphics controls through their original surface")
     require_text(linux_mutation_cpp, "if (!linux_apply_rebuild_curve_targets(context)) return false;",
                  "the Linux curve phase rebuilds targets after an NVML offset clear")
     require_text(_p(ctx, "linux_backend_apply_context.h"),

@@ -686,3 +686,33 @@ unwritable preservation, stale samples, changed topology and fixed-point exit.
 Replacing the saved unowned preimage with current controls fails case 8813.
 Replay gates remain closed: named graphics routing, transition protection,
 fresh-control preconditions and client authoring integration are still pending.
+
+## Named Linux graphics controls (2026-11-13)
+
+Source anchors: `source/graphics_offset_control.h`,
+`source/desired_graphics_surface.h`, `source/linux_graphics_offset_control.h`,
+`source/linux_backend_mutation.cpp`, `source/linux_apply_baseline.h`,
+`source/linux_backend_rollback.h`, `tests/linux_clock_offset_tests.cpp`
+(8828-8842), `tests/clock_transition_tests.cpp`.
+
+An explicitly resolved P0 or global graphics scalar requires the named getter
+and setter, an integer physical-MHz target and any valid reported bounds. A
+missing range retains application policy; it does not invalidate current control
+evidence. AUTO is unresolved. VF components retain their separate backend grid
+and do not require a named scalar getter. No route depends on a GPU allowlist.
+
+Linux binds the rollback preimage to the requested named surface before
+transaction preflight. Apply, baseline preparation and rollback keep that
+surface; a mutating failed setter or a failed verification cannot switch APIs.
+An unchanged named scalar skips writing only after a fresh read. Named scalar
+writes trigger fresh VF target compilation when the transaction also owns
+points, so absolute targets use the resulting physical baseline. Historical
+requests retain their established route.
+
+The fake-driver cases cover distinct simultaneous P0/global values, no-op
+readback, signed targets, failed and rounded writes, post-write getter failure,
+missing getters/setters, invalid metadata, sub-MHz refusal, reported bounds and
+missing ranges. The transition fixture executes the actual baseline/rollback
+helpers and checks their surface arguments and refusal without surface evidence.
+These adapters remain behind the existing authoring replay gate. Windows named
+routing, transition protection and client integration remain pending.

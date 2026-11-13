@@ -93,6 +93,8 @@ struct LinuxHardwareSnapshot {
     bool sysClkValid;
     bool videoClkValid;
     int gpuOffsetMHz;
+    bool gpuOffsetExact;
+    unsigned int gpuOffsetSurface;
     // Display/actual MHz (NVML effective MHz halved at capture, as on Windows).
     int memOffsetMHz;
     bool memOffsetExact;
@@ -122,10 +124,13 @@ struct LinuxHardwareSnapshot {
 static int clockOffsetWrites=0, curveOffsetWrites=0, memoryOffsetWrites=0;
 static int lastMemoryOffsetMHz=0;
 static unsigned int lastMemoryOffsetSurface=0;
+static int lastGraphicsOffsetMHz=0;
+static unsigned int lastGraphicsOffsetSurface=0;
 static long long lastCurveOffsetHz=0;
 static bool lastCurveExact=false;
 static bool nvml_set_clock_offset(LinuxGpuState*,unsigned int domain,int value,unsigned int surface=0){
- ++clockOffsetWrites;if(domain==NVML_CLOCK_MEM){++memoryOffsetWrites;lastMemoryOffsetMHz=value;lastMemoryOffsetSurface=surface;}return true;
+ ++clockOffsetWrites;if(domain==NVML_CLOCK_MEM){++memoryOffsetWrites;lastMemoryOffsetMHz=value;lastMemoryOffsetSurface=surface;}
+ if(domain==NVML_CLOCK_GRAPHICS){lastGraphicsOffsetMHz=value;lastGraphicsOffsetSurface=surface;}return true;
 }
 static int nvml_mem_effective_mhz_from_display_mhz(int x){return x*2;}
 template<class... A> static bool linux_xbar_write_owned(A...){return true;}
@@ -396,6 +401,20 @@ static int run(){
      DesiredSettings request{};request.hasMemOffset=includeMemory;
      CHECK(linux_apply_reset_baseline(&g,&request));
      CHECK(memoryOffsetWrites==oldMemoryWrites);
+   }
+   {
+     DesiredSettings request{}; request.hasGpuOffset=true;
+     request.authoring.graphicsPrecise=1; request.authoring.graphicsSurface=DESIRED_GRAPHICS_GLOBAL;
+     CHECK(linux_apply_reset_baseline(&g,&request));
+     CHECK(lastGraphicsOffsetMHz==0&&lastGraphicsOffsetSurface==CLOCK_OFFSET_SURFACE_GLOBAL);
+     pascalSnapshot.gpuOffsetValid=pascalSnapshot.gpuOffsetExact=true;
+     pascalSnapshot.gpuOffsetSurface=CLOCK_OFFSET_SURFACE_GLOBAL; pascalSnapshot.gpuOffsetMHz=-247;
+     CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,LINUX_MUTATION_GPU_OFFSET,pascalErr,sizeof(pascalErr)));
+     CHECK(lastGraphicsOffsetMHz==-247&&lastGraphicsOffsetSurface==CLOCK_OFFSET_SURFACE_GLOBAL);
+     int oldClockWrites=clockOffsetWrites; pascalSnapshot.gpuOffsetSurface=0;
+     CHECK(!linux_backend_restore_snapshot(&g,&pascalSnapshot,LINUX_MUTATION_GPU_OFFSET,pascalErr,sizeof(pascalErr)));
+     CHECK(clockOffsetWrites==oldClockWrites);
+     pascalSnapshot.gpuOffsetValid=pascalSnapshot.gpuOffsetExact=false;
    }
    oldCurveWrites=curveOffsetWrites;
    CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,

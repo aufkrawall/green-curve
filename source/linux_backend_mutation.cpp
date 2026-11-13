@@ -303,6 +303,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
         case LINUX_MUTATION_RESET_BASELINE:
             return linux_apply_reset_baseline(g, d);
         case LINUX_MUTATION_GPU_OFFSET:
+            if (desired_named_graphics_surface(*d)) return linux_apply_named_graphics_offset(g, d);
             return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS,
                 context->composedGpuOffset ? 0 : d->gpuOffsetMHz);
         case LINUX_MUTATION_MEM_OFFSET: {
@@ -424,6 +425,11 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     }
     const int graphicsRouteOverride = d && d->applicationScope != DESIRED_SCOPE_LEGACY
         ? (scopedPlan.graphicsOffsetViaVf ? 2 : 1) : 0;
+    if (!linux_bind_graphics_snapshot(g, d, &snapshot, preflight, sizeof(preflight))) {
+        LinuxMutationResult mutation{};
+        if (result) gc_strlcpy(result, resultSize, preflight);
+        return mutation;
+    }
     if (!linux_backend_preflight(g, d, &snapshot, preflight, sizeof(preflight), graphicsRouteOverride)) {
         LinuxMutationResult mutation = {};
         if (result) gc_strlcpy(result, resultSize, preflight[0] ? preflight : "Apply preflight failed");
@@ -475,7 +481,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     // curve/lock apply over a reset baseline must rebuild from that fresh
     // readback regardless of the scalar's prior value.
     context.rebuildCurveTargets = curveBuild.pointCount > 0 &&
-        (d->resetOcBeforeApply ||
+        (d->resetOcBeforeApply || desired_named_graphics_surface(*d) ||
          linux_curve_targets_rebuild_after_scalar(snapshot.gpuOffsetValid,
             snapshot.gpuOffsetMHz, d->resetOcBeforeApply, clearStaleGpuOffset));
     lb_log("apply: gpu offset routing composed=%d nvmlOffset=%d MHz (known=%d)"

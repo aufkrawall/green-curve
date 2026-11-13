@@ -173,6 +173,8 @@ struct LinuxHardwareSnapshot {
     bool sysClkValid;
     bool videoClkValid;
     int gpuOffsetMHz;
+    bool gpuOffsetExact;
+    gc_u32 gpuOffsetSurface;
     // Display/actual MHz (NVML effective MHz halved at capture, as on Windows).
     int memOffsetMHz;
     // The exact control preserves odd effective values across rollback.

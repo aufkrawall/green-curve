@@ -54,8 +54,12 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
     }
     bool ok = true;
     bool baseline = (phaseMask & LINUX_MUTATION_RESET_BASELINE) != 0;
-    if ((baseline || (phaseMask & LINUX_MUTATION_GPU_OFFSET)) && snapshot->gpuOffsetValid)
-        ok &= nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, snapshot->gpuOffsetMHz);
+    if ((baseline || (phaseMask & LINUX_MUTATION_GPU_OFFSET)) && snapshot->gpuOffsetValid) {
+        if (snapshot->gpuOffsetExact && !snapshot->gpuOffsetSurface) {
+            lb_log("graphics-offset: exact rollback surface is unavailable\n"); ok = false;
+        } else ok &= nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, snapshot->gpuOffsetMHz,
+            snapshot->gpuOffsetExact ? snapshot->gpuOffsetSurface : 0);
+    }
     if ((phaseMask & LINUX_MUTATION_MEM_OFFSET) && snapshot->memOffsetValid) {
         // Prefer the exact effective control over its legacy display projection.
         int restoreEffectiveMHz =

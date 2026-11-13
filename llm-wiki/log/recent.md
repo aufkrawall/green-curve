@@ -5,6 +5,16 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Named Linux graphics replay and rollback
+
+- A shared control plan distinguishes named scalars, VF components and unresolved
+  routes. Named scalars validate exact physical units and independent current
+  and range evidence without family assumptions.
+- Linux Apply binds the selected scalar's preimage and keeps its surface through
+  baseline, write, verification and rollback. Cases 8828-8842 plus the production
+  transition fixture check refusal and recovery contracts. Replay remains gated;
+  see [profile-document.md](../profile-document.md#named-linux-graphics-controls-2026-11-13).
+
 ## 2026-11-13: Windows exact authoring targets and correction
 
 - The Windows Apply path consumes the shared compiler's physical-Hz targets.

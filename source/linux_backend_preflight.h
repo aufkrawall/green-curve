@@ -7,6 +7,7 @@
 #include "power_ratio_control.h"
 #include "nvml_exact_clock_control.h"
 #include "linux_memory_curve_policy.h"
+#include "linux_graphics_offset_control.h"
 
 static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
                                     const LinuxHardwareSnapshot* snapshot,

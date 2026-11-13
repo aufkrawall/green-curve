@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 #ifndef GREEN_CURVE_LINUX_APPLY_BASELINE_H
 #define GREEN_CURVE_LINUX_APPLY_BASELINE_H
+#include "desired_graphics_surface.h"
 
 // Baseline preparation affects graphics/VF and explicitly included auxiliary
 // controls. Memory moves directly to its requested value in its own phase.
 static bool linux_apply_reset_baseline(LinuxGpuState* g, const DesiredSettings* d) {
-    if (!nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0) ||
+    if (!nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0, desired_named_graphics_surface(*d)) ||
         (!g->nvml.resetGpuLockedClocks &&
          !linux_clock_control_proven_absent(g)))
         return false;
