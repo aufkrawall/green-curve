@@ -1035,6 +1035,7 @@ int run_linux_clock_offset_tests();
 int run_power_ratio_control_tests();
 int run_precise_scalar_schema_tests();
 int run_profile_document_contract_tests();
+int run_profile_codec_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2688,6 +2689,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int preflightFailure = run_linux_scope_preflight_tests()) return preflightFailure;
     if (int offsetFailure = run_linux_clock_offset_tests()) return offsetFailure;
     if (int ratioFailure = run_power_ratio_control_tests()) return ratioFailure;
+    if (int codecFailure = run_profile_codec_tests()) {
+        fprintf(stderr, "portable profile codec regression failed: %d\n", codecFailure);
+        return codecFailure;
+    }
     if (int contractFailure = run_profile_document_contract_tests()) {
         fprintf(stderr, "profile document contract regression failed: %d\n", contractFailure);
         return contractFailure;

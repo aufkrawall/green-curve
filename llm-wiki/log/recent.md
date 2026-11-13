@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Shared bounded portable-profile codec
+
+- Implemented the published v1 table with atomic parse/encode results, checked
+  exact numbers, strict UTF-8 and field/count/reference validation. Canonical
+  output preserves observations and dormant fan data without consulting a GPU.
+- Native cases 8340-8356 cover one/five-profile round trips, malformed input,
+  section/key ordering, size boundaries and unchanged output on failure. A
+  shared fuzz target exercises raw parsing and structured round-trip invariants.
+- This is the shared serialization layer; product file/storage commands and
+  destination resolution remain pending. See
+  [profile-document.md](../profile-document.md#portable-codec).
+
 ## 2026-11-13: Transfer document identities and structural contract
 
 - Added point-set policy, topology evidence/unresolved legacy markers, exclusion

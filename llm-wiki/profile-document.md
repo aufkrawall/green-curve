@@ -256,8 +256,8 @@ cases 8070-8086 and the production Linux rollback fixture cover these contracts.
 ## Transfer document contract (2026-11-13)
 
 The exhaustive version-1 key/section contract is published beside the tests:
-[profile_format_v1.md](../tests/profile_format_v1.md). Parser implementation and
-local storage remain pending; this table fixes field meaning before fixtures.
+[profile_format_v1.md](../tests/profile_format_v1.md). The shared codec implements
+this table; local storage and product entry points remain pending.
 
 The document now carries an independent VF point-set policy, source topology
 completeness versus unresolved legacy indices, identity-based exclusions,
@@ -278,7 +278,7 @@ compare semantically equal; moving observations remain excluded. Unit cases
 
 - No field, constructor or function in these three headers reads `g_app`,
   `LinuxGpuState`, or calls a driver. A document must stay constructible,
-  comparable and (eventually) exportable with no GPU selected at all.
+  comparable and exportable with no GPU selected at all.
 - Structural validity and hardware feasibility are different questions
   answered by different code; this module answers only the first one.
 - Equality always excludes observational-only fields. A point's preview
@@ -296,7 +296,7 @@ compare semantically equal; moving observations remain excluded. Unit cases
 
 - **No authoring-document producer yet.** Runtime fields/backends implement
   captured points, explicit scopes and exact memory/power intent. GUI/TUI,
-  local-slot and portable producers still do not build or consume a
+  local-slot and portable product producers still do not build or consume a
   `ProfileDocument`; that authoring pipeline remains pending.
 - **Destination mapping remains pending.** New graphics exclusions name source
   topology identities. Historical counts and index-only topology carry explicit
@@ -305,8 +305,36 @@ compare semantically equal; moving observations remain excluded. Unit cases
   and per-point observed offsets can survive review/storage independently of
   lock or point authority. Their presence alone never establishes a getter or
   authorizes Apply; pin knowledge defaults to unknown.
-- **No codec.** The portable `.gcprofile` format, bounded parser, legacy
-  adapters and destination mapping remain pending. The document will carry
-  their durable intent independently of live destination observations.
+- **Integration pending.** Legacy adapters, destination mapping and file/storage
+  entry points remain pending. The codec never substitutes destination data.
+
+## Portable codec
+
+Source anchors: `source/profile_codec.h`, `source/profile_codec_types.h`,
+`source/profile_codec_fields.h`, `source/profile_codec_decode.h`,
+`source/profile_codec_encode.h`, `tests/profile_codec_tests.cpp` (8340-8356),
+`tests/profile_codec_fuzz.h`, `tools/security_gates.py` (`profile_codec`).
+
+`ProfileBank` contains zero to five independent documents. Decode and encode
+publish only fully validated temporary results. Neither operation performs
+file I/O, reads hardware, changes assignments or grants Apply authorization.
+The bounded UTF-8 decoder accepts LF/CRLF and a leading BOM, checks decimal
+overflow and field presence, and rejects unknown/duplicate sections and keys,
+inactive payload keys, broken counts/references and incomplete fan records.
+Limits are 1 MiB per input and 4096 bytes per line. Diagnostics carry a stable
+reason and line number; input values are not echoed into errors.
+
+Writer output has fixed section/key order, reduced ratios, sorted identity
+exclusions and escaped quoted text. Point observations, partial power reads,
+lock recognition, dormant fan settings and source metadata survive round trips
+independently of authority. Signed-64-bit limits remain document-valid even
+when destination resolution will refuse them. Numeric values permit leading
+zeros; record ordinals are canonical decimal. All eight fan records remain
+required when a configuration is present.
+
+Native regression covers a full five-document bank, arbitrary section/key
+order, UTF-8/CRLF, exact values, observations, maximum input and malformed data.
+The separate fuzz target checks raw parsing, unchanged output on failure,
+structured exact-value round trips and canonical re-encoding on both hosts.
 
 Last verified: 2026-11-13.

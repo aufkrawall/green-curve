@@ -46,6 +46,7 @@ FUZZ_TARGETS = {
     "update_manifest": 6,
     "service_response": 7,
     "installer_archive": 8,
+    "profile_codec": 9,
 }
 
 # Targets that build on a native Linux host.  The one omission is not an
@@ -68,7 +69,7 @@ FUZZ_TARGETS = {
 # reason update_manifest does.
 FUZZ_LINUX_TARGETS = frozenset({"service_request", "vf_snapshot", "wire_prefix",
                                 "config_strings", "update_manifest",
-                                "service_response", "installer_archive"})
+                                "service_response", "installer_archive", "profile_codec"})
 
 # Extra translation units a Linux fuzz target needs, keyed by target name.  Most
 # resolve entirely inside the harness and its headers; an empty/absent entry
@@ -85,6 +86,7 @@ FUZZ_LINUX_TARGETS = frozenset({"service_request", "vf_snapshot", "wire_prefix",
 # so the answer is an accurate entry, plus check_fuzz_linux_link_lines() below
 # so every entry is proven on every host instead of only in Linux CI.
 FUZZ_LINUX_EXTRA_SOURCES = {
+    "profile_codec": ("fan_curve.cpp", "config_text_utils.cpp"),
     "service_request": ("fan_curve.cpp", "config_text_utils.cpp"),
     # Same dependency as service_request, and for the same reason: the response
     # validator reaches validate_desired_settings_for_ipc(), which calls the

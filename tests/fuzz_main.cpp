@@ -39,6 +39,7 @@
 #define GC_FUZZ_UPDATE_MANIFEST 6
 #define GC_FUZZ_SERVICE_RESPONSE 7
 #define GC_FUZZ_INSTALLER_ARCHIVE 8
+#define GC_FUZZ_PROFILE_CODEC 9
 
 #ifndef GC_FUZZ_TARGET
 #error "GC_FUZZ_TARGET must be defined (see FUZZ_TARGETS in build.py)"
@@ -958,3 +959,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 }
 
 #endif  // GC_FUZZ_UPDATE_MANIFEST
+
+#if GC_FUZZ_TARGET == GC_FUZZ_PROFILE_CODEC
+#include "profile_codec_fuzz.h"
+#endif
