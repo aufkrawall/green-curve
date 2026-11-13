@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Explicit legacy profile transfer
+
+- Source-format adapters preserve Windows/Linux point semantics, exact memory
+  units, explicit locks and fan intent without live repair. Ambiguous units or
+  curve meaning require choices; unresolved indices never acquire destination
+  voltages. Source records and destination slots have separate selections.
+- Native legacy export uses the raw decoder. Cases 8986-9008 and 9010-9017 cover
+  strict parsing, output preservation, selection, persistence and exact values;
+  executable workflows and the codec fuzz boundary also exercise conversion.
+  Native Windows/Linux suites, all-target checks and 5000 codec fuzz runs passed;
+  an incorrect memory conversion factor fails 8992. Static analysis added no findings.
+  See [config-profiles.md](../config-profiles.md#explicit-legacy-transfer-2026-11-13).
+
 ## 2026-11-13: Native Linux regression execution
 
 - The sanitizer-enabled complete C++ harness and all three Linux kernel/store

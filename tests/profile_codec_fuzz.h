@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include "profile_codec_fixture.h"
 #include "profile_slot_codec.h"
+#include "profile_legacy_ini.h"
 #include "profile_mapping.h"
 #include "profile_conversion_grid.h"
 #include "profile_runtime_resolution.h"
@@ -30,6 +31,16 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     } else {
         GC_FUZZ_CHECK(bank->count == 1 && !strcmp(bank->documents[0].displayName, "unchanged"),
             "failed parse published partial state");
+    }
+    for (auto format : {PROFILE_LEGACY_WINDOWS_INI, PROFILE_LEGACY_LINUX_INI}) {
+        bank->count = 1; bank->documents[0] = profile_document_make_empty();
+        strcpy(bank->documents[0].displayName, "unchanged");
+        ProfileLegacyOptions options{format, PROFILE_LEGACY_MEMORY_EFFECTIVE, PROFILE_LEGACY_CURVE_UNKNOWN};
+        if (format == PROFILE_LEGACY_WINDOWS_INI) options.memory = PROFILE_LEGACY_MEMORY_DISPLAY;
+        if (profile_legacy_ini_decode(std::string_view((const char*)data, size), options, {}, *bank))
+            profile_codec_fuzz_round_trip(*bank);
+        else GC_FUZZ_CHECK(bank->count == 1 && !strcmp(bank->documents[0].displayName, "unchanged"),
+            "failed legacy parse published partial state");
     }
     // Reach the complete accepted shape while raw mutations explore syntax.
     FuzzInput in(data, size);

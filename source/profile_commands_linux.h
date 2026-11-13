@@ -8,6 +8,7 @@
 #include "profile_capture_commands.h"
 #include "profile_check_commands.h"
 #include "linux_config_lock.h"
+#include "linux_debug_log.h"
 #include <stdlib.h>
 
 struct LinuxProfileCommands {
@@ -44,17 +45,10 @@ struct LinuxProfileCommands {
     bool write(const std::string& path, const std::string& bytes, ProfileCodecError& error) {
         return write_text_file_atomic(path.c_str(), bytes, error.message, sizeof(error.message));
     }
-    bool legacy(const std::string& path, int slot, ProfileDocument& document, bool& found, ProfileCodecError& error) {
-        IniDocument ini;
-        if (!load_ini_document(path.c_str(), &ini, error.message, sizeof(error.message))) return false;
-        const std::string root = "profile" + std::to_string(slot);
-        found = section_has_keys(&ini, root.c_str()) || section_has_keys(&ini, (root + "_curve").c_str()) ||
-            section_has_keys(&ini, (root + "_fan_curve").c_str()) || (slot == 1 &&
-            (section_has_keys(&ini, "controls") || section_has_keys(&ini, "curve") || section_has_keys(&ini, "fan_curve")));
-        if (!found) return true;
-        DesiredSettings desired{};
-        return load_profile_from_config_path(path.c_str(), slot, &desired, error.message, sizeof(error.message)) &&
-            profile_document_from_legacy_desired(desired, document, error.message, sizeof(error.message));
+    bool legacy(const std::string& input, int slot, ProfileDocument& document, bool& found, ProfileCodecError& error) {
+        const bool ok = profile_legacy_native_slot_decode(input, PROFILE_LEGACY_LINUX_INI, slot, document, found, &error);
+        linux_debug_logf("profile legacy export: platform=linux slot=%d decoded=%d found=%d", slot, ok ? 1 : 0, found ? 1 : 0);
+        return ok;
     }
     bool commit(const std::string& path, const ProfileBankEdit& edit, ProfileCodecError& error) {
         if (edit.replacement.size() > (size_t)LINUX_INI_MAX_BYTES)

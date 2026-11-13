@@ -37,6 +37,7 @@ Curves are checked before Apply, low-voltage points become editable, and dialogs
 - **Curve points below 700 mV:** writable points appear in the editor and graph.
 - **Prepare compatible curve:** Apply can offer to lower conflicting earlier points; review the draft before applying.
 - **CLI profile transfer:** import and export saved profiles offline; review replacements and assignments before confirming.
+- **Legacy profile transfer:** select Windows or Linux source formats and records; review ambiguous units while preserving exact memory offsets and point intent.
 - **CLI hardware capture:** read controls without resetting; review omissions, source ranges and exact or partial capture before saving.
 - **CLI profile checks:** inspect mapping, exact control ranges and curve constraints without applying settings; uncertainty stays explicit.
 

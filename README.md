@@ -246,6 +246,17 @@ proven refusals, conditional estimates and unavailable reads separately.
 Ownership, transition and recovery checks still require service review;
 the command returns exit code 3 even when controls are representable.
 
+To import an older Green Curve INI, select `--legacy-format windows-ini` or
+`--legacy-format linux-ini`. Select source slots with `--source-profiles 2,4`
+and destination slots with `--slots 1,5`. For a portable bank, source numbers
+select records in file order. Unmarked Linux memory requires
+`--legacy-memory-unit display-mhz|effective-mhz`; unmarked curve points require
+`--legacy-curve-semantics absolute|base-plus-offset|absolute-with-origin`.
+Choices cannot override a conflicting format marker. Half-MHz memory values
+are preserved; legacy point indices require mapping review, and rounded old
+voltage labels never become exact destination identities. The legacy options
+also work with export, where `--slots` selects source slots from `--config`.
+
 ## GPU Probe Report
 
 If you are running an unrecognized GPU family or need to report driver compatibility details, generate a diagnostic probe report:

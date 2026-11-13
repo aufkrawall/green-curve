@@ -27,8 +27,9 @@ Source anchors: `source/profile_slot_codec.h`, `source/profile_bank_edit.h`,
 `source/profile_commands.h`, `source/profile_commands_windows.h`,
 `source/profile_commands_linux.h`, `source/profile_file_read.h`,
 `source/profile_config_windows.h`, `source/profile_legacy_document.h`,
+`source/profile_legacy_ini.h`, `tests/profile_legacy_ini_tests.cpp` (8986-9008),
 `tests/profile_slot_codec_tests.cpp` (8370-8383),
-`tests/profile_commands_tests.cpp` (8400-8411),
+`tests/profile_commands_tests.cpp` (8400-8411, 9010-9017),
 `tests/profile_commands_cli_tests.py`, `tools/security_gates.py`
 (`run_profile_commands_fixture`), `build.py` (native artifact verification).
 
@@ -60,8 +61,37 @@ Production build/check verifies the freshly linked native client through bounded
 subprocess workflows before temporary artifacts are removed: preview/cancel,
 exact zero/fraction/ratio transfer, five-slot restart/export, UTF-8 paths and
 malformed input. Both Windows x64 variants ran this fixture. Linux x64/ARM64
-production and lock-fixture link checks passed; native Linux execution remains
-unverified on this Windows host.
+production link checks passed; native Linux unit/store fixtures now pass under
+WSL, as recorded in [testing.md](testing.md#windows-hosted-native-linux-execution-2026-11-13).
+Linux production-client subprocess execution remains a separate check.
+
+### Explicit legacy transfer (2026-11-13)
+
+The common raw decoder reads selected Windows or Linux Green Curve INI records.
+`--legacy-format windows-ini|linux-ini` selects incoming layout independently of
+the importing OS. `--source-profiles` selects source slots (portable record
+ordinals for new banks), while `--slots` selects destinations. Export uses
+`--slots` for source selection. Normal native export also uses this decoder for
+legacy slots rather than the settings loader's repair/migration path.
+
+Windows memory is display MHz; a Linux migration marker proves display MHz.
+Unmarked Linux memory requires `--legacy-memory-unit`; effective MHz converts
+at exactly 500000 Hz per unit. Curve markers preserve absolute, projected and
+per-point-origin meaning. An unmarked curve requires `--legacy-curve-semantics`;
+the historical point-layout marker alone cannot prove numeric meaning. Explicit
+choices never override conflicting markers. Missing locks are not inferred.
+Legacy indices/exclusion counts stay unresolved; rounded mV labels supply no
+exact voltage identity. Point frequency/offset observations never become
+captured control authority. Fan intent includes dormant configuration and the
+established zero-RPM hysteresis migration.
+
+Both UTF-8-compatible text and BOM-marked UTF-16LE sources are accepted. The
+decoder bounds bytes, lines, field count and five slots, rejects duplicate or
+unknown tuning fields, and leaves output unchanged on failure. Selected new
+documents cannot enter legacy decoding. Unselected modern slots may coexist
+with native legacy slots. Destination replacement still uses the existing
+review, confirmation, generation check and single atomic write. Native export
+logs one bounded `profile legacy export:` result per inspected slot.
 
 GUI/TUI document mapping remains pending. Historical Apply readers deliberately
 refuse these new records until destination review exists; they cannot silently

@@ -392,6 +392,13 @@ and perform no hardware mutation.
 
 ## Portable codec
 
+Legacy conversion is a separate explicit raw decoder; its unit/origin rules,
+unresolved mapping contract and source selection are documented in
+[config-profiles.md](config-profiles.md#explicit-legacy-transfer-2026-11-13).
+Its accepted outputs use this same codec and local-slot representation. The
+profile codec fuzz target also exercises both legacy input layouts and their
+unchanged-output-on-failure contract.
+
 Source anchors: `source/profile_codec.h`, `source/profile_codec_types.h`,
 `source/profile_codec_fields.h`, `source/profile_codec_decode.h`,
 `source/profile_codec_encode.h`, `tests/profile_codec_tests.cpp` (8340-8356),

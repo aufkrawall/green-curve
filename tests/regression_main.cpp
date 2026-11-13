@@ -1038,6 +1038,7 @@ int run_profile_document_contract_tests();
 int run_profile_codec_tests();
 int run_profile_slot_codec_tests();
 int run_profile_commands_tests();
+int run_profile_legacy_ini_tests();
 int run_profile_capture_commands_tests();
 int run_profile_mapping_tests();
 int run_profile_conversion_tests();
@@ -2711,6 +2712,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int commandFailure = run_profile_commands_tests()) {
         fprintf(stderr, "profile command regression failed: %d\n", commandFailure);
         return commandFailure;
+    }
+    if (int legacyFailure = run_profile_legacy_ini_tests()) {
+        fprintf(stderr, "legacy profile adapter regression failed: %d\n", legacyFailure);
+        return legacyFailure;
     }
     if (int captureCommandFailure = run_profile_capture_commands_tests()) {
         fprintf(stderr, "capture command regression failed: %d\n", captureCommandFailure);

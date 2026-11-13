@@ -27,6 +27,10 @@ static void cli_print_help(FILE* out) {
     HELP_LOG("  greencurve.exe --capture-current <file> [--domains vf,graphics,memory,power,pin] [--allow-partial] [--representation exact]  Review passive capture before saving\n");
     HELP_LOG("  greencurve.exe --check-profile <file> [--profile N]  Check mapping and control feasibility without applying settings\n");
     HELP_LOG("  greencurve.exe --import-profiles <file> --slots 1,2 [--confirm-import] [--config <path>]  Review and import saved intent\n");
+    HELP_LOG("    --source-profiles all|2,4  Select input records (legacy INI slot numbers)\n");
+    HELP_LOG("    --legacy-format windows-ini|linux-ini  Read an old Green Curve INI explicitly\n");
+    HELP_LOG("    --legacy-memory-unit display-mhz|effective-mhz  Resolve unmarked Linux memory units\n");
+    HELP_LOG("    --legacy-curve-semantics absolute|base-plus-offset|absolute-with-origin  Resolve unmarked legacy points\n");
     HELP_LOG("  greencurve.exe --probe [--probe-output <path>]  Probe NvAPI/NVML/VF support and write a report\n");
     HELP_LOG("  greencurve.exe --self-test  Read-only driver/arch pre-flight, no service needed (run elevated)\n");
     HELP_LOG("  greencurve.exe --clk-domain-probe  Identify ClkDomains entries by briefly writing +50 MHz offsets, then restoring (run elevated)\n");

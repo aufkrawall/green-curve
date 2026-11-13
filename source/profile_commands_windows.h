@@ -36,12 +36,10 @@ struct WindowsProfileCommands {
     bool write(const std::string& path, const std::string& bytes, ProfileCodecError& error) {
         return write_text_file_atomic(path.c_str(), bytes.data(), bytes.size(), error.message, sizeof(error.message));
     }
-    bool legacy(const std::string& path, int slot, ProfileDocument& document, bool& found, ProfileCodecError& error) {
-        found = is_profile_slot_saved(path.c_str(), slot);
-        if (!found) return true;
-        DesiredSettings desired{};
-        return load_profile_from_config(path.c_str(), slot, &desired, error.message, sizeof(error.message), PROFILE_READ_FOR_OWNERSHIP) &&
-            profile_document_from_legacy_desired(desired, document, error.message, sizeof(error.message));
+    bool legacy(const std::string& input, int slot, ProfileDocument& document, bool& found, ProfileCodecError& error) {
+        const bool ok = profile_legacy_native_slot_decode(input, PROFILE_LEGACY_WINDOWS_INI, slot, document, found, &error);
+        debug_log("profile legacy export: platform=windows slot=%d decoded=%d found=%d\n", slot, ok ? 1 : 0, found ? 1 : 0);
+        return ok;
     }
     bool commit(const std::string& path, const ProfileBankEdit& edit, ProfileCodecError& error) {
         ConfigStorageLockGuard lock;
@@ -104,8 +102,7 @@ static bool profile_commands_windows(LPWSTR commandLine, int& exitCode) {
     WindowsProfileCommands io;
     if (profile_check_commands_run(args, io, exitCode)) return true;
     if (profile_capture_commands_run(args, g_app.configPath, io, exitCode)) return true;
-    // Historical readers use the INI API. Keep the complete export generation
-    // locked while those readers decode it; new documents use the raw snapshot.
+    // Keep one complete storage generation for both document and legacy slots.
     if (exporting) {
         ConfigStorageLockGuard lock;
         if (!lock.locked()) { exitCode = PROFILE_COMMAND_IO; return true; }

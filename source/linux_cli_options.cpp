@@ -17,6 +17,10 @@ void print_linux_help() {
     puts("  greencurve --capture-current file [--domains vf,graphics,memory,power,pin] [--allow-partial] [--representation exact]  Review passive capture before saving");
     puts("  greencurve --check-profile file [--profile N]  Check mapping and control feasibility without applying settings");
     puts("  greencurve --import-profiles file --slots 1,2 [--confirm-import] [--config path]  Review and import saved intent");
+    puts("    --source-profiles all|2,4  Select input records (legacy INI slot numbers)");
+    puts("    --legacy-format windows-ini|linux-ini  Read an old Green Curve INI explicitly");
+    puts("    --legacy-memory-unit display-mhz|effective-mhz  Resolve unmarked Linux memory units");
+    puts("    --legacy-curve-semantics absolute|base-plus-offset|absolute-with-origin  Resolve unmarked legacy points");
     puts("  greencurve --dump-live | --json-live  Dump all live VF values from daemon");
     puts("  greencurve --probe [--probe-output path]   Probe driver + GPU control surfaces");
     puts("  greencurve --self-test           Read-only validation of the NvAPI/NVML apply path");

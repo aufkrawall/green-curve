@@ -80,9 +80,45 @@ def verify(executable: Path, workspace: Path) -> None:
         run(import_args, expected=2)
         run(["--check-profile", incoming], expected=2)
         assert config.read_bytes() == saved
+        # Explicit source formats and choices preserve historical values without
+        # invoking host-specific repair or consulting hardware.
+        old = folder / "legacy.ini"
+        old.write_bytes(("[profile2]\nmem_offset_mhz=-1001\n[profile2_curve]\npoint22=1000\n"
+                         "[profile4]\nmem_offset_mhz=3\n").encode())
+        legacy_args = ["--import-profiles", old, "--legacy-format", "linux-ini",
+                       "--source-profiles", "4,2", "--slots", "1,5", "--config", config]
+        run([*legacy_args, "--confirm-import"], expected=2, answer="IMPORT\n")
+        assert config.read_bytes() == saved
+        units = ["--legacy-memory-unit", "effective-mhz"]
+        run([*legacy_args, *units, "--confirm-import"], expected=2, answer="IMPORT\n")
+        assert config.read_bytes() == saved
+        choices = [*units, "--legacy-curve-semantics", "absolute"]
+        preview = run([*legacy_args, *choices], expected=3)
+        assert "explicit mapping review" in preview and config.read_bytes() == saved
+        run([*legacy_args, *choices, "--confirm-import"], answer="IMPORT\n")
+        run(["--export-profiles", exported, "--slots", "5,1", "--config", config])
+        exact_legacy = exported.read_text(encoding="utf-8")
+        assert "offset_hz=-500500000" in exact_legacy and "offset_hz=1500000" in exact_legacy
+        assert "legacy_indices_unresolved=1" in exact_legacy
+        assert "target_hz=1000000000" in exact_legacy
+        run(["--import-profiles", exported, "--source-profiles", "2", "--slots", "3",
+             "--config", config, "--confirm-import"], answer="IMPORT\n")
+        run(["--export-profiles", incoming, "--slots", "3", "--config", config])
+        assert "offset_hz=1500000" in incoming.read_text(encoding="utf-8")
+        # Old Unicode Windows files work as input and local offline export.
+        old.write_bytes(("[profile1]\nmem_offset_mhz=-1001\n[profile1_curve]\n"
+                         "curve_semantics=absolute_with_origin\npoint22_mhz=1000\n"
+                         "point22_mv=650\npoint22_visible=0\n").encode("utf-16"))
+        run(["--import-profiles", old, "--legacy-format", "windows-ini", "--slots", "2",
+             "--config", config, "--confirm-import"], answer="IMPORT\n")
+        run(["--export-profiles", incoming, "--slots", "1", "--config", old])
+        windows_legacy = incoming.read_text(encoding="utf-8")
+        assert "offset_hz=-1001000000" in windows_legacy and "voltage_uv=0" in windows_legacy
+        assert old.read_bytes().startswith(b"\xff\xfe")
+        saved = config.read_bytes()
         run(["--import-profiles", folder / "missing.gcprofile", "--slots", "1", "--config", config], expected=1)
         assert config.read_bytes() == saved
-    print("Offline profile CLI checks passed: review/cancel, exact zero/fraction/ratio, five-slot restart/export, malformed input")
+    print("Offline profile CLI checks passed: review/cancel, exact intent, five slots, legacy units/origins, source selection")
 
 
 if __name__ == "__main__":

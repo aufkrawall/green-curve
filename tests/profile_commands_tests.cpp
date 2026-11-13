@@ -22,7 +22,9 @@ struct ProfileTestIO {
         if (failWrite) return false;
         files[path] = bytes; return true;
     }
-    bool legacy(const std::string&, int, ProfileDocument&, bool& found, ProfileCodecError&) { found = false; return true; }
+    bool legacy(const std::string& bytes, int slot, ProfileDocument& document, bool& found, ProfileCodecError& error) {
+        return profile_legacy_native_slot_decode(bytes, PROFILE_LEGACY_WINDOWS_INI, slot, document, found, &error);
+    }
     void message(const std::string& text) { messages += text; }
     bool confirm() {
         ++confirmations;
@@ -75,6 +77,12 @@ int run_profile_commands_tests() {
         {"--export-profiles", "x", "--import-profiles", "input.gcprofile"},
         {"--export-profiles", "x", "--config", "a", "--config", "b"},
         {"--import-profiles", "input.gcprofile", "--slots", "1,2"},
+        {"--export-profiles", "x", "--source-profiles", "1"},
+        {"--export-profiles", "x", "--legacy-memory-unit", "effective-mhz"},
+        {"--export-profiles", "x", "--legacy-format", "automatic"},
+        {"--import-profiles", "x", "--slots", "1", "--source-profiles", "1,1"},
+        {"--import-profiles", "x", "--slots", "1", "--legacy-format", "linux-ini", "--legacy-format", "windows-ini"},
+        {"--import-profiles", "x", "--slots", "1", "--legacy-curve-semantics", "auto"},
     };
     for (const auto& args : invalid)
         if (!profile_commands_run(args, "config.ini", io, code) || code != PROFILE_COMMAND_INVALID || io.writes != before) return 8408;
@@ -94,6 +102,44 @@ int run_profile_commands_tests() {
         legacy.points[0].kind != PROFILE_POINT_CAPTURED_OFFSET || legacy.points[0].capturedOffsetHz ||
         legacy.memoryOffsetHz != -500000 || legacy.power.ratio.numerator != 249 ||
         legacy.graphicsOffset.exclusionPolicy != PROFILE_EXCLUDE_LEGACY_COUNT) return 8411;
-    fprintf(stdout, "profile commands: explicit review, assignments, atomic import/export and legacy evidence checks passed\n");
+    ProfileTestIO transfer;
+    transfer.files["config.ini"] = original;
+    transfer.files["legacy.ini"] = "[profile2]\nmem_offset_mhz=-1001\n[profile4]\nmem_offset_mhz=3\n";
+    std::vector<std::string> legacyArgs = {"--import-profiles", "legacy.ini", "--legacy-format", "linux-ini",
+        "--source-profiles", "4,2", "--slots", "1,5", "--confirm-import"};
+    transfer.confirmation = true;
+    if (!profile_commands_run(legacyArgs, "config.ini", transfer, code) || code != PROFILE_COMMAND_INVALID ||
+        transfer.writes || transfer.confirmations || transfer.files["config.ini"] != original) return 9010;
+    legacyArgs.insert(legacyArgs.end(), {"--legacy-memory-unit", "effective-mhz"});
+    if (!profile_commands_run(legacyArgs, "config.ini", transfer, code) || code || transfer.writes != 1 ||
+        transfer.files["config.ini"].find("document.memory.offset_hz=-500500000") == std::string::npos) return 9011;
+    if (!profile_commands_run({"--export-profiles", "selected.gcprofile", "--slots", "5,1"}, "config.ini", transfer, code) || code ||
+        !profile_bank_decode(transfer.files["selected.gcprofile"], *bank) || bank->count != 2 ||
+        bank->documents[0].memoryOffsetHz != -500500000 || bank->documents[1].memoryOffsetHz != 1500000) return 9012;
+    if (!profile_commands_run({"--import-profiles", "selected.gcprofile", "--source-profiles", "2", "--slots", "3",
+        "--confirm-import"}, "config.ini", transfer, code) || code) return 9013;
+    if (!profile_commands_run({"--export-profiles", "one.gcprofile", "--slots", "3"}, "config.ini", transfer, code) || code ||
+        !profile_bank_decode(transfer.files["one.gcprofile"], *bank) ||
+        bank->count != 1 || bank->documents[0].memoryOffsetHz != 1500000) return 9014;
+    const auto beforeFailedSelection = transfer.files["config.ini"];
+    if (!profile_commands_run({"--import-profiles", "one.gcprofile", "--source-profiles", "2", "--slots", "4",
+        "--confirm-import"}, "config.ini", transfer, code) || code != PROFILE_COMMAND_INVALID ||
+        transfer.files["config.ini"] != beforeFailedSelection) return 9015;
+    transfer.files["local.ini"] = "[profile1]\nmem_offset_mhz=-1001\n";
+    if (!profile_commands_run({"--export-profiles", "native.gcprofile", "--config", "local.ini"}, "config.ini", transfer, code) ||
+        code || !profile_bank_decode(transfer.files["native.gcprofile"], *bank) ||
+        bank->documents[0].memoryOffsetHz != -1001000000) return 9016;
+    if (!profile_commands_run({"--export-profiles", "explicit.gcprofile", "--config", "legacy.ini",
+        "--legacy-format", "linux-ini", "--legacy-memory-unit", "effective-mhz", "--slots", "2"},
+        "config.ini", transfer, code) || code || !profile_bank_decode(transfer.files["explicit.gcprofile"], *bank) ||
+        bank->documents[0].memoryOffsetHz != -500500000) return 9017;
+    fprintf(stdout, "profile commands: explicit review, assignments, atomic import/export, source selection and legacy conversion passed\n");
     return 0;
 }
+#ifdef GC_PROFILE_COMMAND_FIXTURE_MAIN
+int main() {
+    const int code = run_profile_commands_tests();
+    if (code) fprintf(stderr, "profile command regression: %d\n", code);
+    return code;
+}
+#endif
