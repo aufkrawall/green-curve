@@ -53,6 +53,7 @@
 #include "gpu_core.h"
 #include "service_recovery_policy.h"
 #include "linux_gpu_uuid.h"
+#include "graphics_scalar_recovery.h"
 
 // Attempts per boot, counting the one that died.  Two: a wedge caused by a
 // stale driver image is cured by the restart, and a second death is not.
@@ -212,7 +213,7 @@ static inline const char* ownership_handback_scope_name(
 // --- Windows on-disk marker --------------------------------------------------
 
 #define SERVICE_OWNERSHIP_MARKER_MAGIC 0x4B424347u  // "GCBK"
-#define SERVICE_OWNERSHIP_MARKER_VERSION 1u
+#define SERVICE_OWNERSHIP_MARKER_VERSION 2u
 
 struct ServiceOwnershipMarker {
     gc_u32 magic;
@@ -223,7 +224,18 @@ struct ServiceOwnershipMarker {
     ServiceBootIdentity bootIdentity;
     // The adapter the owning instance wrote, so a multi-GPU handback targets it.
     GpuAdapterInfo targetGpu;
+    gc_u32 graphicsControlSurfaces;
+    gc_u32 reserved;
 };
+static_assert(sizeof(ServiceOwnershipMarker) == 224, "version-2 ownership marker layout changed");
+
+// FROZEN: version 1 carried no named graphics-control recovery evidence.
+struct ServiceOwnershipMarkerV1 {
+    gc_u32 magic, version, size, handbackAttempts;
+    ServiceBootIdentity bootIdentity;
+    GpuAdapterInfo targetGpu;
+};
+static_assert(sizeof(ServiceOwnershipMarkerV1) == 216, "version-1 ownership marker is frozen");
 
 static inline void service_ownership_marker_initialize(
     ServiceOwnershipMarker* marker, const ServiceBootIdentity& boot,
@@ -241,8 +253,24 @@ static inline bool service_ownership_marker_valid(
     return marker && marker->magic == SERVICE_OWNERSHIP_MARKER_MAGIC &&
         marker->version == SERVICE_OWNERSHIP_MARKER_VERSION &&
         marker->size == (gc_u32)sizeof(*marker) &&
+        graphics_scalar_recovery_mask_valid(marker->graphicsControlSurfaces) && !marker->reserved &&
+        (!marker->graphicsControlSurfaces || marker->targetGpu.valid == 1) &&
         marker->handbackAttempts <= OWNERSHIP_HANDBACK_MAX_ATTEMPTS &&
         service_boot_identity_valid(marker->bootIdentity);
+}
+
+static inline bool service_ownership_marker_decode(const void* bytes, size_t size, ServiceOwnershipMarker* output) {
+    if (!bytes || !output) return false;
+    ServiceOwnershipMarker next{};
+    if (size == sizeof(next)) memcpy(&next, bytes, size);
+    else if (size == sizeof(ServiceOwnershipMarkerV1)) {
+        ServiceOwnershipMarkerV1 old{}; memcpy(&old, bytes, size);
+        if (old.magic != SERVICE_OWNERSHIP_MARKER_MAGIC || old.version != 1u || old.size != size) return false;
+        service_ownership_marker_initialize(&next, old.bootIdentity, &old.targetGpu);
+        next.handbackAttempts = old.handbackAttempts;
+    } else return false;
+    if (!service_ownership_marker_valid(&next)) return false;
+    *output = next; return true;
 }
 
 // --- Linux on-disk marker ----------------------------------------------------

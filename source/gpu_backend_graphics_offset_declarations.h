@@ -6,3 +6,6 @@ static bool nvapi_set_gpu_offset_precise(gc_i64 offsetHz, gc_u32 surface, bool f
 struct ScalarCurveSubmissionReview;
 static bool nvapi_set_gpu_offset_precise_checked(gc_i64 offsetHz, gc_u32 surface, bool forceWrite, ScalarCurveSubmissionReview* review);
 static bool nvapi_reset_graphics_scalar_controls();
+#ifdef GREEN_CURVE_SERVICE_BINARY
+static bool service_ownership_marker_note_graphics_surface_before_write(gc_u32);
+#endif

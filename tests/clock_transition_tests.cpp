@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdarg>
 #include "desired_authoring_types.h"
+#include "graphics_scalar_recovery.h"
 namespace clock_transition_fixture {
 constexpr int VF_NUM_POINTS=128, MAX_GPU_FANS=4;
 using gc_u32=unsigned int;
@@ -178,6 +179,7 @@ struct App {
  unsigned int appliedLockFreq{},lockedFreq{},transitionClockCapMHz{}; bool transitionClockCapActive{};
  int readback{}; bool powerLimitWriteUncertain{},memOffsetWriteUncertain{};
  unsigned int gpuOffsetOwnedSurface{},gpuOffsetUncertainSurface{};
+ unsigned int gpuOffsetRecoverySurfaces{};
 };
 static App g_app;
 static Api g_nvml_api;

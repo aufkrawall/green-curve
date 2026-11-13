@@ -17,6 +17,7 @@
 
 static volatile LONG g_serviceOwnershipMarkerCommitted = 0;
 static GpuAdapterInfo g_serviceOwnershipMarkerTarget = {};
+static gc_u32 g_serviceOwnershipGraphicsSurfaces = 0;
 // Guarded by the runtime lock.
 static OwnershipHandbackScope g_serviceHandbackPendingScope =
     OWNERSHIP_HANDBACK_SCOPE_NONE;
@@ -25,6 +26,7 @@ static volatile LONG g_serviceHandbackPending = 0;
 // Set while the handback itself writes, so its own reset does not re-stamp the
 // marker (which would clear the in-flight flag the crash-loop guard relies on).
 static bool g_serviceHandbackRunning = false;
+static void service_ownership_handback_finish_locked();
 
 static bool service_ownership_marker_path(char* out, size_t outSize) {
     if (!out || outSize == 0) return false;
@@ -83,13 +85,14 @@ static int service_ownership_marker_load(ServiceOwnershipMarker* out) {
         return -1;
     }
     DWORD read = 0;
+    BYTE bytes[sizeof(ServiceOwnershipMarker)]{};
     BYTE trailing = 0;
     DWORD trailingRead = 0;
-    bool ok = ReadFile(h, out, sizeof(*out), &read, nullptr) && read == sizeof(*out) &&
+    bool ok = ReadFile(h, bytes, sizeof(bytes), &read, nullptr) &&
         ReadFile(h, &trailing, sizeof(trailing), &trailingRead, nullptr) &&
         trailingRead == 0;
     CloseHandle(h);
-    if (!ok || !service_ownership_marker_valid(out)) {
+    if (!ok || !service_ownership_marker_decode(bytes, read, out)) {
         memset(out, 0, sizeof(*out));
         return -1;
     }
@@ -99,6 +102,7 @@ static int service_ownership_marker_load(ServiceOwnershipMarker* out) {
 static bool service_ownership_marker_clear(const char* reason) {
     InterlockedExchange(&g_serviceOwnershipMarkerCommitted, 0);
     memset(&g_serviceOwnershipMarkerTarget, 0, sizeof(g_serviceOwnershipMarkerTarget));
+    g_serviceOwnershipGraphicsSurfaces = 0;
     char path[MAX_PATH] = {};
     if (!service_ownership_marker_path(path, sizeof(path))) return false;
     bool ok = gc_DeleteFileUtf8(path) != FALSE;
@@ -131,20 +135,25 @@ static bool service_ownership_current_target(GpuAdapterInfo* out) {
 
 // The pre-write boundary.  Fail closed like the proof invalidation beside it:
 // a write whose ownership cannot be recorded is a write a crash could strand.
-static bool service_ownership_marker_ensure_before_write() {
+static bool service_ownership_marker_ensure_before_write(bool forReset) {
     if (!app_is_service_process() || g_serviceHandbackRunning) return true;
+    bool namedResetTakeover = false;
     if (InterlockedExchangeAdd(&g_serviceHandbackPending, 0) != 0) {
-        // Reached only when the pre-write hook found the GPU not ready for the
-        // handback but this write is going ahead anyway: from here on the new
-        // write owns the GPU, and a later handback would undo it.
-        debug_log("ownership handback: superseded by a newer hardware write before it could run\n");
-        g_serviceHandbackPendingScope = OWNERSHIP_HANDBACK_SCOPE_NONE;
-        memset(&g_serviceHandbackMarker, 0, sizeof(g_serviceHandbackMarker));
-        InterlockedExchange(&g_serviceHandbackPending, 0);
+        if (g_serviceHandbackMarker.graphicsControlSurfaces) {
+            if (!forReset || !service_ownership_handback_superseded_by_reset_locked()) {
+                debug_log("graphics recovery: inherited named controls remain pending; refusing a superseding write\n");
+                return false;
+            }
+            namedResetTakeover = true;
+        } else {
+            // Legacy pending markers keep their established takeover policy.
+            debug_log("ownership handback: superseded by a newer hardware write before it could run\n");
+            service_ownership_handback_finish_locked();
+        }
     }
     GpuAdapterInfo target = {};
     service_ownership_current_target(&target);
-    if (InterlockedExchangeAdd(&g_serviceOwnershipMarkerCommitted, 0) != 0 &&
+    if (!namedResetTakeover && InterlockedExchangeAdd(&g_serviceOwnershipMarkerCommitted, 0) != 0 &&
         (!target.valid || !g_serviceOwnershipMarkerTarget.valid ||
          gpu_adapter_has_same_pci_identity(&target, &g_serviceOwnershipMarkerTarget))) {
         return true;
@@ -156,16 +165,44 @@ static bool service_ownership_marker_ensure_before_write() {
     }
     ServiceOwnershipMarker marker = {};
     service_ownership_marker_initialize(&marker, boot, target.valid ? &target : nullptr);
+    marker.graphicsControlSurfaces = g_app.gpuOffsetRecoverySurfaces;
     if (!service_ownership_marker_store(&marker)) {
         debug_log("ownership marker: could not be committed; refusing the hardware write"
                   " (a crash after it could not be handed back)\n");
         return false;
     }
     g_serviceOwnershipMarkerTarget = target;
+    g_serviceOwnershipGraphicsSurfaces = marker.graphicsControlSurfaces;
     InterlockedExchange(&g_serviceOwnershipMarkerCommitted, 1);
+    if (namedResetTakeover) service_ownership_handback_finish_locked();
     debug_log("ownership marker: committed before the first hardware write (target=%s)\n",
         target.valid && target.name[0] ? target.name : "<current selection>");
     return true;
+}
+
+static bool service_ownership_marker_note_graphics_surface_before_write(gc_u32 surface) {
+    if (!app_is_service_process()) return true;
+    const gc_u32 bit = graphics_scalar_recovery_bit(surface);
+    if (!bit) return false;
+    if (g_serviceHandbackRunning)
+        return (g_serviceHandbackMarker.graphicsControlSurfaces & bit) != 0;
+    if (!service_ownership_marker_ensure_before_write()) return false;
+    return graphics_scalar_recovery_prepare(g_serviceOwnershipGraphicsSurfaces, surface, [&](gc_u32 mask) {
+        ServiceBootIdentity boot{};
+        if (!g_serviceOwnershipMarkerTarget.valid || !service_query_boot_identity(&boot)) {
+            debug_log("graphics recovery: target or boot binding unavailable; refusing named control surface=%u\n", (unsigned)surface);
+            return false;
+        }
+        ServiceOwnershipMarker marker{};
+        service_ownership_marker_initialize(&marker, boot, &g_serviceOwnershipMarkerTarget);
+        marker.graphicsControlSurfaces = mask;
+        if (!service_ownership_marker_store(&marker)) {
+            debug_log("graphics recovery: durable preparation failed surface=%u; refusing named control\n", (unsigned)surface);
+            return false;
+        }
+        debug_log("graphics recovery: durable control coverage=0x%X before surface=%u\n", (unsigned)mask, (unsigned)surface);
+        return true;
+    });
 }
 
 // Startup, file I/O only, before RUNNING.  Decides; never writes hardware.
@@ -225,11 +262,25 @@ static void service_ownership_handback_finish_locked() {
 // An explicit Reset returns everything a pending handback would; it takes the
 // handback over whatever its own outcome (a failed Reset is reported to the
 // user who asked for it).
-static void service_ownership_handback_superseded_by_reset_locked() {
+static bool service_ownership_handback_superseded_by_reset_locked() {
     if (InterlockedExchangeAdd(&g_serviceHandbackPending, 0) == 0 ||
-        g_serviceHandbackRunning) return;
+        g_serviceHandbackRunning) return true;
+    if (g_serviceHandbackMarker.graphicsControlSurfaces) {
+        GpuAdapterInfo current{};
+        const bool sameTarget = service_ownership_current_target(&current) &&
+            gpu_adapter_has_same_pci_identity(&current, &g_serviceHandbackMarker.targetGpu);
+        if (!graphics_scalar_recovery_adopt(g_app.gpuOffsetRecoverySurfaces,
+                g_serviceHandbackMarker.graphicsControlSurfaces, sameTarget)) {
+            debug_log("graphics recovery: explicit Reset cannot adopt a different or unresolved GPU target\n");
+            return false;
+        }
+        // Keep pending authority until the Reset pre-write marker stores this
+        // coverage durably. A failed preparation cannot discard the handback.
+        return true;
+    }
     debug_log("ownership handback: superseded by a Reset to stock\n");
     service_ownership_handback_finish_locked();
+    return true;
 }
 
 // Runtime lock held.  Returns true when nothing is pending or the handback
@@ -291,6 +342,7 @@ static bool service_ownership_handback_run_locked(const char* origin,
         return false;
     }
     if (writeAttemptedOut) *writeAttemptedOut = true;
+    g_app.gpuOffsetRecoverySurfaces |= g_serviceHandbackMarker.graphicsControlSurfaces;
     g_serviceHandbackRunning = true;
     debug_log("ownership handback (%s): returning %s GPU state to the driver"
               " (attempt %u of %u)\n", origin, ownership_handback_scope_name(scope),
@@ -344,6 +396,7 @@ static bool service_ownership_handback_run_locked(const char* origin,
         inFlight.handbackAttempts = 0u;
         if (service_ownership_marker_store(&inFlight)) {
             g_serviceOwnershipMarkerTarget = inFlight.targetGpu;
+            g_serviceOwnershipGraphicsSurfaces = inFlight.graphicsControlSurfaces;
             InterlockedExchange(&g_serviceOwnershipMarkerCommitted, 1);
         }
     }

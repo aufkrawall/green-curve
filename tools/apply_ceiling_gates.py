@@ -331,7 +331,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
 
     require_text(rollback_h, "reset_core_clock_controls(vf_curve_global_gpu_offset_supported() &&",
                  "rollback retains backend-aware reset sequencing")
-    require_text(rollback_h, "!g_app.gpuOffsetOwnedSurface && !g_app.gpuOffsetUncertainSurface, true,",
+    require_text(rollback_h, "!g_app.gpuOffsetOwnedSurface && !g_app.gpuOffsetUncertainSurface && !g_app.gpuOffsetRecoverySurfaces, true,",
                  "named scalar state requires its own verified reset even on VF-global backends")
     require_text(rollback_h, "return nvapi_reset_graphics_scalar_controls();",
                  "rollback repairs the selected graphics scalar before resetting the curve")
@@ -920,9 +920,38 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # the service still starts, and only a crash in the right window shows it.
     handback_cpp = _p(ctx, "main_service_ownership_handback.cpp")
     apply_runtime_cpp = _p(ctx, "main_service_apply_runtime.cpp")
+    named_graphics_h = _p(ctx, "gpu_backend_graphics_offset.h")
+    require_order_in_operation(
+        named_graphics_h, "static bool nvapi_write_named_gpu_offset(",
+        "!nvapi_prepare_named_gpu_offset(surface)", "nvml_exact_clock_write(",
+        "named graphics controls prepare durable recovery before submission")
+    require_text(handback_cpp, "service_ownership_marker_decode(bytes, read, out)",
+                 "ownership recovery decodes the frozen and current marker layouts")
+    require_text(handback_cpp, "marker.graphicsControlSurfaces = g_app.gpuOffsetRecoverySurfaces;",
+                 "a new pre-write marker retains adopted named-control coverage")
+    require_order_in_operation(
+        handback_cpp, "static bool service_ownership_marker_ensure_before_write(",
+        "!service_ownership_marker_store(&marker)",
+        "if (namedResetTakeover) service_ownership_handback_finish_locked();",
+        "explicit Reset persists adopted named controls before retiring pending authority")
+    require_order_in_operation(
+        apply_runtime_cpp, "static bool service_reset_all(",
+        "!service_ownership_handback_superseded_by_reset_locked()",
+        "!service_invalidate_oc_apply_proof_before_write()",
+        "a mismatched pending graphics target refuses Reset before its write boundary")
+    require_order_in_operation(
+        handback_cpp, "static bool service_ownership_handback_run_locked(",
+        "service_selected_gpu_write_epoch_is_current(gpuEpoch)",
+        "g_app.gpuOffsetRecoverySurfaces |= g_serviceHandbackMarker.graphicsControlSurfaces;",
+        "named recovery evidence binds to the selected GPU before adoption")
+    require_order_in_operation(
+        handback_cpp, "static bool service_ownership_handback_run_locked(",
+        "g_app.gpuOffsetRecoverySurfaces |= g_serviceHandbackMarker.graphicsControlSurfaces;",
+        "resetOk = service_reset_all(",
+        "handback restores named recovery evidence before resetting controls")
     require_text(apply_cpp, "!service_ownership_marker_ensure_before_write()) {",
                  "the apply records GPU ownership at its pre-write boundary")
-    require_text(apply_runtime_cpp, "!service_ownership_marker_ensure_before_write()) {",
+    require_text(apply_runtime_cpp, "!service_ownership_marker_ensure_before_write(true)) {",
                  "Reset records GPU ownership at its pre-write boundary")
     require_text(apply_runtime_cpp,
                  'service_ownership_marker_clear("reset to stock succeeded");',

@@ -7,7 +7,8 @@
 > a persisted per-boot crash-loop guard. The reset-to-stock rule below is
 > genuinely shared code.
 
-Last verified: 2026-10-22 (driver-recovery flow extracted and sequence-tested,
+Last verified: 2026-11-13 (named graphics-control recovery, software fixtures);
+2026-10-22 (driver-recovery flow extracted and sequence-tested,
 wiring gates mutation-checked); 2026-10-22 (live: two NVIDIA installer runs with a mature proof
 restored the profile through the VEH/controlled-restart path, see invariant 9);
 2026-10-22 (snapshot retirement identity, native file fixtures);
@@ -74,6 +75,12 @@ instance in the same boot provably owned.** Pure decision in
   written durably at the pre-write boundary beside the proof invalidation
   (apply both paths, Reset) and removed only by a successful reset to stock.
   Fail closed: a write whose ownership cannot be recorded is refused.
+- **Named graphics controls (2026-11-13):** version 2 also records control-surface
+  coverage before a precise named write or owned no-op. Failed preparation
+  refuses the setter. Same-boot handback restores this coverage only after GPU
+  selection and epoch validation, then resets those exact controls. The union
+  is conservative recovery evidence, not permission to replay settings. See
+  [persistence-schema.md](persistence-schema.md#windows-graphics-control-recovery-marker-2026-11-13).
 - **Graceful stop returns unreturned writes (2026-09-23 release review):** the
   stop used to reset only when intent was active, so a process whose failed
   Apply disabled the intent (`service_disable_automatic_restore`) or whose

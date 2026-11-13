@@ -143,8 +143,49 @@ comparisons cover the appended arrays. Fixed-width aliases moved to
 
 Fixtures 8010-8030 construct historical structs directly, verify checksums and
 widening, distinguish an owned zero, preserve 15000500 Hz and reject mixed
-protocol versions. Actual Linux loader execution and hardware replay remain
-unverified on this Windows host.
+protocol versions. Actual Linux loader coverage of these new record generations
+and hardware replay remain separate from shared-fixture execution under WSL.
+
+## Windows graphics-control recovery marker (2026-11-13)
+
+Source anchors: `source/ownership_handback_policy.h`,
+`source/graphics_scalar_recovery.h`, `source/main_service_ownership_handback.cpp`,
+`source/gpu_backend_graphics_offset.h`, `tests/memory_recovery_tests.cpp`
+(9033-9059).
+
+The separate Windows ownership marker is version 2, 224 bytes. Its frozen
+version-1 predecessor is 216 bytes and widens fieldwise with zero new control
+coverage; old tail padding cannot become new fields. Size/version, boot
+identity, attempt count, known coverage bits, reserved zero and target binding
+are validated before publishing decoded state. New nonempty coverage requires
+a valid target. Oversized/truncated records refuse through the existing loader.
+
+The shared preparation policy publishes added named graphics-control coverage
+only after the existing atomic, write-through marker store succeeds. Repeated
+coverage needs no further I/O. A failed store blocks the named setter, including
+an otherwise inert ownership claim. Coverage includes owned zero and survives
+service restart independently of the current request or preferred getter.
+The durable union is conservative until a successful full reset; live coverage
+may retire a verified handback earlier. It is not a stored value or replay proof.
+
+Handback restores coverage after selected-GPU epoch validation. An
+explicit pending-handback takeover retains coverage only for the matching
+GPU; a superseding write cannot discard unresolved named controls. A new
+pre-write marker preserves adopted coverage before pending authority retires.
+Failed preparation leaves the handback pending. An Apply cannot bypass
+unowned recovery coverage; a same-control repair remains possible.
+Reset and rollback cannot treat the VF route as scalar-free while named coverage remains;
+they repair each covered control through its own exact API. Unavailable or
+unverified repair retains remaining coverage and prevents ceiling release.
+GPU selection clears only the outgoing live evidence through its existing
+selection lifecycle. Diagnostics use bounded `graphics recovery:` lines.
+
+Fixtures execute the production named setter/reset with a fake durable store,
+verify zero setters on store failure, retain owned zero, restore two controls
+from coverage alone, test failed repair and frozen padding, and check target
+switch evidence retirement. Native GPU behavior remains unverified. Full
+cross-surface Apply cleanup and Linux durable named-control recovery remain
+separate replay-activation requirements.
 
 ## The rule
 

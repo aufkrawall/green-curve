@@ -103,7 +103,8 @@ and precise graphics/absolute-frequency evolution remain pending.
 Fixtures 8040-8060 and the production Windows target/verify fixture cover zero,
 negative offsets, preview/global-offset independence, strict readback, merge,
 restore, unavailable-domain projection and malformed intent. No hardware write
-or native Linux execution is claimed by these host-neutral fixtures.
+is claimed by these host-neutral fixtures. Native Linux shared-fixture execution
+is recorded in [testing.md](testing.md#windows-hosted-native-linux-execution-2026-11-13).
 
 ## Exact power destination controls (2026-11-13)
 
@@ -196,8 +197,8 @@ target adapter and IPC replay remain pending. Captured verification requires
 fresh exact evidence. Exact failures log a bounded summary.
 The production fake-driver and rollback fixtures cover positive/negative half
 steps, ignored writes, no-op detection, range/grid refusal without setters and
-untouched fractional controls. Native Linux and physical GPU replay remain
-unverified.
+untouched fractional controls. Native Linux shared fixtures now execute under
+WSL; physical GPU replay and native ARM64 execution remain unverified.
 
 ## Windows VF preservation across memory writes (2026-11-13)
 
@@ -245,8 +246,8 @@ changes clock-pin controls. Failed memory phases include VF restoration in
 rollback even if the later curve phase never ran. The production helper and
 rollback fixtures cover half steps, precise memory surfaces, topology changes,
 ignored writes, stale preflight controls and unavailable VF. `mem-curve:` logs
-one bounded failure/result summary. Native Linux and hardware execution remain
-unverified on this Windows host.
+one bounded failure/result summary. Native Linux shared fixtures execute under
+WSL; actual driver writes and native ARM64 execution remain unverified.
 
 ### Shared memory units and verification
 
@@ -900,3 +901,10 @@ scalar, VF and ceiling calls, execute both guards, verify current-value binding,
 and drive the real transaction dispatcher through zero-write and guarded
 refusals. Removing the rollback phase filter fails fixture 8979. Authoring replay
 remains gated; these checks do not exercise hardware.
+
+Windows named-control recovery now persists conservative surface coverage before
+submission and retains owned zero; see
+[persistence-schema.md](persistence-schema.md#windows-graphics-control-recovery-marker-2026-11-13).
+This closes process-local recovery evidence loss for those controls. Linux
+durability, cross-surface Apply cleanup and lockless modeled-peak protection
+still gate replay activation.

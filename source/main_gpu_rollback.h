@@ -34,7 +34,7 @@ static ApplyRecoveryResult rollback_to_safe_defaults() {
         return false;
     };
     recovery = reset_core_clock_controls(vf_curve_global_gpu_offset_supported() &&
-        !g_app.gpuOffsetOwnedSurface && !g_app.gpuOffsetUncertainSurface, true,
+        !g_app.gpuOffsetOwnedSurface && !g_app.gpuOffsetUncertainSurface && !g_app.gpuOffsetRecoverySurfaces, true,
         [&]() { return nvapi_reset_graphics_scalar_controls(); },
         [&]() {
             if (!nvapi_read_curve()) return false;

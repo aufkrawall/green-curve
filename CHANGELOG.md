@@ -52,6 +52,7 @@ Curves are checked before Apply, low-voltage points become editable, and dialogs
 ### Fixed
 
 - **Unicode profile banks:** importing preserves existing Unicode text and encoding.
+- **Graphics recovery:** the Windows service remembers affected clock controls across restarts, including explicit zero offsets.
 - **Installer recovery:** leftover temporary files held by shared readers no longer block replacement or rollback.
 - **Fixed clock-floor points:** Apply refuses fixed floor edits and locks, even where displayed; Capture retains observations.
 - **Linux power limits:** out-of-range requests are refused before tuning changes.

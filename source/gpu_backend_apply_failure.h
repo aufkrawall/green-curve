@@ -5,6 +5,7 @@
 
 #include "apply_recovery_text.h"
 #include "desired_graphics_surface.h"
+#include "graphics_scalar_recovery.h"
 
 // An unverified memory or power write is repaired only by a request that owns
 // that domain (or Reset). Any other Apply would succeed while the GPU keeps a
@@ -15,6 +16,16 @@ static bool apply_write_uncertainty_precheck(const DesiredSettings* desired,
     if (g_app.gpuOffsetUncertainSurface && desired_named_graphics_surface(*desired) != g_app.gpuOffsetUncertainSurface) {
         set_message(result, resultSize, "A previous graphics-offset write is still unverified. Run Reset or repair the same graphics control.");
         debug_log("graphics-offset: unrelated Apply refused; uncertain surface=%u\n", (unsigned)g_app.gpuOffsetUncertainSurface);
+        return false;
+    }
+    const gc_u32 unownedGraphics = g_app.gpuOffsetRecoverySurfaces &
+        ~graphics_scalar_recovery_bit(g_app.gpuOffsetOwnedSurface);
+    const gc_u32 repairedGraphics = graphics_scalar_recovery_bit(desired_named_graphics_surface(*desired));
+    if (!graphics_scalar_recovery_mask_valid(g_app.gpuOffsetRecoverySurfaces) ||
+        (unownedGraphics & ~repairedGraphics)) {
+        set_message(result, resultSize, "Graphics clock controls still need recovery. Run Reset before applying unrelated settings.");
+        debug_log("graphics recovery: unrelated Apply refused; unresolved=0x%X repair=0x%X\n",
+            (unsigned)unownedGraphics, (unsigned)repairedGraphics);
         return false;
     }
     const bool power = g_app.powerLimitWriteUncertain && !desired->hasPowerLimit;

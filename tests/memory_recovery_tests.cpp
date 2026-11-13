@@ -6,6 +6,7 @@
 #include "clock_reset_policy.h"
 #include "control_readback_policy.h"
 #include "memory_offset_units.h"
+#include "ownership_handback_policy.h"
 #include <cstdio>
 #include <cstring>
 
@@ -24,6 +25,9 @@ static bool p0SetFails, p0ReadFails, p0BadMetadata, p0ConservativeRange;
 static bool p0ReadFailsAfterSet;
 static bool vfGlobal = true;
 static int graphicsLegacyWrites;
+static gc_u32 durableGraphicsSurfaces;
+static int durableGraphicsStores;
+static bool durableGraphicsStoreFails;
 static struct { void clear() {} } g_applyScalarShiftEvidence;
 static void debug_log(const char*, ...) {}
 static void set_last_apply_phase(const char*) {}
@@ -66,7 +70,14 @@ static void detect_clock_offsets() {
     }
 }
 #include "gpu_backend_memory_offset.h"
+static bool service_ownership_marker_note_graphics_surface_before_write(gc_u32 surface) {
+    return graphics_scalar_recovery_prepare(durableGraphicsSurfaces, surface, [](gc_u32) {
+        ++durableGraphicsStores; return !durableGraphicsStoreFails;
+    });
+}
+#define GREEN_CURVE_SERVICE_BINARY
 #include "gpu_backend_graphics_offset.h"
+#undef GREEN_CURVE_SERVICE_BINARY
 static bool nvapi_set_power_limit(int, bool = false) { return true; }
 static void stop_fan_curve_runtime() {}
 static bool app_is_service_process() { return true; }
@@ -131,9 +142,58 @@ static void initialize(bool canVerifyReset) {
     p0SetFails = p0ReadFails = p0BadMetadata = p0ConservativeRange = false;
     p0ReadFailsAfterSet = false;
     vfGlobal = true; graphicsLegacyWrites = 0;
+    durableGraphicsSurfaces = 0; durableGraphicsStores = 0; durableGraphicsStoreFails = false;
+}
+
+static int run_graphics_recovery_marker_tests() {
+    ServiceBootIdentity boot{1, 2}; GpuAdapterInfo target{}; target.valid = target.pciInfoValid = 1; target.pciBus = 3;
+    ServiceOwnershipMarker marker{}, decoded{};
+    service_ownership_marker_initialize(&marker, boot, &target);
+    marker.graphicsControlSurfaces = GRAPHICS_SCALAR_RECOVERY_ALL;
+    if (!service_ownership_marker_decode(&marker, sizeof(marker), &decoded) ||
+        decoded.graphicsControlSurfaces != GRAPHICS_SCALAR_RECOVERY_ALL || decoded.targetGpu.pciBus != 3) return 9033;
+    ServiceOwnershipMarkerV1 old{};
+    old.magic = SERVICE_OWNERSHIP_MARKER_MAGIC; old.version = 1; old.size = 216; old.handbackAttempts = 1;
+    old.bootIdentity = boot; old.targetGpu = target;
+    if (!service_ownership_marker_decode(&old, sizeof(old), &decoded) || decoded.version != 2 ||
+        decoded.size != 224 || decoded.handbackAttempts != 1 || decoded.graphicsControlSurfaces ||
+        decoded.targetGpu.pciBus != 3 || !service_boot_identity_equal(decoded.bootIdentity, boot)) return 9034;
+    const auto before = decoded;
+    marker.graphicsControlSurfaces = 4;
+    if (service_ownership_marker_decode(&marker, sizeof(marker), &decoded) ||
+        memcmp(&before, &decoded, sizeof(before))) return 9035;
+    marker.graphicsControlSurfaces = 1; marker.targetGpu.valid = 0;
+    if (service_ownership_marker_valid(&marker)) return 9036;
+    marker.targetGpu.valid = 1; marker.reserved = 1;
+    if (service_ownership_marker_valid(&marker)) return 9037;
+    old.version = 2;
+    if (service_ownership_marker_decode(&old, sizeof(old), &decoded) ||
+        service_ownership_marker_decode(&before, sizeof(before) - 1, &decoded)) return 9038;
+    gc_u32 covered = 0; int stores = 0; bool failStore = true;
+    const auto store = [&](gc_u32 mask) { ++stores; return !failStore && mask == (covered | 1u); };
+    if (graphics_scalar_recovery_prepare(covered, CLOCK_OFFSET_SURFACE_P0, store) || covered || stores != 1) return 9039;
+    failStore = false;
+    if (!graphics_scalar_recovery_prepare(covered, CLOCK_OFFSET_SURFACE_P0, store) || covered != 1 || stores != 2 ||
+        !graphics_scalar_recovery_prepare(covered, CLOCK_OFFSET_SURFACE_P0, store) || stores != 2) return 9040;
+    if (graphics_scalar_recovery_prepare(covered, 99, store) || covered != 1 || stores != 2) return 9041;
+    covered = 4;
+    if (graphics_scalar_recovery_prepare(covered, CLOCK_OFFSET_SURFACE_P0, store) || covered != 4 || stores != 2) return 9042;
+    old.version = 1;
+    unsigned char legacy[216]{}; memcpy(legacy, &old, sizeof(old));
+    memset(legacy + 212, 0xff, 4); // Frozen tail padding cannot become new control evidence.
+    if (!service_ownership_marker_decode(legacy, sizeof(legacy), &decoded) || decoded.graphicsControlSurfaces) return 9049;
+    covered = GRAPHICS_SCALAR_RECOVERY_P0;
+    if (graphics_scalar_recovery_adopt(covered, GRAPHICS_SCALAR_RECOVERY_GLOBAL, false) ||
+        covered != GRAPHICS_SCALAR_RECOVERY_P0) return 9050;
+    if (!graphics_scalar_recovery_adopt(covered, GRAPHICS_SCALAR_RECOVERY_GLOBAL, true) ||
+        covered != GRAPHICS_SCALAR_RECOVERY_ALL) return 9051;
+    if (graphics_scalar_recovery_adopt(covered, 4, true) || covered != GRAPHICS_SCALAR_RECOVERY_ALL) return 9052;
+    if (!graphics_scalar_recovery_adopt(covered, 0, false) || covered != GRAPHICS_SCALAR_RECOVERY_ALL) return 9053;
+    return 0;
 }
 
 static int run_precise_graphics_tests() {
+    if (const int failed = run_graphics_recovery_marker_tests()) return failed;
     initialize(false); preciseReadback = true;
     g_nvml_api.getGpcClkVfOffset = g_nvml_api.getMemClkVfOffset;
     g_nvml_api.setGpcClkVfOffset = g_nvml_api.setMemClkVfOffset;
@@ -175,8 +235,9 @@ static int run_precise_graphics_tests() {
         g_app.gpuOffsetOwnedSurface != CLOCK_OFFSET_SURFACE_P0) return 8853;
     g_app.gpuOffsetUncertainSurface = CLOCK_OFFSET_SURFACE_P0;
     if (nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_GLOBAL, false) || p0Writes || writes) return 8854;
+    g_app.gpuOffsetRecoverySurfaces = GRAPHICS_SCALAR_RECOVERY_ALL;
     reset_selected_gpu_write_evidence(&g_app);
-    if (g_app.gpuOffsetOwnedSurface || g_app.gpuOffsetUncertainSurface) return 8855;
+    if (g_app.gpuOffsetOwnedSurface || g_app.gpuOffsetUncertainSurface || g_app.gpuOffsetRecoverySurfaces) return 8855;
     initialize(false); p0ReadFailsAfterSet = true;
     if (nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_P0, false) || p0Writes != 1 ||
         g_app.gpuOffsetUncertainSurface != CLOCK_OFFSET_SURFACE_P0 || g_app.readback.gpuOffset) return 8856;
@@ -202,6 +263,49 @@ static int run_precise_graphics_tests() {
     if (nvapi_set_gpu_offset_precise_checked(100000000, CLOCK_OFFSET_SURFACE_P0, false, &review) ||
         !review.refusedWithoutWrite || p0Writes != 1 || writes ||
         g_app.gpuOffsetOwnedSurface != CLOCK_OFFSET_SURFACE_P0 || g_app.gpuOffsetUncertainSurface) return 8976;
+    initialize(false); preciseReadback = true; durableGraphicsStoreFails = true;
+    review = {};
+    if (nvapi_set_gpu_offset_precise_checked(100000000, CLOCK_OFFSET_SURFACE_P0, false, &review) ||
+        !review.refusedWithoutWrite || p0Writes || writes || durableGraphicsStores != 1 ||
+        durableGraphicsSurfaces || g_app.gpuOffsetRecoverySurfaces || g_app.gpuOffsetUncertainSurface) return 9043;
+    durableGraphicsStoreFails = false;
+    if (!nvapi_set_gpu_offset_precise(0, CLOCK_OFFSET_SURFACE_P0, false) || p0Writes ||
+        g_app.gpuOffsetOwnedSurface != CLOCK_OFFSET_SURFACE_P0 ||
+        g_app.gpuOffsetRecoverySurfaces != GRAPHICS_SCALAR_RECOVERY_P0 ||
+        durableGraphicsSurfaces != GRAPHICS_SCALAR_RECOVERY_P0 || durableGraphicsStores != 2) return 9044;
+    if (!nvapi_reset_graphics_scalar_controls() || p0Writes != 1 || g_app.gpuOffsetOwnedSurface ||
+        g_app.gpuOffsetUncertainSurface || g_app.gpuOffsetRecoverySurfaces) return 9045;
+    initialize(false); preciseReadback = true;
+    // Simulate a fresh process carrying only the decoded durable coverage.
+    g_nvml_api.getGpcClkVfOffset = g_nvml_api.getMemClkVfOffset;
+    g_nvml_api.setGpcClkVfOffset = g_nvml_api.setMemClkVfOffset;
+    p0HardwareMHz = 125; hardwareMHz = -25;
+    durableGraphicsSurfaces = g_app.gpuOffsetRecoverySurfaces = GRAPHICS_SCALAR_RECOVERY_ALL;
+    if (!nvapi_reset_graphics_scalar_controls() || p0Writes != 1 || writes != 1 ||
+        p0HardwareMHz || hardwareMHz || g_app.gpuOffsetRecoverySurfaces || g_app.gpuOffsetOwnedSurface ||
+        g_app.gpuOffsetUncertainSurface || durableGraphicsStores) return 9046;
+    p0HardwareMHz = 125; hardwareMHz = -25; p0Writes = writes = 0; p0SetFails = true;
+    g_app.gpuOffsetRecoverySurfaces = GRAPHICS_SCALAR_RECOVERY_ALL;
+    if (nvapi_reset_graphics_scalar_controls() || p0Writes != 1 || writes ||
+        g_app.gpuOffsetRecoverySurfaces != GRAPHICS_SCALAR_RECOVERY_ALL) return 9047;
+    p0SetFails = false;
+    if (!nvapi_reset_graphics_scalar_controls() || p0Writes != 2 || writes != 1 ||
+        p0HardwareMHz || hardwareMHz || g_app.gpuOffsetRecoverySurfaces) return 9048;
+    initialize(false);
+    DesiredSettings unrelated{}, sameSurface{};
+    unrelated.hasFan = 1; sameSurface.hasGpuOffset = 1;
+    sameSurface.authoring.graphicsPrecise = 1; sameSurface.authoring.graphicsSurface = DESIRED_GRAPHICS_P0;
+    g_app.gpuOffsetRecoverySurfaces = GRAPHICS_SCALAR_RECOVERY_P0;
+    if (apply_write_uncertainty_precheck(&unrelated, why, sizeof(why)) || p0Writes || writes) return 9054;
+    if (!apply_write_uncertainty_precheck(&sameSurface, why, sizeof(why))) return 9055;
+    g_app.gpuOffsetRecoverySurfaces = GRAPHICS_SCALAR_RECOVERY_ALL;
+    if (apply_write_uncertainty_precheck(&sameSurface, why, sizeof(why))) return 9056;
+    g_app.gpuOffsetOwnedSurface = CLOCK_OFFSET_SURFACE_GLOBAL;
+    if (!apply_write_uncertainty_precheck(&sameSurface, why, sizeof(why))) return 9057;
+    g_app.gpuOffsetOwnedSurface = CLOCK_OFFSET_SURFACE_P0;
+    if (apply_write_uncertainty_precheck(&sameSurface, why, sizeof(why))) return 9058;
+    g_app.gpuOffsetRecoverySurfaces = 4;
+    if (apply_write_uncertainty_precheck(&sameSurface, why, sizeof(why)) || p0Writes || writes) return 9059;
     return 0;
 }
 
@@ -422,5 +526,9 @@ int run_memory_recovery_tests() {
     return result;
 }
 #ifdef GC_MEMORY_RECOVERY_FIXTURE_MAIN
-int main() { return run_memory_recovery_tests(); }
+int main() {
+    const int result = run_memory_recovery_tests();
+    if (!result) std::fprintf(stdout, "graphics recovery: marker migration, durable coverage and exact reset regression passed\n");
+    return result;
+}
 #endif

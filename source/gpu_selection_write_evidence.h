@@ -16,6 +16,7 @@ static inline void reset_selected_gpu_write_evidence(AppData* app) {
     invalidate_scalar_readbacks(&app->readback);
     app->memOffsetWriteUncertain = false;
     app->gpuOffsetOwnedSurface = app->gpuOffsetUncertainSurface = 0;
+    app->gpuOffsetRecoverySurfaces = 0;
     app->powerLimitPct = POWER_LIMIT_DEFAULT_PCT;
     app->memOffsetSurface = CLOCK_OFFSET_SURFACE_UNSPECIFIED;
     app->powerLimitDefaultmW = 0;

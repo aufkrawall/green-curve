@@ -560,6 +560,7 @@ struct AppData {
     bool memOffsetWriteUncertain;
     gc_u32 gpuOffsetOwnedSurface;
     gc_u32 gpuOffsetUncertainSurface;
+    gc_u32 gpuOffsetRecoverySurfaces;
     int gpuClockOffsetMinMHz;
     int gpuClockOffsetMaxMHz;
     int memClockOffsetMinMHz;

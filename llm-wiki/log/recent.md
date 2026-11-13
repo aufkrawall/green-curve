@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Durable Windows named graphics-control recovery
+
+- The ownership marker freezes its 216-byte predecessor and adds validated
+  control coverage in version 2 (224 bytes). New named control coverage is
+  persisted before submission; a failed store refuses without a scalar setter.
+- Owned zero retains its control identity. Reset/rollback repair all outstanding
+  named controls, and a same-boot handback restores coverage after target/epoch
+  checks. Cases 9033-9059 cover migration, padding, failed preparation, zero,
+  restarted coverage, target-bound takeover, unrelated refusal and exact repair. See
+  [persistence-schema.md](../persistence-schema.md#windows-graphics-control-recovery-marker-2026-11-13).
+- Native Windows sanitizers and Linux execution passed; ignoring durable
+  preparation failure fails 9043. All-target builds passed and static analysis
+  added no findings. Replay activation still requires the remaining transition
+  and cross-surface recovery work.
+
 ## 2026-11-13: Unicode document-bank preservation
 
 - Document-bank edits and Windows native section inspection share a bounded

@@ -9,11 +9,11 @@
 
 // Ownership marker + once-per-crash handback, defined later in
 // main_service_ownership_handback.cpp (ownership_handback_policy.h).
-static bool service_ownership_marker_ensure_before_write();
+static bool service_ownership_marker_ensure_before_write(bool forReset = false);
 static bool service_ownership_marker_clear(const char* reason);
 static bool service_ownership_handback_before_write_locked(const char* origin,
     char* result, size_t resultSize);
-static void service_ownership_handback_superseded_by_reset_locked();
+static bool service_ownership_handback_superseded_by_reset_locked();
 
 static bool service_desired_has_owned_intent(const DesiredSettings* desired) {
     if (!desired) return false;
@@ -287,13 +287,16 @@ static bool service_reset_all(char* result, size_t resultSize,
         return false;
     }
     // A Reset returns everything a pending ownership handback would.
-    service_ownership_handback_superseded_by_reset_locked();
+    if (!service_ownership_handback_superseded_by_reset_locked()) {
+        set_message(result, resultSize, "Pending graphics recovery belongs to another or unresolved GPU. Nothing was reset.");
+        return false;
+    }
     if (!service_invalidate_oc_apply_proof_before_write()) {
         set_message(result, resultSize,
             "Could not invalidate the previous stability proof; no reset write was attempted");
         return false;
     }
-    if (!service_ownership_marker_ensure_before_write()) {
+    if (!service_ownership_marker_ensure_before_write(true)) {
         set_message(result, resultSize,
             "Could not record GPU ownership before the write; no reset write was attempted");
         return false;
@@ -324,7 +327,7 @@ static bool service_reset_all(char* result, size_t resultSize,
         resetMask[ci] = true;
     }
     ApplyRecoveryResult recovery = reset_core_clock_controls(
-        vf_curve_global_gpu_offset_supported() && !g_app.gpuOffsetOwnedSurface && !g_app.gpuOffsetUncertainSurface, true,
+        vf_curve_global_gpu_offset_supported() && !g_app.gpuOffsetOwnedSurface && !g_app.gpuOffsetUncertainSurface && !g_app.gpuOffsetRecoverySurfaces, true,
         [&]() { return nvapi_reset_graphics_scalar_controls(); },
         [&]() { return apply_curve_offsets_verified(resetOffsets, resetMask, 2); });
     if (apply_recovery_permits_release(recovery)) {
