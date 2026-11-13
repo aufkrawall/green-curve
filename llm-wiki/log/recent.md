@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Exact-Hz feasibility planning
+
+- The shared planner uses exact physical baselines and components for precise
+  points, locks and curve bounds. It distinguishes missing exact samples from
+  representable intent, retains first/worst remainders in diagnostics and checks
+  actual VF and named hard-pin grids. Legacy verification/bin rules remain.
+- Backend prechecks and the Windows original-state backstop provide matching
+  exact arrays. Half-kHz controls cannot be classified as stock through a zero
+  kHz projection. Cases 8760-8779 include a before/after grid regression.
+  Writer and transition review still gate runtime replay. See
+  [profile-document.md](../profile-document.md#exact-hz-feasibility-and-baseline-evidence-2026-11-13).
+
 ## 2026-11-13: Exact frequency samples through backend snapshots
 
 - Windows and Linux retain physical-Hz VF frequencies before kHz projection.

@@ -460,9 +460,16 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     plan_h = _p(ctx, "curve_feasibility_plan.h")
     require_text(plan_h, "const bool fromOffset = requested && d->curvePointFromGpuOffset[ci] != 0;",
                  "the planner's pre-tail check reads per-point provenance")
-    require_text(plan_h, "baseKHz[ci] = curve_point_stock_base_khz(in.curve[ci].freq_kHz,\n"
-                 "                                                 in.programmedOffsetsKHz[ci]);",
-                 "the planner's base uses the existing VF-offset derivation")
+    require_text(plan_h, "baseHz[ci] = curve_plan_base_hz(in, ci);",
+                 "the planner derives each physical baseline from its matching sample")
+    precision_h = _p(ctx, "curve_plan_precision.h")
+    require_text(precision_h, "in.frequencyHz[ci] - in.programmedOffsetsHz[ci]",
+                 "the exact baseline subtracts exact programmed offsets")
+    require_text(precision_h,
+                 "((long long)in.curve[ci].freq_kHz - in.programmedOffsetsKHz[ci]) * 1000",
+                 "legacy baselines preserve the established VF-offset derivation")
+    require_text(precision_h, "in.programmedOffsetsHz[i] / 1000 != in.programmedOffsetsKHz[i]",
+                 "exact samples must agree with the corresponding display projection")
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
                  "in.desired = desired;",
                  "the pre-reset plan judges the request itself")
@@ -507,15 +514,15 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "currentAppliedMHz, currentActiveExclude);",
                  "the pre-reset pre-tail check supplies the retained offset route")
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
-                 "route.evidence, route.provenance, true, route.excludeLow, componentKHz);",
+                 "route.evidence, route.provenance, true, route.excludeLow, componentKHz, componentHz);",
                  "the pre-reset plan supplies the VF-table routing")
     # The GUI's "Prepare compatible curve" judges a draft with the very input
     # the service's pre-write check builds, not a parallel approximation.
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
-                 "apply_curve_plan_pre_write_input(desired, route, componentKHz));",
+                 "apply_curve_plan_pre_write_input(desired, route, componentKHz, componentHz));",
                  "the pre-reset plan uses the shared pre-write input builder")
     require_text(_p(ctx, "ui_curve_prepare.cpp"),
-                 "apply_curve_plan_pre_write_input(desired, route, componentKHz);",
+                 "apply_curve_plan_pre_write_input(desired, route, componentKHz, componentHz);",
                  "the GUI's prefix repair plans with the shared pre-write input builder")
     # Accepting a repair changes only the editor draft: the GUI decides before
     # queueing anything, and the prepare code never reaches a writer.

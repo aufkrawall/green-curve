@@ -66,8 +66,9 @@ static bool gui_curve_prepare_intercept_apply(const DesiredSettings* desired) {
     if (!g_app.vfFloorBinding.bound) return false;
     const ApplyCurvePlanPreWriteRoute route = apply_curve_plan_pre_write_route(desired);
     int componentKHz[VF_NUM_POINTS] = {};
+    gc_i64 componentHz[VF_NUM_POINTS] = {};
     const CurvePlanInput input =
-        apply_curve_plan_pre_write_input(desired, route, componentKHz);
+        apply_curve_plan_pre_write_input(desired, route, componentKHz, componentHz);
     const CurvePlanResult plan = curve_plan_evaluate(input);
     curve_plan_log(plan, "gui-draft", gui_curve_prepare_log_line);
     if (plan.disposition != CURVE_PLAN_REFUSED) return false;

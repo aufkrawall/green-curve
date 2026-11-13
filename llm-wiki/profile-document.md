@@ -556,3 +556,37 @@ and Linux freshness reset invalidate them too. Cases 8740-8747 and 8759 exercise
 raw bounds, missing outputs, fractional-Hz refusal, foreign entries and failed
 reads; the settled-reader fixture verifies array pairing and final-failure
 invalidation. Exact authoring remains gated pending complete Apply integration.
+
+## Exact-Hz feasibility and baseline evidence (2026-11-13)
+
+Source anchors: `source/curve_feasibility_plan.h`, `source/curve_plan_precision.h`,
+`source/desired_curve_intent.h`, `source/curve_feasibility_message.h`,
+`source/gpu_backend_apply_lock_pretail.h`, `source/linux_backend_curve_plan.h`,
+`tests/curve_plan_precision_cases.h` (8760-8779).
+
+The shared planner performs point, prefix, anchor and tail arithmetic in Hz.
+Precise absolute/lock intent requires matching exact status/control arrays;
+missing arrays, inconsistent legacy projections or an unknown hard-pin grid
+produce UNAVAILABLE rather than a representability claim. Backend prechecks
+supply the actual VF grid; Windows backstops retain the exact original arrays
+through reset and scalar readbacks. Named hard-pin targets use the documented
+integer-MHz NVML surface. Projection components preserve exact graphics intent
+and identity-based exclusions independently of display MHz.
+
+Captured and projected controls remain offset authority, including zero. The
+checked exact-baseline adapter preserves output on failure and rejects values
+outside the physical signed-control envelope. Absolute intent uses the exact
+sampled base. Range excesses keep the existing nearest-bin proof rule, and
+legacy prefix/tail verification keeps its established display-bin semantics;
+precise authority does not acquire a new display-rounding tolerance. First and
+worst issues retain exact target/base/adjustment/limit values, with bounded
+numeric diagnostics and explicit grid-conversion refusals.
+
+Pre-write baseline classification inspects exact programmed offsets when
+available. A half-kHz nonzero control cannot become stock evidence because its
+legacy projection is zero. The focused fixture failed at 8760 before planner
+integration; it covers exact remainder grids, absent/mismatched samples,
+conditional range evidence, zero-preview projections, exact prefix ordering,
+hard-pin grids and checked-output failures. Existing curve-plan cases still
+pass. Runtime authoring/replay remains gated pending the complete writer and
+transition-protection integration; CLI preview does not yet claim feasibility.

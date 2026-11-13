@@ -42,7 +42,7 @@ Curves are checked before Apply, low-voltage points become editable, and dialogs
 
 ### Improved
 
-- **Curve checks before Apply:** proven conflicts are refused before tuning changes, with voltage, clock and range details.
+- **Curve checks before Apply:** proven conflicts are refused before tuning changes, with exact frequency, voltage and range details.
 - **Saving over another tool's curve:** Save identifies a curve that Green Curve does not own and the slot omits.
 - **Linux profile switching:** leftover curve points are cleared first; flatten and lock results are verified after Apply.
 - **Linux memory clocks:** curve-only changes preserve memory tuning; failed baseline preparation restores the prior curve.

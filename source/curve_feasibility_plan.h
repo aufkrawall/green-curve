@@ -116,7 +116,8 @@ struct CurvePlanIssue {
     unsigned int targetMHz;     // the point's effective target / plateau
     long long baseKHz;          // baseline the check used (0 when none)
     long long adjustmentKHz;    // required point offset (anchor/explicit)
-    long long adjustmentHz;     // exact captured offset, including sub-kHz remainder
+    long long adjustmentHz;     // exact physical adjustment, including sub-kHz remainder
+    long long targetHz, baseHz, limitHz, worstHz;
     long long limitKHz;         // range bound crossed, or plateau kHz
     int worstCi;                // worst offending point (== ci when one)
     unsigned int worstVoltUv;
@@ -144,6 +145,7 @@ struct CurvePlanResult {
     // Lowest plateau the uniform-minimum tail can reach: max over the tail of
     // base + range min, 0 when not computed.
     long long tailLowerBoundKHz;
+    long long lockHz, anchorOnlyMaxHz, tailLowerBoundHz;
 };
 
 struct CurvePlanInput {
@@ -175,7 +177,15 @@ struct CurvePlanInput {
     // against the exclude-low rule; null means zero everywhere.
     const int* gpuComponentKHz;
     int offsetGridHz; // 0 = the legacy physical-kHz interface
+    // Matching exact arrays for this observation, or both null. Never rebuild
+    // fractional baselines from display caches for precise absolute authority.
+    const long long* frequencyHz;
+    const long long* programmedOffsetsHz;
+    const long long* gpuComponentHz;
+    int lockGridHz; // named hard-pin target grid; 0 means unknown
 };
+
+#include "curve_plan_precision.h"
 
 static inline const char* curve_plan_disposition_name(CurvePlanDisposition d) {
     switch (d) {
@@ -232,12 +242,12 @@ static inline const char* curve_plan_range_source_name(CurvePlanRangeSource s) {
 // composition with the VF readback is not modelled here.
 static inline CurvePlanEvidence curve_plan_classify_pre_write_evidence(
     const VFCurvePoint* curve, const int* programmedOffsetsKHz,
-    const VfFloorTopology& floor, bool scalarKnownZero) {
+    const VfFloorTopology& floor, bool scalarKnownZero, const long long* programmedOffsetsHz = nullptr) {
     if (!curve || !programmedOffsetsKHz || !floor.valid)
         return CURVE_PLAN_EVIDENCE_UNAVAILABLE;
     if (!scalarKnownZero) return CURVE_PLAN_EVIDENCE_LIVE_SHAPED_ESTIMATE;
     for (int ci = 0; ci < floor.graphicsEnd && ci < VF_NUM_POINTS; ++ci) {
-        if (curve[ci].freq_kHz != 0 && programmedOffsetsKHz[ci] != 0)
+        if (curve[ci].freq_kHz != 0 && (programmedOffsetsHz ? programmedOffsetsHz[ci] != 0 : programmedOffsetsKHz[ci] != 0))
             return CURVE_PLAN_EVIDENCE_LIVE_SHAPED_ESTIMATE;
     }
     return CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE;
@@ -251,18 +261,7 @@ static inline CurvePlanEvidence curve_plan_classify_pre_write_evidence(
 static inline long long curve_plan_quant_step_khz(const long long* baseKHz,
                                                   const VFCurvePoint* curve, int ci,
                                                   int end) {
-    long long best = 0;
-    for (int dir = -1; dir <= 1; dir += 2) {
-        for (int j = ci + dir; j >= 0 && j < end; j += dir) {
-            if (curve[j].freq_kHz == 0) continue;
-            long long delta = baseKHz[j] - baseKHz[ci];
-            if (delta < 0) delta = -delta;
-            if (delta == 0) continue;
-            if (best == 0 || delta < best) best = delta;
-            break;
-        }
-    }
-    return best > 0 ? best : 1000;
+    return curve_plan_neighbour_step(baseKHz, curve, ci, end, 1000);
 }
 
 static inline bool curve_plan_baseline_proves(CurvePlanEvidence e) {
@@ -291,14 +290,13 @@ struct CurvePlanAggregate {
     bool any;
     bool anyProven;
     CurvePlanIssue issue;
-    long long worstExcessKHz;
+    long long worstExcessHz;
 };
 
-static inline void curve_plan_aggregate_note(CurvePlanAggregate* a,
+static inline void curve_plan_aggregate_note_hz(CurvePlanAggregate* a,
     CurvePlanReason reason, bool proven, int ci, const VFCurvePoint* curve,
-    unsigned int targetMHz, long long baseKHz, long long adjustmentKHz,
-    long long limitKHz, long long excessKHz, CurvePlanPointKind kind,
-    bool inferred, long long adjustmentHz = 0) {
+    long long targetHz, long long baseHz, long long adjustmentHz,
+    long long limitHz, long long excessHz, CurvePlanPointKind kind, bool inferred) {
     const unsigned int volt = curve[ci].volt_uV;
     if (!a->any) {
         a->any = true;
@@ -306,23 +304,27 @@ static inline void curve_plan_aggregate_note(CurvePlanAggregate* a,
         a->issue.reason = reason;
         a->issue.ci = ci;
         a->issue.voltUv = volt;
-        a->issue.targetMHz = targetMHz;
-        a->issue.baseKHz = baseKHz;
-        a->issue.adjustmentKHz = adjustmentKHz;
+        a->issue.targetMHz = curve_plan_display_hz(targetHz);
+        a->issue.targetHz = targetHz;
+        a->issue.baseKHz = baseHz / 1000;
+        a->issue.baseHz = baseHz;
+        a->issue.adjustmentKHz = adjustmentHz / 1000;
         a->issue.adjustmentHz = adjustmentHz;
-        a->issue.limitKHz = limitKHz;
+        a->issue.limitKHz = limitHz / 1000;
+        a->issue.limitHz = limitHz;
         a->issue.kind = kind;
         a->issue.inferredFromProgrammed = inferred;
         a->issue.belowVoltageRule = volt / 1000u < (unsigned int)MIN_VISIBLE_VOLT_mV;
-        a->worstExcessKHz = LLONG_MIN;
+        a->worstExcessHz = LLONG_MIN;
     }
     if (proven) a->anyProven = true;
     ++a->issue.affectedCount;
-    if (excessKHz > a->worstExcessKHz) {
-        a->worstExcessKHz = excessKHz;
+    if (excessHz > a->worstExcessHz) {
+        a->worstExcessHz = excessHz;
         a->issue.worstCi = ci;
         a->issue.worstVoltUv = volt;
-        a->issue.worstMHz = targetMHz;
+        a->issue.worstMHz = curve_plan_display_hz(targetHz);
+        a->issue.worstHz = targetHz;
     }
 }
 
@@ -361,6 +363,7 @@ static inline bool curve_plan_check_point_topology(CurvePlanResult* r,
 // lowers exactly the values the planner judges.
 struct CurvePlanPrefixTarget {
     unsigned int targetMHz;
+    long long targetHz;
     CurvePlanPointKind kind;
     bool requested;  // the request owns the point (typed or projected)
     bool proven;     // before the one-bin gate, which applies to all but typed
@@ -371,59 +374,65 @@ static inline CurvePlanPrefixTarget curve_plan_prefix_point_target(
     const CurvePlanInput& in, long long baseKHz, int ci, bool baselineProves) {
     CurvePlanPrefixTarget t = {};
     const DesiredSettings* d = in.desired;
+    const long long baseHz = in.frequencyHz ? curve_plan_base_hz(in, ci) : baseKHz * 1000;
+    const long long componentHz = curve_plan_component_hz(in, ci);
+    const long long baseTargetHz = baseHz + componentHz;
     const bool requested = desired_curve_point_present(d, ci);
-    if (d->curvePointCaptured[ci]) {
-        t.requested = true;
-        t.kind = CURVE_PLAN_POINT_CAPTURED;
-        const long long hz = baseKHz * 1000 + d->curvePointCapturedOffsetHz[ci];
-        t.targetMHz = hz > 0 ? (unsigned int)((hz + 500000) / 1000000) : 0;
-        t.proven = baselineProves;
-        return t;
-    }
     const bool fromOffset = requested && d->curvePointFromGpuOffset[ci] != 0;
-    const bool offsetIntent = fromOffset &&
-        in.provenanceMode != APPLY_LOCK_PRETAIL_PROVENANCE_STORED;
-    const long long componentKHz = in.gpuComponentKHz ? in.gpuComponentKHz[ci] : 0;
-    const unsigned int baseTargetMHz = curve_plan_display_mhz(baseKHz + componentKHz);
+    const bool offsetIntent = fromOffset && in.provenanceMode != APPLY_LOCK_PRETAIL_PROVENANCE_STORED;
     t.requested = requested;
-    t.kind = CURVE_PLAN_POINT_ABSENT;
-    if (requested && !fromOffset) {
-        // Typed by the user: exact, needs no baseline.
-        t.targetMHz = d->curvePointMHz[ci];
+    if (d->curvePointCaptured[ci]) {
+        t.kind = CURVE_PLAN_POINT_CAPTURED;
+        t.targetHz = baseHz + d->curvePointCapturedOffsetHz[ci];
+        t.proven = baselineProves;
+    } else if (requested && !fromOffset) {
+        t.targetHz = curve_plan_absolute_hz(d, ci);
         t.kind = CURVE_PLAN_POINT_ABSOLUTE;
         t.proven = true;
     } else if (requested && !offsetIntent) {
-        // STORED route: the stored MHz is judged as the established pre-tail
-        // policy does (separate NVML scalar, composition not yet measured).
-        t.targetMHz = d->curvePointMHz[ci];
+        // The stored projection retains the established separate-scalar rule.
+        t.targetHz = (long long)d->curvePointMHz[ci] * 1000000;
         t.kind = CURVE_PLAN_POINT_PROJECTED;
         t.proven = true;
-        t.inferred = componentKHz == 0;
-    } else if (offsetIntent &&
-               in.provenanceMode == APPLY_LOCK_PRETAIL_PROVENANCE_AGREEMENT) {
-        // Refused only when the stored preview AND base + component agree, as
-        // the established policy does over a shaped base.
-        t.targetMHz = d->curvePointMHz[ci] < baseTargetMHz ? d->curvePointMHz[ci]
-                                                           : baseTargetMHz;
+        t.inferred = componentHz == 0;
+    } else if (offsetIntent && in.provenanceMode == APPLY_LOCK_PRETAIL_PROVENANCE_AGREEMENT) {
+        const long long storedHz = (long long)d->curvePointMHz[ci] * 1000000;
+        t.targetHz = storedHz < baseTargetHz ? storedHz : baseTargetHz;
         t.kind = CURVE_PLAN_POINT_PROJECTED;
         t.proven = true;
-        t.inferred = componentKHz == 0;
-    } else if (offsetIntent || (d->hasGpuOffset && componentKHz != 0)) {
-        t.targetMHz = baseTargetMHz;
+        t.inferred = componentHz == 0;
+    } else if (offsetIntent || (d->hasGpuOffset && componentHz != 0)) {
+        t.targetHz = baseTargetHz;
         t.kind = offsetIntent ? CURVE_PLAN_POINT_PROJECTED : CURVE_PLAN_POINT_ABSENT;
         t.proven = baselineProves;
-        t.inferred = offsetIntent && componentKHz == 0;
+        t.inferred = offsetIntent && componentHz == 0;
     } else if (in.unownedStockMask ? in.unownedStockMask[ci] : in.unownedAtStock) {
-        // Lands on its stock base after the reset.
-        t.targetMHz = curve_plan_display_mhz(baseKHz);
+        t.targetHz = baseHz;
         t.proven = baselineProves;
     } else {
-        // Left at its live value: a direct observation, not a baseline.
-        t.targetMHz = curve_plan_display_mhz(in.curve[ci].freq_kHz);
+        t.targetHz = in.frequencyHz ? in.frequencyHz[ci] : (long long)in.curve[ci].freq_kHz * 1000;
         t.proven = true;
         t.inferred = in.programmedOffsetsKHz[ci] != 0;
     }
+    if (t.targetHz < 0) t.targetHz = 0;
+    t.targetMHz = curve_plan_display_hz(t.targetHz);
     return t;
+}
+
+static inline void curve_plan_grid_issue(CurvePlanResult* r, const CurvePlanInput& in,
+    int ci, long long targetHz, long long adjustmentHz, int gridHz, bool proven) {
+    CurvePlanIssue issue{};
+    issue.reason = CURVE_PLAN_REASON_POINT_GRID;
+    issue.proven = proven;
+    issue.ci = issue.worstCi = ci;
+    issue.voltUv = issue.worstVoltUv = in.curve[ci].volt_uV;
+    issue.targetHz = issue.worstHz = targetHz;
+    issue.targetMHz = issue.worstMHz = curve_plan_display_hz(targetHz);
+    issue.adjustmentHz = adjustmentHz;
+    issue.adjustmentKHz = adjustmentHz / 1000;
+    issue.limitHz = gridHz;
+    issue.affectedCount = 1;
+    curve_plan_add_issue(r, issue);
 }
 
 static inline CurvePlanResult curve_plan_evaluate(const CurvePlanInput& in) {
@@ -433,7 +442,7 @@ static inline CurvePlanResult curve_plan_evaluate(const CurvePlanInput& in) {
     r.lockCi = -1;
     const DesiredSettings* d = in.desired;
     int invalidCi = -1;
-    if (d && !desired_curve_intent_valid(d, &invalidCi)) {
+    if (d && (!desired_curve_intent_valid(d, &invalidCi) || !desired_authoring_valid(d))) {
         CurvePlanIssue issue{};
         issue.reason = CURVE_PLAN_REASON_POINT_INTENT_CONFLICT;
         issue.proven = true;
@@ -444,7 +453,7 @@ static inline CurvePlanResult curve_plan_evaluate(const CurvePlanInput& in) {
         return r;
     }
     if (!in.curve || !in.programmedOffsetsKHz || !d || !in.floor.valid ||
-        in.evidence == CURVE_PLAN_EVIDENCE_UNAVAILABLE) {
+        in.evidence == CURVE_PLAN_EVIDENCE_UNAVAILABLE || !curve_plan_exact_samples_valid(in)) {
         CurvePlanIssue issue = {};
         issue.reason = CURVE_PLAN_REASON_READ_FAILED;
         issue.ci = -1;
@@ -455,12 +464,15 @@ static inline CurvePlanResult curve_plan_evaluate(const CurvePlanInput& in) {
     }
     const bool baselineProves = curve_plan_baseline_proves(in.evidence);
     const LockMode lockMode = in.lockMode;
-    const bool hasLock = d->hasLock && d->lockMHz > 0 && d->lockCi >= 0 &&
+    const long long plateauHz = curve_plan_lock_hz(d);
+    const bool precise = curve_plan_uses_precise_values(d);
+    const bool hasLock = d->hasLock && plateauHz > 0 && d->lockCi >= 0 &&
         d->lockCi < VF_NUM_POINTS && lockMode != LOCK_MODE_NONE;
     if (hasLock) {
         r.lockMode = lockMode;
         r.lockCi = d->lockCi;
         r.lockMHz = d->lockMHz;
+        r.lockHz = plateauHz;
         r.lockVoltUv = in.curve[d->lockCi].volt_uV;
     }
     bool lockUsable = hasLock &&
@@ -482,142 +494,117 @@ static inline CurvePlanResult curve_plan_evaluate(const CurvePlanInput& in) {
         }
     }
 
-    long long baseKHz[VF_NUM_POINTS] = {};
-    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
-        if (in.curve[ci].freq_kHz == 0) continue;
-        baseKHz[ci] = curve_point_stock_base_khz(in.curve[ci].freq_kHz,
-                                                 in.programmedOffsetsKHz[ci]);
-    }
-    const unsigned int lockMHz = d->lockMHz;
-    const long long plateauKHz = (long long)lockMHz * 1000LL;
+    long long baseHz[VF_NUM_POINTS] = {};
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
+        if (in.curve[ci].freq_kHz) baseHz[ci] = curve_plan_base_hz(in, ci);
+    const long long minimumHz = (long long)in.range.minKHz * 1000;
+    const long long maximumHz = (long long)in.range.maxKHz * 1000;
     const int end = in.floor.graphicsEnd < VF_NUM_POINTS ? in.floor.graphicsEnd : VF_NUM_POINTS;
-    // A baseline-derived excess proves a refusal only beyond one bin.
-    auto beyondBin = [&](int ci, long long excessKHz) {
-        return excessKHz > curve_plan_quant_step_khz(baseKHz, in.curve, ci, end);
+    const int gridHz = in.offsetGridHz > 0 ? in.offsetGridHz : 1000;
+    auto beyondBin = [&](int ci, long long excessHz) {
+        return excessHz > curve_plan_neighbour_step(baseHz, in.curve, ci, end, 1000000);
     };
 
-    // Explicit points outside the tail: topology, then range.
     CurvePlanAggregate pointRange = {};
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
-        if (!desired_curve_point_present(d, ci)) continue;
-        const int gridHz = in.offsetGridHz > 0 ? in.offsetGridHz : 1000;
-        if (d->curvePointCaptured[ci] && d->curvePointCapturedOffsetHz[ci] % gridHz) {
+        if (!desired_curve_point_has_target(d, ci)) continue;
+        if (lockUsable && ci >= d->lockCi) continue;
+        const long long targetHz = curve_plan_absolute_hz(d, ci);
+        if (!curve_plan_check_point_topology(&r, in, ci, curve_plan_display_hz(targetHz))) continue;
+        long long adjustmentHz = 0;
+        if (!desired_curve_point_offset_from_base_hz(d, ci, baseHz[ci], curve_plan_component_hz(in, ci), &adjustmentHz)) {
             CurvePlanIssue issue{};
-            issue.reason = CURVE_PLAN_REASON_POINT_GRID;
-            issue.proven = true;
-            issue.ci = issue.worstCi = ci;
-            issue.voltUv = issue.worstVoltUv = in.curve[ci].volt_uV;
-            issue.affectedCount = 1;
+            issue.reason = CURVE_PLAN_REASON_ARITHMETIC_OVERFLOW;
+            issue.proven = true; issue.ci = issue.worstCi = ci; issue.affectedCount = 1;
             curve_plan_add_issue(&r, issue);
             continue;
         }
-        if (!d->curvePointCaptured[ci] && d->curvePointMHz[ci] == 0) continue;
-        if (lockUsable && ci >= d->lockCi) continue;  // the lock owns the tail
-        if (!curve_plan_check_point_topology(&r, in, ci, d->curvePointMHz[ci])) continue;
-        if (d->curvePointCaptured[ci]) {
-            const long long hz = d->curvePointCapturedOffsetHz[ci];
-            const long long minHz = (long long)in.range.minKHz * 1000;
-            const long long maxHz = (long long)in.range.maxKHz * 1000;
-            if (hz >= minHz && hz <= maxHz) continue;
-            const long long limitHz = hz < minHz ? minHz : maxHz;
-            const long long excessHz = hz < minHz ? minHz - hz : hz - maxHz;
-            curve_plan_aggregate_note(&pointRange, CURVE_PLAN_REASON_POINT_OUT_OF_RANGE,
-                true, ci, in.curve, 0, baseKHz[ci], hz / 1000, limitHz / 1000,
-                (excessHz + 999) / 1000, CURVE_PLAN_POINT_CAPTURED, false, hz);
+        const bool offsetIntent = d->curvePointCaptured[ci] || d->curvePointFromGpuOffset[ci];
+        if (adjustmentHz % gridHz) {
+            curve_plan_grid_issue(&r, in, ci, targetHz, adjustmentHz, gridHz, offsetIntent || baselineProves);
             continue;
         }
-        long long offset = 0;
-        if (!desired_curve_point_offset_khz(d, ci, baseKHz[ci],
-                in.gpuComponentKHz ? in.gpuComponentKHz[ci] : 0, &offset)) continue;
-        const bool offsetIntent = d->curvePointCaptured[ci] || d->curvePointFromGpuOffset[ci];
-        long long excess = 0;
-        long long limit = 0;
-        if (offset > in.range.maxKHz) { excess = offset - in.range.maxKHz; limit = in.range.maxKHz; }
-        else if (offset < in.range.minKHz) { excess = in.range.minKHz - offset; limit = in.range.minKHz; }
+        long long excessHz = 0, limitHz = 0;
+        if (adjustmentHz > maximumHz) { excessHz = adjustmentHz - maximumHz; limitHz = maximumHz; }
+        else if (adjustmentHz < minimumHz) { excessHz = minimumHz - adjustmentHz; limitHz = minimumHz; }
         else continue;
-        // A projected offset is the request's own number; an absolute one is
-        // only as good as the baseline it was subtracted from.
-        const bool proven = offsetIntent || (baselineProves && beyondBin(ci, excess));
-        curve_plan_aggregate_note(&pointRange, CURVE_PLAN_REASON_POINT_OUT_OF_RANGE,
-            proven, ci, in.curve, d->curvePointMHz[ci], baseKHz[ci], offset, limit,
-            excess, d->curvePointCaptured[ci] ? CURVE_PLAN_POINT_CAPTURED :
-                offsetIntent ? CURVE_PLAN_POINT_PROJECTED : CURVE_PLAN_POINT_ABSOLUTE,
-            false);
+        const bool proven = offsetIntent || (baselineProves && beyondBin(ci, excessHz));
+        curve_plan_aggregate_note_hz(&pointRange, CURVE_PLAN_REASON_POINT_OUT_OF_RANGE,
+            proven, ci, in.curve, targetHz, baseHz[ci], adjustmentHz, limitHz,
+            excessHz, d->curvePointCaptured[ci] ? CURVE_PLAN_POINT_CAPTURED :
+                offsetIntent ? CURVE_PLAN_POINT_PROJECTED : CURVE_PLAN_POINT_ABSOLUTE, false);
     }
 
     if (lockUsable) {
-        // Prefix: every populated graphics point below the anchor, including
-        // points the editor does not list (contract 11).
         CurvePlanAggregate prefix = {};
         const bool checkPrefix = lockMode != LOCK_MODE_HARD || in.prefixAppliesToHardLock;
         for (int ci = 0; checkPrefix && ci < d->lockCi && ci < in.floor.graphicsEnd; ++ci) {
-            if (in.curve[ci].freq_kHz == 0) continue;
-            const CurvePlanPrefixTarget t =
-                curve_plan_prefix_point_target(in, baseKHz[ci], ci, baselineProves);
-            const unsigned int targetMHz = t.targetMHz;
-            if (targetMHz <= lockMHz) continue;
-            const long long prefixExcessKHz = ((long long)targetMHz - (long long)lockMHz) * 1000LL;
+            if (!in.curve[ci].freq_kHz) continue;
+            const CurvePlanPrefixTarget t = curve_plan_prefix_point_target(in, baseHz[ci] / 1000, ci, baselineProves);
+            // Legacy verification keeps its established display-bin rule;
+            // precise authority never acquires a display-rounding tolerance.
+            const long long targetHz = precise ? t.targetHz : (long long)t.targetMHz * 1000000;
+            if (targetHz <= plateauHz) continue;
+            const long long excessHz = targetHz - plateauHz;
             bool proven = t.proven;
-            if (proven && t.kind != CURVE_PLAN_POINT_ABSOLUTE)
-                proven = beyondBin(ci, prefixExcessKHz);
-            curve_plan_aggregate_note(&prefix, CURVE_PLAN_REASON_PREFIX_ABOVE_PLATEAU,
-                proven, ci, in.curve, targetMHz, baseKHz[ci], 0, plateauKHz,
-                prefixExcessKHz, t.kind, t.inferred);
+            if (proven && t.kind != CURVE_PLAN_POINT_ABSOLUTE) proven = beyondBin(ci, excessHz);
+            curve_plan_aggregate_note_hz(&prefix, CURVE_PLAN_REASON_PREFIX_ABOVE_PLATEAU,
+                proven, ci, in.curve, targetHz, baseHz[ci], 0, plateauHz,
+                excessHz, t.kind, t.inferred);
         }
         curve_plan_aggregate_flush(&r, &prefix);
 
-        // Anchor reach.
         const int a = d->lockCi;
-        const long long anchorAdjust = plateauKHz - baseKHz[a];
-        r.anchorOnlyMaxKHz = baseKHz[a] + in.range.maxKHz;
-        if (anchorAdjust > in.range.maxKHz || anchorAdjust < in.range.minKHz) {
+        const long long adjustmentHz = plateauHz - baseHz[a];
+        r.anchorOnlyMaxHz = baseHz[a] + maximumHz;
+        r.anchorOnlyMaxKHz = r.anchorOnlyMaxHz / 1000;
+        if (adjustmentHz % gridHz)
+            curve_plan_grid_issue(&r, in, a, plateauHz, adjustmentHz, gridHz, baselineProves);
+        if (d->authoring.lockPrecise && lockMode == LOCK_MODE_HARD &&
+            in.lockGridHz > 0 && plateauHz % in.lockGridHz)
+            curve_plan_grid_issue(&r, in, a, plateauHz, plateauHz, in.lockGridHz, true);
+        if (adjustmentHz > maximumHz || adjustmentHz < minimumHz) {
             CurvePlanIssue issue = {};
-            const bool above = anchorAdjust > in.range.maxKHz;
-            issue.reason = above ? CURVE_PLAN_REASON_ANCHOR_ABOVE_RANGE
-                                 : CURVE_PLAN_REASON_ANCHOR_BELOW_RANGE;
-            const long long anchorExcess = above ? anchorAdjust - in.range.maxKHz
-                                                 : in.range.minKHz - anchorAdjust;
-            issue.proven = baselineProves && beyondBin(a, anchorExcess);
-            issue.ci = a;
-            issue.worstCi = a;
-            issue.voltUv = r.lockVoltUv;
-            issue.worstVoltUv = r.lockVoltUv;
-            issue.targetMHz = lockMHz;
-            issue.worstMHz = lockMHz;
-            issue.baseKHz = baseKHz[a];
-            issue.adjustmentKHz = anchorAdjust;
-            issue.limitKHz = above ? in.range.maxKHz : in.range.minKHz;
+            const bool above = adjustmentHz > maximumHz;
+            issue.reason = above ? CURVE_PLAN_REASON_ANCHOR_ABOVE_RANGE : CURVE_PLAN_REASON_ANCHOR_BELOW_RANGE;
+            const long long excessHz = above ? adjustmentHz - maximumHz : minimumHz - adjustmentHz;
+            issue.proven = baselineProves && beyondBin(a, excessHz);
+            issue.ci = issue.worstCi = a;
+            issue.voltUv = issue.worstVoltUv = r.lockVoltUv;
+            issue.targetMHz = issue.worstMHz = curve_plan_display_hz(plateauHz);
+            issue.targetHz = issue.worstHz = plateauHz;
+            issue.baseKHz = baseHz[a] / 1000; issue.baseHz = baseHz[a];
+            issue.adjustmentKHz = adjustmentHz / 1000; issue.adjustmentHz = adjustmentHz;
+            issue.limitHz = above ? maximumHz : minimumHz; issue.limitKHz = issue.limitHz / 1000;
             issue.affectedCount = 1;
             issue.belowVoltageRule = r.lockVoltUv / 1000u < (unsigned int)MIN_VISIBLE_VOLT_mV;
             curve_plan_add_issue(&r, issue);
         }
 
-        // Tail reach: the WHOLE populated tail, not the first mismatch.
         CurvePlanAggregate tail = {};
         for (int ci = a + 1; ci < in.floor.graphicsEnd && ci < VF_NUM_POINTS; ++ci) {
-            if (in.curve[ci].freq_kHz == 0) continue;
-            if (in.tailStrategy == CURVE_PLAN_TAIL_UNIFORM_MIN_OFFSET &&
-                lockMode == LOCK_MODE_FLATTEN) {
-                const long long lowest = baseKHz[ci] + in.range.minKHz;
-                if (lowest > r.tailLowerBoundKHz) r.tailLowerBoundKHz = lowest;
-                const unsigned int lowestMHz = curve_plan_display_mhz(lowest);
-                if (lowestMHz <= lockMHz) continue;
-                const long long tailExcess =
-                    ((long long)lowestMHz - (long long)lockMHz) * 1000LL;
-                curve_plan_aggregate_note(&tail, CURVE_PLAN_REASON_TAIL_UNREACHABLE,
-                    baselineProves && beyondBin(ci, tailExcess), ci, in.curve,
-                    lowestMHz, baseKHz[ci], in.range.minKHz, in.range.minKHz,
-                    tailExcess, CURVE_PLAN_POINT_ABSENT, false);
+            if (!in.curve[ci].freq_kHz) continue;
+            if (in.tailStrategy == CURVE_PLAN_TAIL_UNIFORM_MIN_OFFSET && lockMode == LOCK_MODE_FLATTEN) {
+                const long long lowestHz = baseHz[ci] + minimumHz;
+                if (lowestHz > r.tailLowerBoundHz) r.tailLowerBoundHz = lowestHz;
+                r.tailLowerBoundKHz = r.tailLowerBoundHz / 1000;
+                const long long comparedHz = precise ? lowestHz : (long long)curve_plan_display_hz(lowestHz) * 1000000;
+                if (comparedHz <= plateauHz) continue;
+                const long long excessHz = comparedHz - plateauHz;
+                curve_plan_aggregate_note_hz(&tail, CURVE_PLAN_REASON_TAIL_UNREACHABLE,
+                    baselineProves && beyondBin(ci, excessHz), ci, in.curve,
+                    lowestHz, baseHz[ci], minimumHz, minimumHz, excessHz, CURVE_PLAN_POINT_ABSENT, false);
             } else if (in.tailStrategy == CURVE_PLAN_TAIL_ABSOLUTE_TARGET) {
-                const long long adjust = plateauKHz - baseKHz[ci];
-                long long excess = 0;
-                long long limit = 0;
-                if (adjust > in.range.maxKHz) { excess = adjust - in.range.maxKHz; limit = in.range.maxKHz; }
-                else if (adjust < in.range.minKHz) { excess = in.range.minKHz - adjust; limit = in.range.minKHz; }
+                const long long targetAdjustmentHz = plateauHz - baseHz[ci];
+                if (targetAdjustmentHz % gridHz)
+                    curve_plan_grid_issue(&r, in, ci, plateauHz, targetAdjustmentHz, gridHz, baselineProves);
+                long long excessHz = 0, limitHz = 0;
+                if (targetAdjustmentHz > maximumHz) { excessHz = targetAdjustmentHz - maximumHz; limitHz = maximumHz; }
+                else if (targetAdjustmentHz < minimumHz) { excessHz = minimumHz - targetAdjustmentHz; limitHz = minimumHz; }
                 else continue;
-                curve_plan_aggregate_note(&tail, CURVE_PLAN_REASON_TAIL_UNREACHABLE,
-                    baselineProves && beyondBin(ci, excess), ci, in.curve, lockMHz,
-                    baseKHz[ci], adjust, limit, excess, CURVE_PLAN_POINT_ABSENT, false);
+                curve_plan_aggregate_note_hz(&tail, CURVE_PLAN_REASON_TAIL_UNREACHABLE,
+                    baselineProves && beyondBin(ci, excessHz), ci, in.curve, plateauHz,
+                    baseHz[ci], targetAdjustmentHz, limitHz, excessHz, CURVE_PLAN_POINT_ABSENT, false);
             }
         }
         curve_plan_aggregate_flush(&r, &tail);

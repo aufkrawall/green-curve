@@ -44,11 +44,17 @@ static LockMode apply_curve_plan_lock_mode(const DesiredSettings* desired) {
 }
 
 static void apply_curve_plan_components(const DesiredSettings* desired,
-                                        int excludeLow, int* componentKHz) {
+    int excludeLow, int* componentKHz, gc_i64* componentHz) {
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         componentKHz[ci] = desired->hasGpuOffset
             ? gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz, excludeLow) * 1000
             : 0;
+        if (componentHz) {
+            const bool excluded = desired->authoring.identityExclusions
+                ? desired->authoring.graphicsExcluded[ci] != 0
+                : gpu_offset_component_mhz_for_point(ci, 1, excludeLow) == 0;
+            componentHz[ci] = !desired->hasGpuOffset || excluded ? 0 : desired_graphics_hz(*desired);
+        }
     }
 }
 
@@ -66,8 +72,8 @@ static bool apply_curve_plan_has_curve_work(const DesiredSettings* desired) {
 static CurvePlanInput apply_curve_plan_input(const DesiredSettings* desired,
     LockMode lockMode, const VFCurvePoint* curve, const int* offsetsKHz,
     CurvePlanEvidence evidence, ApplyLockPretailProvenance provenance,
-    bool unownedAtStock, int excludeLow, int* componentKHz) {
-    apply_curve_plan_components(desired, excludeLow, componentKHz);
+    bool unownedAtStock, int excludeLow, int* componentKHz, gc_i64* componentHz) {
+    apply_curve_plan_components(desired, excludeLow, componentKHz, componentHz);
     CurvePlanInput in = {};
     in.curve = curve;
     in.programmedOffsetsKHz = offsetsKHz;
@@ -82,16 +88,27 @@ static CurvePlanInput apply_curve_plan_input(const DesiredSettings* desired,
     in.desired = desired;
     in.lockMode = lockMode;
     in.gpuComponentKHz = componentKHz;
+    in.gpuComponentHz = componentHz;
+    in.offsetGridHz = vf_graphics_offset_grid_hz(g_app.vfBackend);
+    in.lockGridHz = 1000000; // NVML locked clocks use integer MHz.
+    if (curve == g_app.curve && offsetsKHz == g_app.freqOffsets &&
+        g_app.vfFrequenciesHzValid && g_app.vfOffsetsHzValid) {
+        in.frequencyHz = g_app.curveFrequencyHz;
+        in.programmedOffsetsHz = g_app.freqOffsetsHz;
+    }
     return in;
 }
 
 static CurvePlanResult apply_curve_plan_run(const DesiredSettings* desired,
     LockMode lockMode, const VFCurvePoint* curve, const int* offsetsKHz,
     CurvePlanEvidence evidence, ApplyLockPretailProvenance provenance,
-    bool unownedAtStock, int excludeLow, const char* phase) {
+    bool unownedAtStock, int excludeLow, const char* phase,
+    const gc_i64* frequencyHz, const gc_i64* offsetsHz) {
     int componentKHz[VF_NUM_POINTS] = {};
-    const CurvePlanInput in = apply_curve_plan_input(desired, lockMode, curve,
-        offsetsKHz, evidence, provenance, unownedAtStock, excludeLow, componentKHz);
+    gc_i64 componentHz[VF_NUM_POINTS] = {};
+    CurvePlanInput in = apply_curve_plan_input(desired, lockMode, curve,
+        offsetsKHz, evidence, provenance, unownedAtStock, excludeLow, componentKHz, componentHz);
+    in.frequencyHz = frequencyHz; in.programmedOffsetsHz = offsetsHz;
     CurvePlanResult plan = curve_plan_evaluate(in);
     curve_plan_log(plan, phase, apply_curve_plan_log_line);
     return plan;
@@ -176,17 +193,17 @@ static ApplyCurvePlanPreWriteRoute apply_curve_plan_pre_write_route(
     // is an estimate whose baseline-derived failures need the reset first.
     route.evidence = curve_plan_classify_pre_write_evidence(
         g_app.curve, g_app.freqOffsets, g_app.vfFloorBinding.floor,
-        g_app.gpuClockOffsetkHz == 0);
+        g_app.gpuClockOffsetkHz == 0, g_app.vfOffsetsHzValid ? g_app.freqOffsetsHz : nullptr);
     return route;
 }
 
 // The planner input a reset-first request gets before any write, over the
 // curve in g_app.  `componentKHz` is caller storage (see apply_curve_plan_input).
 static CurvePlanInput apply_curve_plan_pre_write_input(const DesiredSettings* desired,
-    const ApplyCurvePlanPreWriteRoute& route, int* componentKHz) {
+    const ApplyCurvePlanPreWriteRoute& route, int* componentKHz, gc_i64* componentHz) {
     return apply_curve_plan_input(desired,
         apply_curve_plan_lock_mode(desired), g_app.curve, g_app.freqOffsets,
-        route.evidence, route.provenance, true, route.excludeLow, componentKHz);
+        route.evidence, route.provenance, true, route.excludeLow, componentKHz, componentHz);
 }
 
 // The pre-write half, for requests that reset to stock first.  Runs BEFORE the
@@ -213,8 +230,9 @@ static bool apply_curve_plan_precheck_before_writes(const DesiredSettings* desir
     }
     const ApplyCurvePlanPreWriteRoute route = apply_curve_plan_pre_write_route(desired);
     int componentKHz[VF_NUM_POINTS] = {};
+    gc_i64 componentHz[VF_NUM_POINTS] = {};
     const CurvePlanResult plan = curve_plan_evaluate(
-        apply_curve_plan_pre_write_input(desired, route, componentKHz));
+        apply_curve_plan_pre_write_input(desired, route, componentKHz, componentHz));
     curve_plan_log(plan, "pre-write", apply_curve_plan_log_line);
     if (plan.disposition != CURVE_PLAN_REFUSED) return true;
     curve_plan_format_message(plan, true, result, resultSize);
@@ -235,7 +253,7 @@ static CurvePlanResult apply_curve_plan_backstop(const DesiredSettings* resolved
     LockMode lockMode, const bool* originalCurvePopulated,
     const int* originalCurveFreqkHz, const int* originalCurveOffsets,
     const unsigned int* originalCurveVoltUv, ApplyLockPretailProvenance provenance,
-    int excludeLow) {
+    int excludeLow, const gc_i64* originalFrequencyHz, const gc_i64* originalOffsetsHz) {
     VFCurvePoint curve[VF_NUM_POINTS] = {};
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (!originalCurvePopulated[ci]) continue;
@@ -246,10 +264,10 @@ static CurvePlanResult apply_curve_plan_backstop(const DesiredSettings* resolved
         ? CURVE_PLAN_EVIDENCE_TRANSACTION_BASELINE
         : curve_plan_classify_pre_write_evidence(curve, originalCurveOffsets,
                                                  g_app.vfFloorBinding.floor,
-                                                 g_app.gpuClockOffsetkHz == 0);
+                                                 g_app.gpuClockOffsetkHz == 0, originalOffsetsHz);
     return apply_curve_plan_run(resolved, lockMode, curve, originalCurveOffsets,
         evidence, provenance, resolved->resetOcBeforeApply != 0, excludeLow,
-        resolved->resetOcBeforeApply ? "post-reset" : "pre-first-write");
+        resolved->resetOcBeforeApply ? "post-reset" : "pre-first-write", originalFrequencyHz, originalOffsetsHz);
 }
 
 #endif

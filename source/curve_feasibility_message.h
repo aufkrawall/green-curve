@@ -151,13 +151,17 @@ static inline void curve_plan_describe_issue(const CurvePlanResult& r,
             break;
         case CURVE_PLAN_REASON_POINT_GRID:
             curve_plan_appendf(out, outSize,
-                "Captured VF point %d needs an explicit precision conversion for this write surface.", i.ci);
+                "VF point %d needs an explicit precision conversion for this write surface"
+                " (adjustment %+lld Hz, grid %lld Hz).", i.ci, i.adjustmentHz, i.limitHz);
             break;
         case CURVE_PLAN_REASON_READ_FAILED:
         default:
             curve_plan_appendf(out, outSize, "The VF curve could not be read.");
             break;
     }
+    if (i.targetHz % 1000000 || i.adjustmentHz % 1000 || i.limitHz % 1000)
+        curve_plan_appendf(out, outSize, " Exact values: target %lld Hz, adjustment %+lld Hz, bound/grid %lld Hz.",
+            i.targetHz, i.adjustmentHz, i.limitHz);
 }
 
 // The whole message: the lead issue, a count of the rest, then the outcome.
@@ -190,7 +194,7 @@ typedef void (*CurvePlanLogFn)(const char* line);
 static inline void curve_plan_log(const CurvePlanResult& r, const char* phase,
                                   CurvePlanLogFn log) {
     if (!log) return;
-    char line[384];
+    char line[640];
     snprintf(line, sizeof(line),
         "curve-plan: phase=%s disposition=%s evidence=%s lock=%s ci=%d mhz=%u mv=%u"
         " range=%d..%d kHz source=%s issues=%d omitted=%d anchorOnlyMax=%lld kHz"
@@ -206,11 +210,12 @@ static inline void curve_plan_log(const CurvePlanResult& r, const char* phase,
         snprintf(line, sizeof(line),
             "curve-plan: issue=%s proven=%d first=ci%d/%umV target=%u MHz base=%lld kHz"
             " adjust=%lld kHz limit=%lld kHz worst=ci%d/%umV/%u MHz count=%d kind=%d"
-            " inferred=%d below700=%d\n",
+            " inferred=%d below700=%d exactHz(target/base/adjust/limit/worst)=%lld/%lld/%lld/%lld/%lld\n",
             curve_plan_reason_name(i.reason), i.proven ? 1 : 0, i.ci, i.voltUv / 1000u,
             i.targetMHz, i.baseKHz, i.adjustmentKHz, i.limitKHz, i.worstCi,
             i.worstVoltUv / 1000u, i.worstMHz, i.affectedCount, (int)i.kind,
-            i.inferredFromProgrammed ? 1 : 0, i.belowVoltageRule ? 1 : 0);
+            i.inferredFromProgrammed ? 1 : 0, i.belowVoltageRule ? 1 : 0,
+            i.targetHz, i.baseHz, i.adjustmentHz, i.limitHz, i.worstHz);
         log(line);
     }
 }

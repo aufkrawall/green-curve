@@ -242,6 +242,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     gc_i64 originalCurveOffsetsHz[VF_NUM_POINTS] = {}, exactCurveTargetsHz[VF_NUM_POINTS] = {};
     bool originalCurveExact = g_app.vfOffsetsHzValid;
     int originalCurveFreqkHz[VF_NUM_POINTS] = {};
+    gc_i64 originalCurveFreqHz[VF_NUM_POINTS] = {};
+    bool originalCurveFrequencyExact = g_app.vfFrequenciesHzValid;
     unsigned int originalCurveVoltUv[VF_NUM_POINTS] = {};
     bool originalCurvePopulated[VF_NUM_POINTS] = {};
     int targetCurveOffsets[VF_NUM_POINTS] = {};
@@ -254,6 +256,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         originalCurveOffsetsHz[ci] = g_app.freqOffsetsHz[ci];
         originalCurveExact = g_app.vfOffsetsHzValid;
         originalCurveFreqkHz[ci] = (int)g_app.curve[ci].freq_kHz;
+        originalCurveFreqHz[ci] = g_app.curveFrequencyHz[ci];
+        originalCurveFrequencyExact = g_app.vfFrequenciesHzValid;
         originalCurveVoltUv[ci] = g_app.curve[ci].volt_uV;
         originalCurvePopulated[ci] = g_app.curve[ci].freq_kHz > 0;
         if (originalCurvePopulated[ci] && curve_control_nonzero(originalCurveOffsets[ci], originalCurveExact, originalCurveOffsetsHz[ci])) haveNonZeroCurveOffsets = true;
@@ -281,6 +285,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             originalCurveOffsetsHz[ci] = g_app.freqOffsetsHz[ci];
             originalCurveExact = g_app.vfOffsetsHzValid;
             originalCurveFreqkHz[ci] = (int)g_app.curve[ci].freq_kHz;
+            originalCurveFreqHz[ci] = g_app.curveFrequencyHz[ci];
+            originalCurveFrequencyExact = g_app.vfFrequenciesHzValid;
             originalCurveVoltUv[ci] = g_app.curve[ci].volt_uV;
             originalCurvePopulated[ci] = g_app.curve[ci].freq_kHz > 0;
         }
@@ -434,7 +440,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         const CurvePlanResult plan = apply_curve_plan_backstop(&resolved,
             resolved.lockMode, originalCurvePopulated, originalCurveFreqkHz,
             originalCurveOffsets, originalCurveVoltUv, pretailProvenance,
-            desired->hasGpuOffset ? desiredActiveGpuOffsetExcludeLowCount : 0);
+            desired->hasGpuOffset ? desiredActiveGpuOffsetExcludeLowCount : 0,
+            originalCurveFrequencyExact && originalCurveExact ? originalCurveFreqHz : nullptr,
+            originalCurveFrequencyExact && originalCurveExact ? originalCurveOffsetsHz : nullptr);
         if (plan.disposition == CURVE_PLAN_REFUSED) {
             char refusal[512] = {};
             curve_plan_format_message(plan, !desired->resetOcBeforeApply,
@@ -524,6 +532,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             originalCurveOffsetsHz[ci] = g_app.freqOffsetsHz[ci];
             originalCurveExact = g_app.vfOffsetsHzValid;
             originalCurveFreqkHz[ci] = (int)g_app.curve[ci].freq_kHz;
+            originalCurveFreqHz[ci] = g_app.curveFrequencyHz[ci];
+            originalCurveFrequencyExact = g_app.vfFrequenciesHzValid;
             originalCurveVoltUv[ci] = g_app.curve[ci].volt_uV;
             originalCurvePopulated[ci] = g_app.curve[ci].freq_kHz > 0;
         }
@@ -544,6 +554,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 originalCurveOffsetsHz[ci] = g_app.freqOffsetsHz[ci];
                 originalCurveExact = g_app.vfOffsetsHzValid;
                 originalCurveFreqkHz[ci] = (int)g_app.curve[ci].freq_kHz;
+                originalCurveFreqHz[ci] = g_app.curveFrequencyHz[ci];
+                originalCurveFrequencyExact = g_app.vfFrequenciesHzValid;
                 originalCurveVoltUv[ci] = g_app.curve[ci].volt_uV;
             }
         } else {

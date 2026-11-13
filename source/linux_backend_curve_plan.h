@@ -50,6 +50,7 @@ static CurvePlanResult linux_backend_curve_plan(LinuxGpuState* g,
                floor.firstPopulated, floor.floorEnd, floor.floorRun, floor.floorMHz);
     }
     int componentKHz[VF_NUM_POINTS] = {};
+    gc_i64 componentHz[VF_NUM_POINTS] = {};
     bool stockMask[VF_NUM_POINTS] = {};
     int exclude = planned->gpuOffsetExcludeLowCount;
     if (exclude < 0) exclude = 0;
@@ -58,6 +59,9 @@ static CurvePlanResult linux_backend_curve_plan(LinuxGpuState* g,
         if (g->curve[ci].freq_kHz == 0) continue;
         if (planned->hasGpuOffset && ordinal >= exclude)
             componentKHz[ci] = planned->gpuOffsetMHz * 1000;
+        const bool excluded = planned->authoring.identityExclusions
+            ? planned->authoring.graphicsExcluded[ci] != 0 : ordinal < exclude;
+        if (planned->hasGpuOffset && !excluded) componentHz[ci] = desired_graphics_hz(*planned);
         ++ordinal;
         // A point the request does not own keeps its live offset, unless the
         // transaction releases it with a zero offset (replacement cleanup).
@@ -70,7 +74,7 @@ static CurvePlanResult linux_backend_curve_plan(LinuxGpuState* g,
     in.programmedOffsetsKHz = g->freqOffsets;
     in.floor = g->vfFloor.floor;
     in.evidence = curve_plan_classify_pre_write_evidence(g->curve, g->freqOffsets,
-                                                         in.floor, scalarKnownZero);
+        in.floor, scalarKnownZero, g->vfOffsetsHzValid ? g->freqOffsetsHz : nullptr);
     in.range = linux_curve_plan_range(g);
     in.tailStrategy = planned->lockMode == LOCK_MODE_HARD
         ? CURVE_PLAN_TAIL_ABSOLUTE_TARGET : CURVE_PLAN_TAIL_UNIFORM_MIN_OFFSET;
@@ -84,6 +88,11 @@ static CurvePlanResult linux_backend_curve_plan(LinuxGpuState* g,
     in.desired = planned;
     in.lockMode = planned->lockMode;
     in.gpuComponentKHz = componentKHz;
+    in.gpuComponentHz = componentHz;
+    if (g->vfFrequenciesHzValid && g->vfOffsetsHzValid) {
+        in.frequencyHz = g->curveFrequencyHz; in.programmedOffsetsHz = g->freqOffsetsHz;
+    }
+    in.lockGridHz = 1000000;
     in.offsetGridHz = vf_graphics_offset_grid_hz(g->backend);
     CurvePlanResult plan = curve_plan_evaluate(in);
     curve_plan_log(plan, "pre-write", linux_curve_plan_log_line);

@@ -19,6 +19,7 @@
 
 #include "curve_feasibility_message.h"
 #include "curve_plan_fixtures.h"
+#include "curve_plan_precision_cases.h"
 #include "gui_graph_axis_policy.h"
 #include "main_layout_policy.h"
 #include "profile_save_policy.h"
@@ -471,6 +472,7 @@ int run_ui_cases() {
 }  // namespace
 
 int run_curve_plan_tests() {
+    if (int failure = curve_plan_precision_cases()) return failure;
     if (int failure = run_writable_point_cases()) return failure;
     if (int failure = run_detect_cases()) return failure;
     if (int failure = run_planner_cases()) return failure;
