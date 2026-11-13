@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Exact topology mapping and reviewed grid batches
+
+- Added GPU-free exact-voltage mapping, complete-topology index proof, explicit
+  historical binding review and distinct missing/ambiguous/read-only outcomes.
+- Added checked lower-clock grids and whole-surface batch previews bound to
+  semantic source revision, destination generation/revision, API grid and power
+  default. A supplied complete planner can refuse the whole proposal; source
+  documents and changed observations remain separate from derived intent.
+- Cases 8420-8444 and 8460-8474 cover identity, signed-grid arithmetic, ratios,
+  complete-plan refusal and stale acceptance. Product destination collection and
+  editor bindings remain pending. See
+  [profile-document.md](../profile-document.md#destination-mapping-and-conversion-primitives).
+
 ## 2026-11-13: Flat local document storage and offline CLI transfer
 
 - Added flat per-slot document serialization with exact numbers and encoded

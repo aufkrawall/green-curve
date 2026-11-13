@@ -8,11 +8,10 @@
 // has no field that can only be filled from `g_app` or `LinuxGpuState`, and
 // no function here calls a driver or reads global state.
 //
-// This is a NEW, separate type from the live wire `DesiredSettings`
-// (gpu_core.h). Step 5 migrates the runtime/IPC/disk schema to carry this
-// document's intent; until then nothing produces or consumes a
-// ProfileDocument except its own tests. Keeping the two separate rather
-// than widening DesiredSettings in place is deliberate: this document must
+// This is separate from the live wire `DesiredSettings` (gpu_core.h).
+// Offline file commands and local storage retain the authoring document;
+// destination resolution compiles its intent into the live runtime model.
+// Keeping the two separate is deliberate: this document must
 // stay valid (and comparable, and exportable) for a destination GPU that is
 // absent, unavailable, or does not match it at all, which the live wire
 // type -- always scoped to "the selected GPU, right now" -- cannot express.

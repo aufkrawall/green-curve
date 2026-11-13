@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 #include "profile_codec_fixture.h"
 #include "profile_slot_codec.h"
+#include "profile_mapping.h"
+#include "profile_conversion_grid.h"
 
 static void profile_codec_fuzz_round_trip(const ProfileBank& input) {
     std::string first, second;
@@ -52,5 +54,31 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     stored->memoryOffsetHz = 17;
     if (!profile_slot_decode(std::string_view((const char*)data, size), *stored, found))
         GC_FUZZ_CHECK(stored->memoryOffsetHz == 17, "failed local parse published partial state");
+    ProfileDestinationTopology destination;
+    destination.available = destination.complete = true;
+    destination.gpuGeneration = 1; destination.revision = 1; destination.count = d.topologyCount;
+    for (int i = 0; i < d.topologyCount; ++i)
+        destination.points[i] = {i, d.topology[i].voltageUv, true, in.byte() % 2 != 0};
+    if (in.byte() % 2) destination.points[3].voltageUv = destination.points[1].voltageUv;
+    const auto mapping = profile_map_topology(d, destination, 1);
+    if (mapping.ready()) for (int i = 0; i < d.topologyCount; ++i) {
+        if (d.points[i].kind == PROFILE_POINT_ABSENT &&
+            (!d.lock.present || d.lock.anchorTopologyId != d.topology[i].topologyId)) continue;
+        const int at = profile_destination_find_index(destination, mapping.destinationByTopology[i]);
+        GC_FUZZ_CHECK(at >= 0 && destination.points[at].graphics && destination.points[at].writable &&
+            destination.points[at].voltageUv == d.topology[i].voltageUv, "mapping guessed or accepted a read-only point");
+    }
+    const ProfileConversionGrid grid{true, (long long)in.u32() + 1, (long long)in.i32()};
+    const auto lower = profile_grid_lower(signedValue, grid);
+    if (lower.valid) {
+        const auto difference = (unsigned long long)signedValue - (unsigned long long)lower.lower;
+        GC_FUZZ_CHECK(lower.lower <= signedValue && difference == lower.error &&
+            lower.error < (unsigned long long)grid.step && lower.exact == !lower.error,
+            "grid conversion raised a clock or reported an invalid error");
+        long long actual = lower.lower % grid.step, origin = grid.origin % grid.step;
+        if (actual < 0) actual += grid.step;
+        if (origin < 0) origin += grid.step;
+        GC_FUZZ_CHECK(actual == origin, "converted value does not belong to the destination grid");
+    }
     return 0;
 }

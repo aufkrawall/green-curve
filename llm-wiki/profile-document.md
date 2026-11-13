@@ -305,9 +305,10 @@ compare semantically equal; moving observations remain excluded. Unit cases
   and per-point observed offsets can survive review/storage independently of
   lock or point authority. Their presence alone never establishes a getter or
   authorizes Apply; pin knowledge defaults to unknown.
-- **Mapping pending.** Destination mapping and complete legacy-format coverage
-  remain pending. The historical decoded-intent adapter and offline file/storage
-  commands never substitute destination data.
+- **Mapping integration pending.** The pure exact-voltage mapper and reviewed
+  conversion primitives exist below. Their GUI/TUI/service binding and complete
+  historical-format coverage remain pending. Offline file/storage commands never
+  substitute destination data.
 
 ## Portable codec
 
@@ -337,5 +338,37 @@ Native regression covers a full five-document bank, arbitrary section/key
 order, UTF-8/CRLF, exact values, observations, maximum input and malformed data.
 The separate fuzz target checks raw parsing, unchanged output on failure,
 structured exact-value round trips and canonical re-encoding on both hosts.
+
+## Destination mapping and conversion primitives
+
+Source anchors: `source/profile_mapping.h`, `source/profile_conversion_grid.h`,
+`source/profile_conversion_batch.h`, `tests/profile_mapping_tests.cpp`
+(8420-8444), `tests/profile_conversion_tests.cpp` (8460-8474),
+`tests/profile_codec_fuzz.h`.
+
+Mapping requires complete destination graphics membership for point/lock work.
+It uses exact microvolt identities, with source indices accepted only after a
+complete topology match proves their meaning. Missing/duplicate voltages,
+read-only writes, repeated destinations, unresolved historical indices and
+unavailable domains are distinct results. Exclusions need identity mapping but
+do not become writes to excluded read-only points. Additional destination points
+still require the complete curve planner; successful mapping is not feasibility
+or write authorization. Default power on an unavailable surface remains a
+candidate inert request, subject to the backend's prior-ownership cleanup check.
+
+Historical-index acceptance creates a separate derived document and binds the
+review to source revision, GPU generation and destination revision. Grid batches
+also bind the exact surface, step/origin and fresh power default, compare current
+semantic source values and re-run a caller-supplied complete planner. Failure
+publishes no partial conversion. Original source documents stay unchanged.
+Negative offsets floor toward a lower resulting clock, including checked signed
+minima; power conversions produce a new exact lower-limit/default ratio. Unknown
+grids remain unresolved and voltage adjustments have no automatic safe direction.
+
+Each batch reports affected count, first/worst physical voltage and maximum
+error. `profile_conversion_summary()` produces one bounded `profile-map:` line
+for preview/accept/reject. Observations and names that change without changing
+semantic values survive acceptance. Product callers and fresh destination
+observation collection remain pending; these helpers perform no I/O or setters.
 
 Last verified: 2026-11-13.
