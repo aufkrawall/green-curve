@@ -223,6 +223,16 @@ readback to its observed interface instead of treating API substitution as proof
 of identical values. An invalid modern read can still use a valid legacy getter
 for ordinary observation; it is labeled as a legacy surface.
 
+Windows and Linux exact writes now share `source/nvml_exact_clock_control.h`.
+The Windows getter retains the chosen surface in internal application state;
+strict memory writes bind that surface and never fall through after a failed
+setter. Modern observation validates version, domain and P0 metadata before
+publishing a readback. Device changes clear the surface. Conservative memory
+range reports remain diagnostic, preserving the existing conditional-write
+contract. Production Windows cases 8200-8205 exercise separate P0/global
+controls, missing setters/getters, malformed metadata and conservative ranges;
+Linux cases 8150-8163 continue through the shared helper.
+
 Signed unit conversion avoids negating the signed minimum and checks scaling
 before multiplication. Power-ratio resolution computes quotient/remainder
 without constructing an overflowing product, so an exactly representable ratio

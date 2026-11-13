@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Shared exact memory control verification
+
+- Windows strict memory writes now bind the API surface observed by their
+  fresh getter. Invalid modern control metadata cannot become a readback,
+  and a failed setter cannot fall through to another control surface.
+- The same exact helper serves Linux recovery. Legacy whole-MHz behavior,
+  conservative memory-range handling and observation fallback remain intact.
+- Production fake-driver cases 8200-8205 cover isolation, failed/missing APIs,
+  malformed metadata and conservative ranges. See
+  [profile-document.md](../profile-document.md). No GPU write performed.
+
 ## 2026-11-13: Exact power planning and backend verification
 
 - Added shared rational-power resolution against fresh destination controls,

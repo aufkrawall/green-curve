@@ -559,6 +559,7 @@ struct AppData {
     int offsetReadPstate;
     bool gpuOffsetRangeKnown;
     bool memOffsetRangeKnown;
+    gc_u32 memOffsetSurface; // exact programmable getter provenance
     bool curveOffsetRangeKnown;
     // Protocol v14 provenance for the scalars above; see
     // control_readback_policy.h.  Those values deliberately keep a last-known

@@ -3,6 +3,7 @@
 // NVML offset controls and verification, included after backend dependencies.
 #ifndef GREEN_CURVE_LINUX_BACKEND_CLOCK_OFFSETS_H
 #define GREEN_CURVE_LINUX_BACKEND_CLOCK_OFFSETS_H
+#include "nvml_exact_clock_control.h"
 
 // NVML units: physical graphics MHz, effective memory MHz (twice display MHz).
 // Shared readback gate: accepts the driver's grid-snapped value (see
@@ -156,45 +157,13 @@ static bool nvml_set_clock_offset(LinuxGpuState* g, unsigned int domain, int off
     gc_u32 exactSurface = CLOCK_OFFSET_SURFACE_UNSPECIFIED) {
     if (!g) return false;
     if (!exactSurface) return nvml_set_clock_offset_legacy(g, domain, offsetMHz);
-    if (domain != NVML_CLOCK_GRAPHICS && domain != NVML_CLOCK_MEM) return false;
-    NvmlApi* a = &g->nvml;
-    const bool modern = exactSurface == CLOCK_OFFSET_SURFACE_P0;
-    if (!modern && exactSurface != CLOCK_OFFSET_SURFACE_GLOBAL) return false;
-    auto legacySet = domain == NVML_CLOCK_MEM ? a->setMemClkVfOffset : a->setGpcClkVfOffset;
-    auto legacyGet = domain == NVML_CLOCK_MEM ? a->getMemClkVfOffset : a->getGpcClkVfOffset;
-    if (modern ? (!a->setClockOffsets || !a->getClockOffsets) : (!legacySet || !legacyGet)) {
-        lb_log("offset: precise control unavailable domain=%u surface=%u\n", domain, (unsigned)exactSurface);
-        return false;
-    }
-    nvmlClockOffset_t info{};
-    info.version = nvmlClockOffset_v1;
-    info.type = domain;
-    info.pstate = nvml_configured_clock_offset_pstate();
-    info.clockOffsetMHz = offsetMHz;
-    const nvmlReturn_t written = modern
-        ? a->setClockOffsets(g->nvmlDevice, &info) : legacySet(g->nvmlDevice, offsetMHz);
-    lb_log("offset: precise write domain=%u surface=%u requested=%d nvml=%d\n",
-        domain, (unsigned)exactSurface, offsetMHz, (int)written);
-    if (written != NVML_SUCCESS) return false;
-    int actual = 0;
-    nvmlReturn_t read;
-    if (modern) {
-        info = {};
-        info.version = nvmlClockOffset_v1;
-        info.type = domain;
-        info.pstate = nvml_configured_clock_offset_pstate();
-        read = a->getClockOffsets(g->nvmlDevice, &info);
-        actual = info.clockOffsetMHz;
-        if (info.version != nvmlClockOffset_v1 || info.type != domain ||
-            info.pstate != nvml_configured_clock_offset_pstate()) {
-            lb_log("offset: precise verify refused control metadata domain=%u version=%u type=%u pstate=%u\n",
-                domain, info.version, info.type, info.pstate);
-            return false;
-        }
-    } else read = legacyGet(g->nvmlDevice, &actual);
-    lb_log("offset: precise verify domain=%u surface=%u requested=%d readback=%d nvml=%d\n",
-        domain, (unsigned)exactSurface, offsetMHz, actual, (int)read);
-    return read == NVML_SUCCESS && actual == offsetMHz;
+    const NvmlExactClockWrite r = nvml_exact_clock_write(g->nvml, g->nvmlDevice,
+        domain, exactSurface, offsetMHz);
+    lb_log("offset: precise domain=%u surface=%u requested=%d attempted=%d write=%d read=%d valid=%d actual=%d verified=%d\n",
+        domain, (unsigned)exactSurface, offsetMHz, r.attempted ? 1 : 0,
+        (int)r.writeStatus, (int)r.after.status, r.after.valid ? 1 : 0,
+        r.after.value, r.verified ? 1 : 0);
+    return r.verified;
 }
 
 #endif

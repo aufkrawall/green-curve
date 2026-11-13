@@ -3,6 +3,7 @@
 #ifndef GREEN_CURVE_GPU_BACKEND_MEMORY_OFFSET_H
 #define GREEN_CURVE_GPU_BACKEND_MEMORY_OFFSET_H
 #include "memory_offset_units.h"
+#include "nvml_exact_clock_control.h"
 
 // Included at the backend's original definition site. Recovery can force a
 // write even when cached stock is the last value from before a failed setter.
@@ -24,6 +25,30 @@ static bool nvapi_set_mem_offset_impl(int offsetkHz, bool forceWrite, bool stric
     }
     if (!forceWrite && !g_app.memOffsetWriteUncertain && g_app.readback.memOffset &&
         g_app.memClockOffsetkHz == offsetkHz) return true;
+    if (strictReadback) {
+        const gc_u32 surface = g_app.memOffsetSurface;
+        const NvmlExactClockRead before = nvml_exact_clock_read(
+            g_nvml_api, g_app.nvmlDevice, NVML_CLOCK_MEM, surface);
+        if (!before.valid || !nvml_exact_clock_surface_available(g_nvml_api, NVML_CLOCK_MEM, surface)) {
+            if (!before.valid) g_app.readback.memOffset = false;
+            debug_log("memory offset: precise surface=%u unavailable; no write\n", (unsigned)surface);
+            return false;
+        }
+        g_app.memOffsetWriteUncertain = true;
+        g_app.readback.memOffset = false;
+        set_last_apply_phase("Memory offset exact NVML write");
+        const NvmlExactClockWrite written = nvml_exact_clock_write(
+            g_nvml_api, g_app.nvmlDevice, NVML_CLOCK_MEM, surface, nvmlValueMHz);
+        if (written.verified) {
+            g_app.memClockOffsetkHz = offsetkHz;
+            g_app.readback.memOffset = true;
+            g_app.memOffsetWriteUncertain = false;
+        }
+        debug_log("memory offset: precise surface=%u target=%d actual=%d write=%d read=%d verified=%d\n",
+            (unsigned)surface, nvmlValueMHz, written.after.value, (int)written.writeStatus,
+            (int)written.after.status, written.verified ? 1 : 0);
+        return written.verified;
+    }
     debug_log("nvapi_set_mem_offset: target_driver_kHz=%d nvml_value_MHz=%d current_driver_kHz=%d force=%d\n",
         offsetkHz, nvmlValueMHz, g_app.memClockOffsetkHz, forceWrite ? 1 : 0);
     bool exact = false;

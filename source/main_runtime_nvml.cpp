@@ -89,7 +89,8 @@ static HMODULE load_trusted_nvml_library() {
 static bool nvml_ensure_ready();
 static bool nvml_read_power_limit();
 
-static bool nvml_get_offset_range(unsigned int domain, int* minMHz, int* maxMHz, int* currentMHz, char* detail, size_t detailSize) {
+static bool nvml_get_offset_range(unsigned int domain, int* minMHz, int* maxMHz, int* currentMHz, char* detail, size_t detailSize, gc_u32* surface = nullptr) {
+    if (surface) *surface = CLOCK_OFFSET_SURFACE_UNSPECIFIED;
     if (!nvml_ensure_ready()) {
         set_message(detail, detailSize, "NVML not ready");
         return false;
@@ -102,7 +103,9 @@ static bool nvml_get_offset_range(unsigned int domain, int* minMHz, int* maxMHz,
         info.type = domain;
         info.pstate = nvml_configured_clock_offset_pstate();
         nvmlReturn_t r = g_nvml_api.getClockOffsets(g_app.nvmlDevice, &info);
-        if (r == NVML_SUCCESS) {
+        if (r == NVML_SUCCESS && info.version == nvmlClockOffset_v1 &&
+            info.type == domain && info.pstate == nvml_configured_clock_offset_pstate()) {
+            if (surface) *surface = CLOCK_OFFSET_SURFACE_P0;
             if (minMHz) *minMHz = info.minClockOffsetMHz;
             if (maxMHz) *maxMHz = info.maxClockOffsetMHz;
             if (currentMHz) *currentMHz = info.clockOffsetMHz;
@@ -127,6 +130,7 @@ static bool nvml_get_offset_range(unsigned int domain, int* minMHz, int* maxMHz,
         // as if it were the active value; modern getClockOffsets above remains
         // the preferred path on current drivers.
         if (r1 == NVML_SUCCESS && r2 == NVML_SUCCESS) {
+            if (surface) *surface = CLOCK_OFFSET_SURFACE_GLOBAL;
             if (minMHz) *minMHz = mn;
             if (maxMHz) *maxMHz = mx;
             if (currentMHz) *currentMHz = cur;
@@ -154,7 +158,8 @@ static bool nvml_read_clock_offsets(char* detail, size_t detailSize) {
         g_app.gpuOffsetRangeKnown = g_app.readback.gpuOffset = false;
     }
 
-    bool memOk = nvml_get_offset_range(NVML_CLOCK_MEM, &mn, &mx, &cur, detail, detailSize);
+    g_app.memOffsetSurface = CLOCK_OFFSET_SURFACE_UNSPECIFIED;
+    bool memOk = nvml_get_offset_range(NVML_CLOCK_MEM, &mn, &mx, &cur, detail, detailSize, &g_app.memOffsetSurface);
     int physicalMemKHz = 0;
     if (memOk && memory_offset_khz_from_effective_mhz(cur, &physicalMemKHz)) {
         g_app.memClockOffsetMinMHz = mem_display_mhz_from_driver_mhz(mn);
@@ -162,6 +167,7 @@ static bool nvml_read_clock_offsets(char* detail, size_t detailSize) {
         g_app.memClockOffsetkHz = physicalMemKHz;
         g_app.memOffsetRangeKnown = g_app.readback.memOffset = true;
     } else {
+        g_app.memOffsetSurface = CLOCK_OFFSET_SURFACE_UNSPECIFIED;
         g_app.memOffsetRangeKnown = g_app.readback.memOffset = false;
         if (memOk) set_message(detail, detailSize, "Memory offset exceeds the physical cache range");
         memOk = false;

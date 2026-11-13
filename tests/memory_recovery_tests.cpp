@@ -18,6 +18,9 @@ static bool verifyReset, setterFails, coreFails;
 static bool pstateReadSucceeds, pstateMemoryPresent, setterLeavesUnchanged;
 static bool preciseReadback;
 static bool setterClaimsMatch;
+static gc_u32 preciseSurface;
+static int p0HardwareMHz, p0Writes;
+static bool p0SetFails, p0ReadFails, p0BadMetadata, p0ConservativeRange;
 static void debug_log(const char*, ...) {}
 static void set_last_apply_phase(const char*) {}
 static void Sleep(unsigned long) {}
@@ -35,8 +38,10 @@ static bool nvml_set_clock_offset_domain(unsigned int, int value, bool* exact, c
 }
 static bool nvml_read_clock_offsets(char*, size_t) {
     if (preciseReadback) {
+        g_app.memOffsetSurface = preciseSurface;
         g_app.readback.memOffset = memory_offset_khz_from_effective_mhz(
-            hardwareMHz, &g_app.memClockOffsetkHz);
+            preciseSurface == CLOCK_OFFSET_SURFACE_P0 ? p0HardwareMHz : hardwareMHz,
+            &g_app.memClockOffsetkHz);
         return g_app.readback.memOffset;
     }
     if (!verifyReset || hardwareMHz != 0) return false;
@@ -89,15 +94,61 @@ static void initialize(bool canVerifyReset) {
     g_app.readback.memOffset = true;
     g_nvml_api = {};
     g_nvml_api.resetGpuLockedClocks = release;
+    g_nvml_api.getMemClkVfOffset = [](nvmlDevice_t, int* out) -> nvmlReturn_t {
+        *out = hardwareMHz;
+        return preciseReadback ? NVML_SUCCESS : NVML_ERROR_NOT_SUPPORTED;
+    };
+    g_nvml_api.setMemClkVfOffset = [](nvmlDevice_t, int value) -> nvmlReturn_t {
+        bool exact = false;
+        return nvml_set_clock_offset_domain(NVML_CLOCK_MEM, value, &exact, nullptr, 0)
+            ? NVML_SUCCESS : NVML_ERROR_NOT_SUPPORTED;
+    };
+    g_nvml_api.getClockOffsets = [](nvmlDevice_t, nvmlClockOffset_t* info) -> nvmlReturn_t {
+        info->clockOffsetMHz = p0HardwareMHz;
+        info->minClockOffsetMHz = -10000; info->maxClockOffsetMHz = 10000;
+        if (p0ConservativeRange) info->minClockOffsetMHz = info->maxClockOffsetMHz = 0;
+        if (p0BadMetadata) info->type = NVML_CLOCK_GRAPHICS;
+        return p0ReadFails ? NVML_ERROR_NOT_SUPPORTED : NVML_SUCCESS;
+    };
+    g_nvml_api.setClockOffsets = [](nvmlDevice_t, nvmlClockOffset_t* info) -> nvmlReturn_t {
+        ++p0Writes;
+        p0HardwareMHz = info->clockOffsetMHz;
+        return p0SetFails ? NVML_ERROR_NOT_SUPPORTED : NVML_SUCCESS;
+    };
     hardwareMHz = writes = releases = 0;
     verifyReset = canVerifyReset;
     setterFails = coreFails = false;
     pstateReadSucceeds = pstateMemoryPresent = setterLeavesUnchanged = false;
     preciseReadback = false;
     setterClaimsMatch = false;
+    preciseSurface = CLOCK_OFFSET_SURFACE_GLOBAL;
+    p0HardwareMHz = p0Writes = 0;
+    p0SetFails = p0ReadFails = p0BadMetadata = p0ConservativeRange = false;
 }
 
 static int run_precise_memory_tests() {
+    initialize(false);
+    preciseReadback = true; preciseSurface = CLOCK_OFFSET_SURFACE_P0;
+    hardwareMHz = 888;
+    if (!nvapi_set_mem_offset_precise(500, false) || p0HardwareMHz != 1 ||
+        p0Writes != 1 || writes || hardwareMHz != 888) return 8200;
+    initialize(false);
+    preciseReadback = true; preciseSurface = CLOCK_OFFSET_SURFACE_P0; p0SetFails = true;
+    if (nvapi_set_mem_offset_precise(500, false) || p0Writes != 1 || writes ||
+        !g_app.memOffsetWriteUncertain || g_app.readback.memOffset) return 8201;
+    initialize(false);
+    preciseReadback = true; preciseSurface = CLOCK_OFFSET_SURFACE_P0; p0ReadFails = true;
+    if (nvapi_set_mem_offset_precise(500, false) || p0Writes || writes) return 8202;
+    initialize(false);
+    preciseReadback = true; preciseSurface = CLOCK_OFFSET_SURFACE_P0; p0BadMetadata = true;
+    if (nvapi_set_mem_offset_precise(500, false) || p0Writes || writes) return 8203;
+    initialize(false);
+    preciseReadback = true; preciseSurface = CLOCK_OFFSET_SURFACE_P0;
+    g_nvml_api.setClockOffsets = nullptr;
+    if (nvapi_set_mem_offset_precise(500, false) || p0Writes || writes) return 8204;
+    initialize(false);
+    preciseReadback = true; preciseSurface = CLOCK_OFFSET_SURFACE_P0; p0ConservativeRange = true;
+    if (!nvapi_set_mem_offset_precise(500, false) || p0Writes != 1 || writes) return 8205;
     initialize(false);
     preciseReadback = true;
     if (!nvapi_set_mem_offset_precise(500, false) || hardwareMHz != 1 ||
