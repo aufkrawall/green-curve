@@ -3,6 +3,7 @@
 #include "main_cli_options.cpp"
 #include "xbar_telemetry.h"
 #include "memory_offset_units.h"
+#include "nvml_clock_observation.h"
 
 static bool nvml_resolve(void** out, const char* name) {
     if (!g_nvml) return false;
@@ -89,83 +90,67 @@ static HMODULE load_trusted_nvml_library() {
 static bool nvml_ensure_ready();
 static bool nvml_read_power_limit();
 
-static bool nvml_get_offset_range(unsigned int domain, int* minMHz, int* maxMHz, int* currentMHz, char* detail, size_t detailSize, gc_u32* surface = nullptr) {
+static bool nvml_get_offset_range(unsigned int domain, int* minMHz, int* maxMHz, int* currentMHz,
+    char* detail, size_t detailSize, gc_u32* surface = nullptr, bool* rangeKnown = nullptr) {
     if (surface) *surface = CLOCK_OFFSET_SURFACE_UNSPECIFIED;
+    if (rangeKnown) *rangeKnown = false;
     if (!nvml_ensure_ready()) {
         set_message(detail, detailSize, "NVML not ready");
         return false;
     }
-
-    bool ok = false;
-    if (g_nvml_api.getClockOffsets) {
-        nvmlClockOffset_t info = {};
-        info.version = nvmlClockOffset_v1;
-        info.type = domain;
-        info.pstate = nvml_configured_clock_offset_pstate();
-        nvmlReturn_t r = g_nvml_api.getClockOffsets(g_app.nvmlDevice, &info);
-        if (r == NVML_SUCCESS && info.version == nvmlClockOffset_v1 &&
-            info.type == domain && info.pstate == nvml_configured_clock_offset_pstate()) {
-            if (surface) *surface = CLOCK_OFFSET_SURFACE_P0;
-            if (minMHz) *minMHz = info.minClockOffsetMHz;
-            if (maxMHz) *maxMHz = info.maxClockOffsetMHz;
-            if (currentMHz) *currentMHz = info.clockOffsetMHz;
-            g_app.offsetReadPstate = (int)info.pstate;
-            ok = true;
-        }
+    const NvmlClockObservation read = nvml_clock_observe(g_nvml_api,
+        g_app.nvmlDevice, domain, rangeKnown == nullptr);
+    if (!read.control.valid || (!rangeKnown && !read.control.rangeValid)) {
+        set_message(detail, detailSize, "Offset control/range unavailable (control=%d range=%d)",
+            (int)read.control.status, (int)read.control.rangeStatus);
+        return false;
     }
-
-    if (!ok) {
-        int mn = 0, mx = 0, cur = 0;
-        nvmlReturn_t r1 = NVML_ERROR_NOT_SUPPORTED;
-        nvmlReturn_t r2 = NVML_ERROR_NOT_SUPPORTED;
-        if (domain == NVML_CLOCK_GRAPHICS) {
-            if (g_nvml_api.getGpcClkMinMaxVfOffset) r1 = g_nvml_api.getGpcClkMinMaxVfOffset(g_app.nvmlDevice, &mn, &mx);
-            if (g_nvml_api.getGpcClkVfOffset) r2 = g_nvml_api.getGpcClkVfOffset(g_app.nvmlDevice, &cur);
-        } else if (domain == NVML_CLOCK_MEM) {
-            if (g_nvml_api.getMemClkMinMaxVfOffset) r1 = g_nvml_api.getMemClkMinMaxVfOffset(g_app.nvmlDevice, &mn, &mx);
-            if (g_nvml_api.getMemClkVfOffset) r2 = g_nvml_api.getMemClkVfOffset(g_app.nvmlDevice, &cur);
-        }
-        // A range without a current value is not a hardware readback. Requiring
-        // both prevents a missing deprecated offset getter from publishing 0
-        // as if it were the active value; modern getClockOffsets above remains
-        // the preferred path on current drivers.
-        if (r1 == NVML_SUCCESS && r2 == NVML_SUCCESS) {
-            if (surface) *surface = CLOCK_OFFSET_SURFACE_GLOBAL;
-            if (minMHz) *minMHz = mn;
-            if (maxMHz) *maxMHz = mx;
-            if (currentMHz) *currentMHz = cur;
-            ok = true;
-        } else {
-            set_message(detail, detailSize, "%s / %s", nvml_err_name(r1), nvml_err_name(r2));
-        }
+    if (surface) *surface = read.surface;
+    if (rangeKnown) *rangeKnown = read.control.rangeValid;
+    if (currentMHz) *currentMHz = read.control.value;
+    if (read.control.rangeValid) {
+        if (minMHz) *minMHz = read.control.minimum;
+        if (maxMHz) *maxMHz = read.control.maximum;
     }
-
-    return ok;
+    if (read.surface == CLOCK_OFFSET_SURFACE_P0)
+        g_app.offsetReadPstate = (int)nvml_configured_clock_offset_pstate();
+    return true;
 }
 
 static bool nvml_read_clock_offsets(char* detail, size_t detailSize) {
     int mn = 0, mx = 0, cur = 0;
-    bool gpuOk = nvml_get_offset_range(NVML_CLOCK_GRAPHICS, &mn, &mx, &cur, detail, detailSize);
+    bool gpuRangeKnown = false;
+    bool gpuOk = nvml_get_offset_range(NVML_CLOCK_GRAPHICS, &mn, &mx, &cur, detail, detailSize, nullptr, &gpuRangeKnown);
+    const long long gpuKHz = (long long)cur * 1000;
+    gpuOk = gpuOk && gpuKHz >= INT_MIN && gpuKHz <= INT_MAX;
     if (gpuOk) {
-        g_app.gpuClockOffsetMinMHz = mn;
-        g_app.gpuClockOffsetMaxMHz = mx;
-        g_app.gpuClockOffsetkHz = cur * 1000;
-        g_app.gpuOffsetRangeKnown = g_app.readback.gpuOffset = true;
-        if (!g_app.curveOffsetRangeKnown) {
-            set_curve_offset_range_khz(mn * 1000, mx * 1000);
+        if (gpuRangeKnown) {
+            g_app.gpuClockOffsetMinMHz = mn;
+            g_app.gpuClockOffsetMaxMHz = mx;
+            if (!g_app.curveOffsetRangeKnown && (long long)mn * 1000 >= INT_MIN &&
+                (long long)mx * 1000 <= INT_MAX)
+                set_curve_offset_range_khz((int)((long long)mn * 1000), (int)((long long)mx * 1000));
         }
+        g_app.gpuClockOffsetkHz = (int)gpuKHz;
+        g_app.gpuOffsetRangeKnown = gpuRangeKnown;
+        g_app.readback.gpuOffset = true;
     } else {
         g_app.gpuOffsetRangeKnown = g_app.readback.gpuOffset = false;
     }
 
     g_app.memOffsetSurface = CLOCK_OFFSET_SURFACE_UNSPECIFIED;
-    bool memOk = nvml_get_offset_range(NVML_CLOCK_MEM, &mn, &mx, &cur, detail, detailSize, &g_app.memOffsetSurface);
+    bool memRangeKnown = false;
+    bool memOk = nvml_get_offset_range(NVML_CLOCK_MEM, &mn, &mx, &cur, detail, detailSize,
+        &g_app.memOffsetSurface, &memRangeKnown);
     int physicalMemKHz = 0;
     if (memOk && memory_offset_khz_from_effective_mhz(cur, &physicalMemKHz)) {
-        g_app.memClockOffsetMinMHz = mem_display_mhz_from_driver_mhz(mn);
-        g_app.memClockOffsetMaxMHz = mem_display_mhz_from_driver_mhz(mx);
+        if (memRangeKnown) {
+            g_app.memClockOffsetMinMHz = mem_display_mhz_from_driver_mhz(mn);
+            g_app.memClockOffsetMaxMHz = mem_display_mhz_from_driver_mhz(mx);
+        }
         g_app.memClockOffsetkHz = physicalMemKHz;
-        g_app.memOffsetRangeKnown = g_app.readback.memOffset = true;
+        g_app.memOffsetRangeKnown = memRangeKnown;
+        g_app.readback.memOffset = true;
     } else {
         g_app.memOffsetSurface = CLOCK_OFFSET_SURFACE_UNSPECIFIED;
         g_app.memOffsetRangeKnown = g_app.readback.memOffset = false;

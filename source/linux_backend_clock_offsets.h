@@ -3,7 +3,7 @@
 // NVML offset controls and verification, included after backend dependencies.
 #ifndef GREEN_CURVE_LINUX_BACKEND_CLOCK_OFFSETS_H
 #define GREEN_CURVE_LINUX_BACKEND_CLOCK_OFFSETS_H
-#include "nvml_exact_clock_control.h"
+#include "nvml_clock_observation.h"
 
 // NVML units: physical graphics MHz, effective memory MHz (twice display MHz).
 // Shared readback gate: accepts the driver's grid-snapped value (see
@@ -38,51 +38,16 @@ struct NvmlClockOffsetReadback {
 // drivers, but are no longer required for capture/rollback availability.
 static NvmlClockOffsetReadback nvml_read_clock_offset(
     LinuxGpuState* g, unsigned int domain) {
-    NvmlClockOffsetReadback readback = {};
+    NvmlClockOffsetReadback readback{};
     if (!g) return readback;
-    NvmlApi* a = &g->nvml;
-    if (a->getClockOffsets) {
-        nvmlClockOffset_t info = {};
-        info.version = nvmlClockOffset_v1;
-        info.type = domain;
-        info.pstate = nvml_configured_clock_offset_pstate();
-        if (a->getClockOffsets(g->nvmlDevice, &info) == NVML_SUCCESS &&
-            info.version == nvmlClockOffset_v1 && info.type == domain &&
-            info.pstate == nvml_configured_clock_offset_pstate()) {
-            readback.offsetValid = true;
-            readback.rangeValid = true;
-            readback.modernApi = true;
-            readback.offsetMHz = info.clockOffsetMHz;
-            readback.minMHz = info.minClockOffsetMHz;
-            readback.maxMHz = info.maxClockOffsetMHz;
-            g->offsetReadPstate = (int)info.pstate;
-            return readback;
-        }
-    }
-
-    nvmlReturn_t rangeResult = NVML_ERROR_NOT_SUPPORTED;
-    nvmlReturn_t offsetResult = NVML_ERROR_NOT_SUPPORTED;
-    if (domain == NVML_CLOCK_GRAPHICS) {
-        if (a->getGpcClkMinMaxVfOffset) {
-            rangeResult = a->getGpcClkMinMaxVfOffset(
-                g->nvmlDevice, &readback.minMHz, &readback.maxMHz);
-        }
-        if (a->getGpcClkVfOffset) {
-            offsetResult = a->getGpcClkVfOffset(
-                g->nvmlDevice, &readback.offsetMHz);
-        }
-    } else if (domain == NVML_CLOCK_MEM) {
-        if (a->getMemClkMinMaxVfOffset) {
-            rangeResult = a->getMemClkMinMaxVfOffset(
-                g->nvmlDevice, &readback.minMHz, &readback.maxMHz);
-        }
-        if (a->getMemClkVfOffset) {
-            offsetResult = a->getMemClkVfOffset(
-                g->nvmlDevice, &readback.offsetMHz);
-        }
-    }
-    readback.rangeValid = rangeResult == NVML_SUCCESS;
-    readback.offsetValid = offsetResult == NVML_SUCCESS;
+    const NvmlClockObservation observed = nvml_clock_observe(g->nvml, g->nvmlDevice, domain);
+    readback.offsetValid = observed.control.valid;
+    readback.rangeValid = observed.control.rangeValid;
+    readback.modernApi = observed.surface == CLOCK_OFFSET_SURFACE_P0 && observed.control.valid;
+    readback.offsetMHz = observed.control.value;
+    readback.minMHz = observed.control.minimum;
+    readback.maxMHz = observed.control.maximum;
+    if (readback.modernApi) g->offsetReadPstate = (int)nvml_configured_clock_offset_pstate();
     return readback;
 }
 

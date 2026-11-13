@@ -5,6 +5,16 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Independent clock-control and range observation
+
+- Windows keeps a valid programmed offset when its range is unavailable,
+  with separate range confidence and checked physical-kHz cache scaling.
+- Shared observation serves both platforms and retains selected API provenance;
+  named exact verification still cannot use an alternate getter. Driver status
+  and semantic range validity remain separate, including malformed ranges.
+- Production reader cases 8265-8271 cover partial and refused observations.
+  See [profile-document.md](../profile-document.md). No hardware write performed.
+
 ## 2026-11-13: Precise scalar runtime and frozen-record evolution
 
 - Appended exact memory Hz/surface and reduced power-ratio authority, with

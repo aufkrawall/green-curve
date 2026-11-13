@@ -236,6 +236,15 @@ contract. Production Windows cases 8200-8205 exercise separate P0/global
 controls, missing setters/getters, malformed metadata and conservative ranges;
 Linux cases 8150-8163 continue through the shared helper.
 
+Clock observation is shared in `source/nvml_clock_observation.h`. The current
+control and its range have independent validity/status, so missing ranges do
+not erase a readable offset. Modern metadata still must name the requested
+control. Range-requiring legacy callers remain explicit; exact post-write
+verification stays on its named API. Windows cache scaling checks the physical
+kHz range before narrowing. Cases 8265-8271 exercise current-only, range-only,
+malformed modern ranges and independently failed getters through production
+observation/reader helpers.
+
 Signed unit conversion avoids negating the signed minimum and checks scaling
 before multiplication. Power-ratio resolution computes quotient/remainder
 without constructing an overflowing product, so an exactly representable ratio

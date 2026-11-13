@@ -13,6 +13,7 @@ struct Driver {
     int p0Writes, globalWrites, p0Reads, globalReads;
     bool snap, failP0Read, failGlobalRead, failP0Set, badMetadata;
     bool layoutValid;
+    bool badRange, globalRangeFails;
 };
 static Driver* driver(nvmlDevice_t device) { return reinterpret_cast<Driver*>(device); }
 static nvmlReturn_t set_p0(nvmlDevice_t device, nvmlClockOffset_t* info) {
@@ -29,6 +30,7 @@ static nvmlReturn_t get_p0(nvmlDevice_t device, nvmlClockOffset_t* info) {
     if (d->failP0Read) return NVML_ERROR_NOT_SUPPORTED;
     info->clockOffsetMHz = d->p0Value;
     info->minClockOffsetMHz = -3000; info->maxClockOffsetMHz = 3000;
+    if (d->badRange) info->minClockOffsetMHz = 4000;
     if (d->badMetadata) info->pstate = 1;
     return NVML_SUCCESS;
 }
@@ -43,6 +45,10 @@ static nvmlReturn_t get_global(nvmlDevice_t device, int* value) {
     ++d->globalReads;
     *value = d->globalValue;
     return d->failGlobalRead ? NVML_ERROR_NOT_SUPPORTED : NVML_SUCCESS;
+}
+static nvmlReturn_t get_global_range(nvmlDevice_t device, int* minimum, int* maximum) {
+    *minimum = -3000; *maximum = 3000;
+    return driver(device)->globalRangeFails ? NVML_ERROR_UNKNOWN : NVML_SUCCESS;
 }
 static void initialize(Driver* d, LinuxGpuState* g) {
     *d = {}; *g = {}; d->layoutValid = true;
@@ -94,5 +100,33 @@ int run_linux_clock_offset_tests() {
         d.p0Writes || d.globalWrites) return 8162;
     if (!nvml_set_clock_offset(&g, NVML_CLOCK_MEM, 0, CLOCK_OFFSET_SURFACE_P0) ||
         d.p0Value || d.p0Writes != 1) return 8163;
+    initialize(&d, &g); d.p0Value = 247;
+    auto read = nvml_clock_observe(g.nvml, g.nvmlDevice, NVML_CLOCK_MEM);
+    if (!read.control.valid || !read.control.rangeValid || read.control.value != 247 ||
+        read.surface != CLOCK_OFFSET_SURFACE_P0 || d.globalReads) return 8265;
+    initialize(&d, &g); d.failP0Read = true; d.globalValue = -247;
+    read = nvml_clock_observe(g.nvml, g.nvmlDevice, NVML_CLOCK_MEM);
+    if (!read.control.valid || read.control.value != -247 || read.control.rangeValid ||
+        read.control.rangeStatus != NVML_ERROR_NOT_SUPPORTED || read.surface != CLOCK_OFFSET_SURFACE_GLOBAL) return 8266;
+    const NvmlClockOffsetReadback controlOnly = nvml_read_clock_offset(&g, NVML_CLOCK_MEM);
+    if (!controlOnly.offsetValid || controlOnly.rangeValid || controlOnly.offsetMHz != -247) return 8267;
+    initialize(&d, &g); d.failP0Read = d.failGlobalRead = true;
+    g.nvml.getMemClkMinMaxVfOffset = get_global_range;
+    read = nvml_clock_observe(g.nvml, g.nvmlDevice, NVML_CLOCK_MEM);
+    if (read.control.valid || !read.control.rangeValid || read.control.rangeStatus != NVML_SUCCESS ||
+        read.control.status != NVML_ERROR_NOT_SUPPORTED) return 8268;
+    initialize(&d, &g); d.badRange = true; d.p0Value = 247; d.globalValue = 88;
+    g.nvml.getMemClkMinMaxVfOffset = get_global_range;
+    read = nvml_clock_observe(g.nvml, g.nvmlDevice, NVML_CLOCK_MEM);
+    if (!read.control.valid || read.control.rangeValid || read.control.value != 247 ||
+        d.globalReads || read.control.rangeStatus != NVML_SUCCESS) return 8269;
+    read = nvml_clock_observe(g.nvml, g.nvmlDevice, NVML_CLOCK_MEM, true);
+    if (!read.control.valid || !read.control.rangeValid || read.control.value != 88 ||
+        read.surface != CLOCK_OFFSET_SURFACE_GLOBAL) return 8270;
+    initialize(&d, &g); d.failP0Read = d.globalRangeFails = true; d.globalValue = 247;
+    g.nvml.getMemClkMinMaxVfOffset = get_global_range;
+    read = nvml_clock_observe(g.nvml, g.nvmlDevice, NVML_CLOCK_MEM);
+    if (!read.control.valid || read.control.rangeValid || read.control.value != 247 ||
+        read.control.rangeStatus != NVML_ERROR_UNKNOWN || read.control.status != NVML_SUCCESS) return 8271;
     return 0;
 }

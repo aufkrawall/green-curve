@@ -8,7 +8,7 @@
 struct NvmlExactClockRead {
     bool valid, rangeValid;
     int value, minimum, maximum;
-    nvmlReturn_t status;
+    nvmlReturn_t status, rangeStatus;
 };
 
 static inline bool nvml_exact_clock_surface_available(const NvmlApi& a,
@@ -26,12 +26,14 @@ static inline NvmlExactClockRead nvml_exact_clock_read(const NvmlApi& a,
     nvmlDevice_t device, unsigned int domain, gc_u32 surface) {
     NvmlExactClockRead r{};
     r.status = NVML_ERROR_NOT_SUPPORTED;
+    r.rangeStatus = NVML_ERROR_NOT_SUPPORTED;
     if (domain != NVML_CLOCK_MEM && domain != NVML_CLOCK_GRAPHICS) return r;
     if (surface == CLOCK_OFFSET_SURFACE_P0 && a.getClockOffsets) {
         nvmlClockOffset_t info{};
         info.version = nvmlClockOffset_v1; info.type = domain;
         info.pstate = nvml_configured_clock_offset_pstate();
         r.status = a.getClockOffsets(device, &info);
+        r.rangeStatus = r.status;
         r.valid = r.status == NVML_SUCCESS && info.version == nvmlClockOffset_v1 &&
             info.type == domain && info.pstate == nvml_configured_clock_offset_pstate();
         r.value = info.clockOffsetMHz; r.minimum = info.minClockOffsetMHz;
@@ -42,7 +44,8 @@ static inline NvmlExactClockRead nvml_exact_clock_read(const NvmlApi& a,
         auto range = domain == NVML_CLOCK_MEM ? a.getMemClkMinMaxVfOffset : a.getGpcClkMinMaxVfOffset;
         if (get) r.status = get(device, &r.value);
         r.valid = r.status == NVML_SUCCESS;
-        r.rangeValid = range && range(device, &r.minimum, &r.maximum) == NVML_SUCCESS && r.minimum <= r.maximum;
+        if (range) r.rangeStatus = range(device, &r.minimum, &r.maximum);
+        r.rangeValid = r.rangeStatus == NVML_SUCCESS && r.minimum <= r.maximum;
     }
     return r;
 }
@@ -58,6 +61,7 @@ static inline NvmlExactClockWrite nvml_exact_clock_write(const NvmlApi& a,
     NvmlExactClockWrite r{};
     r.writeStatus = NVML_ERROR_NOT_SUPPORTED;
     r.after.status = NVML_ERROR_NOT_SUPPORTED;
+    r.after.rangeStatus = NVML_ERROR_NOT_SUPPORTED;
     if (!nvml_exact_clock_surface_available(a, domain, surface)) return r;
     r.attempted = true;
     if (surface == CLOCK_OFFSET_SURFACE_P0) {
