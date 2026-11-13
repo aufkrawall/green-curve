@@ -70,6 +70,10 @@ static inline bool profile_document_structurally_valid(const ProfileDocument& d,
         ((present ^ d.domains) & ~PROFILE_DOMAIN_VF_CURVE))) return fail("domain declaration contradicts included controls");
     if (d.hasMemoryOffset && d.memorySurface > CLOCK_OFFSET_SURFACE_GLOBAL)
         return fail("unknown memory control surface");
+    if (d.graphicsOffset.hasObservedOffset &&
+        (d.graphicsOffset.observedSurface > CLOCK_OFFSET_SURFACE_GLOBAL ||
+         d.graphicsOffset.observedComposition < 0 || d.graphicsOffset.observedComposition > 2))
+        return fail("unknown graphics observation surface or composition");
     if (d.graphicsOffset.present) {
         const ProfileGraphicsOffset& g = d.graphicsOffset;
         if (g.exclusionPolicy < PROFILE_EXCLUDE_NONE || g.exclusionPolicy > PROFILE_EXCLUDE_LEGACY_COUNT ||

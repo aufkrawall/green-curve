@@ -29,7 +29,7 @@ using View = std::string_view;
 enum Section {
     HEADER, DOCUMENT, SOURCE, TOPOLOGY, POINT, GRAPHICS, EXCLUSION, MEMORY,
     POWER, POWER_OBSERVATION, LOCK, LOCK_OBSERVATION, FAN, FAN_CURVE,
-    FAN_POINT, AUX_XBAR, AUX_SYS, AUX_VIDEO, SECTION_COUNT
+    FAN_POINT, AUX_XBAR, AUX_SYS, AUX_VIDEO, GRAPHICS_OBSERVATION, SECTION_COUNT
 };
 struct Seen {
     bool present = false;
@@ -144,9 +144,9 @@ inline bool location(View name, Location& out) {
     out.document = n - 1; out.index = -1;
     if (dot == View::npos) { out.section = DOCUMENT; return true; }
     name.remove_prefix(dot + 1);
-    const View plain[] = {"source", "graphics", "memory", "power", "power_observation", "lock", "lock_observation", "fan", "fan.curve", "aux.xbar", "aux.sys", "aux.video"};
-    const Section kinds[] = {SOURCE, GRAPHICS, MEMORY, POWER, POWER_OBSERVATION, LOCK, LOCK_OBSERVATION, FAN, FAN_CURVE, AUX_XBAR, AUX_SYS, AUX_VIDEO};
-    for (int i = 0; i < 12; ++i) if (name == plain[i]) { out.section = kinds[i]; return true; }
+    const View plain[] = {"source", "graphics", "memory", "power", "power_observation", "lock", "lock_observation", "fan", "fan.curve", "aux.xbar", "aux.sys", "aux.video", "graphics_observation"};
+    const Section kinds[] = {SOURCE, GRAPHICS, MEMORY, POWER, POWER_OBSERVATION, LOCK, LOCK_OBSERVATION, FAN, FAN_CURVE, AUX_XBAR, AUX_SYS, AUX_VIDEO, GRAPHICS_OBSERVATION};
+    for (int i = 0; i < 13; ++i) if (name == plain[i]) { out.section = kinds[i]; return true; }
     const View prefixes[] = {"topology.", "point.", "exclusion.", "fan.point."};
     const Section indexed[] = {TOPOLOGY, POINT, EXCLUSION, FAN_POINT};
     for (int i = 0; i < 4; ++i) {

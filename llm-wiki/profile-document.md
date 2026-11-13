@@ -274,6 +274,27 @@ retained for inspection. Equivalent power ratios and reordered exclusion sets
 compare semantically equal; moving observations remain excluded. Unit cases
 8280-8321 execute these boundaries. No authoring struct is persisted as bytes.
 
+## Passive capture foundation (2026-11-13)
+
+Source anchors: `source/hardware_capture_types.h`, `source/hardware_capture.h`,
+`source/hardware_capture_getters.h`, `tests/hardware_capture_tests.cpp` (8480-8501).
+
+The getter-only collector reads fresh VF membership, physical microvolt identity,
+exact Hz offsets and separate frequency samples. NVML memory retains half-MHz
+physical steps; power keeps independently valid current/default observations.
+Scalar/table composition defaults to unresolved, with a portable graphics
+observation that cannot silently become an independent graphics component.
+Pin knowledge requires an optional validated getter; current clocks never prove
+absence. External fan behavior is excluded; explicitly requested owned fan
+intent can be copied with its complete curve configuration.
+
+At most three immediate read pairs compare topology, bindings, controls, ranges
+and validity while excluding moving frequency values. Failure leaves the caller's
+previous result intact. This is a best-effort consistent observation; external
+writers can still interleave or make an ABA change. Fingerprints detect stale
+observations and confer no authorization or ownership. Service/client integration
+is pending; these fixtures load no driver and perform no hardware mutation.
+
 ## Invariants
 
 - No authoring-model or codec operation reads `g_app`,

@@ -49,10 +49,11 @@ inline bool finish_document(DecodeState& state, int n, ProfileCodecError* error)
         if (r.exclusions[i].present != (i < excluded) ||
             (i < excluded && !required(r.exclusions[i], 1))) return reject("graphics exclusion records do not match policy");
     d.hasMemoryOffset = r.sections[MEMORY].present;
+    d.graphicsOffset.hasObservedOffset = r.sections[GRAPHICS_OBSERVATION].present;
     d.power.present = r.sections[POWER].present;
     d.lock.present = r.sections[LOCK].present;
     d.fan.present = r.sections[FAN].present;
-    if (!section(MEMORY, 1) || !section(POWER, 7) || !section(LOCK, 15) || !section(FAN, 7) ||
+    if (!section(GRAPHICS_OBSERVATION, 7) || !section(MEMORY, 1) || !section(POWER, 7) || !section(LOCK, 15) || !section(FAN, 7) ||
         !section(AUX_SYS, 1) || !section(AUX_VIDEO, 1)) return reject("missing required control fields");
     const auto powerKeys = r.sections[POWER_OBSERVATION].keys;
     if (r.sections[POWER_OBSERVATION].present && !powerKeys) return reject("empty power observation");

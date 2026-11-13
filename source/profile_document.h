@@ -22,26 +22,10 @@
 #include "fan_curve_api.h"       // pure fan contracts; no UI state dependency
 #include "profile_point_intent.h"
 #include "tuning_units.h"
+#include "profile_domain_mask.h"
 
 #include <stdio.h>
 #include <string.h>
-
-// Which domains this document includes. A domain's absence means "no
-// opinion" for application scope UPDATE_INCLUDED (§5.5): the destination's
-// current state and ownership for that domain are left alone. Bit flags so
-// one document can name an arbitrary subset.
-enum ProfileDomainMask : int {
-    PROFILE_DOMAIN_NONE = 0,
-    PROFILE_DOMAIN_VF_CURVE = 1 << 0,
-    PROFILE_DOMAIN_GRAPHICS_OFFSET = 1 << 1,
-    PROFILE_DOMAIN_MEMORY = 1 << 2,
-    PROFILE_DOMAIN_POWER = 1 << 3,
-    PROFILE_DOMAIN_LOCK = 1 << 4,
-    PROFILE_DOMAIN_FAN = 1 << 5,
-    PROFILE_DOMAIN_XBAR = 1 << 6,
-    PROFILE_DOMAIN_SYS_CLK = 1 << 7,
-    PROFILE_DOMAIN_VIDEO_CLK = 1 << 8,
-};
 
 // §5.5: explicit application scope, distinct from domain membership.
 enum ProfileApplicationScope : int {
@@ -115,6 +99,10 @@ struct ProfileGraphicsOffset {
     ProfileExclusionPolicy exclusionPolicy;
     int excludedCount;
     int excludedTopologyIds[VF_NUM_POINTS];
+    bool hasObservedOffset;
+    long long observedOffsetHz;
+    gc_u32 observedSurface;
+    int observedComposition; // 0 unresolved, 1 independent, 2 aliased
 };
 
 struct ProfilePowerIntent {

@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Getter-only consistent capture foundation
+
+- Added a bounded passive collector with exact VF/memory controls, independent
+  power observations, explicit omissions/composition and unknown pin knowledge.
+- Three immediate read pairs exclude moving frequency samples and publish only
+  a coherent result; no initialization, recovery, cache adoption or setter path
+  is called. Cases 8480-8501 exercise the production helpers with fake getters.
+- Portable graphics observations retain unresolved controls without inventing
+  replay intent. Service/client capture integration remains pending. See
+  [profile-document.md](../profile-document.md#passive-capture-foundation-2026-11-13).
+
 ## 2026-11-13: Exact topology mapping and reviewed grid batches
 
 - Added GPU-free exact-voltage mapping, complete-topology index proof, explicit

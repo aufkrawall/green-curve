@@ -98,6 +98,7 @@ Source writable flags and moving observations cannot change semantic equality.
 | Section | Keys, in writer order | Meaning |
 | --- | --- | --- |
 | `[profile.N.graphics]` | `offset_hz`, `exclusion_policy`, applicable count | Offset and policy required. Offset is signed-64-bit physical Hz. Policy is `none`, `identities` or `legacy_count_unresolved`. |
+| `[profile.N.graphics_observation]` | `offset_hz`, `surface`, `composition` | All required when present: signed-64-bit observed Hz, `unknown`/`p0`/`global`, and `unresolved`/`independent`/`aliased`. Allowed without graphics intent; an unresolved scalar/VF relationship never supplies a missing component. |
 | `[profile.N.exclusion.I]` | `topology_id` | Required only for `identities`; every index 0..`excluded_count-1` must exist. References must be unique and belong to the document topology. Exclusion order has no semantic meaning. |
 | `[profile.N.memory]` | `offset_hz`, `surface` | Offset required, any signed-64-bit physical Hz. Surface defaults to `destination`, otherwise `p0` or `global`; a named source surface is retained. Runtime feasibility is separate from storage bounds. |
 | `[profile.N.power]` | `mode`, `numerator`, `denominator` | All required: `board_default_ratio` and positive signed-64-bit terms. Accept equivalent unreduced ratios; writer reduces them. |

@@ -121,6 +121,14 @@ inline void write_document(Writer& w, const ProfileDocument& d, int ordinal) {
             }
         }
     }
+    if (d.graphicsOffset.hasObservedOffset) {
+        w.section(root + ".graphics_observation");
+        w.integer("offset_hz", d.graphicsOffset.observedOffsetHz);
+        const View surfaces[] = {"unknown", "p0", "global"};
+        const View composition[] = {"unresolved", "independent", "aliased"};
+        w.value("surface", surfaces[d.graphicsOffset.observedSurface]);
+        w.value("composition", composition[d.graphicsOffset.observedComposition]);
+    }
     if (d.hasMemoryOffset) {
         w.section(root + ".memory");
         w.integer("offset_hz", d.memoryOffsetHz);

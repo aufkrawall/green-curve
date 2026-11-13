@@ -1040,6 +1040,7 @@ int run_profile_slot_codec_tests();
 int run_profile_commands_tests();
 int run_profile_mapping_tests();
 int run_profile_conversion_tests();
+int run_hardware_capture_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2712,6 +2713,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int conversionFailure = run_profile_conversion_tests()) {
         fprintf(stderr, "profile conversion regression failed: %d\n", conversionFailure);
         return conversionFailure;
+    }
+    if (int captureFailure = run_hardware_capture_tests()) {
+        fprintf(stderr, "hardware capture regression failed: %d\n", captureFailure);
+        return captureFailure;
     }
     if (int contractFailure = run_profile_document_contract_tests()) {
         fprintf(stderr, "profile document contract regression failed: %d\n", contractFailure);

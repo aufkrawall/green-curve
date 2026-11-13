@@ -88,6 +88,11 @@ inline bool field(DecodeState& state, const Location& at, View key, View v) {
         case EXCLUSION:
             GC_PROFILE_FIELD("topology_id", GC_PROFILE_INT(d.graphicsOffset.excludedTopologyIds[at.index], 0, INT_MAX));
             break;
+        case GRAPHICS_OBSERVATION:
+            GC_PROFILE_FIELD("offset_hz", GC_PROFILE_I64(d.graphicsOffset.observedOffsetHz));
+            GC_PROFILE_FIELD("surface", choice(v, d.graphicsOffset.observedSurface, {"unknown", "p0", "global"}));
+            GC_PROFILE_FIELD("composition", choice(v, d.graphicsOffset.observedComposition, {"unresolved", "independent", "aliased"}));
+            break;
         case MEMORY:
             GC_PROFILE_FIELD("offset_hz", GC_PROFILE_I64(d.memoryOffsetHz));
             GC_PROFILE_FIELD("surface", choice(v, d.memorySurface, {"destination", "p0", "global"}));
