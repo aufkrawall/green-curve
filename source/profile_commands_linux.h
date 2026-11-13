@@ -6,6 +6,7 @@
 #include "profile_legacy_document.h"
 #include "profile_file_read.h"
 #include "profile_capture_commands.h"
+#include "profile_check_commands.h"
 #include "linux_config_lock.h"
 #include <stdlib.h>
 
@@ -77,7 +78,7 @@ static bool profile_commands_linux(int argc, char** argv, int& exitCode) {
     bool transfer = false, exporting = false;
     for (int i = 1; i < argc; ++i) {
         exporting |= !strcmp(argv[i], "--export-profiles");
-        transfer |= exporting || !strcmp(argv[i], "--import-profiles") || !strcmp(argv[i], "--capture-current");
+        transfer |= exporting || !strcmp(argv[i], "--import-profiles") || !strcmp(argv[i], "--capture-current") || !strcmp(argv[i], "--check-profile");
     }
     if (!transfer) return false;
     char defaultConfig[LINUX_PATH_MAX]{};
@@ -85,6 +86,7 @@ static bool profile_commands_linux(int argc, char** argv, int& exitCode) {
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
     LinuxProfileCommands io;
+    if (profile_check_commands_run(args, io, exitCode)) return true;
     if (profile_capture_commands_run(args, defaultConfig, io, exitCode)) return true;
     if (exporting) {
         ProfileCommand command; ProfileCodecError error; bool handled = false;

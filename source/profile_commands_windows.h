@@ -6,6 +6,7 @@
 #include "profile_legacy_document.h"
 #include "profile_file_read.h"
 #include "profile_capture_commands.h"
+#include "profile_check_commands.h"
 
 struct WindowsProfileCommands {
     bool capture(gc_u32 domains, HardwareCaptureObservation& output, ProfileCodecError& error) {
@@ -87,7 +88,7 @@ static bool profile_commands_windows(LPWSTR commandLine, int& exitCode) {
     bool transfer = false, exporting = false;
     for (int i = 1; i < argc; ++i) {
         exporting |= !wcscmp(argv[i], L"--export-profiles");
-        transfer |= exporting || !wcscmp(argv[i], L"--import-profiles") || !wcscmp(argv[i], L"--capture-current");
+        transfer |= exporting || !wcscmp(argv[i], L"--import-profiles") || !wcscmp(argv[i], L"--capture-current") || !wcscmp(argv[i], L"--check-profile");
     }
     if (!transfer) { LocalFree(argv); return false; }
     gc_cli_console_ready();
@@ -101,6 +102,7 @@ static bool profile_commands_windows(LPWSTR commandLine, int& exitCode) {
     }
     LocalFree(argv);
     WindowsProfileCommands io;
+    if (profile_check_commands_run(args, io, exitCode)) return true;
     if (profile_capture_commands_run(args, g_app.configPath, io, exitCode)) return true;
     // Historical readers use the INI API. Keep the complete export generation
     // locked while those readers decode it; new documents use the raw snapshot.

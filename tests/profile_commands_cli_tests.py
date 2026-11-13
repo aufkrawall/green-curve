@@ -71,9 +71,14 @@ def verify(executable: Path, workspace: Path) -> None:
         run(["--capture-current", exported, "--domains", "vf,vf"], expected=2)
         run(["--capture-current", config, "--config", config], expected=2)
         run(["--capture-current", exported, "--representation", "sampled"], expected=2)
+        run(["--check-profile", incoming], expected=2)  # multi-profile file requires selection before any capture
+        run(["--check-profile", incoming, "--profile", "0"], expected=2)
+        run(["--check-profile", incoming, "--profile", "1", "--profile", "1"], expected=2)
+        run(["--check-profile", incoming, "--apply-config"], expected=2)
         assert config.read_bytes() == saved
         incoming.write_text(seed + "\n[unknown]\nfield=1\n", encoding="utf-8", newline="\n")
         run(import_args, expected=2)
+        run(["--check-profile", incoming], expected=2)
         assert config.read_bytes() == saved
         run(["--import-profiles", folder / "missing.gcprofile", "--slots", "1", "--config", config], expected=1)
         assert config.read_bytes() == saved

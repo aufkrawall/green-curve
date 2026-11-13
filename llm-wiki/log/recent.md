@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Exact runtime resolution and mapping preview
+
+- Both CLI clients expose passive `--check-profile` mapping review. Parsing and
+  bank selection precede Capture; exact runtime resolution retains point kinds,
+  scalar precision, exclusions and destination voltage bindings without editing
+  source files or publishing partial results. Missing getters do not prove absent
+  write capability.
+- Cases 8700-8717 exercise the product command and compiler; executable checks
+  cover early invalid-input rejection, with structured runtime-resolution checks
+  added to the portable-codec fuzz target. Range/grid/transition planning and
+  current-ownership release resolution remain pending before replay is enabled.
+  See [profile-document.md](../profile-document.md#exact-runtime-resolution-and-cli-mapping-preview-2026-11-13).
+
 ## 2026-11-13: Visible fixed floors remain read-only
 
 - The shared target-status rule now distinguishes listed floor entries from

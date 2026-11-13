@@ -36,8 +36,9 @@ Curves are checked before Apply, low-voltage points become editable, and dialogs
 - **Dialog text copying:** Ctrl+C copies confirmation, warning and error dialogs.
 - **Curve points below 700 mV:** writable points appear in the editor and graph.
 - **Prepare compatible curve:** Apply can offer to lower conflicting earlier points; review the draft before applying.
-- **CLI profile transfer:** import and export saved profiles without a connected GPU; review replacements and existing assignments before confirming.
-- **CLI hardware capture:** read programmed controls without resetting the GPU, inspect omissions, and explicitly choose partial capture and exact representation before saving.
+- **CLI profile transfer:** import and export saved profiles offline; review replacements and assignments before confirming.
+- **CLI hardware capture:** read programmed controls without resetting; review omissions, partial capture and exact representation before saving.
+- **CLI mapping preview:** inspect portable profiles against the current GPU without applying settings; unresolved checks stay explicit.
 
 ### Improved
 
@@ -49,11 +50,11 @@ Curves are checked before Apply, low-voltage points become editable, and dialogs
 
 ### Fixed
 
-- **Fixed clock-floor points:** Apply refuses edits and locks on fixed floor entries even where displayed; Capture keeps them as observations.
+- **Fixed clock-floor points:** Apply refuses fixed floor edits and locks, even where displayed; Capture retains observations.
 - **Linux power limits:** requests outside the board's bounds are refused before tuning changes, instead of being silently adjusted to another limit.
 - **Linux memory recovery:** fractional offsets stay exact; driver rounding or unavailable verification reports a mismatch.
 - **Clock offset readback:** missing driver ranges no longer hide valid Windows clock controls.
-- **Windows memory precision:** fractional memory tuning is verified through the same control that was written; failed writes cannot silently switch to another control.
+- **Windows memory precision:** fractional tuning is verified through the control that was written; failed writes cannot switch controls.
 - **Memory changes:** preserve exact curve offsets on Windows and Linux; unavailable preservation is reported before tuning changes.
 - **Precise curve recovery:** Linux restores fractional curve offsets exactly, and Reset checks the programmed value before treating a curve point as zero.
 - **VF curve flatten editing:** retyping the target frequency in a ticked flatten point's edit box preserves normal left-to-right typing order without caret resets.

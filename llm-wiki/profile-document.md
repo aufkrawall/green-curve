@@ -448,8 +448,9 @@ grids remain unresolved and voltage adjustments have no automatic safe direction
 Each batch reports affected count, first/worst physical voltage and maximum
 error. `profile_conversion_summary()` produces one bounded `profile-map:` line
 for preview/accept/reject. Observations and names that change without changing
-semantic values survive acceptance. Product callers and fresh destination
-observation collection remain pending; these helpers perform no I/O or setters.
+semantic values survive acceptance. Conversion-batch product callers remain
+pending. CLI mapping preview consumes fresh passive destination observations
+through the runtime resolution path below; the pure helpers perform no I/O or setters.
 
 Last verified: 2026-11-13.
 
@@ -478,3 +479,33 @@ in `persistence-schema.md` still requires reviewed destination adapters.
 Native regression fixtures cover shifted tables, overlapping index moves,
 full-match duplicate voltages, missing/ambiguous matches, fixed floors and scoped
 replacement. No physical or native Linux replay is claimed.
+
+## Exact runtime resolution and CLI mapping preview (2026-11-13)
+
+Source anchors: `source/profile_runtime_resolution.h`,
+`source/profile_check_commands.h`, `source/profile_commands_windows.h`,
+`source/profile_commands_linux.h`, `tests/profile_check_commands_cases.h`
+(8700-8717), `tests/profile_commands_cli_tests.py`, `tests/profile_codec_fuzz.h`.
+
+`--check-profile FILE [--profile N]` validates the portable file and requires a
+selection for a multi-entry bank before contacting the service. It uses passive
+Capture in the existing bound session, maps exact voltage identities and reports
+included controls and exact resolved values. It has no write or commit callback.
+Missing pin/fan capture getters never imply absent write capability. Parse,
+mapping, conversion and session failures preserve both input files and drafts.
+
+The resolver compiles explicit scope, point-set policy, captured zero, exact
+absolute/graphics/lock frequencies, exclusions, named physical memory and rational
+power, owned fan data and auxiliary controls. It stamps the full destination
+topology, uses destination-selected graphics routes, retains explicit named memory
+surfaces, and publishes no partial runtime result on failure. Values exceeding application bounds or a kHz-only
+auxiliary surface require explicit correction/conversion; the source document
+remains unchanged. Explicit release still requires current ownership resolution.
+
+This command is a mapping preview, not a completed feasibility gate: range,
+grid and transition checks remain outstanding, with decision-required exit 3
+even when mapping succeeds. Runtime replay stays guarded until those production
+adapters are complete. Native fixtures cover file preservation, bank selection,
+read-only destinations, exact values, exclusions and missing sessions. The
+portable-codec fuzz target also checks exact runtime resolution, source
+immutability and unchanged output on refusal. Hardware replay remains unverified.

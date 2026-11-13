@@ -4,6 +4,8 @@
 #include "profile_slot_codec.h"
 #include "profile_mapping.h"
 #include "profile_conversion_grid.h"
+#include "profile_runtime_resolution.h"
+#include "desired_settings_ui_policy.h"
 
 static void profile_codec_fuzz_round_trip(const ProfileBank& input) {
     std::string first, second;
@@ -68,6 +70,35 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         GC_FUZZ_CHECK(at >= 0 && destination.points[at].graphics && destination.points[at].writable &&
             destination.points[at].voltageUv == d.topology[i].voltageUv, "mapping guessed or accepted a read-only point");
     }
+    auto runtimeSource = std::make_unique<ProfileDocument>(d);
+    runtimeSource->lock = {}; runtimeSource->domains &= ~PROFILE_DOMAIN_LOCK;
+    runtimeSource->graphicsOffset.offsetHz = signedValue % 1000000001LL;
+    runtimeSource->memoryOffsetHz = signedValue % 3000000001LL;
+    runtimeSource->points[1].absoluteFrequencyHz = 1000000000LL + in.u32() % 4000000001ULL;
+    runtimeSource->points[3].capturedOffsetHz = signedValue % 1000000001LL;
+    runtimeSource->xbarOffsetHz = runtimeSource->sysClkOffsetHz = runtimeSource->videoClkOffsetHz =
+        (gc_i64)(in.i32() % 1000001) * 1000;
+    runtimeSource->xbarMsvddOffsetUv = in.i32() % 100001;
+    auto runtime = std::make_unique<DesiredSettings>();
+    desired_memory_set_precise(runtime.get(), 17000000, CLOCK_OFFSET_SURFACE_GLOBAL);
+    const DesiredSettings beforeResolution = *runtime;
+    ProfileMappingReport resolutionMap; ProfileRuntimeRoutes routes;
+    routes.graphics = DESIRED_GRAPHICS_VF_COMPONENT;
+    char resolutionWhy[192]{};
+    const auto sourceBeforeResolution = std::make_unique<ProfileDocument>(*runtimeSource);
+    if (profile_resolve_runtime(*runtimeSource, destination, 1, routes, *runtime, resolutionMap,
+            resolutionWhy, sizeof(resolutionWhy))) {
+        GC_FUZZ_CHECK(desired_authoring_valid(runtime.get()) && desired_curve_intent_valid(runtime.get()) &&
+            desired_scalar_intent_valid(runtime.get()), "runtime resolution published invalid authority");
+        GC_FUZZ_CHECK(desired_graphics_hz(*runtime) == runtimeSource->graphicsOffset.offsetHz &&
+            desired_memory_hz(*runtime) == runtimeSource->memoryOffsetHz &&
+            desired_absolute_hz(*runtime, resolutionMap.destinationByTopology[1]) == runtimeSource->points[1].absoluteFrequencyHz &&
+            runtime->curvePointCapturedOffsetHz[resolutionMap.destinationByTopology[3]] == runtimeSource->points[3].capturedOffsetHz,
+            "runtime resolution rounded exact authority");
+    } else GC_FUZZ_CHECK(desired_settings_equal(runtime.get(), &beforeResolution),
+        "failed runtime resolution published partial authority");
+    GC_FUZZ_CHECK(profile_document_semantically_equal(*runtimeSource, *sourceBeforeResolution),
+        "runtime resolution changed its source document");
     const ProfileConversionGrid grid{true, (long long)in.u32() + 1, (long long)in.i32()};
     const auto lower = profile_grid_lower(signedValue, grid);
     if (lower.valid) {

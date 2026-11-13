@@ -228,6 +228,22 @@ greencurve --reset --apply-config   # reset clocks and voltages to driver defaul
 sudo greencurve --service-remove    # uninstall daemon service
 ```
 
+Saved profiles can also be transferred without a connected GPU. Use the same
+options with `greencurve.exe` on Windows:
+
+```bash
+greencurve --export-profiles profiles.gcprofile --slots all
+greencurve --import-profiles profiles.gcprofile --slots 1,2,3,4,5 --confirm-import
+greencurve --capture-current captured.gcprofile --domains vf,memory,power --allow-partial --representation exact
+greencurve --check-profile profiles.gcprofile --profile 1
+```
+
+Import previews replacements and assignment references before asking for
+`IMPORT`. Capture reviews readable controls and omissions using the service's
+existing GPU session. The mapping preview reports exact values and identity
+conflicts without applying settings; range, grid and transition checks remain
+explicitly outstanding and return exit code 3 for further review.
+
 ## GPU Probe Report
 
 If you are running an unrecognized GPU family or need to report driver compatibility details, generate a diagnostic probe report:

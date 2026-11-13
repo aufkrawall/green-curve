@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 #include "profile_capture_commands.h"
+#include "profile_check_commands.h"
 #include <map>
 
 namespace {
@@ -9,6 +10,12 @@ struct CaptureIO {
     std::string messages;
     int captures = 0, writes = 0;
     bool failCapture = false, failWrite = false, malformed = false, noControls = false;
+    bool readOnly = false;
+    bool read(const std::string& path, std::string& data, size_t limit, bool, ProfileCodecError& error) {
+        auto found = files.find(path);
+        if (found == files.end() || found->second.size() > limit) return profile_codec::fail(&error, 0, "fixture read refused");
+        data = found->second; return true;
+    }
     bool distinct(const std::string& a, const std::string& b, ProfileCodecError& error) {
         return a != b || profile_codec::fail(&error, 0, "same destination");
     }
@@ -30,7 +37,7 @@ struct CaptureIO {
             out.topologyComplete = 1; out.pointCount = 3;
             for (gc_u32 i = 0; i < 3; ++i) {
                 auto& p = out.points[i];
-                p.index = 22 + i; p.voltageUv = 662000 + (gc_i64)i * 6250; p.writableState = 1;
+                p.index = 22 + i; p.voltageUv = 662000 + (gc_i64)i * 6250; p.writableState = readOnly && !i ? 2 : 1;
                 p.offsetValid = p.frequencyValid = 1; p.offsetHz = i == 0 ? 0 : i == 1 ? 15000500 : -15000500;
                 p.frequencyHz = 1000000500 + (gc_i64)i * 1000000;
             }
@@ -55,7 +62,9 @@ struct CaptureIO {
 };
 }
 
+#include "profile_check_commands_cases.h"
 int run_profile_capture_commands_tests() {
+    if (int failure = profile_check_commands_cases()) return failure;
     CaptureIO io; int code = -1;
     io.files["capture.gcprofile"] = "previous file";
     const std::vector<std::string> base{"--capture-current", "capture.gcprofile"};
