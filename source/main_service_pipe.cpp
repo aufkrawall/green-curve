@@ -322,6 +322,7 @@ static void service_execute_checked_request(ServiceRequest* request,
     // gates are unaffected, and only refused or low-integrity callers lose it.
     if (stateEnvelopeAuthorized) {
         populate_service_state_response(response);
+        service_capture_check_published_generation(response);
         service_update_populate_response(&response->update);
     } else {
         debug_log("service_pipe_server: withheld the state/update envelope from an unauthorized caller command=%u\n",

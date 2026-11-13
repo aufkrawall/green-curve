@@ -10,6 +10,9 @@
 // project's source-size guideline; it is not an include boundary for reuse.
 
 switch (request->command) {
+    case SERVICE_CMD_CAPTURE_CURRENT:
+        service_handle_capture_request(request, response);
+        break;
     case SERVICE_CMD_PING:
         response->status = SERVICE_STATUS_OK;
         StringCchCopyA(response->message, ARRAY_COUNT(response->message), "pong");

@@ -145,7 +145,7 @@ struct HardwareCaptureContext {
     gc_u64 gpuGeneration = 0;
     gc_u32 osFamily = 0, backendFamily = 0;
     HardwareCaptureComposition composition = CAPTURE_COMPOSITION_UNKNOWN;
-    const char* driverVersion = nullptr;
+    char driverVersion[65]{};
     const DesiredSettings* ownedFanIntent = nullptr;
     // Optional, validated read-only pin getter. No production backend currently
     // supplies one; operating clocks and active intent never substitute for it.
@@ -154,8 +154,10 @@ struct HardwareCaptureContext {
 
 static inline void hardware_capture_owned_fan(const DesiredSettings* intent, HardwareCaptureFan& fan) {
     if (!intent || !intent->hasFan) return;
-    fan.valid = fan.curvePresent = 1;
+    fan.valid = 1;
     fan.mode = (gc_u32)intent->fanMode; fan.dutyPct = (gc_u32)intent->fanPercent;
+    fan.curvePresent = gc_bool8_from_bool(fan_curve_validate(&intent->fanCurve, nullptr, 0));
+    if (!fan.curvePresent) return;
     fan.pollIntervalMs = (gc_u32)intent->fanCurve.pollIntervalMs; fan.hysteresisC = (gc_u32)intent->fanCurve.hysteresisC;
     fan.zeroRpmEnabled = intent->fanCurve.zeroRpmEnabled; fan.zeroRpmHysteresisC = intent->fanCurve.zeroRpmHysteresisC;
     for (int i = 0; i < 8; ++i) {
@@ -176,7 +178,7 @@ static inline bool hardware_capture_collect(const HardwareCaptureContext& contex
     out.valid = 1; out.schemaVersion = 1; out.requestedDomains = requested;
     out.binding = context.binding; out.gpuGeneration = context.gpuGeneration;
     out.osFamily = context.osFamily; out.backendFamily = context.backendFamily; out.composition = context.composition;
-    if (context.driverVersion) snprintf(out.driverVersion, sizeof(out.driverVersion), "%s", context.driverVersion);
+    memcpy(out.driverVersion, context.driverVersion, sizeof(out.driverVersion));
     for (int i = 0; i < 9; ++i) if (requested & (1u << i)) hardware_capture_domain(out, 1 << i, CAPTURE_READ_FAILED);
     if (requested & (PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_GRAPHICS_OFFSET | PROFILE_DOMAIN_LOCK)) {
         int status = -100001;
@@ -191,6 +193,9 @@ static inline bool hardware_capture_collect(const HardwareCaptureContext& contex
             out.graphics = hardware_capture_nvml_clock(*context.nvml, context.nvmlDevice, NVML_CLOCK_GRAPHICS);
         if (requested & PROFILE_DOMAIN_MEMORY) out.memory = hardware_capture_nvml_clock(*context.nvml, context.nvmlDevice, NVML_CLOCK_MEM);
         if (requested & PROFILE_DOMAIN_POWER) out.power = hardware_capture_nvml_power(*context.nvml, context.nvmlDevice);
+    } else {
+        out.graphics.status = out.memory.status = NVML_ERROR_NOT_SUPPORTED;
+        out.power.currentStatus = out.power.defaultStatus = NVML_ERROR_NOT_SUPPORTED;
     }
     if (requested & PROFILE_DOMAIN_GRAPHICS_OFFSET) {
         const bool represented = out.graphics.valid && (out.composition == CAPTURE_COMPOSITION_INDEPENDENT ||

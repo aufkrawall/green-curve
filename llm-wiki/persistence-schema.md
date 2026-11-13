@@ -37,7 +37,7 @@ DesiredSettings schema 4 is 2152 bytes. It appends memory Hz and surface
 provenance, a reduced positive power ratio, and independent presence tags.
 Legacy scalar fields remain checked display projections when a precise tag is
 present. Old desired schema 3 stays frozen at 2120 bytes; wideners leave the new
-tags/payloads zero. Protocol 32 uses 2744-byte requests and 9936-byte responses.
+tags/payloads zero. Protocol 32 used 2744-byte requests and 9936-byte responses.
 All enclosing sizes above are compiler-checked on the supported architectures.
 
 Explicit scalar scopes resolve exact units before mutation. Memory keeps the
@@ -48,7 +48,17 @@ resolved API, and independently refreshed backend reads must agree. Legacy
 overrides following precise ownership resolve exact units; a named-profile transition
 following precise ownership goes through scoped cleanup. Profile matching uses
 physical memory intent and rational power, retaining named-surface authority.
-No new local-slot, capture or portable-codec producer is connected yet.
+Flat local document storage and offline transfer are connected; precise runtime
+document compilation and GUI/TUI draft integration remain pending.
+
+Protocol 33 adds a getter-only capture command and a separate 4832-byte
+observation. The requested-domain word occupies former trailing request padding,
+so requests stay 2744 bytes; responses become 14768 bytes. DesiredSettings and
+the durable records above are unchanged. Capture accepts no file path, settings,
+operation or restore fields, and never rebinds or recovers a GPU. Both platforms
+use only an existing usable session. Linux passive envelope publication skips
+ordinary snapshot getters; Windows queries only its resolved interface cache.
+Cases 8502-8513 and 8520-8526 cover wire boundaries and the daemon handler.
 
 Frozen daemon schema 5 and Windows restart schema 3 preserve the outgoing
 captured-offset layout. Loaders check original versions/checksums before

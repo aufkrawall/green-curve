@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Dedicated passive capture IPC
+
+- Protocol 33 carries a separate bounded observation, preserving the desired
+  settings and durable record layouts. Capture rejects settings, file paths,
+  mutation flags and restore fields.
+- Windows uses its resolved driver interface; Linux skips the normal hardware
+  snapshot during response stamping. Existing sessions only: no initialization,
+  selection, recovery or deferred fan handback. Wire and actual daemon-handler
+  fixtures cover rejection without capture calls and unchanged ownership.
+- All declared production Windows/Linux targets compile. Client capture review
+  remains pending. See [persistence-schema.md](../persistence-schema.md).
+
 ## 2026-11-13: Getter-only consistent capture foundation
 
 - Added a bounded passive collector with exact VF/memory controls, independent

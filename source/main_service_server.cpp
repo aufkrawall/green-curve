@@ -7,6 +7,7 @@
 #include "main_service_request_policy.cpp"
 #include "main_service_operation_persist.cpp"
 #include "main_service_snapshot_request.cpp"
+#include "main_service_capture.cpp"
 // The updater, in dependency order: state and settings, then the two things
 // that touch untrusted bytes (network, crypto), then the orchestration that
 // uses all three.  It sits ahead of the pipe shard because the command handlers

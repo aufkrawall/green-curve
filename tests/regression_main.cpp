@@ -1041,6 +1041,7 @@ int run_profile_commands_tests();
 int run_profile_mapping_tests();
 int run_profile_conversion_tests();
 int run_hardware_capture_tests();
+int run_hardware_capture_service_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2717,6 +2718,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int captureFailure = run_hardware_capture_tests()) {
         fprintf(stderr, "hardware capture regression failed: %d\n", captureFailure);
         return captureFailure;
+    }
+    if (int captureServiceFailure = run_hardware_capture_service_tests()) {
+        fprintf(stderr, "capture service regression failed: %d\n", captureServiceFailure);
+        return captureServiceFailure;
     }
     if (int contractFailure = run_profile_document_contract_tests()) {
         fprintf(stderr, "profile document contract regression failed: %d\n", contractFailure);
@@ -4506,7 +4511,7 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 32) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 33) return 81;
         // These are release gates, not incidental layout observations. A field
         // addition that changes a fixed-size IPC structure must bump the wire
         // version; otherwise mixed old/new peers pass the header handshake and
@@ -4515,7 +4520,7 @@ static int run_all_tests(int argc, char** argv) {
             sizeof(ControlState) != 188 ||
             sizeof(DesiredSettings) != 2152 ||
             sizeof(ServiceSnapshot) != 4440 ||
-            sizeof(ServiceResponse) != 9936) return 4521;
+            sizeof(ServiceResponse) != 14768) return 4521;
         if (offsetof(ServiceRequest, expectedServiceInstanceId) <=
             offsetof(ServiceRequest, operationId) ||
             offsetof(ServiceResponse, state) <=
@@ -9396,7 +9401,7 @@ static int run_all_tests(int argc, char** argv) {
         // command rather than to RESUME_RESTORE: the v19 updater commands were
         // added after it, and an anchor that does not move turns this from a
         // boundary check into an assertion that a real command is rejected.
-        tampered = resume; tampered.command = SERVICE_CMD_SET_UPDATE_POLICY + 1;
+        tampered = resume; tampered.command = SERVICE_CMD_CAPTURE_CURRENT + 1;
         if (validate_service_request_for_ipc(&tampered)) return 3188;
     }
 
@@ -15557,7 +15562,7 @@ static int run_all_tests_final() {
         // A command past the end of the v19 set is still unknown.
         {
             ServiceRequest tampered = base;
-            tampered.command = SERVICE_CMD_SET_UPDATE_POLICY + 1;
+            tampered.command = SERVICE_CMD_CAPTURE_CURRENT + 1;
             if (validate_service_request_for_ipc(&tampered)) return 4228;
             tampered.command = SERVICE_CMD_NONE;
             if (validate_service_request_for_ipc(&tampered)) return 4229;
@@ -16885,6 +16890,7 @@ static int run_all_tests_final() {
                 {17, SERVICE_IPC_CLASS_NORMAL},      // CHECK_FOR_UPDATE
                 {18, SERVICE_IPC_CLASS_LIFECYCLE},   // INSTALL_UPDATE
                 {19, SERVICE_IPC_CLASS_LIFECYCLE},   // SET_UPDATE_POLICY
+                {20, SERVICE_IPC_CLASS_NORMAL},      // CAPTURE_CURRENT
             };
             for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
                 if (service_ipc_classify_command(cases[i].cmd) !=
@@ -16892,7 +16898,7 @@ static int run_all_tests_final() {
             }
             if (service_ipc_classify_command(0) !=
                 SERVICE_IPC_CLASS_UNKNOWN) return 4611;
-            if (service_ipc_classify_command(20) !=
+            if (service_ipc_classify_command(SERVICE_CMD_CAPTURE_CURRENT + 1) !=
                 SERVICE_IPC_CLASS_UNKNOWN) return 4612;
             if (service_ipc_classify_command(0xFFFFFFFFu) !=
                 SERVICE_IPC_CLASS_UNKNOWN) return 4613;
@@ -17575,6 +17581,7 @@ static int run_all_tests_final() {
             { SERVICE_CMD_GET_OPERATION_RESULT,   SERVICE_COMMAND_TIER_READ },
             { SERVICE_CMD_GET_STARTUP_POLICY,     SERVICE_COMMAND_TIER_READ },
             { SERVICE_CMD_GET_UPDATE_STATE,       SERVICE_COMMAND_TIER_READ },
+            { SERVICE_CMD_CAPTURE_CURRENT,        SERVICE_COMMAND_TIER_READ },
             { SERVICE_CMD_APPLY,                  SERVICE_COMMAND_TIER_CONTROL },
             { SERVICE_CMD_RESET,                  SERVICE_COMMAND_TIER_CONTROL },
             { SERVICE_CMD_WRITE_LOG_SNAPSHOT,     SERVICE_COMMAND_TIER_CONTROL },
@@ -17595,7 +17602,7 @@ static int run_all_tests_final() {
         // Every command in the protocol's range is classified. A new command
         // that nobody adds to the table must not silently land in READ.
         for (unsigned int command = SERVICE_CMD_PING;
-             command <= SERVICE_CMD_SET_UPDATE_POLICY; ++command) {
+             command <= SERVICE_CMD_CAPTURE_CURRENT; ++command) {
             bool named = false;
             for (const auto& expected : kExpected) {
                 if (expected.command == command) { named = true; break; }

@@ -226,6 +226,7 @@ static bool capture_uncertain_record(bool uncertain, LinuxDaemonStateRecord* rec
 // store_daemon_record() and populate_snapshot() above it.
 #include "linux_startup_policy.h"
 #include "linux_daemon_scoped_apply.h"
+#include "linux_daemon_capture.h"
 
 static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp) {
     memset(resp, 0, sizeof(*resp));
@@ -296,10 +297,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             if (g_hasActiveDesired) resp->desired = g_activeDesired;
             resp->status = SERVICE_STATUS_OK;
             break;
-        case SERVICE_CMD_GET_ACTIVE_DESIRED:
-            if (g_hasActiveDesired) resp->desired = g_activeDesired;
-            resp->status = SERVICE_STATUS_OK;
-            break;
+#include "linux_daemon_read_switch.h"
         case SERVICE_CMD_RESUME_RESTORE:
             daemon_handle_resume_restore(resp);
             break;
@@ -578,7 +576,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
     // Stamp every response as one daemon/GPU generation. The envelope derives
     // READY versus DEGRADED from the complete atomic snapshot and advertises
     // only independently rollback-safe mutation domains.
-    daemon_stamp_state_envelope(resp);
+    daemon_stamp_state_envelope(resp, req->command == SERVICE_CMD_CAPTURE_CURRENT);
     // The daemon's counterpart of the Windows write-out stamp, and for the same
     // reason: every branch above sets `status` and breaks, so severity is
     // derived once here instead of in each of them.  The Linux hardware

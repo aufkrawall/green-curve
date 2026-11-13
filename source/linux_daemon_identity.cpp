@@ -20,7 +20,7 @@ static gc_u64 daemon_service_instance_id() {
     return g_daemonServiceInstanceId;
 }
 
-static void daemon_stamp_state_envelope(ServiceResponse* response) {
+static void daemon_stamp_state_envelope(ServiceResponse* response, bool passive = false) {
     // Rebuild snapshot and controls together under g_lock.  This keeps the
     // envelope atomic: identity, topology, live controls and active intent all
     // describe the same selected-GPU lifetime.
@@ -30,7 +30,9 @@ static void daemon_stamp_state_envelope(ServiceResponse* response) {
     // overwritten here.  A handler with something else to publish needs its own
     // response member; resp->startupProfile exists because the boot-apply
     // snapshot was borrowing resp->desired and losing that race silently.
-    populate_snapshot(&response->snapshot, &response->controlState);
+    // Passive capture publishes its dedicated result, with no extra getters,
+    // cache publication or ownership handback through normal snapshot assembly.
+    if (!passive) populate_snapshot(&response->snapshot, &response->controlState);
     if (g_hasActiveDesired) response->desired = g_activeDesired;
     response->state.serviceInstanceId = daemon_service_instance_id();
     response->state.stateRevision = ++g_daemonStateRevision;

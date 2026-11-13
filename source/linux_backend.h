@@ -156,6 +156,9 @@ static inline const LinuxGpuUuid* linux_backend_selected_uuid(const LinuxGpuStat
         ? &g->adapterUuids[g->selectedAdapterIndex] : nullptr;
 }
 
+bool linux_backend_capture_current(const LinuxGpuState* gpu, gc_u64 generation, gc_u32 domains,
+    const DesiredSettings* ownedFan, HardwareCaptureObservation* output, char* why, size_t size);
+
 struct LinuxHardwareSnapshot {
     bool valid;
     gc_u32 availableMutationDomains;

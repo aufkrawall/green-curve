@@ -38,7 +38,7 @@ int run_linux_read_request_tests() {
         if (validate_service_request_for_ipc(&request)) return 7715;
     }
     for (unsigned int command = SERVICE_CMD_PING;
-         command <= SERVICE_CMD_SET_UPDATE_POLICY; ++command) {
+         command <= SERVICE_CMD_CAPTURE_CURRENT; ++command) {
         const bool consumesFlag = command == SERVICE_CMD_APPLY ||
             command == SERVICE_CMD_GET_SNAPSHOT || command == SERVICE_CMD_GET_TELEMETRY;
         if ((service_request_flags_for_command(command, true) != 0) != consumesFlag ||

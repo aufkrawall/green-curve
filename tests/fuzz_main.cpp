@@ -208,6 +208,16 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         request.targetGpu.name[sizeof(request.targetGpu.name) - 1] = '\0';
     }
 
+    if (mode & 0x10) {
+        // Reach passive capture beyond the magic/version and zero-settings
+        // gates while still varying its mask and forbidden field decisions.
+        memset(&request, 0, sizeof(request));
+        request.magic = SERVICE_PROTOCOL_MAGIC; request.version = SERVICE_PROTOCOL_VERSION;
+        request.callerPid = 1; request.command = SERVICE_CMD_CAPTURE_CURRENT;
+        request.captureDomains = size >= 3 ? (((gc_u32)data[1] << 8) | data[2]) & 1023u : 1;
+        if (mode & 0x20) request.desired.hasMemOffset = 1;
+        if (mode & 0x40) request.path[0] = 'x';
+    }
     const bool accepted = validate_service_request_for_ipc(&request);
     if (!accepted) return 0;
 
@@ -302,6 +312,21 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         memset(&response.snapshot, 0, sizeof(response.snapshot));
     }
 
+    if (mode & 0x10) {
+        // A coherent memory-only capture, with independently fuzzed value and
+        // reserved bytes, reaches the new observation validator on both hosts.
+        memset(&response, 0, sizeof(response));
+        response.magic = SERVICE_PROTOCOL_MAGIC; response.version = SERVICE_PROTOCOL_VERSION;
+        response.status = SERVICE_STATUS_OK; response.outcomeSeverity = SERVICE_OUTCOME_SEVERITY_SUCCESS;
+        response.state.serviceInstanceId = response.state.stateRevision = response.state.gpuGeneration = 1;
+        response.state.gpuPhase = SERVICE_GPU_PHASE_DEGRADED;
+        auto& c = response.capture;
+        c.valid = 1; c.schemaVersion = 1; c.gpuGeneration = 1; c.binding.valid = 1;
+        c.requestedDomains = c.capturedDomains = PROFILE_DOMAIN_MEMORY; c.domainStatus[2] = CAPTURE_COMPLETE;
+        c.memory.valid = 1; c.memory.surface = CLOCK_OFFSET_SURFACE_P0;
+        if (size > 1) memcpy(&c.memory.value, data + 1, size - 1 < sizeof(c.memory.value) ? size - 1 : sizeof(c.memory.value));
+        if ((mode & 0x20) && size > 2) c.reserved[0] = data[2];
+    }
     const bool accepted = validate_service_response_for_ipc(&response);
     if (!accepted) return 0;
 

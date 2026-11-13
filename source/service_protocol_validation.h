@@ -15,6 +15,8 @@
 
 #ifndef GREEN_CURVE_SERVICE_PROTOCOL_VALIDATION_H
 #define GREEN_CURVE_SERVICE_PROTOCOL_VALIDATION_H
+#include "hardware_capture_wire_validation.h"
+static inline bool service_desired_settings_is_zero(const DesiredSettings& desired);
 
 // Why a request is refused, or nullptr when it is well formed.
 //
@@ -30,8 +32,15 @@ static inline const char* service_request_reject_reason(
     if (r->magic != SERVICE_PROTOCOL_MAGIC) return "wrong protocol magic";
     if (r->version != SERVICE_PROTOCOL_VERSION) return "wrong protocol version";
     if (r->command < SERVICE_CMD_PING ||
-        r->command > SERVICE_CMD_SET_UPDATE_POLICY)
+        r->command > SERVICE_CMD_CAPTURE_CURRENT)
         return "unknown command";
+    if (r->command == SERVICE_CMD_CAPTURE_CURRENT) {
+        if (!r->captureDomains || (r->captureDomains & ~511u)) return "invalid capture domains";
+        if (r->flags || r->operationId || r->resetOcBeforeApply || r->applyOrigin || r->profileSource ||
+            r->profileSlot || r->startupMode || r->updateAutoCheck || r->updateIntervalSeconds || r->path[0] ||
+            r->expectedServiceInstanceId || r->expectedGpuGeneration || r->expectedTopologySignature ||
+            !service_desired_settings_is_zero(r->desired)) return "passive capture carries mutation or file fields";
+    } else if (r->captureDomains) return "capture domains on another command";
     if (r->startupMode >= SERVICE_STARTUP_POLICY_MODE_COUNT)
         return "unknown startup policy mode";
     if (!r->callerPid) return "missing caller pid";
@@ -246,7 +255,7 @@ static inline const char* service_request_reject_reason(
 static inline bool validate_service_request_for_ipc(ServiceRequest* r) {
     if (service_request_reject_reason(r) != nullptr) return false;
     validate_gpu_adapter_info_for_ipc(&r->targetGpu);
-    validate_desired_settings_for_ipc(&r->desired);
+    if (r->command != SERVICE_CMD_CAPTURE_CURRENT) validate_desired_settings_for_ipc(&r->desired);
     return true;
 }
 
@@ -681,7 +690,8 @@ static inline bool service_response_payload_is_absent(
         service_control_state_is_zero(r->controlState) &&
         service_desired_settings_is_zero(r->startupProfile) &&
         r->startupProfileValid == 0 &&
-        service_scalar_array_is_zero(r->startupProfileReserved);
+        service_scalar_array_is_zero(r->startupProfileReserved) &&
+        hardware_capture_bytes_zero(&r->capture, sizeof(r->capture));
 }
 
 static inline bool validate_service_update_state_for_ipc(ServiceUpdateState* update) {
@@ -747,7 +757,8 @@ static inline bool validate_service_response_for_ipc(ServiceResponse* r) {
             (unsigned int)sizeof(r->serviceVersion)) ||
         !service_wire_string_is_terminated(r->message,
             (unsigned int)sizeof(r->message))) return false;
-    if (!validate_service_update_state_for_ipc(&r->update)) return false;
+    if (!validate_service_update_state_for_ipc(&r->update) ||
+        !hardware_capture_observation_valid(r->capture)) return false;
     // A refusal that publishes no state at all is the service's answer, not a
     // damaged one.  Rejecting it here is what turned every protocol-level and
     // authorization-level refusal into "Service response contains an invalid
@@ -762,6 +773,8 @@ static inline bool validate_service_response_for_ipc(ServiceResponse* r) {
     // Checked after the envelope because its coherence rule reads the published
     // policy mode out of that envelope.
     if (!service_response_startup_profile_is_coherent(r)) return false;
+    if (r->capture.valid && (r->status != SERVICE_STATUS_OK ||
+        r->capture.gpuGeneration != r->state.gpuGeneration)) return false;
     if (r->startupProfileValid)
         validate_desired_settings_for_ipc(&r->startupProfile);
     return true;

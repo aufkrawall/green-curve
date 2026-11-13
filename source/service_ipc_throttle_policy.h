@@ -176,6 +176,7 @@ inline ServiceIpcRequestClass service_ipc_classify_command(
         case 15: // SERVICE_CMD_RESUME_RESTORE
         case 16: // SERVICE_CMD_GET_UPDATE_STATE
         case 17: // SERVICE_CMD_CHECK_FOR_UPDATE
+        case 20: // SERVICE_CMD_CAPTURE_CURRENT
             return SERVICE_IPC_CLASS_NORMAL;
         default:
             return SERVICE_IPC_CLASS_UNKNOWN;

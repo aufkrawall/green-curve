@@ -17,6 +17,7 @@
 #include "update_schedule_policy.h"
 #include "update_manifest_policy.h"
 #include "service_protocol_update.h"
+#include "hardware_capture_types.h"
 
 enum {
     SERVICE_PROTOCOL_MAGIC = 0x47535643u,
@@ -85,7 +86,7 @@ enum {
     // GUI can tell the user instead of leaving a silent lockout.
     // v30 preserves independent signed-Hz captured VF offsets, including zero.
     // v31 defines explicit update/replacement/release and VF point-set semantics.
-    SERVICE_PROTOCOL_VERSION = 32,
+    SERVICE_PROTOCOL_VERSION = 33,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply; on a state read it
@@ -143,6 +144,7 @@ enum ServiceCommand {
     SERVICE_CMD_CHECK_FOR_UPDATE = 17,
     SERVICE_CMD_INSTALL_UPDATE = 18,
     SERVICE_CMD_SET_UPDATE_POLICY = 19,
+    SERVICE_CMD_CAPTURE_CURRENT = 20,
 };
 
 // What the daemon does with the GPU at startup.  RESTORE_LAST is zero so an
@@ -679,6 +681,7 @@ struct ServiceRequest {
     DesiredSettings desired;
     char source[64];
     char path[GC_REQUEST_PATH_MAX];
+    gc_u32 captureDomains; // Getter-only command; zero for every other verb.
 };
 
 // Static field-offset assertions: these catch accidental ABI breaks when
@@ -774,8 +777,9 @@ struct ServiceResponse {
     // outcomeSeverity, so a new command branch cannot leave it behind.
     ServiceUpdateState update;
     char message[512];
+    HardwareCaptureObservation capture;
 };
-static_assert(sizeof(ServiceResponse) == 9936,
+static_assert(sizeof(ServiceResponse) == 14768,
               "ServiceResponse changed without an IPC protocol-version bump");
 
 static_assert(offsetof(ServiceResponse, magic) == 0, "ServiceResponse.magic must be at offset 0");

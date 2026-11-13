@@ -292,8 +292,15 @@ At most three immediate read pairs compare topology, bindings, controls, ranges
 and validity while excluding moving frequency values. Failure leaves the caller's
 previous result intact. This is a best-effort consistent observation; external
 writers can still interleave or make an ABA change. Fingerprints detect stale
-observations and confer no authorization or ownership. Service/client integration
-is pending; these fixtures load no driver and perform no hardware mutation.
+observations and confer no authorization or ownership. Protocol 33 connects the
+collector to dedicated Windows/Linux handlers using existing sessions only.
+Linux capture skips ordinary snapshot assembly when stamping its envelope;
+Windows never uses the lazy driver loader. A different target, deferred recovery
+or uncertain Linux session refuses without discovery or handback. See
+`source/main_service_capture.cpp`, `source/linux_backend_capture.h`,
+`source/linux_daemon_capture.h`, `tests/hardware_capture_service_tests.cpp`
+(8520-8526). Client capture review remains pending. Fixtures load no driver and
+perform no hardware mutation.
 
 ## Invariants
 

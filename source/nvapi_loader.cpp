@@ -14,6 +14,12 @@
 // nonce-bound helper starts a fresh service process instead.
 static void* (*g_nvapiQi)(unsigned int) = nullptr;
 
+// Passive capture never loads a library, resolves the entry point or initializes
+// a session. The runtime lane keeps the already-bound mapping alive.
+static void* nvapi_qi_passive(unsigned int id) {
+    return g_app.hNvApi && g_nvapiQi ? g_nvapiQi(id) : nullptr;
+}
+
 // Module preference order lives in nvapi_module_policy.h: on arm64 the native
 // image is nvapia64.dll, and the nvapi64.dll/nvapi.dll in the same driver
 // package are the x64/x86 emulation copies a native arm64 process cannot load.

@@ -72,4 +72,6 @@ static_assert(sizeof(HardwareCapturePoint) == 32, "capture point wire layout cha
 static_assert(sizeof(HardwareCaptureScalar) == 48, "capture scalar wire layout changed");
 static_assert(sizeof(HardwareCapturePower) == 56, "capture power wire layout changed");
 static_assert(sizeof(HardwareCaptureFan) == 120, "capture fan wire layout changed");
+static_assert(sizeof(HardwareCaptureBinding) == 36, "capture binding wire layout changed");
+static_assert(sizeof(HardwareCaptureObservation) == 4832, "capture observation wire layout changed");
 #endif

@@ -78,6 +78,7 @@ static inline ServiceCommandAuthorityTier service_command_authority_tier(
         case SERVICE_CMD_GET_OPERATION_RESULT:
         case SERVICE_CMD_GET_STARTUP_POLICY:
         case SERVICE_CMD_GET_UPDATE_STATE:
+        case SERVICE_CMD_CAPTURE_CURRENT:
             return SERVICE_COMMAND_TIER_READ;
 
         // Per-session control: hardware intent, diagnostics written on the

@@ -74,7 +74,7 @@ static HardwareCaptureContext context(Driver& driver, const NvmlApi& api) {
     c.backend = &g_vfBackendPascal; c.nvml = &api; c.nvmlDevice = (nvmlDevice_t)&driver;
     c.binding.valid = c.binding.pciInfoValid = 1; c.binding.deviceId = 0x1234;
     c.gpuGeneration = 4; c.osFamily = PROFILE_SOURCE_OS_WINDOWS;
-    c.backendFamily = GPU_FAMILY_PASCAL; c.driverVersion = "fixture";
+    c.backendFamily = GPU_FAMILY_PASCAL; snprintf(c.driverVersion, sizeof(c.driverVersion), "%s", "fixture");
     return c;
 }
 static bool collect(const HardwareCaptureContext& c, gc_u32 requested,
@@ -183,5 +183,27 @@ int run_hardware_capture_tests() {
     *observation = {}; observation->memory.value = 1;
     if (hardware_capture_observation_valid(*observation)) return 8500;
     *observation = {}; if (!hardware_capture_observation_valid(*observation)) return 8501;
+    ServiceRequest request{};
+    request.magic = SERVICE_PROTOCOL_MAGIC; request.version = SERVICE_PROTOCOL_VERSION;
+    request.callerPid = 1; request.command = SERVICE_CMD_CAPTURE_CURRENT; request.captureDomains = requested;
+    if (!validate_service_request_for_ipc(&request)) return 8502;
+    const auto valid = request;
+    request.captureDomains = 0; if (validate_service_request_for_ipc(&request)) return 8503;
+    request = valid; request.captureDomains = 512; if (validate_service_request_for_ipc(&request)) return 8504;
+    request = valid; request.path[0] = 'x'; if (validate_service_request_for_ipc(&request)) return 8505;
+    request = valid; request.desired.hasMemOffset = 1; if (validate_service_request_for_ipc(&request)) return 8506;
+    request = valid; request.desired.memOffsetMHz = 1; if (validate_service_request_for_ipc(&request)) return 8507;
+    request = valid; request.flags = SERVICE_REQUEST_FLAG_INTERACTIVE; if (validate_service_request_for_ipc(&request)) return 8508;
+    request = valid; request.operationId = 1; if (validate_service_request_for_ipc(&request)) return 8509;
+    request = valid; request.command = SERVICE_CMD_PING; if (validate_service_request_for_ipc(&request)) return 8510;
+    auto response = std::make_unique<ServiceResponse>();
+    response->magic = SERVICE_PROTOCOL_MAGIC; response->version = SERVICE_PROTOCOL_VERSION;
+    response->status = SERVICE_STATUS_ERROR;
+    response->outcomeSeverity = service_response_resolve_outcome_severity(response->status, 0);
+    if (!validate_service_response_for_ipc(response.get())) return 8511;
+    response->capture.memory.value = 1;
+    if (validate_service_response_for_ipc(response.get()) || service_response_payload_is_absent(response.get())) return 8512;
+    response->capture = stable;
+    if (validate_service_response_for_ipc(response.get())) return 8513;
     return 0;
 }

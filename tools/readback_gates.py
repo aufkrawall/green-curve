@@ -21,6 +21,22 @@ def _p(ctx, name):
 
 
 def check_all(ctx, require_text, forbid_text):
+    # The executing getter and daemon-handler fixtures cannot see the complete
+    # production include graph. Pin the dedicated passive dispatch boundaries.
+    for name in ("main_service_capture.cpp", "linux_backend_capture.h", "linux_daemon_capture.h"):
+        for forbidden in ("hardware_initialize(", "linux_backend_init(", "linux_backend_refresh(",
+                          "select_request_gpu(", "service_prepare_requested_gpu(", "populate_snapshot("):
+            forbid_text(_p(ctx, name), forbidden, "passive capture cannot initialize, refresh or switch the bound GPU")
+    require_text(_p(ctx, "main_service_capture.cpp"), "c.query = nvapi_qi_passive;",
+                 "Windows capture uses an already-resolved query interface")
+    require_text(_p(ctx, "nvapi_loader.cpp"), "return g_app.hNvApi && g_nvapiQi ? g_nvapiQi(id) : nullptr;",
+                 "passive query cannot load or initialize a driver")
+    require_text(_p(ctx, "linux_daemon_identity.cpp"),
+                 "if (!passive) populate_snapshot(&response->snapshot, &response->controlState);",
+                 "passive capture envelope stamping performs no additional hardware reads")
+    require_text(_p(ctx, "linux_daemon.cpp"),
+                 "daemon_stamp_state_envelope(resp, req->command == SERVICE_CMD_CAPTURE_CURRENT);",
+                 "capture selects the passive envelope path")
     # The executing Linux VF fixture covers the raw driver boundary. Pin its
     # Windows/probe counterparts so a normalized cache cannot be copied back
     # into a driver block without the inverse conversion.
