@@ -116,6 +116,25 @@ def verify(executable: Path, workspace: Path) -> None:
         assert "offset_hz=-1001000000" in windows_legacy and "voltage_uv=0" in windows_legacy
         assert old.read_bytes().startswith(b"\xff\xfe")
         saved = config.read_bytes()
+        unicode_bank = folder / "unicode.ini"
+        unicode_text = "[profiles]\r\nlogon_slot=3\r\n[preferences]\r\nopaque=\u66f2\U0001f600\r\n"
+        unicode_original = unicode_text.encode("utf-16")
+        unicode_bank.write_bytes(unicode_original)
+        unicode_import = ["--import-profiles", incoming, "--slots", "3", "--config", unicode_bank]
+        preview = run(unicode_import, expected=3)
+        assert "assignments=logon" in preview and unicode_bank.read_bytes() == unicode_original
+        run([*unicode_import, "--confirm-import"], expected=3, answer="CANCEL\n")
+        assert unicode_bank.read_bytes() == unicode_original
+        run([*unicode_import, "--confirm-import"], answer="IMPORT\n")
+        unicode_saved = unicode_bank.read_bytes()
+        assert unicode_saved.startswith(unicode_original)
+        assert "document.memory.offset_hz=-1001000000" in unicode_saved.decode("utf-16")
+        run(["--export-profiles", exported, "--slots", "3", "--config", unicode_bank])
+        assert exported.read_bytes() == incoming.read_bytes()
+        # One malformed code unit refuses before review or replacement.
+        unicode_bank.write_bytes(unicode_saved + b"\x00")
+        run([*unicode_import, "--confirm-import"], expected=2, answer="IMPORT\n")
+        assert unicode_bank.read_bytes() == unicode_saved + b"\x00"
         run(["--import-profiles", folder / "missing.gcprofile", "--slots", "1", "--config", config], expected=1)
         assert config.read_bytes() == saved
     print("Offline profile CLI checks passed: review/cancel, exact intent, five slots, legacy units/origins, source selection")

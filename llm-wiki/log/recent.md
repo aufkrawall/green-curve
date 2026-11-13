@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Unicode document-bank preservation
+
+- Document-bank edits and Windows native section inspection share a bounded
+  encoding adapter. UTF-16LE stays UTF-16LE, unrelated code units survive, and
+  conflict detection compares the original raw generation. Malformed Unicode
+  refuses without replacement; existing BOM-less bytes remain opaque.
+- Cases 9018-9032 cover exact encoding, surrogate pairs, retained preferences,
+  stale edits, malformed data and bounds. The executable transfer fixture and
+  codec fuzz boundary also exercise encoding; Windows production section reads
+  and wide INI getters consume the resulting file. The pre-fix NUL rejection
+  fails 9019. ASan/UBSan, native Linux, all-target builds, executable workflows
+  and 5000 codec fuzz runs passed. See
+  [config-profiles.md](../config-profiles.md#portable-documents-and-offline-transfer-2026-11-13).
+
 ## 2026-11-13: Explicit legacy profile transfer
 
 - Source-format adapters preserve Windows/Linux point semantics, exact memory

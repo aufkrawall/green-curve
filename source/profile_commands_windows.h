@@ -51,7 +51,8 @@ struct WindowsProfileCommands {
             (void)gc_WritePrivateProfileStringUtf8(nullptr, nullptr, nullptr, path.c_str());
             invalidate_tray_profile_cache();
         }
-        debug_log("profile import: committed=%d records=%d\n", ok ? 1 : 0, edit.count);
+        debug_log("profile import: committed=%d records=%d utf16=%d\n", ok ? 1 : 0, edit.count,
+            edit.replacement.compare(0, 2, "\xff\xfe") == 0 ? 1 : 0);
         return ok;
     }
     void message(const std::string& text) { gc_cli_console_write(text.c_str()); }

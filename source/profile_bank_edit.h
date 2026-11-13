@@ -3,6 +3,7 @@
 #ifndef GREEN_CURVE_PROFILE_BANK_EDIT_H
 #define GREEN_CURVE_PROFILE_BANK_EDIT_H
 #include "profile_slot_codec.h"
+#include "profile_config_encoding.h"
 
 struct ProfileBankEdit {
     std::string previous;
@@ -18,8 +19,8 @@ static inline bool profile_bank_prepare_edit(std::string_view previous, const Pr
     using namespace profile_codec;
     if (error) *error = {};
     if (!bank_valid(incoming, error)) return false;
-    if (previous.size() > profile_slot::MAX_CONFIG_BYTES || previous.find('\0') != View::npos)
-        return fail(error, 0, "invalid local configuration");
+    std::string decoded;
+    if (!profile_config::decode(previous, decoded, error)) return false;
     if (incoming.count && !destinations) return fail(error, 0, "missing explicit destination slots");
     bool replaced[PROFILE_BANK_CAPACITY]{};
     std::string sections;
@@ -48,7 +49,7 @@ static inline bool profile_bank_prepare_edit(std::string_view previous, const Pr
     };
     std::string replacement;
     bool keep = true;
-    View input(previous);
+    View input(decoded);
     if (input.substr(0, 3) == "\xef\xbb\xbf") {
         replacement = "\xef\xbb\xbf";
         input.remove_prefix(3);
@@ -79,7 +80,7 @@ static inline bool profile_bank_prepare_edit(std::string_view previous, const Pr
     }
     ProfileBankEdit edit;
     edit.previous.assign(previous.data(), previous.size());
-    edit.replacement.swap(replacement);
+    if (!profile_config::encode_like(previous, replacement, edit.replacement, error)) return false;
     edit.count = incoming.count;
     for (int i = 0; i < incoming.count; ++i) edit.destinations[i] = destinations[i];
     output = std::move(edit);

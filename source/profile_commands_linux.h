@@ -55,9 +55,12 @@ struct LinuxProfileCommands {
             return profile_codec::fail(&error, 0, "updated profile bank exceeds configuration size limit");
         LinuxConfigLock lock(path.c_str(), error.message, sizeof(error.message));
         if (!lock.locked()) return false;
-        return profile_bank_commit_edit(edit,
+        const bool ok = profile_bank_commit_edit(edit,
             [&](std::string& bytes) { return read(path, bytes, profile_slot::MAX_CONFIG_BYTES, true, error); },
             [&](const std::string& bytes) { return write(path, bytes, error); }, &error);
+        linux_debug_logf("profile import: committed=%d records=%d utf16=%d", ok ? 1 : 0, edit.count,
+            edit.replacement.compare(0, 2, "\xff\xfe") == 0 ? 1 : 0);
+        return ok;
     }
     void message(const std::string& text) { fputs(text.c_str(), stdout); fflush(stdout); }
     bool confirm() {

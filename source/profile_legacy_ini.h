@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "profile_slot_codec.h"
+#include "profile_config_encoding.h"
 #include "fan_zero_rpm_profile_policy.h"
 #include <map>
 
@@ -28,40 +29,9 @@ inline std::string lower(View text) {
     return result;
 }
 inline bool fail(ProfileCodecError* e, const char* text) { return profile_codec::fail(e, 0, text); }
-inline bool text(View input, std::string& output, ProfileCodecError* e) {
-    if (input.size() > profile_slot::MAX_CONFIG_BYTES) return fail(e, "legacy input exceeds size limit");
-    if (input.substr(0, 2) != "\xff\xfe") {
-        if (input.find('\0') != View::npos) return fail(e, "unsupported legacy text encoding");
-        output.assign(input.data(), input.size()); return true;
-    }
-    if (input.size() % 2) return fail(e, "truncated legacy UTF-16 input");
-    const auto unit = [&](size_t at) { return (unsigned)(unsigned char)input[at] | ((unsigned)(unsigned char)input[at + 1] << 8); };
-    std::string result;
-    for (size_t at = 2; at < input.size(); at += 2) {
-        unsigned value = unit(at);
-        if (!value) return fail(e, "NUL in legacy text");
-        if (value >= 0xd800 && value <= 0xdbff) {
-            if (at + 3 >= input.size()) return fail(e, "truncated legacy UTF-16 pair");
-            const unsigned tail = unit(at + 2);
-            if (tail < 0xdc00 || tail > 0xdfff) return fail(e, "invalid legacy UTF-16 pair");
-            value = 0x10000 + ((value - 0xd800) << 10) + tail - 0xdc00; at += 2;
-        } else if (value >= 0xdc00 && value <= 0xdfff) return fail(e, "unpaired legacy UTF-16 unit");
-        if (value < 0x80) result += (char)value;
-        else if (value < 0x800) {
-            result += (char)(0xc0 | (value >> 6)); result += (char)(0x80 | (value & 63));
-        } else if (value < 0x10000) {
-            result += (char)(0xe0 | (value >> 12)); result += (char)(0x80 | ((value >> 6) & 63)); result += (char)(0x80 | (value & 63));
-        } else {
-            result += (char)(0xf0 | (value >> 18)); result += (char)(0x80 | ((value >> 12) & 63));
-            result += (char)(0x80 | ((value >> 6) & 63)); result += (char)(0x80 | (value & 63));
-        }
-        if (result.size() > profile_slot::MAX_CONFIG_BYTES) return fail(e, "decoded legacy text exceeds size limit");
-    }
-    output.swap(result); return true;
-}
 inline bool sections(View raw, Sections& out, ProfileCodecError* e) {
     std::string decoded;
-    if (!text(raw, decoded, e)) return false;
+    if (!profile_config::decode(raw, decoded, e)) return false;
     View input(decoded), line;
     if (input.substr(0, 3) == "\xef\xbb\xbf") input.remove_prefix(3);
     Fields* current = nullptr; int fields = 0;

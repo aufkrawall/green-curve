@@ -28,7 +28,8 @@ Source anchors: `source/profile_slot_codec.h`, `source/profile_bank_edit.h`,
 `source/profile_commands_linux.h`, `source/profile_file_read.h`,
 `source/profile_config_windows.h`, `source/profile_legacy_document.h`,
 `source/profile_legacy_ini.h`, `tests/profile_legacy_ini_tests.cpp` (8986-9008),
-`tests/profile_slot_codec_tests.cpp` (8370-8383),
+`source/profile_config_encoding.h`,
+`tests/profile_slot_codec_tests.cpp` (8370-8383, 9018-9032),
 `tests/profile_commands_tests.cpp` (8400-8411, 9010-9017),
 `tests/profile_commands_cli_tests.py`, `tools/security_gates.py`
 (`run_profile_commands_fixture`), `build.py` (native artifact verification).
@@ -55,6 +56,15 @@ commit re-reads and compares those bytes before one atomic replacement. It
 preserves preferences and assignments, never applies hardware, and flushes the
 Windows INI cache after success. Native deterministic seams cover stale review,
 cancelled review, write failure, one replacement and offline load/export fidelity.
+The shared bounded encoding adapter exposes a UTF-8 parsing view of BOM-marked
+UTF-16LE snapshots, while the edit keeps original raw bytes for generation
+checks. Replacement restores the original encoding and preserves unrelated
+Unicode code units, including surrogate pairs. BOM-less opaque bytes stay
+unchanged. Malformed Unicode refuses before confirmation or writes. Windows
+native document-section inspection uses the same decoder; commit diagnostics
+report record count and encoding without preferences or profile contents.
+Native Windows cases read the produced bank through both production section
+inspection and real wide INI getters, then verify scratch-file cleanup.
 The Linux writer lock spans profile Save/Clear and selected-GPU updates too;
 the native POSIX fixture checks lock exclusion and release without timing waits.
 Production build/check verifies the freshly linked native client through bounded
@@ -605,14 +615,17 @@ that save explicit intent, so its fixed-threshold rules (60/150 MHz gaps, a
 60-250 MHz saved offset) could only ever delete a point the user shaped on
 purpose. Tests 6470-6473 (legacy file still repaired, marked file untouched).
 
-**INI text encoding (2026-09-24).** Every whole-file writer
+**INI text encoding (2026-09-24; document transfer updated 2026-11-13).** Legacy whole-file writers
 (`write_config_sections_atomic`, and `write_config_text_atomic` used by profile
-save/clear) encodes its UTF-8 text through `gc_utf8_to_ini_file_bytes()` into
+save/clear) encode UTF-8 text through `gc_utf8_to_ini_file_bytes()` into
 the ANSI code page that `GetPrivateProfileStringW` decodes a BOM-less INI with,
 and refuses characters that code page cannot hold. Profile save/clear rebuild
 the file by reading every section back as UTF-8 and used to write it raw, which
 re-encoded every non-ASCII value (auto-profile patterns) on every save. See
 [auto-profiles](auto-profiles.md).
+Document transfer instead preserves the bounded raw snapshot's original
+encoding through the shared adapter above; its generated tuning keys are ASCII
+and names/metadata are hex-encoded, so it introduces no ANSI conversion.
 
 ## Startup and logon
 

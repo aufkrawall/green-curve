@@ -23,6 +23,12 @@ static void profile_codec_fuzz_round_trip(const ProfileBank& input) {
 }
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+    const std::string_view raw((const char*)data, size);
+    std::string configText = "unchanged", configBytes;
+    if (profile_config::decode(raw, configText)) {
+        GC_FUZZ_CHECK(profile_config::encode_like(raw, configText, configBytes) && configBytes == raw,
+            "configuration encoding round trip changed bytes");
+    } else GC_FUZZ_CHECK(configText == "unchanged", "failed encoding decode published partial text");
     auto bank = std::make_unique<ProfileBank>();
     bank->count = 1; bank->documents[0] = profile_document_make_empty();
     strcpy(bank->documents[0].displayName, "unchanged");

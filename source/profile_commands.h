@@ -147,26 +147,23 @@ static inline bool profile_commands_run(const std::vector<std::string>& args,
     if (!io.distinct(command.config, command.file, error)) return reject(PROFILE_COMMAND_INVALID);
     std::string config;
     if (!io.read(command.config, config, profile_slot::MAX_CONFIG_BYTES, true, error)) return reject(PROFILE_COMMAND_IO);
-    if (command.exporting) {
-        std::string decoded;
-        if (!profile_legacy::text(config, decoded, &error)) return reject(PROFILE_COMMAND_INVALID);
-        config.swap(decoded);
-    }
+    std::string configText;
+    if (!profile_config::decode(config, configText, &error)) return reject(PROFILE_COMMAND_INVALID);
     auto bank = std::make_unique<ProfileBank>();
     if (command.exporting && command.legacy.format != PROFILE_LEGACY_NONE) {
         ProfileSourceSelection selection;
         selection.all = command.all; selection.count = command.count;
         for (int n = 0; n < selection.count; ++n) selection.slots[n] = command.slots[n];
-        if (!profile_legacy_ini_decode(config, command.legacy, selection, *bank, &error)) return reject(PROFILE_COMMAND_INVALID);
+        if (!profile_legacy_ini_decode(configText, command.legacy, selection, *bank, &error)) return reject(PROFILE_COMMAND_INVALID);
     } else if (command.exporting) {
         for (int n = 0; n < command.count; ++n) {
             const int slot = command.slots[n];
             std::string body;
             bool section = false, found = false;
             ProfileDocument& document = bank->documents[bank->count];
-            if (!profile_slot::extract(config, slot, body, section, &error) ||
+            if (!profile_slot::extract(configText, slot, body, section, &error) ||
                 !profile_slot_decode(body, document, found, &error)) return reject(PROFILE_COMMAND_INVALID);
-            if (!found && !io.legacy(config, slot, document, found, error)) return reject(PROFILE_COMMAND_INVALID);
+            if (!found && !io.legacy(configText, slot, document, found, error)) return reject(PROFILE_COMMAND_INVALID);
             if (!found) {
                 if (command.all) continue;
                 profile_codec::fail(&error, 0, "selected export slot is empty"); return reject(PROFILE_COMMAND_INVALID);
@@ -211,7 +208,7 @@ static inline bool profile_commands_run(const std::vector<std::string>& args,
         io.message("Import record " + std::to_string(n + 1) + " -> slot " + std::to_string(slot) +
             ": name=\"" + d.displayName + "\", controls=" + profile_command_domains(d.domains) +
             ", topology points=" + std::to_string(d.topologyCount) +
-            ", assignments=" + profile_command_assignments(config, slot) + "\n");
+            ", assignments=" + profile_command_assignments(configText, slot) + "\n");
         const char* scope = d.applicationScope == PROFILE_SCOPE_UPDATE_INCLUDED ? "update included controls" :
             d.applicationScope == PROFILE_SCOPE_REPLACE_PROFILE ? "replace previously owned profile controls" : "release selected owned controls";
         io.message(std::string("  Apply scope: ") + scope + "; source values and precision are retained for destination review.\n");
