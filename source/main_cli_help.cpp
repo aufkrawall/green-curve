@@ -25,7 +25,7 @@ static void cli_print_help(FILE* out) {
     HELP_LOG("  greencurve.exe --json       Write VF curve to greencurve_curve.json\n");
     HELP_LOG("  greencurve.exe --export-profiles <file> [--slots all|1,2] [--config <path>]  Export saved intent without a GPU\n");
     HELP_LOG("  greencurve.exe --capture-current <file> [--domains vf,graphics,memory,power,pin] [--allow-partial] [--representation exact]  Review passive capture before saving\n");
-    HELP_LOG("  greencurve.exe --check-profile <file> [--profile N]  Preview exact destination mapping without applying settings\n");
+    HELP_LOG("  greencurve.exe --check-profile <file> [--profile N]  Check mapping and control feasibility without applying settings\n");
     HELP_LOG("  greencurve.exe --import-profiles <file> --slots 1,2 [--confirm-import] [--config <path>]  Review and import saved intent\n");
     HELP_LOG("  greencurve.exe --probe [--probe-output <path>]  Probe NvAPI/NVML/VF support and write a report\n");
     HELP_LOG("  greencurve.exe --self-test  Read-only driver/arch pre-flight, no service needed (run elevated)\n");

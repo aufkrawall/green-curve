@@ -502,10 +502,10 @@ surfaces, and publishes no partial runtime result on failure. Values exceeding a
 auxiliary surface require explicit correction/conversion; the source document
 remains unchanged. Explicit release still requires current ownership resolution.
 
-This command is a mapping preview, not a completed feasibility gate: range,
-grid and transition checks remain outstanding, with decision-required exit 3
-even when mapping succeeds. Runtime replay stays guarded until those production
-adapters are complete. Native fixtures cover file preservation, bank selection,
+The initial command provided mapping preview only; control feasibility is now
+covered below. Decision-required exit 3 remains even when controls are
+representable, because ownership and transition checks remain outstanding.
+Runtime replay stays guarded. Native fixtures cover file preservation, bank selection,
 read-only destinations, exact values, exclusions and missing sessions. The
 portable-codec fuzz target also checks exact runtime resolution, source
 immutability and unchanged output on refusal. Hardware replay remains unverified.
@@ -821,3 +821,34 @@ padding independence, moving clocks, malformed tokens, wrong domains, stale
 bindings/generations, unavailable sessions and untouched daemon ownership.
 Source-order gates cover the production dispatch boundaries. Client review and
 full transition/recovery integration remain pending; no hardware is exercised.
+
+## Passive profile control feasibility (2026-11-13)
+
+Source anchors: `source/profile_capture_curve_plan.h`,
+`source/profile_control_feasibility.h`, `source/profile_check_commands.h`,
+`source/curve_feasibility_plan.h`, `tests/profile_control_feasibility_tests.cpp`
+(8915-8940, 8943-8947), `tests/profile_check_commands_cases.h` (8941-8942).
+
+`--check-profile` now evaluates the shared exact-Hz curve planner and named
+scalar grids/ranges. Power uses the existing rational resolver with a fresh
+destination denominator. Reported and policy ranges remain labeled separately.
+Control results distinguish representable, conditional, unavailable and refused;
+issues carry bounded counts, proof strength, physical units and exact values.
+Whole-operation results retain control refusals and missing evidence; otherwise
+they remain conditional pending service-owned cleanup, transition and recovery
+review. The read-only command still returns decision
+exit 3, including successful control checks; it has no mutation callback.
+
+The capture adapter retains voltage bindings, captured writable membership and
+the bound leading floor. It rejects incomplete or unsupported topology shapes
+without reclassifying the floor from frequencies. VF components never apply to
+read-only points or override absolute/captured authority. Independent scalar
+zero is required to prove an unshaped baseline; unknown composition remains
+an estimate. Missing pin/fan reads never prove lack of write capability.
+
+Bound projected points now use offset intent for shared prefix planning.
+Historical MHz previews neither prove a conflict nor hide one; shaped-baseline
+results remain conditional. Removing this rule fails fixture 8919. Legacy
+projection provenance rules are unchanged. Fixtures also cover signed raw
+remainders, grid/range refusals, physical power conversion, missing evidence,
+fixed floors, stale bindings, truncated issue lists and unchanged CLI files.

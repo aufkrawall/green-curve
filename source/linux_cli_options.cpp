@@ -15,7 +15,7 @@ void print_linux_help() {
     puts("  greencurve --dump | --json       Dump selected profile (text / JSON)");
     puts("  greencurve --export-profiles file [--slots all|1,2] [--config path]  Export saved intent without a GPU");
     puts("  greencurve --capture-current file [--domains vf,graphics,memory,power,pin] [--allow-partial] [--representation exact]  Review passive capture before saving");
-    puts("  greencurve --check-profile file [--profile N]  Preview exact destination mapping without applying settings");
+    puts("  greencurve --check-profile file [--profile N]  Check mapping and control feasibility without applying settings");
     puts("  greencurve --import-profiles file --slots 1,2 [--confirm-import] [--config path]  Review and import saved intent");
     puts("  greencurve --dump-live | --json-live  Dump all live VF values from daemon");
     puts("  greencurve --probe [--probe-output path]   Probe driver + GPU control surfaces");

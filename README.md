@@ -240,9 +240,11 @@ greencurve --check-profile profiles.gcprofile --profile 1
 
 Import previews replacements and assignment references before asking for
 `IMPORT`. Capture reviews readable controls and omissions using the service's
-existing GPU session. The mapping preview reports exact values and identity
-conflicts without applying settings; range, grid and transition checks remain
-explicitly outstanding and return exit code 3 for further review.
+existing GPU session. Profile checking reports exact mapping, control ranges,
+precision grids and curve constraints without applying settings. It labels
+proven refusals, conditional estimates and unavailable reads separately.
+Ownership, transition and recovery checks still require service review;
+the command returns exit code 3 even when controls are representable.
 
 ## GPU Probe Report
 

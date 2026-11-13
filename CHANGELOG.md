@@ -38,7 +38,7 @@ Curves are checked before Apply, low-voltage points become editable, and dialogs
 - **Prepare compatible curve:** Apply can offer to lower conflicting earlier points; review the draft before applying.
 - **CLI profile transfer:** import and export saved profiles offline; review replacements and assignments before confirming.
 - **CLI hardware capture:** read controls without resetting; review omissions, source ranges and exact or partial capture before saving.
-- **CLI mapping preview:** inspect portable profiles against the current GPU without applying settings; unresolved checks stay explicit.
+- **CLI profile checks:** inspect mapping, exact control ranges and curve constraints without applying settings; uncertainty stays explicit.
 
 ### Improved
 

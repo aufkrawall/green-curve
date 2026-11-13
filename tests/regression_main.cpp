@@ -1044,6 +1044,7 @@ int run_profile_conversion_tests();
 int run_hardware_capture_tests();
 int run_hardware_capture_service_tests();
 int run_service_control_review_tests();
+int run_profile_control_feasibility_tests();
 int run_windows_vf_exact_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
@@ -2737,6 +2738,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int reviewFailure = run_service_control_review_tests()) {
         fprintf(stderr, "service control review regression failed: %d\n", reviewFailure);
         return reviewFailure;
+    }
+    if (int controlPlanFailure = run_profile_control_feasibility_tests()) {
+        fprintf(stderr, "profile control feasibility regression failed: %d\n", controlPlanFailure);
+        return controlPlanFailure;
     }
     if (int contractFailure = run_profile_document_contract_tests()) {
         fprintf(stderr, "profile document contract regression failed: %d\n", contractFailure);

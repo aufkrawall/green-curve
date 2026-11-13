@@ -385,6 +385,13 @@ static inline CurvePlanPrefixTarget curve_plan_prefix_point_target(
         t.kind = CURVE_PLAN_POINT_CAPTURED;
         t.targetHz = baseHz + d->curvePointCapturedOffsetHz[ci];
         t.proven = baselineProves;
+    } else if (fromOffset && d->authoring.topologyBound) {
+        // Bound authoring projections own an offset, never the informational
+        // MHz preview retained for old editors. A shaped base stays conditional.
+        t.targetHz = baseTargetHz;
+        t.kind = CURVE_PLAN_POINT_PROJECTED;
+        t.proven = baselineProves;
+        t.inferred = componentHz == 0;
     } else if (requested && !fromOffset) {
         t.targetHz = curve_plan_absolute_hz(d, ci);
         t.kind = CURVE_PLAN_POINT_ABSOLUTE;

@@ -83,5 +83,15 @@ static int profile_check_commands_cases() {
     ServiceScopedApplyPlan scoped{};
     if (!service_build_scoped_apply_plan(&previous, runtime, nullptr, {}, false, &scoped, error.message, sizeof(error.message)) ||
         !scoped.owned.curvePointCaptured[22] || scoped.hardware.curvePointCaptured[22] || scoped.cleanupPoints) return 8734;
+    io.failCapture = false; io.constraints = true; io.messages.clear();
+    if (!profile_check_commands_run({"--check-profile", "review.gcprofile"}, io, code) || code != PROFILE_COMMAND_DECISION ||
+        io.messages.find("Control feasibility: disposition=representable") == std::string::npos ||
+        io.messages.find("Operation feasibility: conditional") == std::string::npos || io.files != unchanged || io.writes != 1) return 8941;
+    io.vfGrid = 1000; io.messages.clear();
+    if (!profile_check_commands_run({"--check-profile", "review.gcprofile"}, io, code) || code != PROFILE_COMMAND_DECISION ||
+        io.messages.find("Control feasibility: disposition=refused") == std::string::npos ||
+        io.messages.find("reason=point-grid; proven=yes") == std::string::npos ||
+        io.messages.find("Operation feasibility: refused") == std::string::npos ||
+        io.messages.find("worst-point=") == std::string::npos || io.files != unchanged || io.writes != 1) return 8942;
     return 0;
 }

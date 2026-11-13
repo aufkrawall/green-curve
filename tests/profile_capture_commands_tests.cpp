@@ -12,6 +12,8 @@ struct CaptureIO {
     int captures = 0, writes = 0;
     bool failCapture = false, failWrite = false, malformed = false, noControls = false;
     bool readOnly = false;
+    bool constraints = false;
+    gc_i64 vfGrid = 500;
     bool read(const std::string& path, std::string& data, size_t limit, bool, ProfileCodecError& error) {
         auto found = files.find(path);
         if (found == files.end() || found->second.size() > limit) return profile_codec::fail(&error, 0, "fixture read refused");
@@ -56,6 +58,11 @@ struct CaptureIO {
             out.power.currentValid = out.power.defaultValid = 1;
             out.power.currentMw = 249000; out.power.defaultMw = 250000;
             hardware_capture_domain(out, PROFILE_DOMAIN_POWER, CAPTURE_COMPLETE);
+        }
+        if (constraints) {
+            out.vfLimits = {1, 1, 1, 1, VF_OFFSET_RANGE_SOURCE_NVML_GRAPHICS, -1000000000, 1000000000, vfGrid};
+            out.memory.writable = 1; out.memory.grid = 500000;
+            out.power.writable = 1; out.power.gridMw = 1;
         }
         if (malformed) out.pointCount = 129;
         return true;

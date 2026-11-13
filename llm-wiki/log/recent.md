@@ -5,6 +5,16 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Passive profile control feasibility
+
+- Profile checking now evaluates exact curve constraints and scalar grids/ranges
+  against passive capture, with bounded typed issues and explicit uncertainty.
+  Whole-operation review remains conditional; the command still writes nothing.
+- Bound projected prefixes use offset authority and baseline evidence rather
+  than stored MHz previews. Cases 8915-8947 cover the checker, production CLI
+  path and the shared planner; removing the prefix rule fails 8919. See
+  [profile-document.md](../profile-document.md#passive-profile-control-feasibility-2026-11-13).
+
 ## 2026-11-13: Fresh controls and ownership review
 
 - Protocol 36 binds explicit scoped Apply to a fresh passive all-domain capture
