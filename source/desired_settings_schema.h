@@ -402,4 +402,5 @@ static inline void desired_settings_narrow_schema3(DesiredSettingsSchema3* out,
     memcpy(out->curvePointCapturedOffsetHz, in->curvePointCapturedOffsetHz, sizeof(out->curvePointCapturedOffsetHz));
 }
 
+#include "desired_settings_precise_schema.h"
 #endif

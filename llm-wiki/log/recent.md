@@ -5,6 +5,15 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Frozen exact-scalar runtime predecessors
+
+- Froze the current desired payload and enclosing active/startup/restart records
+  before the next authoring extension. Fieldwise converters preserve exact scalar
+  and captured authority, with fixed offsets and original-byte checksum checks.
+- Cases 8640-8644 pass alongside existing historical/current record fixtures.
+  Live layouts, disk dispatch and current versions are unchanged. See
+  [persistence-schema.md](../persistence-schema.md#frozen-precise-scalar-predecessor-2026-11-13).
+
 ## 2026-11-13: Exact Linux curve preservation across memory writes
 
 - The Linux memory phase now holds fresh exact VF controls, verifies its binding

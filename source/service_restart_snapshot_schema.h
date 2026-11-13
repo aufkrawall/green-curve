@@ -114,6 +114,29 @@ static inline void service_restart_snapshot_widen_schema3(
     // widened record must not invent bytes the source file did not have.
 }
 
+struct ServiceRestartReapplySnapshotSchema4 {
+    DesiredSettingsSchema4 desired;
+    GpuAdapterInfo targetGpu;
+    DWORD activeProfileSource;
+    DWORD activeProfileSlot;
+    DWORD reserved[2];
+};
+
+static_assert(sizeof(ServiceRestartReapplySnapshotSchema4) == 2352,
+              "the pre-authoring restart snapshot is frozen");
+static inline void service_restart_snapshot_widen_schema4(
+    ServiceRestartReapplySnapshot* out,
+    const ServiceRestartReapplySnapshotSchema4* in) {
+    if (!out || !in) return;
+    *out = {};
+    desired_settings_widen_schema4(&out->desired, &in->desired);
+    out->targetGpu = in->targetGpu;
+    out->activeProfileSource = in->activeProfileSource;
+    out->activeProfileSlot = in->activeProfileSlot;
+    // `reserved` stays zero: the old layout never carried anything in it, and a
+    // widened record must not invent bytes the source file did not have.
+}
+
 // The same bounded payload decoder serves the real file reader and byte
 // fixtures. Version selects meaning only after the exact layout size matches.
 template <typename Read>

@@ -179,6 +179,40 @@ static int frozen_scalar_cases() {
 }
 
 int run_precise_scalar_schema_tests() {
+    DesiredSettings current = precise_fixture(), widened{};
+    current.curvePointCaptured[20] = 1; current.curvePointCapturedOffsetHz[20] = -500;
+    DesiredSettingsSchema4 frozen{};
+    desired_settings_narrow_schema4(&frozen, &current);
+    desired_settings_widen_schema4(&widened, &frozen);
+    if (sizeof(frozen) != 2152 || !desired_settings_equal(&current, &widened) ||
+        offsetof(DesiredSettingsSchema4, memOffsetHz) != offsetof(DesiredSettings, memOffsetHz) ||
+        offsetof(DesiredSettingsSchema4, curvePointCapturedOffsetHz) != offsetof(DesiredSettings, curvePointCapturedOffsetHz)) return 8640;
+    LinuxDaemonStateRecordSchema6 old{};
+    old.magic = LINUX_DAEMON_RECORD_MAGIC; old.version = LINUX_DAEMON_RECORD_PRE_AUTHORING_VERSION;
+    old.size = sizeof(old); old.state = LINUX_DAEMON_RECORD_ACTIVE;
+    old.targetGpu.valid = old.targetGpu.pciInfoValid = 1;
+    old.desired = frozen;
+    old.checksum = linux_daemon_record_hash_bytes(&old, offsetof(LinuxDaemonStateRecordSchema6, checksum));
+    LinuxDaemonStateRecord record{};
+    if (!linux_daemon_state_record_widen_schema6(&record, &old) || !desired_settings_equal(&record.desired, &current) ||
+        sizeof(old) != sizeof(record)) return 8641;
+    old.checksum ^= 1;
+    if (linux_daemon_state_record_widen_schema6(&record, &old)) return 8642;
+    LinuxDaemonStartupRecordSchema6 startup{};
+    startup.magic = LINUX_DAEMON_STARTUP_MAGIC; startup.version = LINUX_DAEMON_STARTUP_PRE_AUTHORING_VERSION;
+    startup.size = sizeof(startup); startup.mode = SERVICE_STARTUP_POLICY_PROFILE; startup.profileSlot = 2;
+    startup.targetGpu = old.targetGpu; startup.desired = frozen;
+    startup.checksum = linux_daemon_record_hash_bytes(&startup, offsetof(LinuxDaemonStartupRecordSchema6, checksum));
+    LinuxDaemonStartupRecord restored{};
+    if (!linux_daemon_startup_widen_schema6(&restored, &startup) || !desired_settings_equal(&restored.desired, &current) ||
+        sizeof(startup) != sizeof(restored)) return 8643;
+#ifdef _WIN32
+    ServiceRestartReapplySnapshotSchema4 restart{}; restart.desired = frozen;
+    restart.targetGpu = old.targetGpu; restart.activeProfileSlot = 2;
+    ServiceRestartReapplySnapshot replay{}; service_restart_snapshot_widen_schema4(&replay, &restart);
+    if (sizeof(restart) != sizeof(replay) || replay.activeProfileSlot != 2 ||
+        !desired_settings_equal(&replay.desired, &current)) return 8644;
+#endif
     int result = scalar_intent_cases();
     return result ? result : frozen_scalar_cases();
 }

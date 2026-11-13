@@ -66,6 +66,16 @@ widening and keep identity, scope and operation metadata. Current record,
 historical byte and production power-phase fixtures cover precision, owned zero,
 cleanup, stale denominators and previews that hide a different target.
 
+## Frozen precise-scalar predecessor (2026-11-13)
+
+`source/desired_settings_precise_schema.h` pins schema 4 at 2152 bytes with
+fieldwise widening/narrowing, including exact memory and rational power fields.
+`source/linux_daemon_authoring_schema.h` freezes its 2472-byte active and
+2528-byte startup records; the restart schema header freezes its 2352-byte
+payload. Cases 8640-8644 check offsets, scalar/captured preservation and original
+checksum validation. These explicit predecessors prepare the next extension;
+the current live layout/version and disk dispatch remain unchanged.
+
 ## Captured-offset capacity (2026-11-12)
 
 Source anchors: `source/desired_settings_schema.h`,

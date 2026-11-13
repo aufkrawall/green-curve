@@ -51,6 +51,7 @@ enum {
     // move: see desired_settings_schema.h for why size, not version, now
     // selects the layout a loader decodes with.
     LINUX_DAEMON_RECORD_VERSION = 9,
+    LINUX_DAEMON_RECORD_PRE_AUTHORING_VERSION = 9,
     LINUX_DAEMON_RECORD_PRE_PRECISE_SCALAR_VERSION = 8,
     LINUX_DAEMON_RECORD_PRE_CAPTURED_OFFSET_VERSION = 7,
     LINUX_DAEMON_RECORD_PRE_UUID_VERSION = 6,
@@ -402,6 +403,7 @@ enum {
     // read.  Size selects the layout, version the meaning; see
     // desired_settings_schema.h.
     LINUX_DAEMON_STARTUP_VERSION = 8,
+    LINUX_DAEMON_STARTUP_PRE_AUTHORING_VERSION = 8,
     LINUX_DAEMON_STARTUP_PRE_PRECISE_SCALAR_VERSION = 7,
     LINUX_DAEMON_STARTUP_PRE_CAPTURED_OFFSET_VERSION = 6,
     LINUX_DAEMON_STARTUP_PRE_UUID_VERSION = 5,
@@ -576,6 +578,7 @@ static inline bool linux_daemon_startup_widen_schema1(
 #include "linux_daemon_uuid_schema.h"
 #include "linux_daemon_captured_offset_schema.h"
 #include "linux_daemon_precise_scalar_schema.h"
+#include "linux_daemon_authoring_schema.h"
 
 // Automatic-restore guard.  Stored beside active.bin with the same root-owned
 // checksummed atomic write, for the same reason: it decides whether an
