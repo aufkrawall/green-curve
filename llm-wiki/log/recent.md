@@ -5,6 +5,16 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Native Linux regression execution
+
+- The sanitizer-enabled complete C++ harness and all three Linux kernel/store
+  fixtures passed under WSL, using the pinned Windows cross-compiler and declared
+  link units. Native scratch storage and bounded process-group cleanup were
+  verified; no GPU was accessed. Windows source/Python gates remain separate.
+- These x86-64 results cover native execution rather than link checks; driver ABI,
+  workload behavior and native ARM64 remain unverified. See
+  [testing.md](../testing.md#windows-hosted-native-linux-execution-2026-11-13).
+
 ## 2026-11-13: Named scalar submission protection
 
 - Bound scalar-to-curve requests classify raising submissions before mutation.

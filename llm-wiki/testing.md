@@ -334,6 +334,35 @@ and the plain deliverable build pass. No live GPU mutation is used by these chec
 
 Last verified: 2026-10-24.
 
+## Windows-hosted native Linux execution (2026-11-13)
+
+Source anchors: `tools/security_gates.py` (`run_linux_fixtures`, `LINUX_FIXTURES`),
+`build.py` (`_gate_ctx`, `_run_zig_link`, `SANITIZER_FLAGS`),
+`tests/regression_main.cpp`, `tests/posix_test_environment.h`.
+
+The complete C++ harness and the Linux socket, crash-report and GPU-selection
+store fixtures executed successfully under an existing WSL environment. The
+ELF binaries used the pinned Windows Zig toolchain and the repository's declared
+fixture translation units, with its undefined-behavior sanitizer flags appended
+to each audited link command. A bounded, non-dumpable overflow probe confirmed
+trapping instrumentation, while its explicitly unsanitized negative control
+exited normally; runtime handler symbols are not required in this configuration.
+Every native regression process exited zero. This supplements the ordinary Windows suite,
+which still cross-links Linux fixtures without executing them automatically.
+
+For repeat verification, retain `run_linux_fixtures` outputs in an ignored
+workspace directory, using its declared link commands and the same
+`SANITIZER_FLAGS`. Execute the resulting three fixtures and
+`fan_curve_regression_linux_check` in WSL; the latter takes an absolute scratch
+configuration path. Use native Linux temporary storage rather than a Windows
+mount for permission and socket fixtures. Give each process an explicit timeout,
+own its process group, verify no children remain, and remove the owned scratch
+directory. A fixture's blocked exit remains a failure, never a successful run.
+
+No GPU backend was initialized and no GPU write was requested. WSL execution
+does not establish the private NVIDIA driver ABI or workload stability. Native
+ARM64 execution remains separate from these x86-64 results.
+
 ## Linux agent sandbox execution
 
 Source anchors: `tests/posix_test_environment.h`,
