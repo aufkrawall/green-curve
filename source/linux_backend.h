@@ -72,6 +72,8 @@ struct LinuxGpuState {
     int freqOffsets[VF_NUM_POINTS];
     gc_i64 freqOffsetsHz[VF_NUM_POINTS];
     bool vfOffsetsHzValid;
+    gc_i64 curveFrequencyHz[VF_NUM_POINTS];
+    bool vfFrequenciesHzValid;
     unsigned char vfMask[32];
     bool vfInfoCached;
     int numPopulated;

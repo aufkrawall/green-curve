@@ -15,6 +15,8 @@ struct LinuxVfReadCandidate {
     int offsets[VF_NUM_POINTS];
     gc_i64 offsetsHz[VF_NUM_POINTS];
     bool offsetsHzValid;
+    gc_i64 frequencyHz[VF_NUM_POINTS];
+    bool frequenciesHzValid;
     int populated;
 };
 
@@ -159,7 +161,7 @@ static bool nvapi_read_curve_candidate(LinuxGpuState* g,
             candidate->curve[i].volt_uV = volt;
         }
         int domainEnd = vf_normalize_graphics_status(b, candidate->curve,
-                                                    VF_NUM_POINTS);
+            VF_NUM_POINTS, candidate->frequencyHz, &candidate->frequenciesHzValid);
         linux_vf_layout_note_status(&g->vfLayout, candidate->curve,
                                     VF_NUM_POINTS, g->vfMask,
                                     (unsigned int)sizeof(g->vfMask));
@@ -294,6 +296,7 @@ static bool nvapi_read_vf_snapshot(LinuxGpuState* g, char* why,
     g->vfControlFresh = false;
     g->vfSnapshotFresh = false;
     g->vfOffsetsHzValid = false;
+    g->vfFrequenciesHzValid = false;
     g->vfStructureValid = false;
     g->vfInfoStatus = LB_NVAPI_FUNCTION_MISSING;
     g->vfStatusStatus = LB_NVAPI_NOT_ATTEMPTED;
@@ -321,6 +324,8 @@ static bool nvapi_read_vf_snapshot(LinuxGpuState* g, char* why,
     memcpy(g->freqOffsets, candidate.offsets, sizeof(g->freqOffsets));
     memcpy(g->freqOffsetsHz, candidate.offsetsHz, sizeof(g->freqOffsetsHz));
     g->vfOffsetsHzValid = candidate.offsetsHzValid;
+    memcpy(g->curveFrequencyHz, candidate.frequencyHz, sizeof(g->curveFrequencyHz));
+    g->vfFrequenciesHzValid = candidate.frequenciesHzValid;
     g->numPopulated = candidate.populated;
     g->vfStructureValid = true;
     g->vfSnapshotFresh = true;

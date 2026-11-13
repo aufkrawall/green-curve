@@ -30,6 +30,15 @@ static inline int vf_graphics_offset_khz(const VfBackendSpec* b, int raw) {
     return (int)((long long)raw / vf_graphics_frequency_scale(b));
 }
 
+static inline bool vf_graphics_frequency_hz(const VfBackendSpec* b, unsigned int raw, gc_i64* hz) {
+    if (!hz) return false;
+    const gc_i64 numerator = (gc_i64)raw * 1000;
+    const gc_i64 scale = vf_graphics_frequency_scale(b);
+    if (numerator % scale) return false;
+    *hz = numerator / scale;
+    return true;
+}
+
 static inline bool vf_graphics_offset_hz(const VfBackendSpec* b, int raw, gc_i64* hz) {
     if (!hz) return false;
     const gc_i64 numerator = (gc_i64)raw * 1000;
@@ -74,11 +83,24 @@ static inline int vf_graphics_domain_length(const VFCurvePoint* curve, int count
 
 // Return the leading graphics extent and normalize it exactly once. Keep the
 // following domains raw for layout diagnostics; they have independent units.
+// Optional frequencyHz storage has VF_NUM_POINTS entries, including cleared
+// foreign/unpopulated entries; validity describes this exact status sample.
 static inline int vf_normalize_graphics_status(
-    const VfBackendSpec* b, VFCurvePoint* curve, int count) {
+    const VfBackendSpec* b, VFCurvePoint* curve, int count,
+    gc_i64* frequencyHz = nullptr, bool* frequencyHzValid = nullptr) {
     const int end = vf_graphics_domain_length(curve, count);
     const unsigned int scale = vf_graphics_frequency_scale(b);
-    for (int i = 0; i < end; ++i) curve[i].freq_kHz /= scale;
+    bool exact = frequencyHz != nullptr, populated = false;
+    if (frequencyHz) for (int i = 0; i < VF_NUM_POINTS; ++i) frequencyHz[i] = 0;
+    for (int i = 0; i < end; ++i) {
+        if (!curve[i].freq_kHz && curve[i].volt_uV) exact = false;
+        if (frequencyHz && curve[i].freq_kHz) {
+            populated = true;
+            if (!curve[i].volt_uV || !vf_graphics_frequency_hz(b, curve[i].freq_kHz, &frequencyHz[i])) exact = false;
+        }
+        curve[i].freq_kHz /= scale;
+    }
+    if (frequencyHzValid) *frequencyHzValid = exact && populated;
     return end;
 }
 

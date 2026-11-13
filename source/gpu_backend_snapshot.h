@@ -5,6 +5,7 @@
 // Latest complete sample wins. A final read failure invalidates the proof,
 // even when an earlier successful sample remains available for diagnostics.
 static bool read_live_curve_snapshot_settled(int attempts, DWORD delayMs, bool* lastOffsetsOkOut) {
+    g_app.vfFrequenciesHzValid = g_app.vfOffsetsHzValid = false;
     if (!g_app.isServiceProcess && g_app.usingBackgroundService) {
         char err[256] = {};
         ServiceResponse stateResponse = {};
@@ -27,6 +28,8 @@ static bool read_live_curve_snapshot_settled(int attempts, DWORD delayMs, bool* 
     int bestNumPopulated = -1;
     VFCurvePoint bestCurve[VF_NUM_POINTS] = {};
     int bestFreqOffsets[VF_NUM_POINTS] = {};
+    gc_i64 bestFrequencyHz[VF_NUM_POINTS]{}, bestOffsetsHz[VF_NUM_POINTS]{};
+    bool bestFrequencyHzValid = false, bestOffsetsHzValid = false;
     for (int attempt = 0; attempt < attempts; attempt++) {
         if (attempt > 0 && delayMs > 0) Sleep(delayMs);
         // F-APPLY-CEILING witness. Inert unless an apply is in progress; it adds
@@ -45,6 +48,10 @@ static bool read_live_curve_snapshot_settled(int attempts, DWORD delayMs, bool* 
         if (betterSnapshot) {
             memcpy(bestCurve, g_app.curve, sizeof(bestCurve));
             memcpy(bestFreqOffsets, g_app.freqOffsets, sizeof(bestFreqOffsets));
+            memcpy(bestFrequencyHz, g_app.curveFrequencyHz, sizeof(bestFrequencyHz));
+            memcpy(bestOffsetsHz, g_app.freqOffsetsHz, sizeof(bestOffsetsHz));
+            bestFrequencyHzValid = g_app.vfFrequenciesHzValid;
+            bestOffsetsHzValid = g_app.vfOffsetsHzValid;
             bestNumVisible = g_app.numVisible;
             bestNumPopulated = g_app.numPopulated;
             bestOffsetsOk = offsetsOk;
@@ -52,11 +59,16 @@ static bool read_live_curve_snapshot_settled(int attempts, DWORD delayMs, bool* 
         }
     }
     if (!bestValid) {
+        g_app.vfFrequenciesHzValid = g_app.vfOffsetsHzValid = false;
         if (lastOffsetsOkOut) *lastOffsetsOkOut = false;
         return false;
     }
     memcpy(g_app.curve, bestCurve, sizeof(g_app.curve));
     memcpy(g_app.freqOffsets, bestFreqOffsets, sizeof(g_app.freqOffsets));
+    memcpy(g_app.curveFrequencyHz, bestFrequencyHz, sizeof(g_app.curveFrequencyHz));
+    memcpy(g_app.freqOffsetsHz, bestOffsetsHz, sizeof(g_app.freqOffsetsHz));
+    g_app.vfFrequenciesHzValid = lastSampleOk && bestFrequencyHzValid;
+    g_app.vfOffsetsHzValid = lastSampleOk && bestOffsetsHzValid;
     g_app.numPopulated = bestNumPopulated;
     g_app.loaded = true;
     rebuild_visible_map();

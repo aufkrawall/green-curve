@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-13: Exact frequency samples through backend snapshots
+
+- Windows and Linux retain physical-Hz VF frequencies before kHz projection.
+  Capture shares the checked conversion, and settled Windows samples keep
+  matching exact frequency/offset arrays. Final read failure, service display
+  projection and selection/freshness reset invalidate precision evidence.
+- Focused fixtures cover half-kHz samples, malformed/empty tables, raw bounds,
+  foreign-domain isolation and failed reads. Exact authoring remains gated until
+  Apply integration is complete. See
+  [profile-document.md](../profile-document.md#exact-frequency-snapshots-2026-11-13).
+
 ## 2026-11-13: Stale installer names and shared readers
 
 - Stale transaction leaves are discarded through the existing no-follow

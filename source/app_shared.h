@@ -536,6 +536,8 @@ struct AppData {
     int freqOffsets[VF_NUM_POINTS];
     gc_i64 freqOffsetsHz[VF_NUM_POINTS];
     bool vfOffsetsHzValid;
+    gc_i64 curveFrequencyHz[VF_NUM_POINTS];
+    bool vfFrequenciesHzValid;
     int populatedOrdinal[VF_NUM_POINTS]; // ordinal index (0-based) per populated point, -1 for unpopulated
     int numPopulated;
     bool loaded;

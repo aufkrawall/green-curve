@@ -533,3 +533,26 @@ includes the VF domain: a memory-only or observation-only capture cannot clear
 retained curve authority. Semantic equality and mapping/planning requirements
 also ignore the inactive point-set policy. The production scoped-plan fixture
 checks that omitted curve points survive scalar-only runtime resolution.
+
+## Exact frequency snapshots (2026-11-13)
+
+Source anchors: `source/vf_curve_units.h`, `source/gpu_backend.cpp`,
+`source/gpu_backend_snapshot.h`, `source/linux_backend_vf_read.h`,
+`source/main_state_sync.cpp`, `tests/vf_frequency_precision_cases.h`,
+`tests/linux_vf_read_tests.cpp`, `tests/clock_transition_tests.cpp`.
+
+Both backends retain physical-Hz graphics status frequencies before projecting
+into the legacy kHz display table. Pascal scale-2 status values therefore keep
+half-kHz remainders. Frequency and offset precision flags describe their cached
+samples, not an atomic cross-interface read or proof that a future write is
+safe. Capture uses the same checked frequency conversion. Foreign-domain cache
+entries are zero; malformed or empty status samples cannot grant exact validity.
+
+The settled Windows reader saves matching exact arrays with each complete
+legacy sample. A final failed read invalidates precision proof even when the
+previous complete arrays remain for diagnostics. A service snapshot carries
+only kHz display data and invalidates both local exact flags; selection teardown
+and Linux freshness reset invalidate them too. Cases 8740-8747 and 8759 exercise
+raw bounds, missing outputs, fractional-Hz refusal, foreign entries and failed
+reads; the settled-reader fixture verifies array pairing and final-failure
+invalidation. Exact authoring remains gated pending complete Apply integration.

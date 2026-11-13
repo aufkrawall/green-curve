@@ -99,6 +99,7 @@ static void close_nvapi() {
 
     g_app.loaded = false;
     g_app.vfBackend = nullptr;
+    g_app.vfFrequenciesHzValid = g_app.vfOffsetsHzValid = false;
     debug_log("nvapi: closed DLL, cleared adapter cache, and invalidated nvapi_qi cache\n");
 }
 
@@ -184,6 +185,7 @@ static void reset_gpu_runtime_selection() {
     g_app.nvmlReady = false;
     g_app.nvmlDevice = nullptr;
     g_app.vfBackend = nullptr;
+    g_app.vfFrequenciesHzValid = g_app.vfOffsetsHzValid = false;
     g_app.gpuName[0] = 0;
     g_app.adapterCount = 0;
     memset(g_app.adapters, 0, sizeof(g_app.adapters));
@@ -302,6 +304,7 @@ static bool nvapi_get_name() {
     return getName(g_app.gpuHandle, g_app.gpuName) == 0;
 }
 static bool nvapi_read_curve() {
+    g_app.vfFrequenciesHzValid = false;
     const VfBackendSpec* backend = g_app.vfBackend;
     if (!backend || !backend->readSupported) return false;
     auto getStatus = (NvApiFunc)nvapi_qi(backend->getStatusId);
@@ -334,14 +337,14 @@ static bool nvapi_read_curve() {
         g_app.curve[i].volt_uV = volt;
     }
     const int graphicsEnd = vf_normalize_graphics_status(backend, g_app.curve,
-                                                        VF_NUM_POINTS);
+        VF_NUM_POINTS, g_app.curveFrequencyHz, &g_app.vfFrequenciesHzValid);
     for (int i = 0; i < VF_NUM_POINTS; ++i) {
         if (i >= graphicsEnd) g_app.curve[i] = {};
         if (g_app.curve[i].freq_kHz) ++g_app.numPopulated;
     }
     debug_log_on_change("vf units: backend=%s graphicsScale=%u graphicsPoints=%d "
-                        "status and control use physical kHz internally\n",
-        backend->name, vf_graphics_frequency_scale(backend), graphicsEnd);
+                        "status and control use physical kHz internally; frequencyHzValid=%d\n",
+        backend->name, vf_graphics_frequency_scale(backend), graphicsEnd, g_app.vfFrequenciesHzValid ? 1 : 0);
     g_app.loaded = true;
     return true;
 }

@@ -30,6 +30,7 @@ struct VfDriver {
     bool malformedPoint;
     bool malformedOffset;
     bool reportedPascalSample;
+    bool frequencyHalfStep;
     bool requestValid;
 };
 
@@ -93,6 +94,10 @@ static int read_table(void* handle, void* buffer, int call) {
                     put_word(bytes, offset + 4u, driver->foreignZeroVoltage
                         ? 0u : 540000u + (unsigned int)f * 5000u);
                 }
+            }
+            if (driver->frequencyHalfStep) {
+                unsigned int raw = 0; memcpy(&raw, bytes + b->statusEntriesOffset + (unsigned int)i * b->statusEntryStride, 4);
+                put_word(bytes, b->statusEntriesOffset + (unsigned int)i * b->statusEntryStride, raw + 1);
             }
         } else if (call == 2) {
             unsigned int offset = b->controlEntryBaseOffset +
@@ -230,7 +235,9 @@ static int run_vf_layout_cases() {
 }
 } // namespace
 
+#include "vf_frequency_precision_cases.h"
 int run_linux_vf_read_tests() {
+    if (int failure = vf_frequency_precision_cases()) return failure;
     VfDriver driver = {};
     LinuxGpuState gpu = {};
     char why[160] = {};
@@ -313,6 +320,14 @@ int run_linux_vf_read_tests() {
             gpu.curve[79].freq_kHz != 1785000u || gpu.freqOffsets[79] != 15000)
             return 7727;
     }
+    initialize(&driver, &gpu); driver.frequencyHalfStep = true;
+    add_foreign_domain(&driver, 2, false);
+    if (!nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) || !gpu.vfFrequenciesHzValid ||
+        gpu.curveFrequencyHz[0] != 600000500 || gpu.curve[0].freq_kHz != 600000 ||
+        gpu.curveFrequencyHz[80] || gpu.curveFrequencyHz[127]) return 8746;
+    driver.refusedCall = 1;
+    if (nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) || gpu.vfFrequenciesHzValid || gpu.vfOffsetsHzValid ||
+        gpu.curveFrequencyHz[0] != 600000500) return 8747;
     return run_vf_layout_cases();
 }
 

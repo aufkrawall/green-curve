@@ -167,6 +167,7 @@ struct App {
  int numVisible=0,numPopulated=0;
  Point curve[VF_NUM_POINTS]{}; int freqOffsets[VF_NUM_POINTS]{};
  long long freqOffsetsHz[VF_NUM_POINTS]{}; bool vfOffsetsHzValid{};
+ long long curveFrequencyHz[VF_NUM_POINTS]{}; bool vfFrequenciesHzValid{};
  int gpuClockOffsetkHz{}; LockMode lockMode{};
  GpuFamily gpuFamily{};
  unsigned int appliedLockFreq{},lockedFreq{},transitionClockCapMHz{}; bool transitionClockCapActive{};
@@ -206,11 +207,15 @@ static Sample samples[3]{};
 static int sampleIndex=0;
 static bool nvapi_read_curve(){
  const auto sample=samples[sampleIndex];
+ g_app.vfFrequenciesHzValid=sample.curveOk&&sample.freq>0;
+ if(sample.curveOk)g_app.curveFrequencyHz[0]=(long long)sample.freq*1000+500;
  if(sample.curveOk){g_app.curve[0].freq_kHz=sample.freq;g_app.numPopulated=sample.freq?1:0;}
  return sample.curveOk;
 }
 static bool nvapi_read_offsets(){
  const auto sample=samples[sampleIndex++];
+ g_app.vfOffsetsHzValid=sample.offsetsOk;
+ if(sample.offsetsOk)g_app.freqOffsetsHz[0]=(long long)(sample.freq/1000)*1000+500;
  if(sample.offsetsOk)g_app.freqOffsets[0]=(int)(sample.freq/1000);
  return sample.offsetsOk;
 }
@@ -802,10 +807,14 @@ static int run(){
  sampleIndex=0;bool offsetsOk=false;
  CHECK(read_live_curve_snapshot_settled(3,0,&offsetsOk));
  CHECK(offsetsOk&&g_app.curve[0].freq_kHz==2700000&&g_app.freqOffsets[0]==2700);
+ CHECK(g_app.vfFrequenciesHzValid&&g_app.vfOffsetsHzValid&&
+   g_app.curveFrequencyHz[0]==2700000500LL&&g_app.freqOffsetsHz[0]==2700500);
  // Latest read failure cannot silently reuse older success as verification.
  for(int failure=0;failure<3;++failure){
    samples[2]={failure!=0,failure!=1,failure==2?0u:2700000u};sampleIndex=0;
    CHECK(!read_live_curve_snapshot_settled(3,0,&offsetsOk));CHECK(!offsetsOk);
+   CHECK(!g_app.vfFrequenciesHzValid&&!g_app.vfOffsetsHzValid&&
+     g_app.curveFrequencyHz[0]==2600000500LL&&g_app.freqOffsetsHz[0]==2600500);
  }
  CHECK(vf_offset_zero_readback_is_benign(100000,0,400000,500000));
  CHECK(!vf_offset_zero_readback_is_benign(-100000,0,400000,500000));

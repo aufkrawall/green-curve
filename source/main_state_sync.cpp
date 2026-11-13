@@ -421,6 +421,7 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot,
     memcpy(g_app.fanControlSignal, snapshot->fanControlSignal, sizeof(g_app.fanControlSignal));
     memcpy(g_app.fanTargetMask, snapshot->fanTargetMask, sizeof(g_app.fanTargetMask));
     memcpy(g_app.curve, snapshot->curve, sizeof(g_app.curve));
+    g_app.vfFrequenciesHzValid = g_app.vfOffsetsHzValid = false;
     memcpy(g_app.freqOffsets, snapshot->freqOffsets, sizeof(g_app.freqOffsets));
     copy_fan_curve(&g_app.activeFanCurve, &snapshot->activeFanCurve);
     StringCchCopyA(g_app.gpuName, ARRAY_COUNT(g_app.gpuName), snapshot->gpuName);

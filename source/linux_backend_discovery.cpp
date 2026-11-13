@@ -42,6 +42,7 @@ static void linux_backend_clear_vf_freshness(LinuxGpuState* g,
     g->vfControlFresh = false;
     g->vfStructureValid = false;
     g->vfSnapshotFresh = false;
+    g->vfFrequenciesHzValid = g->vfOffsetsHzValid = false;
     if (clearInfoCache) g->vfInfoCached = false;
     g->health.vfSnapshotFresh = false;
     g->health.availableMutationDomains &=

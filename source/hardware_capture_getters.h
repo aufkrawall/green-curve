@@ -107,9 +107,9 @@ static inline bool hardware_capture_read_vf(Query query, void* handle, const VfB
     for (int i = 0; i < end; ++i) {
         if (!curve[i].freq_kHz) { if (curve[i].volt_uV) { driverStatus = -100002; return false; } continue; }
         if (!curve[i].volt_uV) { driverStatus = -100002; return false; }
-        const gc_i64 numerator = (gc_i64)curve[i].freq_kHz * 1000;
-        if (numerator % scale) { driverStatus = -100002; return false; }
-        exactFrequency[i] = numerator / scale;
+        if (!vf_graphics_frequency_hz(backend, curve[i].freq_kHz, &exactFrequency[i])) {
+            driverStatus = -100002; return false;
+        }
         int raw = 0;
         const unsigned int at = backend->controlEntryBaseOffset + (unsigned int)i * backend->controlEntryStride + backend->controlEntryDeltaOffset;
         memcpy(&raw, control.get() + at, 4);
