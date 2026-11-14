@@ -97,6 +97,11 @@ static int run() {
     if (sends != count || g_profileReviewJob) return 9385;
     queue = false; start(); queue = true;
     if (g_profileReviewJob || g_profileReadPending || g_profileSourceWindow->status != "fixture queue refusal") return 9386;
+    gui_profile_source_check(nullptr, g_app.guiSource.value, 0, CLOCK_OFFSET_SURFACE_GLOBAL);
+    if (!g_profileReviewJob || g_profileReviewJob->memory != CLOCK_OFFSET_SURFACE_GLOBAL ||
+        g_app.guiSource.value.memorySurface != CLOCK_OFFSET_SURFACE_P0) return 9389;
+    gui_profile_source_preview_changed(nullptr);
+    if (g_profileReviewJob || g_profileReadPending) return 9390;
     g_profileSourceWindow.reset(); return 0;
 }
 }

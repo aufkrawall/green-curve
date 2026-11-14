@@ -5,7 +5,8 @@
 #include <cstring>
 namespace {
 struct Host {
-    int saves = 0, changes = 0, closes = 0, confirms = 0, checks = 0, inputChanges = 0;
+    int saves = 0, changes = 0, closes = 0, confirms = 0, checks = 0, inputChanges = 0, previewChanges = 0;
+    gc_u32 graphics = 0, memory = 0;
     bool discard = false, failSave = false;
     ProfileDocument saved{};
     ProfileSourceWindow* window = nullptr;
@@ -18,13 +19,14 @@ static bool save(void* context, const ProfileDocument& document, char* error, si
 static bool confirm(void* context) { auto& h = *(Host*)context; ++h.confirms; return h.discard; }
 static void changed(void* context) { ++((Host*)context)->changes; }
 static void closed(void* context) { ++((Host*)context)->closes; }
-static void check(void* context, const ProfileDocument& document) {
-    auto& h = *(Host*)context; ++h.checks; h.saved = document;
+static void check(void* context, const ProfileDocument& document, gc_u32 graphics, gc_u32 memory) {
+    auto& h = *(Host*)context; ++h.checks; h.saved = document; h.graphics = graphics; h.memory = memory;
 }
 static void input_changed(void* context) {
     auto& h = *(Host*)context; ++h.inputChanges;
     if (h.window) h.window->clear_report();
 }
+static void preview_changed(void* context) { ++((Host*)context)->previewChanges; input_changed(context); }
 static void select(ProfileSourceWindow& window, int row) {
     SendMessageW(window.control(ProfileSourceWindow::LIST), LB_SETCURSEL, row, 0);
     SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::LIST, LBN_SELCHANGE), (LPARAM)window.control(ProfileSourceWindow::LIST));
@@ -48,6 +50,7 @@ int run_profile_source_window_tests() {
     auto host = std::make_unique<Host>();
     ProfileSourceWindowCallbacks callbacks{host.get(), save, confirm, changed, closed, nullptr};
     callbacks.check = check; callbacks.inputChanged = input_changed;
+    callbacks.previewChanged = preview_changed;
     ProfileSourceWindow window(*model, callbacks);
     host->window = &window;
     if (!window.create(nullptr, 96, false) || IsWindowVisible(window.handle())) return 9330;
@@ -65,8 +68,14 @@ int run_profile_source_window_tests() {
     select(window, point);
     if (text(window.control(ProfileSourceWindow::INPUT)) != L"1200.123456" || window.pending() || profile_editor_document_dirty(*model)) return 9333;
     if (!window.save() || host->saves != 1 || host->saved.points[0].kind != PROFILE_POINT_CAPTURED_OFFSET || host->changes) return 9334;
+    if (IsWindowEnabled(window.control(ProfileSourceWindow::GRAPHICS_ROUTE)) ||
+        !IsWindowEnabled(window.control(ProfileSourceWindow::MEMORY_ROUTE))) return 9387;
+    SendMessageW(window.control(ProfileSourceWindow::MEMORY_ROUTE), CB_SETCURSEL, 1, 0);
+    SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::MEMORY_ROUTE, CBN_SELCHANGE), 0);
     SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::CHECK, 0);
-    if (host->checks != 1 || host->saved.points[0].kind != PROFILE_POINT_CAPTURED_OFFSET || host->changes) return 9364;
+    if (host->checks != 1 || host->saved.points[0].kind != PROFILE_POINT_CAPTURED_OFFSET || host->changes ||
+        host->memory != CLOCK_OFFSET_SURFACE_P0 || host->graphics || host->previewChanges != 1 ||
+        d.memorySurface != CLOCK_OFFSET_SURFACE_GLOBAL || profile_editor_document_dirty(*model)) return 9364;
     SetWindowTextW(window.control(ProfileSourceWindow::INPUT), L"1200.123456");
     MSG enter{}; enter.hwnd = window.control(ProfileSourceWindow::INPUT); enter.message = WM_KEYDOWN; enter.wParam = VK_RETURN;
     if (!window.route(enter) || host->changes != 1 || d.points[0].kind != PROFILE_POINT_ABSOLUTE_FREQUENCY ||
@@ -82,13 +91,26 @@ int run_profile_source_window_tests() {
     RECT placement{0, 0, 320, 250}; SendMessageW(window.handle(), WM_DPICHANGED, MAKEWPARAM(144, 144), (LPARAM)&placement);
     DWORD start = 0, end = 0; SendMessageW(window.control(ProfileSourceWindow::INPUT), EM_GETSEL, (WPARAM)&start, (LPARAM)&end);
     if (!window.pending() || text(window.control(ProfileSourceWindow::INPUT)) != L"1." || start != 1 || end != 2) return 9338;
-    const HWND help = window.control(ProfileSourceWindow::HELP);
-    HDC dc = GetDC(help); if (!dc) return 9349;
-    HGDIOBJ oldFont = SelectObject(dc, (HFONT)SendMessageW(help, WM_GETFONT, 0, 0));
-    const auto label = text(help); SIZE labelSize{};
-    const bool measured = GetTextExtentPoint32W(dc, label.c_str(), (int)label.size(), &labelSize) != FALSE;
-    SelectObject(dc, oldFont); ReleaseDC(help, dc); RECT helpRect{}; GetClientRect(help, &helpRect);
-    if (!measured || labelSize.cx > helpRect.right || labelSize.cy > helpRect.bottom) return 9349;
+    for (int id : {ProfileSourceWindow::HELP, ProfileSourceWindow::GRAPHICS_TITLE, ProfileSourceWindow::MEMORY_TITLE}) {
+        const HWND help = window.control(id);
+        HDC dc = GetDC(help); if (!dc) return 9349;
+        HGDIOBJ oldFont = SelectObject(dc, (HFONT)SendMessageW(help, WM_GETFONT, 0, 0));
+        const auto label = text(help); SIZE labelSize{};
+        const bool measured = GetTextExtentPoint32W(dc, label.c_str(), (int)label.size(), &labelSize) != FALSE;
+        SelectObject(dc, oldFont); ReleaseDC(help, dc); RECT helpRect{}; GetClientRect(help, &helpRect);
+        if (!measured || labelSize.cx > helpRect.right || labelSize.cy > helpRect.bottom) {
+            fprintf(stderr, "source-window label id=%d measured=%d text=%ldx%ld bounds=%ldx%ld\n", id,
+                measured ? 1 : 0, labelSize.cx, labelSize.cy, helpRect.right, helpRect.bottom);
+            return 9349;
+        }
+    }
+    SendMessageW(window.handle(), WM_VSCROLL, SB_TOP, 0); SendMessageW(window.handle(), WM_HSCROLL, SB_LEFT, 0);
+    const HWND choice = window.control(ProfileSourceWindow::MEMORY_ROUTE);
+    SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::MEMORY_ROUTE, CBN_SETFOCUS), (LPARAM)choice);
+    RECT choiceRect{}, viewport{}; GetWindowRect(choice, &choiceRect);
+    MapWindowPoints(nullptr, window.handle(), (POINT*)&choiceRect, 2); GetClientRect(window.handle(), &viewport);
+    if (choiceRect.left < 0 || choiceRect.top < 0 || choiceRect.right > viewport.right || choiceRect.bottom > viewport.bottom ||
+        !window.pending() || text(window.control(ProfileSourceWindow::INPUT)) != L"1.") return 9393;
     SendMessageW(window.handle(), WM_CLOSE, 0, 0);
     if (!window.handle() || host->confirms != 1 || host->closes || text(window.control(ProfileSourceWindow::INPUT)) != L"1.") return 9339;
     SetWindowTextW(window.control(ProfileSourceWindow::INPUT), L"1300.000001");
@@ -113,6 +135,11 @@ int run_profile_source_window_tests() {
         text(window.control(ProfileSourceWindow::REPORT)).find(L"maximum=3000000000") == std::wstring::npos) return 9366;
     const LONG_PTR reportStyle = GetWindowLongPtrW(window.control(ProfileSourceWindow::REPORT), GWL_STYLE);
     if (!(reportStyle & ES_READONLY) || !(reportStyle & ES_MULTILINE) || !(reportStyle & WS_VSCROLL)) return 9367;
+    SendMessageW(window.control(ProfileSourceWindow::MEMORY_ROUTE), CB_SETCURSEL, 2, 0);
+    SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::MEMORY_ROUTE, CBN_SELCHANGE), 0);
+    if (visible(window.control(ProfileSourceWindow::VIEW)) || !visible(window.control(ProfileSourceWindow::LIST)) ||
+        host->previewChanges != 2 || d.memorySurface != CLOCK_OFFSET_SURFACE_GLOBAL || profile_editor_document_dirty(*model)) return 9388;
+    window.report(report);
     SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::VIEW, 0);
     if (!visible(window.control(ProfileSourceWindow::LIST)) || !IsWindowEnabled(window.control(ProfileSourceWindow::INPUT)) ||
         text(window.control(ProfileSourceWindow::INPUT)) != L"-123.500001") return 9368;
@@ -124,6 +151,18 @@ int run_profile_source_window_tests() {
     SendMessageW(window.handle(), WM_CLOSE, 0, 0);
     if (window.handle() || host->closes != 1 || host->confirms != 1) return 9345;
     if (!window.create(nullptr, 96, false)) return 9346;
+    d.domains |= PROFILE_DOMAIN_GRAPHICS_OFFSET; d.graphicsOffset.present = true;
+    window.reload();
+    if (!IsWindowEnabled(window.control(ProfileSourceWindow::GRAPHICS_ROUTE)) ||
+        SendMessageW(window.control(ProfileSourceWindow::GRAPHICS_ROUTE), CB_GETCOUNT, 0, 0) != 4 ||
+        SendMessageW(window.control(ProfileSourceWindow::MEMORY_ROUTE), CB_GETCURSEL, 0, 0) != 0) return 9391;
+    const gc_u32 expected[] = {0, CLOCK_OFFSET_SURFACE_P0, CLOCK_OFFSET_SURFACE_GLOBAL, DESIRED_GRAPHICS_VF_COMPONENT};
+    for (int choice = 1; choice <= 3; ++choice) {
+        SendMessageW(window.control(ProfileSourceWindow::GRAPHICS_ROUTE), CB_SETCURSEL, choice, 0);
+        SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::GRAPHICS_ROUTE, CBN_SELCHANGE), 0);
+        SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::CHECK, 0);
+        if (host->graphics != expected[choice] || host->memory || d.graphicsOffset.offsetHz) return 9392;
+    }
     select(window, point); SetWindowTextW(window.control(ProfileSourceWindow::INPUT), L"invalid");
     model->unsaved = true; host->discard = true;
     SendMessageW(window.handle(), WM_CLOSE, 0, 0);

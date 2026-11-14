@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Explicit Windows preview controls
+
+- Native source checks offer named graphics/memory controls without changing
+  saved source meaning. Choice changes expire pending and completed reviews;
+  loading another source resets choices to Auto.
+- Cases 9387-9393 cover native selection, job binding, absent domains, reload
+  defaults, keyboard focus scrolling and measured caption fit at high DPI.
+  See [config-profiles.md](../config-profiles.md#windows-read-only-destination-checks-2026-11-14).
+- Focused native ASan/UBSan tests and all-target builds pass. Dropping a chosen
+  API fails 9389; omitting combo focus scrolling reproduces 9393.
+
 ## 2026-11-14: Windows passive destination checks
 
 - The native source editor queues a named passive read through the existing

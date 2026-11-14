@@ -26,14 +26,16 @@ struct ProfileSourceWindowCallbacks {
     void (*changed)(void*) = nullptr;
     void (*closed)(void*) = nullptr;
     void (*created)(HWND) = nullptr;
-    void (*check)(void*, const ProfileDocument&) = nullptr;
+    void (*check)(void*, const ProfileDocument&, gc_u32, gc_u32) = nullptr;
     void (*inputChanged)(void*) = nullptr;
+    void (*previewChanged)(void*) = nullptr;
 };
 // The native window edits only the canonical source. It has no driver, service
 // or live-topology dependency; callbacks own storage and parent presentation.
 class ProfileSourceWindow {
 public:
-    enum { LIST = 9101, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CHECK, REPORT, VIEW, CLOSE = IDCANCEL };
+    enum { LIST = 9101, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CHECK, REPORT, VIEW,
+        GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, CLOSE = IDCANCEL };
     ProfileSourceWindow(ProfileEditorDocument& model, ProfileSourceWindowCallbacks callbacks)
         : model_(model), callbacks_(callbacks) {}
     ProfileSourceWindow(const ProfileSourceWindow&) = delete;
@@ -73,7 +75,9 @@ public:
     }
     void show() { if (window_) { ShowWindow(window_, SW_SHOW); SetForegroundWindow(window_); } }
     void reload() {
-        ++generation_; pending_ = false; selected_ = -1; clear_report(); rebuild(-1);
+        ++generation_; pending_ = false; selected_ = -1; graphics_ = memory_ = 0;
+        SendMessageW(control(GRAPHICS_ROUTE), CB_SETCURSEL, 0, 0); SendMessageW(control(MEMORY_ROUTE), CB_SETCURSEL, 0, 0);
+        clear_report(); rebuild(-1);
         status(L"Source draft; destination review is required before Apply");
     }
     void notice(const char* message) { GcWideUtf8Arg text(message); status(text.value); }
@@ -113,6 +117,7 @@ private:
     int dpi_ = 96, selected_ = -1, scrollX_ = 0, scrollY_ = 0;
     bool pending_ = false, updating_ = false, layingOut_ = false;
     bool reportAvailable_ = false, reportVisible_ = false;
+    gc_u32 graphics_ = 0, memory_ = 0;
     unsigned long long generation_ = 0;
     std::vector<ProfileEditorSourceRow> rows_;
     int px(int value) const { return MulDiv(value, dpi_, 96); }
@@ -131,7 +136,8 @@ private:
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
         if (!fresh) return;
         HFONT old = font_; font_ = fresh;
-        for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE, CHECK, REPORT, VIEW})
+        for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE, CHECK, REPORT, VIEW,
+            GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE})
             SendMessageW(control(id), WM_SETFONT, (WPARAM)font_, FALSE);
         if (old) DeleteObject(old);
     }
@@ -152,7 +158,15 @@ private:
         child(L"BUTTON", L"Close source", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CLOSE);
         child(L"EDIT", L"", ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP, STATUS);
         child(L"EDIT", L"", ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP, REPORT);
-        for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE, CHECK, REPORT, VIEW}) if (!control(id)) return false;
+        child(L"STATIC", L"Check graphics control", 0, GRAPHICS_TITLE);
+        child(L"STATIC", L"Check memory control", 0, MEMORY_TITLE);
+        for (int id : {GRAPHICS_ROUTE, MEMORY_ROUTE}) {
+            HWND combo = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, id);
+            for (const auto* label : {L"Auto", L"P0", L"Global"}) SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)label);
+            if (id == GRAPHICS_ROUTE) SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)L"VF component");
+        }
+        for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE, CHECK, REPORT, VIEW,
+            GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE}) if (!control(id)) return false;
         SendMessageW(control(REPORT), EM_SETLIMITTEXT, 128 * 1024, 0);
         SendMessageW(input_, EM_SETLIMITTEXT, 31, 0);
         if (!SetWindowSubclass(input_, input_proc, 1, (DWORD_PTR)this)) return false;
@@ -175,6 +189,8 @@ private:
         selected_ = selected; SendMessageW(list_, LB_SETCURSEL, selected, 0); updating_ = false;
         select(false); EnableWindow(control(SAVE), model_.valid);
         EnableWindow(control(CHECK), model_.valid && callbacks_.check); project_view(); update_title();
+        EnableWindow(control(GRAPHICS_ROUTE), model_.valid && model_.value.graphicsOffset.present);
+        EnableWindow(control(MEMORY_ROUTE), model_.valid && model_.value.hasMemoryOffset);
     }
     bool commit(bool force) {
         if (!pending_ && !force) return true;
@@ -218,23 +234,39 @@ private:
         const bool editable = !reportVisible_ && model_.valid && index >= 0 && (size_t)index < rows_.size() && rows_[index].editable;
         EnableWindow(input_, editable); EnableWindow(control(STAGE), editable);
     }
+    void preview_choice(int id) {
+        if (!model_.valid || (id == GRAPHICS_ROUTE ? !model_.value.graphicsOffset.present : !model_.value.hasMemoryOffset)) return;
+        const int selected = (int)SendMessageW(control(id), CB_GETCURSEL, 0, 0);
+        if (selected < 0 || selected > (id == GRAPHICS_ROUTE ? 3 : 2)) return;
+        const gc_u32 choice = selected == 1 ? CLOCK_OFFSET_SURFACE_P0 : selected == 2 ? CLOCK_OFFSET_SURFACE_GLOBAL :
+            selected == 3 ? (gc_u32)DESIRED_GRAPHICS_VF_COMPONENT : 0u;
+        auto& current = id == GRAPHICS_ROUTE ? graphics_ : memory_;
+        if (current == choice) return;
+        current = choice; clear_report();
+        if (callbacks_.previewChanged) callbacks_.previewChanged(callbacks_.context);
+        status(L"Preview control changed; source unchanged; Check reviews this choice");
+    }
     void layout() {
         if (!list_ || layingOut_) return;
         layingOut_ = true; RECT client{};
         for (int pass = 0; pass < 2; ++pass) {
             GetClientRect(window_, &client);
-            const int width = std::max((int)client.right, px(360)), height = std::max((int)client.bottom, px(320));
+            const int width = std::max((int)client.right, px(360)), height = std::max((int)client.bottom, px(360));
             SCROLLINFO x{sizeof(x), SIF_RANGE | SIF_PAGE | SIF_POS, 0, width - 1, (UINT)client.right, scrollX_, 0};
             SCROLLINFO y{sizeof(y), SIF_RANGE | SIF_PAGE | SIF_POS, 0, height - 1, (UINT)client.bottom, scrollY_, 0};
             SetScrollInfo(window_, SB_HORZ, &x, TRUE); SetScrollInfo(window_, SB_VERT, &y, TRUE);
         }
         SCROLLINFO info{}; info.cbSize = sizeof(info); info.fMask = SIF_POS;
         GetScrollInfo(window_, SB_HORZ, &info); scrollX_ = info.nPos; GetScrollInfo(window_, SB_VERT, &info); scrollY_ = info.nPos;
-        GetClientRect(window_, &client); const int w = std::max((int)client.right, px(360)), h = std::max((int)client.bottom, px(320));
+        GetClientRect(window_, &client); const int w = std::max((int)client.right, px(360)), h = std::max((int)client.bottom, px(360));
         const int m = px(12), row = px(28), gap = px(8);
         const auto place = [&](int id, int x, int y, int width, int height) { MoveWindow(control(id), x - scrollX_, y - scrollY_, width, height, TRUE); };
         place(TITLE, m, m, w - 2*m - px(104), px(22)); place(VIEW, w - m - px(96), m, px(96), px(24));
-        place(LIST, m, px(42), w - 2*m, h - px(216)); place(REPORT, m, px(42), w - 2*m, h - px(216));
+        place(LIST, m, px(42), w - 2*m, h - px(276)); place(REPORT, m, px(42), w - 2*m, h - px(276));
+        place(GRAPHICS_TITLE, m, h - px(230), w/2 - m - px(6), px(22));
+        place(MEMORY_TITLE, w/2 + px(6), h - px(230), w/2 - m - px(6), px(22));
+        place(GRAPHICS_ROUTE, m, h - px(206), w/2 - m - px(6), px(180));
+        place(MEMORY_ROUTE, w/2 + px(6), h - px(206), w/2 - m - px(6), px(180));
         place(HELP, m, h - px(166), w - 2*m, px(22));
         place(INPUT, m, h - px(138), w - 2*m - px(128) - gap, row); place(STAGE, w - m - px(128), h - px(138), px(128), row);
         place(SAVE, m, h - px(100), px(120), row); place(CHECK, m + px(128), h - px(100), px(80), row);
@@ -274,6 +306,15 @@ private:
         if (old) SelectObject(item.hDC, old);
         if (item.itemState & ODS_FOCUS) { RECT focus = item.rcItem; InflateRect(&focus, -px(3), -px(3)); DrawFocusRect(item.hDC, &focus); }
     }
+    static bool focus_notification(int id, int notification) {
+        switch (id) {
+            case LIST: return notification == LBN_SETFOCUS;
+            case INPUT: case REPORT: case STATUS: return notification == EN_SETFOCUS;
+            case GRAPHICS_ROUTE: case MEMORY_ROUTE: return notification == CBN_SETFOCUS;
+            case STAGE: case SAVE: case CLOSE: case CHECK: case VIEW: return notification == BN_SETFOCUS;
+            default: return false;
+        }
+    }
     static LRESULT CALLBACK input_proc(HWND hwnd, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
         auto* self = (ProfileSourceWindow*)data;
         if (message == WM_KEYDOWN && (w == VK_RETURN || (w == 'S' && (GetKeyState(VK_CONTROL) & 0x8000)))) {
@@ -307,7 +348,7 @@ private:
                 self->layout(); return 0;
             }
             case WM_COMMAND:
-                if (HIWORD(w) == EN_SETFOCUS || HIWORD(w) == BN_SETFOCUS || HIWORD(w) == LBN_SETFOCUS) self->reveal((HWND)l);
+                if (l && focus_notification(LOWORD(w), HIWORD(w))) self->reveal((HWND)l);
                 if (LOWORD(w) == LIST && HIWORD(w) == LBN_SELCHANGE) self->select(true);
                 else if (LOWORD(w) == INPUT && HIWORD(w) == EN_CHANGE && !self->updating_) {
                     self->pending_ = true; self->update_title();
@@ -316,7 +357,9 @@ private:
                 else if (LOWORD(w) == STAGE && HIWORD(w) == BN_CLICKED) (void)self->commit(true);
                 else if (LOWORD(w) == SAVE && HIWORD(w) == BN_CLICKED) (void)self->save();
                 else if (LOWORD(w) == CHECK && HIWORD(w) == BN_CLICKED && self->callbacks_.check && self->model_.valid && self->commit(false))
-                    self->callbacks_.check(self->callbacks_.context, self->model_.value);
+                    self->callbacks_.check(self->callbacks_.context, self->model_.value, self->graphics_, self->memory_);
+                else if ((LOWORD(w) == GRAPHICS_ROUTE || LOWORD(w) == MEMORY_ROUTE) && HIWORD(w) == CBN_SELCHANGE)
+                    self->preview_choice(LOWORD(w));
                 else if (LOWORD(w) == VIEW && HIWORD(w) == BN_CLICKED && self->reportAvailable_) {
                     if (!self->reportVisible_ && !self->commit(false)) return 0;
                     self->reportVisible_ = !self->reportVisible_; self->project_view();

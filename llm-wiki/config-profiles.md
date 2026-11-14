@@ -32,11 +32,18 @@ ownership remain unchanged, including on refused checks.
 Reports use a separate read-only, wrapping/scrolling native pane. Switching
 back to Source restores the exact selected value; invalid input cannot start a
 check. The report is a control/mapping preview and grants no Apply authority.
-Explicit preview-route controls, destination acceptance and mapped Apply remain
-separate integration work.
+Graphics preview offers Auto, P0, Global and VF component; memory offers Auto,
+P0 and Global. Absent source domains have disabled selectors. Choices stay out
+of the source document and Save, are frozen into each check job and expire any
+previous/pending report when changed. Loading another source resets them to Auto.
+Destination acceptance and mapped Apply remain separate integration work.
+
+Cases 9387-9393 also cover native API selection, absent domains, job choices,
+review invalidation, source preservation, reload defaults, DPI label fit and
+keyboard focus scrolling without losing unfinished text.
 
 Diagnostics use `profile-check:` queued/completed/expired lines with tokens,
-revisions, stage/result and bounded reasons. Cases 9350-9386 cover the pure
+revisions, selected controls, stage/result and bounded reasons. Cases 9350-9386 cover the pure
 request/session contract, native report controls and production GUI callbacks
 with scripted transport. They include owned zero, stale/late completions,
 invalid input, selection mismatch, duplicate reads, queue/transport/service

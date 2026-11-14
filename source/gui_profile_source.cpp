@@ -58,6 +58,7 @@ static bool gui_profile_source_open() {
         callbacks.created = apply_system_titlebar_theme;
         callbacks.check = gui_profile_source_check;
         callbacks.inputChanged = gui_profile_source_input_changed;
+        callbacks.previewChanged = gui_profile_source_preview_changed;
         g_profileSourceWindow = std::make_unique<ProfileSourceWindow>(g_app.guiSource, callbacks);
     }
     return g_profileSourceWindow->create(g_app.hMainWnd, g_dpi, false);

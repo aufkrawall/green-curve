@@ -30,7 +30,7 @@ static void gui_profile_source_observe_service(const ServiceResponse* response) 
     g_profileShownContext = response ? profile_editor_review_context(*response) : ProfileEditorReviewContext{};
     gui_profile_source_service_changed();
 }
-static void gui_profile_source_check(void*, const ProfileDocument& document) {
+static void gui_profile_source_check(void*, const ProfileDocument& document, gc_u32 graphics = 0, gc_u32 memory = 0) {
     char error[256]{};
     if (g_profileReadPending) { g_profileSourceWindow->notice("A destination check is already pending"); return; }
     gui_profile_source_invalidate_review("Checking the destination again");
@@ -41,6 +41,7 @@ static void gui_profile_source_check(void*, const ProfileDocument& document) {
     }
     if (g_profileReadToken == ~(gc_u64)0) { g_profileSourceWindow->notice("Reopen the application before checking again"); return; }
     auto job = std::make_unique<ProfileEditorReviewJob>(); job->token = ++g_profileReadToken;
+    job->graphics = graphics; job->memory = memory;
     job->source = document; job->sourceRevision = g_app.guiSource.revision; job->context = g_profileShownContext;
     if (!gui_service_io_queue_capture(job->context.target, profile_editor_review_domains(document), job->token, error, sizeof(error))) {
         g_profileSourceWindow->notice(error); return;
@@ -65,14 +66,18 @@ static void gui_profile_source_handle_check(GuiServiceIoCompletion* completion) 
             g_profileShownContext, completion->response, lines, *review, result)) {
         gui_profile_source_invalidate_review("Source, GPU controls or ownership changed during the check; try again"); return;
     }
-    debug_log("profile-check: completed token=%llu revision=%llu stage=%d result=%d lines=%u\n",
+    debug_log("profile-check: completed token=%llu revision=%llu graphics=%u memory=%u stage=%d result=%d lines=%u\n",
         (unsigned long long)completion->captureToken, (unsigned long long)g_app.guiSource.revision,
+        (unsigned)g_profileReviewJob->graphics, (unsigned)g_profileReviewJob->memory,
         (int)review->stage, result, (unsigned)lines.size());
     g_profileReview = std::move(review); g_profileSourceWindow->report(lines);
     g_profileSourceWindow->notice("Read-only destination report; no Apply authority is granted");
 }
 static void gui_profile_source_input_changed(void*) {
     gui_profile_source_invalidate_review("Source input changed; stage the value and check again");
+}
+static void gui_profile_source_preview_changed(void*) {
+    gui_profile_source_invalidate_review("Preview controls changed; check the destination again");
 }
 static void gui_profile_source_check_allocation_failed(gc_u64 token) {
     if (g_profileReviewJob && g_profileReviewJob->token == token)
