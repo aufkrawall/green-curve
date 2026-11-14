@@ -629,8 +629,10 @@ static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
     switch (phase) {
         case LINUX_MUTATION_LOCK: {
             bool noControl = linux_clock_control_proven_absent(g);
-            bool ok = noControl || (g->nvml.resetGpuLockedClocks &&
-                g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS);
+            bool ok = linux_finalize_named_graphics_reset(g, [&] {
+                return noControl || (g->nvml.resetGpuLockedClocks &&
+                    g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS);
+            });
             if (noControl)
                 lb_log("reset: NVML locked-clock domain absent on Pascal;"
                        " continuing with mutable domains\n");
@@ -638,7 +640,7 @@ static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
             return ok;
         }
         case LINUX_MUTATION_GPU_OFFSET:
-            if (g->graphicsRecovery.covered) return linux_reset_named_graphics(g);
+            if (g->graphicsRecovery.covered) return linux_reset_named_graphics(g, false);
             return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0);
         case LINUX_MUTATION_MEM_OFFSET:
             return nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0);

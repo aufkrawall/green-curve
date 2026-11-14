@@ -18,6 +18,7 @@ struct Driver {
     bool badRange, globalRangeFails;
     bool narrowRange, failReadAfterWrite;
     int capWrites;
+    bool globalWriteClobbersP0;
 };
 static nvmlReturn_t scalar_guard_set(nvmlDevice_t device, unsigned int, unsigned int) {
     ++reinterpret_cast<Driver*>(device)->capWrites; return NVML_SUCCESS;
@@ -49,6 +50,7 @@ static nvmlReturn_t set_global(nvmlDevice_t device, int value) {
     Driver* d = driver(device);
     ++d->globalWrites;
     d->globalValue = d->snap ? (value / 2) * 2 : value;
+    if (d->globalWriteClobbersP0) ++d->p0Value;
     return NVML_SUCCESS;
 }
 static nvmlReturn_t get_global(nvmlDevice_t device, int* value) {
@@ -108,7 +110,8 @@ static int graphics_recovery_cases() {
         g.graphicsRecovery.attempted != GRAPHICS_SCALAR_RECOVERY_ALL) return 9064;
     state.failP0Set = false;
     if (!graphics_scalar_restore(g.graphicsRecovery, snapshot.graphicsPreimage,
-            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(&g, NVML_CLOCK_GRAPHICS, value, surface); }) ||
+            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(&g, NVML_CLOCK_GRAPHICS, value, surface); },
+            [&](gc_u32 surface, int value) { return linux_named_graphics_matches(&g, surface, value); }) ||
         state.p0Value != 71 || state.globalValue != -243 ||
         g.graphicsRecovery.covered != GRAPHICS_SCALAR_RECOVERY_ALL ||
         g.graphicsRecovery.uncertain != GRAPHICS_SCALAR_RECOVERY_ALL) return 9065;
@@ -116,7 +119,8 @@ static int graphics_recovery_cases() {
         g.graphicsRecovery.covered || g.graphicsRecovery.uncertain) return 9066;
     state.failP0Set = true;
     if (graphics_scalar_restore(g.graphicsRecovery, snapshot.graphicsPreimage,
-            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(&g, NVML_CLOCK_GRAPHICS, value, surface); }) ||
+            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(&g, NVML_CLOCK_GRAPHICS, value, surface); },
+            [&](gc_u32 surface, int value) { return linux_named_graphics_matches(&g, surface, value); }) ||
         g.graphicsRecovery.covered != GRAPHICS_SCALAR_RECOVERY_ALL ||
         g.graphicsRecovery.uncertain != GRAPHICS_SCALAR_RECOVERY_ALL) return 9082;
     initialize(&state, &g); state.p0Value = 13; state.globalValue = 99;
@@ -128,13 +132,15 @@ static int graphics_recovery_cases() {
         g.graphicsRecovery.uncertain != GRAPHICS_SCALAR_RECOVERY_P0) return 9068;
     state.failP0Set = false;
     if (!graphics_scalar_restore(g.graphicsRecovery, snapshot.graphicsPreimage,
-            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(&g, NVML_CLOCK_GRAPHICS, value, surface); }) ||
+            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(&g, NVML_CLOCK_GRAPHICS, value, surface); },
+            [&](gc_u32 surface, int value) { return linux_named_graphics_matches(&g, surface, value); }) ||
         state.p0Value != 13 || state.globalValue != 99 || state.globalWrites ||
         g.graphicsRecovery.covered || g.graphicsRecovery.uncertain) return 9069;
     g.graphicsRecovery.attempted = GRAPHICS_SCALAR_RECOVERY_GLOBAL;
     const int writes = state.p0Writes;
     if (graphics_scalar_restore(g.graphicsRecovery, snapshot.graphicsPreimage,
-            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(&g, NVML_CLOCK_GRAPHICS, value, surface); }) ||
+            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(&g, NVML_CLOCK_GRAPHICS, value, surface); },
+            [&](gc_u32 surface, int value) { return linux_named_graphics_matches(&g, surface, value); }) ||
         state.p0Writes != writes || state.globalWrites) return 9070;
     snapshot = {}; state.failGlobalRead = true;
     const auto before = snapshot;
@@ -192,6 +198,37 @@ static int graphics_recovery_cases() {
     if (linux_backend_recovery_binding_matches(&g, &moved)) return 9087;
     moved.selectedGpu = g.selectedGpu;
     if (!linux_backend_recovery_binding_matches(&g, &moved)) return 9088;
+    initialize(&state, &g);
+    state.p0Value = 71; state.globalValue = -243;
+    g.graphicsRecovery.covered = GRAPHICS_SCALAR_RECOVERY_ALL;
+    snapshot = {};
+    if (!linux_capture_named_graphics(&g, &snapshot, g.graphicsRecovery.covered)) return 9089;
+    state.globalWriteClobbersP0 = true;
+    if (linux_reset_named_graphics(&g) || state.p0Writes != 1 || state.globalWrites != 1 ||
+        state.p0Value != 1 || state.globalValue ||
+        g.graphicsRecovery.covered != GRAPHICS_SCALAR_RECOVERY_ALL ||
+        g.graphicsRecovery.uncertain != GRAPHICS_SCALAR_RECOVERY_P0) return 9089;
+    auto restore = [&] {
+        return graphics_scalar_restore(g.graphicsRecovery, snapshot.graphicsPreimage,
+            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(&g, NVML_CLOCK_GRAPHICS, value, surface); },
+            [&](gc_u32 surface, int value) { return linux_named_graphics_matches(&g, surface, value); });
+    };
+    if (restore() || state.p0Value != 72 || state.globalValue != -243 ||
+        g.graphicsRecovery.covered != GRAPHICS_SCALAR_RECOVERY_ALL ||
+        g.graphicsRecovery.uncertain != GRAPHICS_SCALAR_RECOVERY_ALL) return 9090;
+    state.globalWriteClobbersP0 = false;
+    if (!restore() || state.p0Value != 71 || state.globalValue != -243 ||
+        g.graphicsRecovery.covered != GRAPHICS_SCALAR_RECOVERY_ALL || g.graphicsRecovery.uncertain) return 9091;
+    if (!linux_reset_named_graphics(&g, false) ||
+        g.graphicsRecovery.covered != GRAPHICS_SCALAR_RECOVERY_ALL) return 9095;
+    ++state.p0Value; // A later VF write invalidates the earlier scalar readback.
+    int unlocks = 0;
+    if (linux_finalize_named_graphics_reset(&g, [&] { ++unlocks; return true; }) || unlocks ||
+        g.graphicsRecovery.covered != GRAPHICS_SCALAR_RECOVERY_ALL ||
+        g.graphicsRecovery.uncertain != GRAPHICS_SCALAR_RECOVERY_P0) return 9096;
+    if (!linux_reset_named_graphics(&g, false) ||
+        !linux_finalize_named_graphics_reset(&g, [&] { ++unlocks; return true; }) ||
+        unlocks != 1 || g.graphicsRecovery.covered || g.graphicsRecovery.uncertain) return 9097;
     return 0;
 }
 

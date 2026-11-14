@@ -59,17 +59,45 @@ static inline bool linux_write_named_graphics(LinuxGpuState* g, gc_u32 surface, 
     return written.verified;
 }
 
-static inline bool linux_reset_named_graphics(LinuxGpuState* g) {
+static inline bool linux_named_graphics_matches(LinuxGpuState* g, gc_u32 surface, int expectedMHz) {
+    const auto read = nvml_exact_clock_read(g->nvml, g->nvmlDevice, NVML_CLOCK_GRAPHICS, surface);
+    const bool matches = read.valid && read.value == expectedMHz;
+    if (!matches)
+        lb_log("graphics-offset: final recovery mismatch surface=%u expected=%d actual=%d readable=%d status=%d\n",
+            surface, expectedMHz, read.value, read.valid ? 1 : 0, (int)read.status);
+    return matches;
+}
+
+static inline bool linux_verify_graphics_recovery_zero(LinuxGpuState* g, bool retireCoverage) {
+    const gc_u32 mask = g->graphicsRecovery.covered;
+    if (!graphics_scalar_recovery_mask_valid(mask)) return false;
+    bool ok = true;
+    for (gc_u32 bit = 1; bit <= GRAPHICS_SCALAR_RECOVERY_GLOBAL; bit <<= 1) {
+        if (!(mask & bit)) continue;
+        const bool matches = linux_named_graphics_matches(g, graphics_scalar_recovery_surface(bit), 0);
+        if (!matches) g->graphicsRecovery.uncertain |= bit;
+        ok &= matches;
+    }
+    if (ok && retireCoverage) {
+        g->graphicsRecovery.covered = g->graphicsRecovery.uncertain = 0;
+        g->graphicsRecovery.ownedSurface = 0;
+    }
+    return ok;
+}
+template<class Unlock>
+static inline bool linux_finalize_named_graphics_reset(LinuxGpuState* g, Unlock unlock) {
+    if (!linux_verify_graphics_recovery_zero(g, false) || !unlock()) return false;
+    g->graphicsRecovery.covered = g->graphicsRecovery.uncertain = g->graphicsRecovery.ownedSurface = 0;
+    return true;
+}
+static inline bool linux_reset_named_graphics(LinuxGpuState* g, bool retireCoverage = true) {
     const gc_u32 mask = g->graphicsRecovery.covered;
     if (!mask || (mask & ~g->graphicsRecovery.prepared)) return false;
     bool ok = true;
     for (gc_u32 bit = 1; bit <= GRAPHICS_SCALAR_RECOVERY_GLOBAL; bit <<= 1)
         if (mask & bit) ok &= linux_write_named_graphics(g, graphics_scalar_recovery_surface(bit), 0);
-    if (ok) {
-        g->graphicsRecovery.covered = g->graphicsRecovery.uncertain = 0;
-        g->graphicsRecovery.ownedSurface = 0;
-    }
-    return ok;
+    const bool verified = linux_verify_graphics_recovery_zero(g, ok && retireCoverage);
+    return ok && verified;
 }
 
 static inline bool linux_authoring_scalar_transition_precheck(const LinuxGpuState* g, const DesiredSettings* d,

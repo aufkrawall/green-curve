@@ -131,11 +131,15 @@ static int lastGraphicsOffsetMHz=0;
 static unsigned int lastGraphicsOffsetSurface=0;
 static long long lastCurveOffsetHz=0;
 static bool lastCurveExact=false;
+static bool curveRestoreClobbersGraphics=false;
 static bool nvml_set_clock_offset(LinuxGpuState*,unsigned int domain,int value,unsigned int surface=0){
  ++clockOffsetWrites;if(domain==NVML_CLOCK_MEM){++memoryOffsetWrites;lastMemoryOffsetMHz=value;lastMemoryOffsetSurface=surface;}
  if(domain==NVML_CLOCK_GRAPHICS){lastGraphicsOffsetMHz=value;lastGraphicsOffsetSurface=surface;}return true;
 }
 static int nvml_mem_effective_mhz_from_display_mhz(int x){return x*2;}
+static bool linux_named_graphics_matches(LinuxGpuState*, gc_u32 surface, int expected) {
+ return lastGraphicsOffsetSurface==surface&&lastGraphicsOffsetMHz==expected;
+}
 template<class... A> static bool linux_xbar_write_owned(A...){return true;}
 template<class... A> static bool linux_xbar_write_entry(A...){return true;}
 template<class... A> static bool linux_read_power_limit_pair(A...){return true;}
@@ -147,6 +151,7 @@ static void linux_backend_refresh(LinuxGpuState*){}
 static bool apply_curve_offsets_verified(LinuxGpuState*,const int*,const bool*,int,
  const long long* hz=nullptr,const bool* exact=nullptr){
  ++curveOffsetWrites;lastCurveExact=hz&&exact&&exact[0];
+ if(curveRestoreClobbersGraphics)++lastGraphicsOffsetMHz;
  lastCurveOffsetHz=lastCurveExact?hz[0]:0;return true;
 }
 #include "linux_backend_rollback.h"
@@ -241,7 +246,7 @@ static int scalarWrites=0,curveWrites=0;
 static ApplyRecoveryResult rollback_to_safe_defaults(){
  auto r=reset_core_clock_controls(false,true,
    [](){++scalarWrites;return !failScalar;},
-   [](){++curveWrites;return !failCurve;});
+   [](){++curveWrites;return !failCurve;}, [](){return true;});
  if(apply_recovery_permits_release(r)){resetCap(0);r.restrictionReleased=true;}
  return r;
 }
@@ -838,7 +843,7 @@ static int run(){
  for(int curveFails=0;curveFails<2;++curveFails){
    int scalar=0,curve=0;
    auto recovered=reset_core_clock_controls(vfGlobal,true,
-     [&](){++scalar;return !scalarFails;},[&](){++curve;return !curveFails;});
+     [&](){++scalar;return !scalarFails;},[&](){++curve;return !curveFails;}, [](){return true;});
    CHECK(scalar==(vfGlobal?0:1));CHECK(curve==((!vfGlobal&&scalarFails)?0:1));
    CHECK(apply_recovery_permits_release(recovered)==((vfGlobal||!scalarFails)&&!curveFails));
  }
@@ -939,6 +944,21 @@ static int run(){
    CHECK(linux_backend_restore_snapshot(&pending,&before,0,why,sizeof(why)));
    CHECK(!pending.graphicsRecovery.covered&&!pending.graphicsRecovery.ownedSurface);
    CHECK(clockOffsetWrites==writesBefore);
+ }
+ {
+   LinuxGpuState pending{}; pending.family=GPU_FAMILY_PASCAL;
+   pending.graphicsRecovery.covered=pending.graphicsRecovery.attempted=GRAPHICS_SCALAR_RECOVERY_P0;
+   LinuxHardwareSnapshot before{};before.valid=before.gpuOffsetValid=before.gpuOffsetExact=before.curveValid=true;
+   before.gpuOffsetSurface=CLOCK_OFFSET_SURFACE_P0;before.gpuOffsetMHz=71;
+   before.graphicsPreimage.validMask=before.graphicsPreimage.covered=GRAPHICS_SCALAR_RECOVERY_P0;
+   before.graphicsPreimage.p0MHz=71;char why[160]{};
+   curveRestoreClobbersGraphics=true;
+   CHECK(!linux_backend_restore_snapshot(&pending,&before,LINUX_MUTATION_GPU_OFFSET|LINUX_MUTATION_CURVE,why,sizeof(why)));
+   CHECK(pending.graphicsRecovery.covered==GRAPHICS_SCALAR_RECOVERY_P0);
+   CHECK(pending.graphicsRecovery.uncertain==GRAPHICS_SCALAR_RECOVERY_P0);
+   curveRestoreClobbersGraphics=false;
+   CHECK(linux_backend_restore_snapshot(&pending,&before,LINUX_MUTATION_GPU_OFFSET|LINUX_MUTATION_CURVE,why,sizeof(why)));
+   CHECK(!pending.graphicsRecovery.uncertain&&lastGraphicsOffsetMHz==71);
  }
  for(const auto range:{vf_offset_range_from_probe(true,0,500000),
                       vf_offset_range_from_probe(true,-400000,250000),

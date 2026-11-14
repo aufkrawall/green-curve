@@ -328,8 +328,9 @@ static bool service_reset_all(char* result, size_t resultSize,
     }
     ApplyRecoveryResult recovery = reset_core_clock_controls(
         vf_curve_global_gpu_offset_supported() && !g_app.gpuOffsetOwnedSurface && !g_app.gpuOffsetUncertainSurface && !g_app.gpuOffsetRecoverySurfaces, true,
-        [&]() { return nvapi_reset_graphics_scalar_controls(); },
-        [&]() { return apply_curve_offsets_verified(resetOffsets, resetMask, 2); });
+        [&]() { return nvapi_reset_graphics_scalar_controls(false); },
+        [&]() { return apply_curve_offsets_verified(resetOffsets, resetMask, 2); },
+        [&]() { return nvapi_verify_graphics_scalar_recovery(true); });
     if (apply_recovery_permits_release(recovery)) {
         successCount++;
     } else {

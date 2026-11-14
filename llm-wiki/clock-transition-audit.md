@@ -1,5 +1,30 @@
 # Clock transition hardening
 
+## Final named-control recovery verification (2026-11-14)
+
+Source anchors: `source/clock_reset_policy.h`, `source/graphics_scalar_recovery.h`,
+`source/gpu_backend_graphics_offset.h`, `source/linux_graphics_offset_control.h`,
+`source/linux_backend_rollback.h`, `tests/memory_recovery_tests.cpp`,
+`tests/linux_clock_offset_tests.cpp`, `tests/clock_transition_tests.cpp`.
+
+An individual setter's readback precedes later writes and cannot prove the final
+combined state. Both platforms reread every covered named API before retiring
+recovery coverage. Windows repeats scalar verification after the VF reset;
+Linux verifies named zero controls before its unlock callback and verifies
+snapshot preimages again after restoring the VF table. Mismatch or missing
+readback retains coverage and uncertainty, including a control whose earlier
+read succeeded. Unrelated power-only rollback does not require these getters.
+
+Cases 9089-9097 model a later named API changing an earlier one, and VF reset
+changing a previously verified scalar. The Linux transition fixture executes
+the production rollback with a late curve-side effect. Retry succeeds only
+after all final controls match. These are software fixtures; driver coupling
+and physical failure recovery remain hardware-unverified.
+
+Verified 2026-11-14: native Windows regressions, focused ASan/UBSan fixtures,
+the native Linux UBSan suite and both-platform/architecture compile checks.
+Static analysis added no findings. Omitting final zero readback fails 9089.
+
 ## Power write evidence and core attempt accounting (2026-10-27)
 
 Source anchors: `source/service_apply_severity_policy.h`,

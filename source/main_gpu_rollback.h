@@ -35,7 +35,7 @@ static ApplyRecoveryResult rollback_to_safe_defaults() {
     };
     recovery = reset_core_clock_controls(vf_curve_global_gpu_offset_supported() &&
         !g_app.gpuOffsetOwnedSurface && !g_app.gpuOffsetUncertainSurface && !g_app.gpuOffsetRecoverySurfaces, true,
-        [&]() { return nvapi_reset_graphics_scalar_controls(); },
+        [&]() { return nvapi_reset_graphics_scalar_controls(false); },
         [&]() {
             if (!nvapi_read_curve()) return false;
             int zeros[VF_NUM_POINTS] = {};
@@ -44,7 +44,7 @@ static ApplyRecoveryResult rollback_to_safe_defaults() {
             for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
                 any |= mask[ci] = g_app.curve[ci].freq_kHz != 0;
             return any && apply_curve_offsets_verified(zeros, mask, 2);
-        });
+        }, [&]() { return nvapi_verify_graphics_scalar_recovery(true); });
     debug_log("rollback core reset: vfGlobal=%d scalarOk=%d curveOk=%d\n",
         vf_curve_global_gpu_offset_supported(), recovery.gpuOffset.verified,
         recovery.curve.verified);

@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Final combined graphics recovery verification
+
+- Named APIs are verified together after scalar recovery; subsequent VF writes
+  must preserve that result before protection or recovery coverage retires.
+  A mismatch retains uncertainty even if every individual setter returned a
+  matching immediate readback.
+- Cases 9089-9097 and the production Linux rollback fixture exercise coupled
+  APIs, late curve clobbering, refusal before unlock and successful retry. See
+  [clock-transition-audit.md](../clock-transition-audit.md#final-named-control-recovery-verification-2026-11-14).
+- Native Windows/Linux regressions, focused ASan/UBSan, all-target compile
+  checks and static analysis passed. Removing final readback fails 9089.
+
 ## 2026-11-14: Durable Linux named graphics recovery
 
 - Active records freeze the previous authoring layout and add named-control

@@ -28,6 +28,7 @@ static int graphicsLegacyWrites;
 static gc_u32 durableGraphicsSurfaces;
 static int durableGraphicsStores;
 static bool durableGraphicsStoreFails;
+static bool globalGraphicsClobbersP0;
 static struct { void clear() {} } g_applyScalarShiftEvidence;
 static void debug_log(const char*, ...) {}
 static void set_last_apply_phase(const char*) {}
@@ -41,6 +42,7 @@ static bool apply_curve_offsets_verified(const int*, const bool*, int) { return 
 static bool nvml_set_clock_offset_domain(unsigned int, int value, bool* exact, char*, size_t) {
     ++writes;
     if (!setterLeavesUnchanged) hardwareMHz = value;
+    if (globalGraphicsClobbersP0) ++p0HardwareMHz;
     *exact = setterClaimsMatch || (verifyReset && value == 0);
     return !setterFails;
 }
@@ -143,6 +145,7 @@ static void initialize(bool canVerifyReset) {
     p0ReadFailsAfterSet = false;
     vfGlobal = true; graphicsLegacyWrites = 0;
     durableGraphicsSurfaces = 0; durableGraphicsStores = 0; durableGraphicsStoreFails = false;
+    globalGraphicsClobbersP0 = false;
 }
 
 static int run_graphics_recovery_marker_tests() {
@@ -206,7 +209,7 @@ static int run_precise_graphics_tests() {
         g_app.gpuOffsetOwnedSurface != CLOCK_OFFSET_SURFACE_GLOBAL) return 8845;
     if (nvapi_set_gpu_offset_precise(-247000500, CLOCK_OFFSET_SURFACE_GLOBAL, false) || writes != 1 || p0Writes != 2 ||
         g_app.gpuOffsetOwnedSurface != CLOCK_OFFSET_SURFACE_GLOBAL) return 8846;
-    if (!nvapi_reset_graphics_scalar_controls() || hardwareMHz || g_app.gpuOffsetOwnedSurface ||
+    if (!nvapi_reset_graphics_scalar_controls(true) || hardwareMHz || g_app.gpuOffsetOwnedSurface ||
         g_app.gpuOffsetUncertainSurface || graphicsLegacyWrites || writes != 2) return 8847;
     initialize(false); p0SetFails = true;
     if (nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_P0, false) ||
@@ -242,14 +245,14 @@ static int run_precise_graphics_tests() {
     if (nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_P0, false) || p0Writes != 1 ||
         g_app.gpuOffsetUncertainSurface != CLOCK_OFFSET_SURFACE_P0 || g_app.readback.gpuOffset) return 8856;
     p0ReadFailsAfterSet = false;
-    if (!nvapi_reset_graphics_scalar_controls() || p0HardwareMHz || p0Writes != 2 ||
+    if (!nvapi_reset_graphics_scalar_controls(true) || p0HardwareMHz || p0Writes != 2 ||
         g_app.gpuOffsetUncertainSurface || graphicsLegacyWrites) return 8857;
     initialize(false); preciseReadback = setterLeavesUnchanged = true;
     g_nvml_api.getGpcClkVfOffset = g_nvml_api.getMemClkVfOffset;
     g_nvml_api.setGpcClkVfOffset = g_nvml_api.setMemClkVfOffset;
     if (nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_GLOBAL, false) || hardwareMHz ||
         writes != 1 || g_app.gpuOffsetUncertainSurface != CLOCK_OFFSET_SURFACE_GLOBAL) return 8858;
-    if (!nvapi_reset_graphics_scalar_controls() || writes != 2 || g_app.gpuOffsetUncertainSurface) return 8859;
+    if (!nvapi_reset_graphics_scalar_controls(true) || writes != 2 || g_app.gpuOffsetUncertainSurface) return 8859;
     initialize(false); p0BadMetadata = true;
     if (nvapi_set_gpu_offset_precise(247000000, CLOCK_OFFSET_SURFACE_P0, false) || p0Writes ||
         g_app.gpuOffsetUncertainSurface) return 8860;
@@ -273,7 +276,7 @@ static int run_precise_graphics_tests() {
         g_app.gpuOffsetOwnedSurface != CLOCK_OFFSET_SURFACE_P0 ||
         g_app.gpuOffsetRecoverySurfaces != GRAPHICS_SCALAR_RECOVERY_P0 ||
         durableGraphicsSurfaces != GRAPHICS_SCALAR_RECOVERY_P0 || durableGraphicsStores != 2) return 9044;
-    if (!nvapi_reset_graphics_scalar_controls() || p0Writes != 1 || g_app.gpuOffsetOwnedSurface ||
+    if (!nvapi_reset_graphics_scalar_controls(true) || p0Writes != 1 || g_app.gpuOffsetOwnedSurface ||
         g_app.gpuOffsetUncertainSurface || g_app.gpuOffsetRecoverySurfaces) return 9045;
     initialize(false); preciseReadback = true;
     // Simulate a fresh process carrying only the decoded durable coverage.
@@ -281,16 +284,39 @@ static int run_precise_graphics_tests() {
     g_nvml_api.setGpcClkVfOffset = g_nvml_api.setMemClkVfOffset;
     p0HardwareMHz = 125; hardwareMHz = -25;
     durableGraphicsSurfaces = g_app.gpuOffsetRecoverySurfaces = GRAPHICS_SCALAR_RECOVERY_ALL;
-    if (!nvapi_reset_graphics_scalar_controls() || p0Writes != 1 || writes != 1 ||
+    if (!nvapi_reset_graphics_scalar_controls(true) || p0Writes != 1 || writes != 1 ||
         p0HardwareMHz || hardwareMHz || g_app.gpuOffsetRecoverySurfaces || g_app.gpuOffsetOwnedSurface ||
         g_app.gpuOffsetUncertainSurface || durableGraphicsStores) return 9046;
     p0HardwareMHz = 125; hardwareMHz = -25; p0Writes = writes = 0; p0SetFails = true;
     g_app.gpuOffsetRecoverySurfaces = GRAPHICS_SCALAR_RECOVERY_ALL;
-    if (nvapi_reset_graphics_scalar_controls() || p0Writes != 1 || writes ||
+    if (nvapi_reset_graphics_scalar_controls(true) || p0Writes != 1 || writes ||
         g_app.gpuOffsetRecoverySurfaces != GRAPHICS_SCALAR_RECOVERY_ALL) return 9047;
     p0SetFails = false;
-    if (!nvapi_reset_graphics_scalar_controls() || p0Writes != 2 || writes != 1 ||
+    if (!nvapi_reset_graphics_scalar_controls(true) || p0Writes != 2 || writes != 1 ||
         p0HardwareMHz || hardwareMHz || g_app.gpuOffsetRecoverySurfaces) return 9048;
+    initialize(false); preciseReadback = true;
+    g_nvml_api.getGpcClkVfOffset = g_nvml_api.getMemClkVfOffset;
+    g_nvml_api.setGpcClkVfOffset = g_nvml_api.setMemClkVfOffset;
+    p0HardwareMHz = 125; hardwareMHz = -25;
+    g_app.gpuOffsetRecoverySurfaces = GRAPHICS_SCALAR_RECOVERY_ALL;
+    globalGraphicsClobbersP0 = true;
+    if (nvapi_reset_graphics_scalar_controls(true) || p0HardwareMHz != 1 || hardwareMHz ||
+        g_app.gpuOffsetRecoverySurfaces != GRAPHICS_SCALAR_RECOVERY_ALL ||
+        g_app.gpuOffsetUncertainSurface != CLOCK_OFFSET_SURFACE_P0 || g_app.readback.gpuOffset) return 9092;
+    globalGraphicsClobbersP0 = false;
+    auto resetWithCurve = [&](bool clobber) {
+        return reset_core_clock_controls(false, true,
+            [&] { return nvapi_reset_graphics_scalar_controls(false); },
+            [&] { if (clobber) p0HardwareMHz = 1; return true; },
+            [&] { return nvapi_verify_graphics_scalar_recovery(true); });
+    };
+    const auto clobbered = resetWithCurve(true);
+    if (clobbered.gpuOffset.verified || !clobbered.curve.verified || releases ||
+        g_app.gpuOffsetRecoverySurfaces != GRAPHICS_SCALAR_RECOVERY_ALL ||
+        g_app.gpuOffsetUncertainSurface != CLOCK_OFFSET_SURFACE_P0) return 9093;
+    const auto repaired = resetWithCurve(false);
+    if (!repaired.gpuOffset.verified || !repaired.curve.verified || p0HardwareMHz || hardwareMHz ||
+        g_app.gpuOffsetRecoverySurfaces || g_app.gpuOffsetUncertainSurface) return 9094;
     initialize(false);
     DesiredSettings unrelated{}, sameSurface{};
     unrelated.hasFan = 1; sameSurface.hasGpuOffset = 1;

@@ -90,7 +90,8 @@ static BOOL WINAPI fixture_create_process(LPCWSTR, LPWSTR,
 
 static bool vf_curve_global_gpu_offset_supported() { return true; }
 static bool nvapi_set_gpu_offset(int, bool = false) { return true; }
-static bool nvapi_reset_graphics_scalar_controls() { return nvapi_set_gpu_offset(0, true); }
+static bool nvapi_reset_graphics_scalar_controls(bool) { return nvapi_set_gpu_offset(0, true); }
+static bool nvapi_verify_graphics_scalar_recovery(bool) { return !g_app.gpuOffsetRecoverySurfaces; }
 static bool nvapi_set_mem_offset(int, bool = false) { return true; }
 static bool nvapi_read_curve() {
     g_app.curve[0].freq_kHz = 2000000;

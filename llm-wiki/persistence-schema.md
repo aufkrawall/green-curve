@@ -179,6 +179,9 @@ they repair each covered control through its own exact API. Unavailable or
 unverified repair retains remaining coverage and prevents ceiling release.
 GPU selection clears only the outgoing live evidence through its existing
 selection lifecycle. Diagnostics use bounded `graphics recovery:` lines.
+Coverage retires only after combined named-control readback, and the normal
+Reset/rollback verifies those controls again after the VF reset. A later
+coupled write cannot turn an earlier successful getter into final authority.
 
 Fixtures execute the production named setter/reset with a fake durable store,
 verify zero setters on store failure, retain owned zero, restore two controls
@@ -202,6 +205,9 @@ Source anchors: `source/linux_daemon_graphics_recovery_schema.h`,
   permission only after PREPARED is durable. Owned zero retains its exact API.
   Snapshot and rollback track both named preimages and actually attempted APIs;
   failed rollback retains coverage even after a successful forward Reset.
+  Named controls are reread together after all restore writes and after the
+  rollback VF table. Reset retains coverage through its VF phase and verifies
+  zero controls before its final clock-unlock callback.
   Missing named readback blocks affected writes and Reset, while independent
   power-only updates preserve that control without requiring its getter.
 - PREPARED/UNCERTAIN records require recovery regardless of startup policy.

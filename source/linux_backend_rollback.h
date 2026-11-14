@@ -60,7 +60,8 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
     bool baseline = (phaseMask & LINUX_MUTATION_RESET_BASELINE) != 0;
     if ((baseline || (phaseMask & LINUX_MUTATION_GPU_OFFSET)) && g->graphicsRecovery.attempted) {
         ok &= graphics_scalar_restore(g->graphicsRecovery, snapshot->graphicsPreimage,
-            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, value, surface); });
+            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, value, surface); },
+            [&](gc_u32 surface, int value) { return linux_named_graphics_matches(g, surface, value); });
     } else if ((baseline || (phaseMask & LINUX_MUTATION_GPU_OFFSET)) &&
         !snapshot->graphicsPreimage.validMask && snapshot->gpuOffsetValid) {
         if (snapshot->gpuOffsetExact && !snapshot->gpuOffsetSurface) {
@@ -157,6 +158,11 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
             if (!fanOk) lb_log("fan: rollback verification failed for fan %u\n", i);
             ok &= fanOk;
         }
+    }
+    if (phaseMask & (clockPhases | LINUX_MUTATION_MEM_OFFSET)) {
+        const gc_u32 covered = g->graphicsRecovery.attempted | snapshot->graphicsPreimage.covered;
+        ok &= graphics_scalar_verify_preimage(g->graphicsRecovery, snapshot->graphicsPreimage, covered,
+            [&](gc_u32 surface, int value) { return linux_named_graphics_matches(g, surface, value); });
     }
     if ((phaseMask & clockPhases) && !noClockControl) {
         // A restored HARD curve needs its restriction even when failure happened

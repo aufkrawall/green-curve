@@ -59,9 +59,22 @@ static inline bool graphics_scalar_capture(GraphicsScalarRecoveryState& state,
     next.ownedSurface = state.ownedSurface;
     output = next; return true;
 }
-template<class Write>
+template<class Verify>
+static inline bool graphics_scalar_verify_preimage(GraphicsScalarRecoveryState& state,
+    const GraphicsScalarPreimage& before, gc_u32 mask, Verify verify) {
+    if (!graphics_scalar_recovery_mask_valid(mask)) return false;
+    bool ok = (mask & ~before.validMask) == 0;
+    for (gc_u32 bit = 1; bit <= GRAPHICS_SCALAR_RECOVERY_GLOBAL; bit <<= 1) {
+        if (!(mask & before.validMask & bit)) continue;
+        ok &= verify(graphics_scalar_recovery_surface(bit),
+            bit == GRAPHICS_SCALAR_RECOVERY_P0 ? before.p0MHz : before.globalMHz);
+    }
+    if (!ok) { state.covered |= mask; state.uncertain |= mask; }
+    return ok;
+}
+template<class Write, class Verify>
 static inline bool graphics_scalar_restore(GraphicsScalarRecoveryState& state,
-    const GraphicsScalarPreimage& before, Write write) {
+    const GraphicsScalarPreimage& before, Write write, Verify verify) {
     const gc_u32 attempted = state.attempted;
     if (!graphics_scalar_recovery_mask_valid(attempted)) return false;
     // A successful forward Reset may already have retired its live coverage.
@@ -73,12 +86,11 @@ static inline bool graphics_scalar_restore(GraphicsScalarRecoveryState& state,
         if (!(attempted & bit)) continue;
         const bool restored = write(graphics_scalar_recovery_surface(bit),
             bit == GRAPHICS_SCALAR_RECOVERY_P0 ? before.p0MHz : before.globalMHz);
-        if (restored) {
-            state.covered = (state.covered & ~bit) | (before.covered & bit);
-            state.uncertain = (state.uncertain & ~bit) | (before.uncertain & bit);
-        }
         ok &= restored;
     }
+    // One API can affect another. Immediate readback of each setter does not
+    // prove that an earlier control survived the remaining restore writes.
+    ok &= graphics_scalar_verify_preimage(state, before, attempted, verify);
     if (ok) {
         state.covered = before.covered; state.uncertain = before.uncertain;
         state.ownedSurface = before.ownedSurface;

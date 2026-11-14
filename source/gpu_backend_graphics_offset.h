@@ -90,7 +90,27 @@ static bool nvapi_set_gpu_offset_precise(gc_i64 offsetHz, gc_u32 surface, bool f
 // Reset/rollback repair the actual named surface before any VF baseline can
 // remove its protection. A VF-global backend must not subtract a flatten floor
 // as though it were a separate scalar; its next phase resets the curve itself.
-static bool nvapi_reset_graphics_scalar_controls() {
+static bool nvapi_verify_graphics_scalar_recovery(bool retireCoverage) {
+    const gc_u32 mask = g_app.gpuOffsetRecoverySurfaces;
+    if (!graphics_scalar_recovery_mask_valid(mask)) return false;
+    constexpr gc_u32 surfaces[]{CLOCK_OFFSET_SURFACE_P0, CLOCK_OFFSET_SURFACE_GLOBAL};
+    for (gc_u32 surface : surfaces) {
+        if (!(mask & graphics_scalar_recovery_bit(surface))) continue;
+        const auto read = nvml_exact_clock_read(g_nvml_api, g_app.nvmlDevice, NVML_CLOCK_GRAPHICS, surface);
+        if (!read.valid || read.value != 0) {
+            g_app.gpuOffsetUncertainSurface = surface; g_app.readback.gpuOffset = false;
+            debug_log("graphics recovery: final mismatch surface=%u actual=%d readable=%d status=%d\n",
+                (unsigned)surface, read.value, read.valid ? 1 : 0, (int)read.status);
+            return false;
+        }
+    }
+    if (retireCoverage) {
+        g_app.gpuOffsetRecoverySurfaces &= ~mask;
+        g_app.gpuOffsetOwnedSurface = g_app.gpuOffsetUncertainSurface = 0;
+    }
+    return true;
+}
+static bool nvapi_reset_graphics_scalar_controls(bool retireCoverage) {
     const gc_u32 mask = g_app.gpuOffsetRecoverySurfaces |
         graphics_scalar_recovery_bit(g_app.gpuOffsetUncertainSurface) |
         graphics_scalar_recovery_bit(g_app.gpuOffsetOwnedSurface);
@@ -100,8 +120,8 @@ static bool nvapi_reset_graphics_scalar_controls() {
         const gc_u32 bit = graphics_scalar_recovery_bit(surface);
         if (!(mask & bit)) continue;
         if (!nvapi_write_named_gpu_offset(0, surface)) return false;
-        g_app.gpuOffsetRecoverySurfaces &= ~bit;
         if (g_app.gpuOffsetOwnedSurface == surface) g_app.gpuOffsetOwnedSurface = 0;
     }
-    return vf_curve_global_gpu_offset_supported() || nvapi_set_gpu_offset(0, true);
+    if (!vf_curve_global_gpu_offset_supported() && !nvapi_set_gpu_offset(0, true)) return false;
+    return nvapi_verify_graphics_scalar_recovery(retireCoverage);
 }

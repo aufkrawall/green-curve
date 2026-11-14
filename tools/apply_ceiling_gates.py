@@ -333,7 +333,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "rollback retains backend-aware reset sequencing")
     require_text(rollback_h, "!g_app.gpuOffsetOwnedSurface && !g_app.gpuOffsetUncertainSurface && !g_app.gpuOffsetRecoverySurfaces, true,",
                  "named scalar state requires its own verified reset even on VF-global backends")
-    require_text(rollback_h, "return nvapi_reset_graphics_scalar_controls();",
+    require_text(rollback_h, "return nvapi_reset_graphics_scalar_controls(false);",
                  "rollback repairs the selected graphics scalar before resetting the curve")
     require_text(reset_cpp, "if (desired && desired->hasGpuOffset &&",
                  "baseline reset owns the requested GPU-offset domain")
@@ -870,6 +870,10 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         "result.gpuOffset.verified = resetScalar();",
         "result.curve.verified = resetCurve();",
         "independent scalar reset verifies before the curve reset")
+    require_order_in_operation(
+        _p(ctx, "clock_reset_policy.h"), "static ApplyRecoveryResult reset_core_clock_controls(",
+        "result.curve.verified = resetCurve();", "result.curve.verified && verifyScalar();",
+        "named controls are verified again after the final VF reset")
 
     # --- 2026-09-23 audit follow-up -------------------------------------------
     # The apply's correction phase is bounded by the budget its client deadline
@@ -934,6 +938,10 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(_p(ctx, "linux_daemon.cpp"),
                  'daemon_enter_uncertain_state("saved named graphics controls were not restored")',
                  "an aborted startup replay retains pending named-control recovery")
+    require_order_in_operation(
+        _p(ctx, "linux_graphics_offset_control.h"), "static inline bool linux_finalize_named_graphics_reset(",
+        "linux_verify_graphics_recovery_zero(g, false)", "!unlock()",
+        "Linux verifies all named zero controls before clock protection can be released")
     require_order_in_operation(
         named_graphics_h, "static bool nvapi_write_named_gpu_offset(",
         "!nvapi_prepare_named_gpu_offset(surface)", "nvml_exact_clock_write(",
