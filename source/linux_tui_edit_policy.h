@@ -42,7 +42,7 @@ static inline bool tui_edit_click_targets_active_field(
 // both the buffer and the selection untouched: it must not be the thing that
 // silently discards the value the user can still see highlighted.
 static inline bool tui_edit_insert_character(char* text, size_t size,
-                                             bool* selectAll, char character) {
+                                             bool* selectAll, char character, bool allowDecimal = false) {
     if (!text || size == 0) return false;
     // With the contents selected the buffer is treated as empty, so the
     // accepted character lands at index 0 and the old value is gone.
@@ -52,7 +52,9 @@ static inline bool tui_edit_insert_character(char* text, size_t size,
     // A sign is only meaningful in the first position -- which a replacement
     // always is, so typing "-50" over "100" works.
     bool sign = (character == '-' || character == '+') && length == 0;
-    if (!digit && !sign) return false;
+    const bool decimal = allowDecimal && character == '.' &&
+        (replacing || strchr(text, '.') == nullptr);
+    if (!digit && !sign && !decimal) return false;
     if (length + 1 >= size) return false;
     text[length] = character;
     text[length + 1] = '\0';

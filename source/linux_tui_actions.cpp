@@ -13,6 +13,7 @@
 #include "linux_tui_profile_load.h"
 #include "profile_slot_io_linux.h"
 #include "profile_document_slot.h"
+#include "linux_tui_source_edit.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -344,6 +345,7 @@ void tui_answer_profile_load(TuiState* state, bool discard) {
 
 void tui_begin_edit(TuiState* state, TuiField field, int index) {
     if (!state || field == TUI_FIELD_NONE) return;
+    if (tui_source_field(field)) { (void)tui_begin_source_edit(*state, field, index); return; }
     if (!field_edit_available(state, field)) return;
     state->edit.active = true;
     state->edit.field = field;
@@ -360,6 +362,12 @@ void tui_begin_edit(TuiState* state, TuiField field, int index) {
 
 void tui_commit_edit(TuiState* state) {
     if (!state || !state->edit.active) return;
+    if (tui_source_field(state->edit.field)) {
+        const int index = state->edit.index; const auto field = state->edit.field;
+        const bool accepted = tui_commit_source_edit(*state);
+        linux_debug_logf("profile-edit: source=tui field=%d index=%d accepted=%d", (int)field, index, accepted ? 1 : 0);
+        return;
+    }
     int value = 0;
     if (!parse_int_strict(state->edit.text, &value)) {
         snprintf(state->status, sizeof(state->status),
@@ -382,7 +390,7 @@ void tui_handle_character(TuiState* state, char character) {
     if (!state) return;
     if (state->edit.active) {
         tui_edit_insert_character(state->edit.text, sizeof(state->edit.text),
-                                  &state->edit.selectAll, character);
+                                  &state->edit.selectAll, character, tui_source_field(state->edit.field));
         return;
     }
     switch (character) {
@@ -414,10 +422,11 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
         else if (action.type == ACTION_PROFILE_LOAD_KEEP) tui_answer_profile_load(state, false);
         return;
     }
-    if (state->document.valid && (action.type == ACTION_FIELD_EDIT || action.type == ACTION_FIELD_STEP ||
+    const bool sourceEdit = action.type == ACTION_FIELD_EDIT && tui_source_field((TuiField)action.index);
+    if (state->document.valid && ((!sourceEdit && action.type == ACTION_FIELD_EDIT) || action.type == ACTION_FIELD_STEP ||
         action.type == ACTION_LOCK_CYCLE || action.type == ACTION_FAN_MODE_SET || action.type == ACTION_FAN_POINT_ENABLE ||
         action.type == ACTION_FAN_ZERO_RPM_TOGGLE)) {
-        snprintf(state->status, sizeof(state->status), "Portable source is preserved; destination review is required before editing");
+        snprintf(state->status, sizeof(state->status), "Use source fields to edit stored intent; destination controls require review");
         return;
     }
     switch (action.type) {

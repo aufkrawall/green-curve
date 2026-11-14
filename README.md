@@ -251,8 +251,10 @@ the command returns exit code 3 even when controls are representable.
 
 The Linux TUI can Load portable slots as source documents. Profiles & Tools
 shows exact units and source point intent; Save preserves the complete document
-without a GPU. Destination mapping and control review are required before
-editing or applying these sources.
+without a GPU. Select a source point to type absolute MHz, or an offset field
+to type physical MHz, with up to six decimal places. Untouched points retain
+their captured or projected intent. Destination mapping and control review
+are required before applying these sources.
 Use Check in Profiles & Tools to inspect destination mapping and feasibility.
 The graphics and memory buttons change only this preview's control choices.
 

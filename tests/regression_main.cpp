@@ -1063,6 +1063,7 @@ int run_linux_tui_gpu_target_tests();
 int run_tui_profile_load_tests();
 int run_tui_document_tests();
 int run_tui_profile_check_tests();
+int run_tui_source_edit_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -2804,6 +2805,9 @@ static int run_all_tests(int argc, char** argv) {
     }
     if (int checkFailure = run_tui_profile_check_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", checkFailure); return checkFailure;
+    }
+    if (int editFailure = run_tui_source_edit_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", editFailure); return editFailure;
     }
 #if defined(_WIN32)
     // Win32 config storage: the named-mutex lock and the Unicode INI writer.

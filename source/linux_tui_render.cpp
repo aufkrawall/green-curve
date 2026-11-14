@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "linux_tui_internal.h"
+#include "linux_tui_source_edit.h"
 #include "linux_tui_profile_load.h"
 
 #include <errno.h>
@@ -497,6 +498,10 @@ void tui_handle_event(TuiState* state, const TuiInputEvent& event) {
         else if (event.type == TUI_INPUT_BACKSPACE) {
             tui_edit_backspace(state->edit.text, &state->edit.selectAll);
         } else if (event.type == TUI_INPUT_UP || event.type == TUI_INPUT_DOWN) {
+            if (tui_source_field(state->edit.field)) {
+                snprintf(state->status, sizeof(state->status), "Type exact source MHz; Enter commits and Esc cancels");
+                return;
+            }
             TuiField field = state->edit.field;
             int index = state->edit.index;
             int delta = edit_step(field) *

@@ -1552,6 +1552,12 @@ def check_canonical_tui_documents(ctx, require_text):
                  "editor previews use the tested CLI mapping and feasibility engine")
     require_text(_p(ctx, "linux_tui_document_view.h"), "lines.swap(wrapped);",
                  "long feasibility details wrap before scrolling and rendering")
+    ctx.require_order_in_operation(actions, "void tui_begin_edit(", "tui_begin_source_edit(*state, field, index)",
+                                   "field_edit_available(state, field)", "offline source edits precede destination availability checks")
+    ctx.require_order_in_operation(actions, "void tui_commit_edit(", "tui_commit_source_edit(*state)",
+                                   "parse_int_strict(", "source values retain exact decimal precision")
+    require_text(actions, "&state->edit.selectAll, character, tui_source_field(state->edit.field)",
+                 "decimal input is enabled only for source frequency fields")
 
 
 def check_all(ctx, require_text, forbid_text):

@@ -1,5 +1,32 @@
 # Config and Profiles
 
+## Offline TUI source edits (2026-11-14)
+
+Source anchors: `source/profile_editor_source_edit.h`,
+`source/linux_tui_source_edit.h`, `source/linux_tui_document_view.h`,
+`source/linux_tui_actions.cpp`, `tests/tui_source_edit_tests.cpp`.
+
+Source point and included graphics/memory offset fields accept exact decimal
+MHz through six fractional digits, independently of daemon availability. The
+parser rejects excess precision, trailing text and signed 64-bit overflow;
+it never rounds or clamps to a destination range. Point input must be positive.
+Typing an observed frequency explicitly changes only that source point to
+absolute intent, even when its displayed number is unchanged. Captured payload
+authority is cleared; observations and untouched points remain source data.
+There is no baseline inference, neighbor adjustment or lock retargeting.
+
+Known read-only source points and release documents have no edit action.
+Invalid input stays open; cancel leaves the document unchanged. Successful
+edits refresh only scalar display values, preserve the saved document baseline,
+clear prior Check output and leave Apply detached. Source identities travel
+through wrapped rows and never become destination indices. Check reports
+remain read-only. New destination review is required before Apply integration.
+
+Cases 9241-9264 cover exact signed limits, malformed input, decimal keystrokes,
+kind conversion, source immutability on refusal, hidden/read-only points,
+unrelated power/lock preservation, scalar projection, slot round-trip and
+editable layouts at all supported breakpoints.
+
 ## Read-only TUI destination checks (2026-11-14)
 
 Source anchors: `source/profile_editor_check.h`, `source/linux_tui_source_check.h`,
@@ -18,7 +45,7 @@ Mapping, precise scalar ranges, grids, curve constraints and conditional
 relationships use the same engine as the CLI. Reports are bounded, wrap long
 reasons and scroll by visible rows so compact terminals retain trailing bounds.
 Load, source reset and control-choice changes invalidate the displayed report.
-A completed check grants no editing or Apply authority; structured acceptance,
+A completed check grants no destination editing or Apply authority; structured acceptance,
 mapped editing and fresh service review remain separate integration work.
 
 Cases 9230-9240 exercise exact API choices, source preservation, invalid choices
@@ -44,9 +71,9 @@ values, so cancellation never swaps hidden intent. Document dirty tracking
 compares canonical serialization, including names and metadata, rather than
 only runtime control equality. Saving updates its saved document baseline;
 accepted/applied intent remains separate. Unmapped source points and locks are
-not projected onto the live GPU graph. Source drafts stay detached and refuse
-editing/Apply until destination review is integrated; this is an explicit
-remaining editor contract, not a GPU-family restriction.
+not projected onto the live GPU graph. Source drafts stay detached from Apply
+until destination review is integrated. Offline source edits preserve those
+identities without granting destination authority.
 
 Cases 9210-9226 execute Save, fresh editor construction, Load and portable
 export with no GPU; they preserve captured zero, sub-grid offsets, hidden

@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Offline TUI source editing
+
+- Source points and included clock offsets accept exact decimal MHz without a
+  daemon. Typing explicitly converts a point to absolute intent; untouched
+  source values, rational power and lock targets remain unchanged.
+- Cases 9241-9264 cover numeric limits, refusal preservation, hidden/read-only
+  source identities, slot round-trip and editable layouts. Apply stays detached.
+  See [config-profiles.md](../config-profiles.md#offline-tui-source-edits-2026-11-14).
+- Full Windows regressions, focused ASan/UBSan, native Linux UBSan and
+  all-target builds passed. Retaining a captured kind after typing fails 9247.
+  Static analysis retained 34 baseline findings and added none.
+
 ## 2026-11-14: TUI source destination checks
 
 - The TUI uses the shared CLI engine to check its in-memory source through

@@ -29,10 +29,8 @@ static inline bool profile_editor_mhz_preview(long long hz, int& value) {
 }
 // Display scalars only. Point/lock source identities are not destination indices.
 // This projection grants no Apply authority, and saving uses the document alone.
-static inline void profile_editor_source_candidate(const ProfileDocument& source, ProfileEditorCandidate& out) {
-    out = {};
-    out.source.valid = true; out.source.value = out.source.saved = source;
-    auto& d = out.settings;
+static inline void profile_editor_source_display(const ProfileDocument& source, DesiredSettings& d) {
+    d = {};
     d.hasGpuOffset = source.graphicsOffset.present && profile_editor_mhz_preview(source.graphicsOffset.offsetHz, d.gpuOffsetMHz);
     d.hasMemOffset = source.hasMemoryOffset && profile_editor_mhz_preview(source.memoryOffsetHz, d.memOffsetMHz);
     if (source.hasMemoryOffset) (void)desired_memory_set_precise(&d, source.memoryOffsetHz, source.memorySurface);
@@ -41,4 +39,9 @@ static inline void profile_editor_source_candidate(const ProfileDocument& source
         d.hasFan = true; d.fanMode = source.fan.fanMode; d.fanAuto = source.fan.fanAuto;
         d.fanPercent = source.fan.fanPercent; d.fanCurve = source.fan.fanCurve;
     }
+}
+static inline void profile_editor_source_candidate(const ProfileDocument& source, ProfileEditorCandidate& out) {
+    out = {};
+    out.source.valid = true; out.source.value = out.source.saved = source;
+    profile_editor_source_display(source, out.settings);
 }
