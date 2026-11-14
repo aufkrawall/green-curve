@@ -1,5 +1,23 @@
 # Config and Profiles
 
+## Explicit scalar edits over precise intent (2026-11-14)
+
+Source anchors: `source/desired_scalar_editor.h`, `source/linux_tui_actions.cpp`,
+`source/desired_scalar_intent.h`, `tests/scalar_editor_tests.cpp`.
+
+The TUI's ordinary memory and power controls use typed-intent helpers rather
+than changing only legacy display fields. A memory edit replaces exact Hz
+while retaining a previously named API. A power percentage replaces a prior
+rational value with that exact percentage. Retyping the same displayed integer
+is still an explicit change when the old value had fractional precision.
+Legacy values retain their legacy representation, and inactive precise
+payloads are cleared. Existing UI bounds remain in force.
+
+Refused helper inputs leave intent untouched. Accepted edits preserve unrelated
+curve/fan intent and log the authoritative Hz/surface or power ratio once per
+edit. Cases 9286-9294 cover semantic dirty comparison, named controls, owned
+zero, reduced ratios, invalid input and legacy compatibility.
+
 ## TUI review session lifetime (2026-11-14)
 
 Source anchors: `source/linux_tui_review_context.h`,

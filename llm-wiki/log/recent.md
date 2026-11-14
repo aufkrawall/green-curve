@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: TUI scalar edits replace precise intent
+
+- Explicit memory/power edits update precise authority as well as display
+  values, preserve named memory controls and keep unrelated intent intact.
+- Cases 9286-9294 include edits whose displayed integer does not change but
+  whose precise meaning does. Accepted edits emit authoritative diagnostics.
+  See [config-profiles.md](../config-profiles.md#explicit-scalar-edits-over-precise-intent-2026-11-14).
+- Focused ASan/UBSan, full Windows regressions, native Linux UBSan and
+  all-target builds passed. Keeping the previous exact memory/power authority
+  fails 9287/9288 respectively. Static analysis added no findings.
+
 ## 2026-11-14: Destination-check session lifetime
 
 - TUI Check names the shown GPU and rejects changed service/GPU/ownership

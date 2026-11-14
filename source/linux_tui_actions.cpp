@@ -14,6 +14,7 @@
 #include "profile_slot_io_linux.h"
 #include "profile_document_slot.h"
 #include "linux_tui_source_edit.h"
+#include "desired_scalar_editor.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -132,12 +133,16 @@ void set_field_value(TuiState* state, TuiField field, int index, int value) {
                                      : VF_NUM_POINTS);
             break;
         case TUI_FIELD_MEMORY_OFFSET:
-            desired.hasMemOffset = true;
-            desired.memOffsetMHz = clamp_int(value, -3000, 3000);
+            if (!desired_memory_edit_physical_mhz(&desired, clamp_int(value, -3000, 3000))) {
+                snprintf(state->status, sizeof(state->status), "Memory edit refused: stored control intent is invalid");
+                linux_debug_logf("tui-edit: memory refused invalid stored intent"); return;
+            }
             break;
         case TUI_FIELD_POWER_LIMIT:
-            desired.hasPowerLimit = true;
-            desired.powerLimitPct = clamp_power_limit_pct(value);
+            if (!desired_power_edit_percent(&desired, clamp_power_limit_pct(value))) {
+                snprintf(state->status, sizeof(state->status), "Power edit refused: stored control intent is invalid");
+                linux_debug_logf("tui-edit: power refused invalid stored intent"); return;
+            }
             break;
         case TUI_FIELD_XBAR_OFFSET:
             desired.hasXbarOffsetKhz = true;
@@ -257,6 +262,13 @@ void set_field_value(TuiState* state, TuiField field, int index, int value) {
                 missing);
             return;
         }
+    }
+    if (field == TUI_FIELD_MEMORY_OFFSET)
+        linux_debug_logf("tui-edit: memory physicalHz=%lld surface=%u", desired_memory_hz(desired),
+            (unsigned)(desired.memOffsetPrecise ? desired.memOffsetSurface : 0));
+    else if (field == TUI_FIELD_POWER_LIMIT) {
+        const auto ratio = desired_power_ratio(desired);
+        linux_debug_logf("tui-edit: power percent=%d ratio=%lld/%lld", desired.powerLimitPct, ratio.numerator, ratio.denominator);
     }
     tui_recompute_dirty(state);
     bind_current_draft(state);

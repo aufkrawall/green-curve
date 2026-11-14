@@ -1566,6 +1566,10 @@ def check_canonical_tui_documents(ctx, require_text):
                                    "parse_int_strict(", "source values retain exact decimal precision")
     require_text(actions, "&state->edit.selectAll, character, tui_source_field(state->edit.field)",
                  "decimal input is enabled only for source frequency fields")
+    require_text(actions, "desired_memory_edit_physical_mhz(&desired, clamp_int(value, -3000, 3000))",
+                 "typed memory replaces precise authority while keeping the named control")
+    require_text(actions, "desired_power_edit_percent(&desired, clamp_power_limit_pct(value))",
+                 "typed power replaces the previous rational authority")
 
 
 def check_all(ctx, require_text, forbid_text):
