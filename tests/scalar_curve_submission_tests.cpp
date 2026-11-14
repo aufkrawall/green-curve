@@ -46,6 +46,13 @@ int run_scalar_curve_submission_tests() {
     if (scalar_curve_submission_plan(d, true, 0, offsets, true, true).status != SCALAR_CURVE_PIN_EVIDENCE_REQUIRED) return 8964;
     d.hasLock = 0; d.hasCurvePoint[2] = 0; d.curvePointCaptured[2] = 1; d.curvePointCapturedOffsetHz[2] = 1000;
     if (scalar_curve_submission_plan(d, true, 200000000, offsets, true, true, true).status != SCALAR_CURVE_PIN_EVIDENCE_REQUIRED) return 8981;
+    d = {};
+    if (scalar_curve_handoff_plan(d, false, 0, true).status != SCALAR_CURVE_CURRENT_UNAVAILABLE ||
+        scalar_curve_handoff_plan(d, true, 0, false).status != SCALAR_CURVE_ORDER_SAFE ||
+        scalar_curve_handoff_plan(d, true, -1000000, true).status != SCALAR_CURVE_PIN_EVIDENCE_REQUIRED) return 9144;
+    d.hasLock = 1; d.lockMode = LOCK_MODE_HARD; d.lockMHz = 1000;
+    if (scalar_curve_handoff_plan(d, true, -1000000, false).status != SCALAR_CURVE_GUARD_UNAVAILABLE ||
+        scalar_curve_handoff_plan(d, true, -1000000, true).status != SCALAR_CURVE_INSTALL_GUARD) return 9145;
     return 0;
 }
 #ifdef GC_SCALAR_CURVE_FIXTURE_MAIN

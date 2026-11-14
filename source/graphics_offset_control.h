@@ -59,3 +59,12 @@ static inline GraphicsOffsetControlPlan graphics_offset_control_plan(const Desir
     p.status = p.targetMHz == p.before.value ? GRAPHICS_OFFSET_INERT : GRAPHICS_OFFSET_READY;
     return p;
 }
+
+static inline GraphicsOffsetControlPlan graphics_offset_release_plan(gc_u32 surface,
+    const NvmlApi& api, nvmlDevice_t device) {
+    DesiredSettings zero{}; zero.hasGpuOffset = 1;
+    zero.authoring.graphicsPrecise = 1;
+    zero.authoring.graphicsSurface = surface == CLOCK_OFFSET_SURFACE_P0 ? DESIRED_GRAPHICS_P0 :
+        surface == CLOCK_OFFSET_SURFACE_GLOBAL ? DESIRED_GRAPHICS_GLOBAL : DESIRED_GRAPHICS_AUTO;
+    return graphics_offset_control_plan(zero, api, device);
+}

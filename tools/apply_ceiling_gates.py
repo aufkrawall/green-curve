@@ -277,8 +277,17 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "ceiling-aware rule")
     forbid_text(_p(ctx, "linux_apply_baseline.h"), "NVML_CLOCK_MEM",
                 "Apply baseline preparation never resets unrelated memory")
-    require_text(linux_mutation_cpp, "return linux_apply_reset_baseline(g, d);",
-                 "the real Apply phase uses the tested graphics-only baseline")
+    submission_h = _p(ctx, "linux_apply_graphics_submission.h")
+    require_text(linux_mutation_cpp, "return linux_apply_graphics_baseline(context);",
+                 "the real Apply baseline uses the tested named-control handoff")
+    require_text(submission_h, "linux_apply_reset_baseline(g, &baseline)",
+                 "named handoff still executes the graphics-only baseline")
+    require_text(submission_h, "linux_release_graphics_handoff(g, d, review, g_linuxCeilingArmed)",
+                 "outgoing named controls require the actual installed protection")
+    require_text(linux_mutation_cpp, "return linux_apply_graphics_finish(context);",
+                 "final clock handover verifies both named controls")
+    require_text(submission_h, "linux_verify_graphics_handoff(context->gpu, context->desired, context->scalarReview)",
+                 "a later VF write cannot revive an outgoing named control before unlock")
     # CT-01 on Linux: the phase body used to `return true` on every path,
     # including the one where both clamp forms were refused.
     require_text(linux_ceiling_h,
@@ -291,8 +300,8 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # request on `.arm` alone meant a GPU with no locked-clock control simply
     # omitted the phase, so the refusal inside it could never run.
     require_text(linux_mutation_cpp,
-                 "if (ceilingPlan.arm || ceilingPlan.required)",
-                 "the Linux ceiling phase is scheduled whenever protection is required")
+                 "if (ceilingPlan.arm || ceilingPlan.required || scalarReview.installedGuardRequired)",
+                 "the Linux ceiling phase is scheduled for required protection and named handoffs")
     # CT-07: the witness used to pass the PLAN's arm flag as evidence that the
     # clamp was installed, so a refused clamp still printed HELD.
     require_text(linux_ceiling_h, "g_linuxCeilingArmed",
@@ -322,8 +331,8 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "Linux plans protection from the actual previous intent")
     require_text(linux_mutation_cpp, "linux_apply_arm_transition_ceiling(g, d, context->previousIntent, context->scalarReview.installedGuardRequired)",
                  "Linux arming receives the previous intent too")
-    require_text(linux_mutation_cpp, "if (d->hasLock || (requested & LINUX_MUTATION_LOCK_CEILING))",
-                 "temporary protection always receives final disposition")
+    require_text(linux_mutation_cpp, "if (d->hasLock || (requested & LINUX_MUTATION_LOCK_CEILING) || scalarReview.outgoingSurface)",
+                 "temporary protection and named handoffs always receive final verification")
     forbid_text(linux_rollback_h, "g->nvml.resetGpuLockedClocks(g->nvmlDevice);",
                 "uncertain Linux rollback cannot erase clock protection")
     require_text(reset_cpp, "0, 0, ownsXbar, ownsMsvdd)",
@@ -645,11 +654,13 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # Linux: a composed offset lives in the VF deltas, so a stale NVML
     # graphics offset from an earlier uniform-only apply is cleared in the
     # same transaction, and targets are rebuilt after any such clear.
-    require_text(linux_mutation_cpp, "|| clearStaleGpuOffset)",
+    require_text(linux_mutation_cpp, "|| clearStaleGpuOffset || scalarReview.outgoingSurface)",
                  "a no-reset composed Linux apply schedules the stale NVML offset clear")
-    require_text(linux_mutation_cpp, "context->composedGpuOffset ? 0 : d->gpuOffsetMHz);",
+    require_text(submission_h, "context->composedGpuOffset ? 0 : d->gpuOffsetMHz);",
                  "the Linux GPU_OFFSET phase writes 0 for a composed offset")
-    require_text(linux_mutation_cpp, "if (desired_named_graphics_surface(*d)) return linux_apply_named_graphics_offset(g, d,",
+    require_text(linux_mutation_cpp, "return linux_apply_graphics_submission(context);",
+                 "the real scalar phase uses the tested named submission helper")
+    require_text(submission_h, "if (desired_named_graphics_surface(*d)) return linux_apply_named_graphics_offset(g, d,",
                  "named Linux graphics scalars bypass legacy surface fallback")
     require_order_in_operation(linux_mutation_cpp,
                                "LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings* d,",

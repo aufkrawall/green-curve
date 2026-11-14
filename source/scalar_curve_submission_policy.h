@@ -15,7 +15,15 @@ struct ScalarCurveSubmissionPlan {
 struct ScalarCurveSubmissionReview {
     bool installedGuardRequired = false, beforeValid = false, refusedWithoutWrite = false;
     long long beforeHz = 0;
+    gc_u32 outgoingSurface = 0;
+    long long outgoingBeforeHz = 0;
+    bool outgoingReleased = false, writeAttempted = false;
 };
+static inline void scalar_curve_note_write(ScalarCurveSubmissionReview* review, bool attempted) {
+    if (!review) return;
+    review->writeAttempted |= attempted;
+    review->refusedWithoutWrite = !review->writeAttempted;
+}
 static inline unsigned int scalar_curve_rollback_phases(const ScalarCurveSubmissionReview& review,
     unsigned int phases, unsigned int scalarPhase) {
     return review.refusedWithoutWrite ? phases & ~scalarPhase : phases;
@@ -39,6 +47,23 @@ static inline const char* scalar_curve_submission_reason(ScalarCurveSubmissionSt
         case SCALAR_CURVE_GUARD_UNAVAILABLE: return "the scalar-to-curve transition requires an available clock ceiling";
     }
     return "invalid scalar-to-curve transition";
+}
+
+// Without a composition proof, removing a nonzero named control is a separate
+// clock transition even when the incoming request contains no VF points.
+template <class D>
+static inline ScalarCurveSubmissionPlan scalar_curve_handoff_plan(const D& d,
+    bool outgoingValid, long long outgoingHz, bool clampAvailable) {
+    ScalarCurveSubmissionPlan p;
+    if (!outgoingValid) { p.status = SCALAR_CURVE_CURRENT_UNAVAILABLE; return p; }
+    p.status = SCALAR_CURVE_ORDER_SAFE;
+    if (!outgoingHz) return p;
+    p.baselineDependent = true;
+    const bool target = d.hasLock && d.lockMode != LOCK_MODE_NONE && d.lockMHz > 0 &&
+        (!d.authoring.lockPrecise || d.authoring.lockFrequencyHz > 0);
+    p.status = !target ? SCALAR_CURVE_PIN_EVIDENCE_REQUIRED :
+        !clampAvailable ? SCALAR_CURVE_GUARD_UNAVAILABLE : SCALAR_CURVE_INSTALL_GUARD;
+    return p;
 }
 
 // A named scalar and VF offsets are different submissions. Do not invent a

@@ -304,6 +304,7 @@ static bool linux_power_request_is_inert(const DesiredSettings* d,
 
 #include "linux_backend_apply_context.h"
 #include "linux_apply_baseline.h"
+#include "linux_apply_graphics_submission.h"
 // Read-only feasibility of the built targets, before the first setter.
 #include "linux_backend_curve_plan.h"
 
@@ -315,12 +316,9 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
         case LINUX_MUTATION_LOCK_CEILING:
             return linux_apply_arm_transition_ceiling(g, d, context->previousIntent, context->scalarReview.installedGuardRequired);
         case LINUX_MUTATION_RESET_BASELINE:
-            return linux_apply_reset_baseline(g, d);
+            return linux_apply_graphics_baseline(context);
         case LINUX_MUTATION_GPU_OFFSET:
-            if (desired_named_graphics_surface(*d)) return linux_apply_named_graphics_offset(g, d,
-                &context->scalarReview);
-            return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS,
-                context->composedGpuOffset ? 0 : d->gpuOffsetMHz);
+            return linux_apply_graphics_submission(context);
         case LINUX_MUTATION_MEM_OFFSET: {
             return linux_apply_memory_preserving_curve(g, d, context->snapshot,
                 pl_monotonic_ms() + GC_DAEMON_HARDWARE_WRITE_BUDGET_MS);
@@ -366,7 +364,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             return curveOk;
         }
         case LINUX_MUTATION_LOCK:
-            return linux_apply_write_final_lock(g, context->committedIntent ? context->committedIntent : d);
+            return linux_apply_graphics_finish(context);
         case LINUX_MUTATION_FAN:
             if (d->fanMode == FAN_MODE_CURVE &&
                 context->fanUseDriverAuto) {
@@ -453,14 +451,14 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     ScalarCurveSubmissionReview scalarReview{};
     const gc_u32 graphicsDomains = SERVICE_MUTATION_DOMAIN_GPU_OFFSET | SERVICE_MUTATION_DOMAIN_VF_CURVE |
         SERVICE_MUTATION_DOMAIN_LOCK | SERVICE_MUTATION_DOMAIN_RESET_BASELINE;
-    if (!linux_graphics_apply_precheck(g, d, (service_desired_mutation_domains(d) & graphicsDomains) != 0,
-        preflight, sizeof(preflight))) {
+    if (!linux_authoring_scalar_transition_precheck(g, d, snapshot, scalarReview, preflight, sizeof(preflight)) ||
+        !linux_graphics_apply_precheck(g, d, (service_desired_mutation_domains(d) & graphicsDomains) != 0,
+            preflight, sizeof(preflight), scalarReview.outgoingSurface != 0)) {
         LinuxMutationResult mutation{};
         if (result) gc_strlcpy(result, resultSize, preflight);
         return mutation;
     }
-    if (!linux_authoring_scalar_transition_precheck(g, d, snapshot, scalarReview, preflight, sizeof(preflight)) ||
-        !linux_backend_preflight(g, d, &snapshot, preflight, sizeof(preflight), graphicsRouteOverride)) {
+    if (!linux_backend_preflight(g, d, &snapshot, preflight, sizeof(preflight), graphicsRouteOverride)) {
         LinuxMutationResult mutation = {};
         if (result) gc_strlcpy(result, resultSize, preflight[0] ? preflight : "Apply preflight failed");
         return mutation;
@@ -512,7 +510,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     // curve/lock apply over a reset baseline must rebuild from that fresh
     // readback regardless of the scalar's prior value.
     context.rebuildCurveTargets = curveBuild.pointCount > 0 &&
-        (d->resetOcBeforeApply || desired_named_graphics_surface(*d) ||
+        (d->resetOcBeforeApply || desired_named_graphics_surface(*d) || scalarReview.outgoingSurface ||
          linux_curve_targets_rebuild_after_scalar(snapshot.gpuOffsetValid,
             snapshot.gpuOffsetMHz, d->resetOcBeforeApply, clearStaleGpuOffset));
     lb_log("apply: gpu offset routing composed=%d nvmlOffset=%d MHz (known=%d)"
@@ -575,11 +573,11 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     {
         ApplyClockCeilingPlan ceilingPlan =
             linux_apply_clock_ceiling_plan(g, d, previousIntent);
-        if (ceilingPlan.arm || ceilingPlan.required)
+        if (ceilingPlan.arm || ceilingPlan.required || scalarReview.installedGuardRequired)
             requested |= LINUX_MUTATION_LOCK_CEILING;
     }
     if (d->resetOcBeforeApply) requested |= LINUX_MUTATION_RESET_BASELINE;
-    if ((d->hasGpuOffset && !curveBuild.composedGpuOffset) || clearStaleGpuOffset)
+    if ((d->hasGpuOffset && !curveBuild.composedGpuOffset) || clearStaleGpuOffset || scalarReview.outgoingSurface)
         requested |= LINUX_MUTATION_GPU_OFFSET;
     if (d->hasMemOffset) requested |= LINUX_MUTATION_MEM_OFFSET;
     // An inert power request owns the domain but writes nothing; see
@@ -588,7 +586,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         requested |= LINUX_MUTATION_POWER;
     if (curveBuild.pointCount > 0)
         requested |= LINUX_MUTATION_CURVE;
-    if (d->hasLock || (requested & LINUX_MUTATION_LOCK_CEILING))
+    if (d->hasLock || (requested & LINUX_MUTATION_LOCK_CEILING) || scalarReview.outgoingSurface)
         requested |= LINUX_MUTATION_LOCK;
     if (d->hasFan) requested |= LINUX_MUTATION_FAN;
     if (d->hasXbarOffsetKhz || d->hasXbarMsvddOffsetUv)

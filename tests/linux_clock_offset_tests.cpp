@@ -284,9 +284,11 @@ static int graphics_control_cases() {
         state.globalWrites || state.globalReads) return 8842;
     return 0;
 }
+#include "linux_graphics_handoff_cases.h"
 }
 
 int run_linux_clock_offset_tests() {
+    if (int failure = linux_graphics_handoff_cases()) return failure;
     if (int failure = graphics_recovery_cases()) return failure;
     {
         Driver state{}; LinuxGpuState g{}; initialize(&state, &g);

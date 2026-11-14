@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Linux named graphics handoff
+
+- Apply releases the outgoing named API under reviewed protection, retains
+  exact preimages for both APIs and verifies their combined final state before
+  clock handover. A failed incoming submission preserves earlier attempt
+  evidence; owned zero participates in coupled-API recovery.
+- Cases 9122-9151 exercise drift refusals, absent protection, exact handback,
+  VF routing, baseline review updates and coupled failures. See
+  [clock-transition-audit.md](../clock-transition-audit.md#linux-named-control-handoff-2026-11-14).
+- Full native Windows tests, focused ASan/UBSan, native Linux UBSan fixtures
+  and all-target checks passed; static analysis retained 34 baseline findings
+  and added none. Removing the handoff fails 9124.
+
 ## 2026-11-14: Both named clock controls in passive review
 
 - Capture schema 3 includes both graphics/memory APIs. Protocol 37 carries

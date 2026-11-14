@@ -7,6 +7,9 @@ Source anchors: `source/profile_document.h`, `source/profile_point_intent.h`,
 
 ## Named clock controls in passive review (2026-11-14)
 
+Linux Apply's prepared control handoff and final verification are documented
+in [clock-transition-audit.md](clock-transition-audit.md#linux-named-control-handoff-2026-11-14).
+
 Source anchors: `source/hardware_capture_getters.h`,
 `source/hardware_capture_wire_validation.h`, `source/profile_control_feasibility.h`,
 `source/profile_check_commands.h`, `tests/capture_clock_surface_cases.h`,
@@ -915,7 +918,8 @@ FLATTEN protection no longer grants permission to continue unprotected. Legacy
 strategies retain their existing exception. Lockless splits remain unavailable
 without a proven composition/transition model and pin evidence; sampled curve
 MHz never supplies a guessed clamp over an unreadable external pin. Full
-lockless modeled-peak and durable route recovery remain activation prerequisites.
+lockless modeled-peak protection remains an activation prerequisite. Durable
+named-route recovery is now implemented on both platforms.
 
 The selected scalar is checked again at submission against the reviewed value.
 A changed current refuses before that setter. Windows preserves VF controls
@@ -936,5 +940,5 @@ Windows named-control recovery now persists conservative surface coverage before
 submission and retains owned zero; see
 [persistence-schema.md](persistence-schema.md#windows-graphics-control-recovery-marker-2026-11-13).
 This closes process-local recovery evidence loss for those controls. Linux
-durability, cross-surface Apply cleanup and lockless modeled-peak protection
-still gate replay activation.
+durability and guarded handoff are also implemented; Windows cross-surface
+Apply cleanup and lockless modeled-peak protection still gate replay activation.

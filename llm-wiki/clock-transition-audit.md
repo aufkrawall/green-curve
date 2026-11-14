@@ -1,5 +1,36 @@
 # Clock transition hardening
 
+## Linux named-control handoff (2026-11-14)
+
+Source anchors: `source/linux_graphics_offset_control.h`,
+`source/linux_apply_graphics_submission.h`, `source/linux_backend_mutation.cpp`,
+`source/scalar_curve_submission_policy.h`, `tests/linux_graphics_handoff_cases.h`.
+
+Switching a named graphics API releases the outgoing owned API through that
+same API, including ownership of zero. Its exact preimage and the incoming
+preimage remain covered by the durable preparation. Another preferred API is
+not a substitute for either one. A nonzero handoff without proven composition
+requires an explicit clock target and an actually installed ceiling, even for
+a request with no separate VF point edits. Missing protection or changed
+incoming/outgoing controls refuses before release.
+
+Coverage remains until combined readback after the curve phase and before
+final clock handover. API coupling or a later VF write cannot silently revive
+the released control. An incoming write conservatively covers side effects on
+the other owned API, including zero. A failed second submission cannot erase
+the first write's rollback evidence. Failed combined restoration retains
+uncertainty and clock protection. A zero-only handoff's final verification does
+not reset an unrelated pin. Baseline preparation uses an already prepared API
+and updates a review binding only after proving its authorized zero.
+
+Cases 9122-9151 exercise these helpers and the real exact NVML adapters with
+scripted driver calls. Runtime authoring/replay activation remains gated;
+modeled lockless guards and hardware API relationships remain unverified.
+
+Verified 2026-11-14: focused Windows ASan/UBSan, full native regressions,
+native Linux UBSan and all-target compile checks. Static analysis retained
+34 baseline findings and added none. Omitting the handoff fails case 9124.
+
 ## Final named-control recovery verification (2026-11-14)
 
 Source anchors: `source/clock_reset_policy.h`, `source/graphics_scalar_recovery.h`,
