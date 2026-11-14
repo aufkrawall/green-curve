@@ -333,6 +333,16 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             if (size > 4) c.vfLimits.rangeReported = data[4];
         }
         if (size > 1) memcpy(&c.memory.value, data + 1, size - 1 < sizeof(c.memory.value) ? size - 1 : sizeof(c.memory.value));
+        if ((mode & 0x80) && size > 11) {
+            c.memoryAlternate.surface = data[9];
+            c.memoryAlternate.valid = data[10];
+            c.memoryAlternate.value = (gc_i64)(signed char)data[11] * 500000;
+            if (size > 12) c.memoryAlternate.reserved = data[12];
+            if (c.memoryAlternate.valid == 1 && c.memoryAlternate.value) {
+                c.domainStatus[2] = CAPTURE_PARTIAL;
+                c.omittedDomains |= PROFILE_DOMAIN_MEMORY;
+            }
+        }
         if ((mode & 0x20) && size > 2) c.reserved[0] = data[2];
     }
     const bool accepted = validate_service_response_for_ipc(&response);

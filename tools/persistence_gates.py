@@ -83,6 +83,12 @@ def check_all(ctx, require_text, forbid_text):
     # DesiredSettings *or* GpuAdapterInfo breaks the build at the record.
     require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecord) == 4816",
                  "the live daemon state record pins its on-disk size")
+    require_text(_p(ctx, "hardware_capture_types.h"), "HARDWARE_CAPTURE_SCHEMA_CURRENT = 3",
+                 "both named clock observations require a new capture schema")
+    require_text(_p(ctx, "hardware_capture_types.h"), "sizeof(HardwareCaptureObservation) == 4960",
+                 "the complete passive control observation pins its wire size")
+    require_text(_p(ctx, "service_protocol.h"), "sizeof(ServiceResponse) == 19568",
+                 "the response layout includes both named clock observations")
     require_text(_p(ctx, "linux_daemon_graphics_recovery_schema.h"),
                  "sizeof(LinuxDaemonStateRecordSchema7) == 4808",
                  "the pre-recovery active record remains byte-frozen")

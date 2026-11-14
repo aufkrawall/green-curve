@@ -26,6 +26,7 @@ static void cli_print_help(FILE* out) {
     HELP_LOG("  greencurve.exe --export-profiles <file> [--slots all|1,2] [--config <path>]  Export saved intent without a GPU\n");
     HELP_LOG("  greencurve.exe --capture-current <file> [--domains vf,graphics,memory,power,pin] [--allow-partial] [--representation exact]  Review passive capture before saving\n");
     HELP_LOG("  greencurve.exe --check-profile <file> [--profile N]  Check mapping and control feasibility without applying settings\n");
+    HELP_LOG("    --graphics-control p0|global|vf --memory-control p0|global  Choose controls for this preview\n");
     HELP_LOG("  greencurve.exe --import-profiles <file> --slots 1,2 [--confirm-import] [--config <path>]  Review and import saved intent\n");
     HELP_LOG("    --source-profiles all|2,4  Select input records (legacy INI slot numbers)\n");
     HELP_LOG("    --legacy-format windows-ini|linux-ini  Read an old Green Curve INI explicitly\n");

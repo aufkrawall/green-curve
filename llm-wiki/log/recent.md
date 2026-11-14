@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Both named clock controls in passive review
+
+- Capture schema 3 includes both graphics/memory APIs. Protocol 37 carries
+  compiler-checked observation/response sizes of 4960/19568 bytes; requests,
+  snapshots and persisted authoring layouts do not change.
+- Both values bind consistency and fresh review. Nonzero alternatives remain
+  partial observations; exact control previews never borrow another API's
+  values. CLI choices affect a derived preview and preserve saved intent.
+- Cases 9100-9121 and service-response fuzz seeds cover dual reads, malformed
+  metadata, drift, stale review, explicit choices and source preservation. See
+  [profile-document.md](../profile-document.md#named-clock-controls-in-passive-review-2026-11-14).
+- Full Windows ASan regressions, native Linux UBSan fixtures and both platforms'
+  production CLI checks passed, as did all-target checks, 5000 service-response
+  fuzz runs and static analysis (34 baseline findings, zero new).
+
 ## 2026-11-14: Final combined graphics recovery verification
 
 - Named APIs are verified together after scalar recovery; subsequent VF writes

@@ -48,9 +48,25 @@ static inline bool hardware_capture_observation_valid(const HardwareCaptureObser
     } else if (!o.topologyComplete || vf.rangeSource > VF_OFFSET_RANGE_SOURCE_PSTATE ||
         vf.rangeReported != (vf.rangeSource != VF_OFFSET_RANGE_SOURCE_FALLBACK) ||
         vf.minimumHz > vf.maximumHz || (vf.gridValid ? (vf.gridHz <= 0 || vf.gridHz > 1000) : vf.gridHz != 0)) return false;
-    const HardwareCaptureScalar* scalars[] = {&o.graphics, &o.memory, &o.xbarClock, &o.xbarVoltage, &o.systemClock, &o.videoClock};
+    const HardwareCaptureScalar* scalars[] = {&o.graphics, &o.memory, &o.xbarClock, &o.xbarVoltage, &o.systemClock, &o.videoClock,
+        &o.graphicsAlternate, &o.memoryAlternate};
     for (const auto* scalar : scalars) if (!hardware_capture_scalar_valid(*scalar)) return false;
     if (o.graphics.surface > CLOCK_OFFSET_SURFACE_GLOBAL || o.memory.surface > CLOCK_OFFSET_SURFACE_GLOBAL) return false;
+    const HardwareCaptureScalar* alternates[] = {&o.graphicsAlternate, &o.memoryAlternate};
+    for (const auto* alternate : alternates) {
+        const auto& primary = alternate == &o.graphicsAlternate ? o.graphics : o.memory;
+        if (alternate->surface > CLOCK_OFFSET_SURFACE_GLOBAL ||
+            (alternate->surface && alternate->surface == primary.surface) ||
+            (!alternate->surface && !hardware_capture_bytes_zero(alternate, sizeof(*alternate)))) return false;
+    }
+    if (!(o.requestedDomains & (PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_GRAPHICS_OFFSET)) &&
+        !hardware_capture_bytes_zero(&o.graphicsAlternate, sizeof(o.graphicsAlternate))) return false;
+    if (!(o.requestedDomains & PROFILE_DOMAIN_MEMORY) &&
+        !hardware_capture_bytes_zero(&o.memoryAlternate, sizeof(o.memoryAlternate))) return false;
+    if (o.graphicsAlternate.valid && o.graphicsAlternate.value &&
+        o.domainStatus[1] == CAPTURE_COMPLETE) return false;
+    if (o.memoryAlternate.valid && o.memoryAlternate.value &&
+        o.domainStatus[2] == CAPTURE_COMPLETE) return false;
     const auto& p = o.power;
     if (p.currentValid > 1 || p.defaultValid > 1 || p.rangeValid > 1 || p.writable > 1 || p.gridMw < 0 ||
         (p.currentValid ? p.currentMw <= 0 : p.currentMw != 0) ||

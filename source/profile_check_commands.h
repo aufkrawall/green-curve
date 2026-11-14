@@ -14,18 +14,29 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
     for (const auto& arg : args) handled |= arg == "--check-profile";
     if (!handled) return false;
     ProfileCodecError error; std::string file; int selected = 0;
+    gc_u32 graphicsChoice = 0, memoryChoice = 0;
     const auto reject = [&](int code) {
         io.message(std::string("Profile check: ") + error.message + "\n"); exitCode = code; return true;
     };
     for (size_t i = 0; i < args.size(); ++i) {
         const auto& key = args[i];
-        if ((key != "--check-profile" && key != "--profile") || ++i == args.size() ||
+        if ((key != "--check-profile" && key != "--profile" && key != "--graphics-control" && key != "--memory-control") || ++i == args.size() ||
             args[i].empty() || args[i].size() >= 4096) {
-            profile_codec::fail(&error, 0, "use --check-profile FILE [--profile N]"); return reject(PROFILE_COMMAND_INVALID);
+            profile_codec::fail(&error, 0, "use --check-profile FILE [--profile N] [--graphics-control p0|global|vf] [--memory-control p0|global]");
+            return reject(PROFILE_COMMAND_INVALID);
         }
         if (key == "--check-profile") {
             if (!file.empty()) { profile_codec::fail(&error, 0, "duplicate profile file"); return reject(PROFILE_COMMAND_INVALID); }
             file = args[i];
+        } else if (key == "--graphics-control" || key == "--memory-control") {
+            auto& choice = key == "--graphics-control" ? graphicsChoice : memoryChoice;
+            const gc_u32 parsed = args[i] == "p0" ? CLOCK_OFFSET_SURFACE_P0 :
+                args[i] == "global" ? CLOCK_OFFSET_SURFACE_GLOBAL :
+                args[i] == "vf" && key == "--graphics-control" ? (gc_u32)DESIRED_GRAPHICS_VF_COMPONENT : 0u;
+            if (choice || !parsed) {
+                profile_codec::fail(&error, 0, "invalid or duplicate clock control selection"); return reject(PROFILE_COMMAND_INVALID);
+            }
+            choice = parsed;
         } else if (selected || !profile_codec::ordinal(args[i], selected, 1, PROFILE_BANK_CAPACITY)) {
             profile_codec::fail(&error, 0, "invalid or duplicate profile selection"); return reject(PROFILE_COMMAND_INVALID);
         }
@@ -38,6 +49,10 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
     }
     if (!selected) selected = 1;
     const auto& source = bank->documents[selected - 1];
+    if ((graphicsChoice && !source.graphicsOffset.present) || (memoryChoice && !source.hasMemoryOffset)) {
+        profile_codec::fail(&error, 0, "clock control selection requires that profile domain");
+        return reject(PROFILE_COMMAND_INVALID);
+    }
     const char* scopeNames[] = {"update included settings", "replace owned profile", "release owned settings"};
     io.message("Profile " + std::to_string(selected) + ": " + source.displayName + "\nIncluded: " +
         profile_command_domains(source.domains) + "; scope=" + scopeNames[source.applicationScope] + "\n");
@@ -50,17 +65,20 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
         profile_codec::fail(&error, 0, "destination capture is invalid or differs from the request"); return reject(PROFILE_COMMAND_IO);
     }
     ProfileRuntimeRoutes routes;
-    routes.memory = capture->memory.valid ? capture->memory.surface : 0;
+    routes.memory = memoryChoice ? memoryChoice : capture->memory.valid ? capture->memory.surface : 0;
     if (source.graphicsOffset.present) {
         bool projection = false;
         for (int i = 0; i < source.topologyCount; ++i) projection |= source.points[i].kind == PROFILE_POINT_PROJECTION;
-        if (projection || source.graphicsOffset.exclusionPolicy != PROFILE_EXCLUDE_NONE)
+        if (graphicsChoice) routes.graphics = graphicsChoice;
+        else if (projection || source.graphicsOffset.exclusionPolicy != PROFILE_EXCLUDE_NONE)
             routes.graphics = DESIRED_GRAPHICS_VF_COMPONENT;
         else if (capture->composition == CAPTURE_COMPOSITION_INDEPENDENT && capture->graphics.valid)
             routes.graphics = capture->graphics.surface;
     }
     auto runtime = std::make_unique<DesiredSettings>(); ProfileMappingReport mapping;
-    const bool resolved = profile_resolve_runtime(source, destination, 1, routes, *runtime, mapping,
+    auto reviewedSource = std::make_unique<ProfileDocument>(source);
+    if (memoryChoice) reviewedSource->memorySurface = memoryChoice;
+    const bool resolved = profile_resolve_runtime(*reviewedSource, destination, 1, routes, *runtime, mapping,
         error.message, sizeof(error.message));
     const char* issueNames[] = {"offline", "invalid topology", "incomplete topology", "legacy index requires review",
         "legacy exclusions require review", "missing voltage", "ambiguous voltage", "read-only point",
@@ -83,8 +101,10 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
     io.message("Mapped points: captured=" + std::to_string(captured) + "; absolute=" + std::to_string(absolute) +
         "; projected=" + std::to_string(projected) + "; complete table match=" + (mapping.completeTopologyMatch ? "yes\n" : "no\n"));
     if (runtime->hasGpuOffset) io.message("Graphics: " + std::to_string(desired_graphics_hz(*runtime)) +
-        " Hz; control selection=" + (routes.graphics == DESIRED_GRAPHICS_AUTO ? "unresolved\n" : "identified\n"));
-    if (runtime->hasMemOffset) io.message("Memory: " + std::to_string(desired_memory_hz(*runtime)) + " physical Hz\n");
+        " Hz; control selection=" + (routes.graphics == DESIRED_GRAPHICS_AUTO ? "unresolved" : "identified") +
+        "; surface=" + (routes.graphics == DESIRED_GRAPHICS_VF_COMPONENT ? "VF table" : hardware_capture_clock_surface_name(routes.graphics)) + "\n");
+    if (runtime->hasMemOffset) io.message("Memory: " + std::to_string(desired_memory_hz(*runtime)) +
+        " physical Hz; surface=" + hardware_capture_clock_surface_name(runtime->memOffsetSurface) + "\n");
     if (runtime->hasPowerLimit) { const auto ratio = desired_power_ratio(*runtime);
         io.message("Power: " + std::to_string(ratio.numerator) + "/" + std::to_string(ratio.denominator) + " of the destination default\n"); }
     if (runtime->hasLock) io.message("Lock: " + std::to_string(desired_lock_hz(*runtime)) + " Hz\n");

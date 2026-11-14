@@ -6,7 +6,7 @@
 
 enum ProfileControlFeasibility { PROFILE_CONTROL_READY, PROFILE_CONTROL_CONDITIONAL, PROFILE_CONTROL_UNAVAILABLE, PROFILE_CONTROL_REFUSED };
 enum ProfileControlIssueKind { PROFILE_CONTROL_MISSING, PROFILE_CONTROL_GRID, PROFILE_CONTROL_RANGE, PROFILE_CONTROL_ROUTE,
-    PROFILE_CONTROL_POWER_CONVERSION, PROFILE_CONTROL_FAN_REVIEW, PROFILE_CONTROL_ARITHMETIC };
+    PROFILE_CONTROL_POWER_CONVERSION, PROFILE_CONTROL_FAN_REVIEW, PROFILE_CONTROL_ARITHMETIC, PROFILE_CONTROL_RELATIONSHIP };
 enum ProfileControlUnit { PROFILE_CONTROL_HZ, PROFILE_CONTROL_UV, PROFILE_CONTROL_MW, PROFILE_CONTROL_NO_UNIT };
 struct ProfileControlIssue {
     gc_u32 domain;
@@ -36,6 +36,7 @@ static inline const char* profile_control_issue_name(ProfileControlIssueKind k) 
         case PROFILE_CONTROL_GRID: return "explicit-grid-conversion-required";
         case PROFILE_CONTROL_RANGE: return "outside-control-range";
         case PROFILE_CONTROL_ROUTE: return "control-selection-unresolved";
+        case PROFILE_CONTROL_RELATIONSHIP: return "other-clock-control-relationship-unresolved";
         case PROFILE_CONTROL_POWER_CONVERSION: return "explicit-power-conversion-required";
         case PROFILE_CONTROL_FAN_REVIEW: return "fan-capability-review-required";
         case PROFILE_CONTROL_ARITHMETIC: return "arithmetic-overflow";
@@ -116,9 +117,28 @@ static inline ProfileControlPlan profile_control_plan(const DesiredSettings& d, 
     if (d.hasGpuOffset && graphics != DESIRED_GRAPHICS_VF_COMPONENT) {
         if (!d.authoring.graphicsPrecise || (graphics != DESIRED_GRAPHICS_P0 && graphics != DESIRED_GRAPHICS_GLOBAL))
             profile_control_note(p, PROFILE_CONTROL_UNAVAILABLE, PROFILE_DOMAIN_GRAPHICS_OFFSET, PROFILE_CONTROL_ROUTE);
-        else profile_control_scalar(p, PROFILE_DOMAIN_GRAPHICS_OFFSET, desired_graphics_hz(d), o.graphics, graphics);
+        else {
+            const auto* selected = hardware_capture_named_clock(o.graphics, o.graphicsAlternate, graphics);
+            if (!selected) profile_control_note(p, PROFILE_CONTROL_UNAVAILABLE, PROFILE_DOMAIN_GRAPHICS_OFFSET, PROFILE_CONTROL_MISSING);
+            else {
+                profile_control_scalar(p, PROFILE_DOMAIN_GRAPHICS_OFFSET, desired_graphics_hz(d), *selected, graphics);
+                const auto& other = selected == &o.graphics ? o.graphicsAlternate : o.graphics;
+                if (other.valid && other.value)
+                    profile_control_note(p, PROFILE_CONTROL_CONDITIONAL, PROFILE_DOMAIN_GRAPHICS_OFFSET, PROFILE_CONTROL_RELATIONSHIP);
+            }
+        }
     }
-    if (d.hasMemOffset) profile_control_scalar(p, PROFILE_DOMAIN_MEMORY, desired_memory_hz(d), o.memory, d.memOffsetSurface);
+    if (d.hasMemOffset) {
+        const auto* selected = d.memOffsetSurface
+            ? hardware_capture_named_clock(o.memory, o.memoryAlternate, d.memOffsetSurface) : &o.memory;
+        if (!selected) profile_control_note(p, PROFILE_CONTROL_UNAVAILABLE, PROFILE_DOMAIN_MEMORY, PROFILE_CONTROL_MISSING);
+        else {
+            profile_control_scalar(p, PROFILE_DOMAIN_MEMORY, desired_memory_hz(d), *selected, d.memOffsetSurface);
+            const auto& other = selected == &o.memory ? o.memoryAlternate : o.memory;
+            if (other.valid && other.value)
+                profile_control_note(p, PROFILE_CONTROL_CONDITIONAL, PROFILE_DOMAIN_MEMORY, PROFILE_CONTROL_RELATIONSHIP);
+        }
+    }
     if (d.hasPowerLimit) {
         const auto& v = o.power;
         if (!v.currentValid || !v.defaultValid || !v.writable || v.gridMw <= 0 || v.currentMw > UINT_MAX ||

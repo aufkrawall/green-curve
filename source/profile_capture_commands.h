@@ -5,6 +5,25 @@
 #include "profile_commands.h"
 #include "hardware_capture_runtime.h"
 
+template<class IO>
+static inline void profile_capture_report_clocks(IO& io, const char* domain,
+    const HardwareCaptureScalar& primary, const HardwareCaptureScalar& alternate) {
+    const HardwareCaptureScalar* controls[] = {&primary, &alternate};
+    for (const auto* control : controls) {
+        if (!control->surface) continue;
+        std::string line = std::string("  ") + domain + " control (" +
+            hardware_capture_clock_surface_name(control->surface) + "): ";
+        line += control->valid ? std::to_string(control->value) + " Hz" :
+            "unavailable (driver status " + std::to_string(control->status) + ")";
+        line += std::string("; writable=") + (control->writable ? "yes" : "no");
+        line += control->rangeValid ? "; range=" + std::to_string(control->minimum) +
+            ".." + std::to_string(control->maximum) + " Hz\n" : "; range=unreported\n";
+        io.message(line);
+    }
+    if (alternate.valid && alternate.value)
+        io.message(std::string("  ") + domain + ": another nonzero control is observed; complete replay needs relationship review.\n");
+}
+
 struct ProfileCaptureCommand {
     std::string file, config;
     gc_u32 domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_GRAPHICS_OFFSET | PROFILE_DOMAIN_MEMORY |
@@ -77,6 +96,10 @@ static inline bool profile_capture_commands_run(const std::vector<std::string>& 
     }
     char summary[320]{}; hardware_capture_summary(*capture, summary, sizeof(summary));
     io.message(std::string(summary) + "\n");
+    if (command.domains & (PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_GRAPHICS_OFFSET))
+        profile_capture_report_clocks(io, "Graphics", capture->graphics, capture->graphicsAlternate);
+    if (command.domains & PROFILE_DOMAIN_MEMORY)
+        profile_capture_report_clocks(io, "Memory", capture->memory, capture->memoryAlternate);
     const char* statuses[] = {"not requested", "captured", "unsupported", "read failed", "state changed", "composition unresolved", "partial"};
     for (int i = 0; i < 9; ++i) if (command.domains & (1u << i))
         io.message("  " + profile_command_domains(1 << i) + ": " + statuses[capture->domainStatus[i]] +

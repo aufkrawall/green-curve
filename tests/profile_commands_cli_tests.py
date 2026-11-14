@@ -76,6 +76,12 @@ def verify(executable: Path, workspace: Path) -> None:
         run(["--check-profile", incoming, "--profile", "0"], expected=2)
         run(["--check-profile", incoming, "--profile", "1", "--profile", "1"], expected=2)
         run(["--check-profile", incoming, "--apply-config"], expected=2)
+        missing_controls = folder / "absent-controls.gcprofile"
+        for choice in ("p0", "global", "vf"):
+            run(["--check-profile", missing_controls, "--graphics-control", choice], expected=1)
+        for choice in ("p0", "global"):
+            run(["--check-profile", missing_controls, "--memory-control", choice], expected=1)
+        run(["--check-profile", missing_controls, "--memory-control", "vf"], expected=2)
         assert config.read_bytes() == saved
         incoming.write_text(seed + "\n[unknown]\nfield=1\n", encoding="utf-8", newline="\n")
         run(import_args, expected=2)

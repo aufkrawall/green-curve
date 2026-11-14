@@ -86,8 +86,8 @@ enum {
     // GUI can tell the user instead of leaving a silent lockout.
     // v30 preserves independent signed-Hz captured VF offsets, including zero.
     // v31 defines explicit update/replacement/release and VF point-set semantics.
-    // v36 binds reviewed Apply to passive controls and outgoing ownership.
-    SERVICE_PROTOCOL_VERSION = 36,
+    // v37 binds passive review to both named clock APIs and outgoing ownership.
+    SERVICE_PROTOCOL_VERSION = 37,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply; on a state read it
@@ -782,7 +782,7 @@ struct ServiceResponse {
     char message[512];
     HardwareCaptureObservation capture;
 };
-static_assert(sizeof(ServiceResponse) == 19472,
+static_assert(sizeof(ServiceResponse) == 19568,
               "ServiceResponse changed without an IPC protocol-version bump");
 
 static_assert(offsetof(ServiceResponse, magic) == 0, "ServiceResponse.magic must be at offset 0");

@@ -87,9 +87,11 @@ static bool collect(const HardwareCaptureContext& c, gc_u32 requested,
 }
 
 #include "hardware_capture_constraints_cases.h"
+#include "capture_clock_surface_cases.h"
 int run_hardware_capture_tests() {
+    if (int failure = capture_clock_surfaces::run()) return failure;
     if (int failure = hardware_capture_constraints_cases()) return failure;
-    static_assert(sizeof(HardwareCaptureObservation) == 4864, "capture wire size changed");
+    static_assert(sizeof(HardwareCaptureObservation) == 4960, "capture wire size changed");
     Driver driver{};
     NvmlApi api{}; api.getClockOffsets = clock; api.getPowerLimit = power;
     api.getPowerDefaultLimit = baseline; api.getPowerConstraints = constraints;

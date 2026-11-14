@@ -93,5 +93,29 @@ static int profile_check_commands_cases() {
         io.messages.find("reason=point-grid; proven=yes") == std::string::npos ||
         io.messages.find("Operation feasibility: refused") == std::string::npos ||
         io.messages.find("worst-point=") == std::string::npos || io.files != unchanged || io.writes != 1) return 8942;
+    io.dualClocks = true; io.messages.clear();
+    bank->count = 1; memory.memorySurface = CLOCK_OFFSET_SURFACE_P0; memory.memoryOffsetHz = -123500000;
+    bank->documents[0] = memory;
+    if (!profile_bank_encode(*bank, io.files["controls.gcprofile"], &error)) return 9115;
+    const auto originalControls = io.files;
+    if (!profile_check_commands_run({"--check-profile", "controls.gcprofile", "--memory-control", "global"}, io, code) ||
+        code != PROFILE_COMMAND_DECISION || io.messages.find("-123500000 physical Hz; surface=global") == std::string::npos ||
+        io.files != originalControls || io.writes != 1) return 9116;
+    const int beforeChoices = io.captures;
+    for (const auto& arguments : std::vector<std::vector<std::string>>{
+            {"--check-profile", "controls.gcprofile", "--memory-control", "vf"},
+            {"--check-profile", "controls.gcprofile", "--memory-control", "p0", "--memory-control", "global"},
+            {"--check-profile", "controls.gcprofile", "--graphics-control", "p0"}})
+        if (!profile_check_commands_run(arguments, io, code) || code != PROFILE_COMMAND_INVALID ||
+            io.captures != beforeChoices || io.files != originalControls || io.writes != 1) return 9117;
+    auto graphics = profile_document_make_empty(); graphics.domains = PROFILE_DOMAIN_GRAPHICS_OFFSET;
+    graphics.graphicsOffset.present = true; graphics.graphicsOffset.offsetHz = -17000000;
+    bank->documents[0] = graphics;
+    if (!profile_bank_encode(*bank, io.files["graphics.gcprofile"], &error)) return 9118;
+    io.messages.clear(); const auto originalGraphics = io.files;
+    if (!profile_check_commands_run({"--check-profile", "graphics.gcprofile", "--graphics-control", "global"}, io, code) ||
+        code != PROFILE_COMMAND_DECISION || io.messages.find("surface=global") == std::string::npos ||
+        io.messages.find("Control feasibility: disposition=representable") == std::string::npos ||
+        io.files != originalGraphics || io.writes != 1) return 9119;
     return 0;
 }

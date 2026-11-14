@@ -5,6 +5,36 @@ Source anchors: `source/profile_document.h`, `source/profile_point_intent.h`,
 `source/profile_text_validation.h`, `tests/profile_document_tests.cpp` (7960-8000),
 `tests/profile_document_contract_tests.cpp` (8280-8321).
 
+## Named clock controls in passive review (2026-11-14)
+
+Source anchors: `source/hardware_capture_getters.h`,
+`source/hardware_capture_wire_validation.h`, `source/profile_control_feasibility.h`,
+`source/profile_check_commands.h`, `tests/capture_clock_surface_cases.h`,
+`tests/service_control_review_tests.cpp`.
+
+Capture reads P0 and global graphics/memory APIs separately, retaining their
+values, ranges, availability and exact units. P0 remains the preferred readable
+control; the other is observation metadata. Both participate in bounded
+consistency checks and the fresh service review revision. No setter or backend
+initialization is performed. Memory keeps odd effective values as physical Hz.
+
+Another nonzero control makes capture partial rather than proving an alias.
+Control preview checks the exact selected API and marks the relationship to a
+nonzero other control conditional. A failed selected getter cannot borrow the
+other API's value or range. CLI preview accepts explicit graphics/memory control
+choices; a memory control conversion uses a derived preview and preserves the
+source file. Capture reports both controls and their omissions before saving.
+
+NVML documents the current getter as PState-specific and as the replacement for
+older getters. That does not establish per-device aliasing
+from equal readings; see the [official query reference](https://docs.nvidia.com/deploy/nvml-api/latest/api/group__nvmlDeviceQueries.html).
+Composition and pin evidence remain separate from control availability.
+
+Cases 9100-9121 cover both getters with zero setters, malformed alternate
+metadata, nonzero omissions, alternate-only drift, exact-surface previews,
+source preservation and stale-review refusal. Hardware alias relationships
+remain unverified.
+
 ## Summary
 
 A new, platform-neutral authoring type, `ProfileDocument`, built 2026-11-12.

@@ -38,8 +38,8 @@ Curve checks, low-voltage editing, profile transfer and read-only capture improv
 - **Prepare compatible curve:** review a draft with conflicting earlier points lowered before Apply.
 - **CLI profile transfer:** transfer one or five saved profiles offline, with assignment and replacement review.
 - **Legacy profile transfer:** review Windows/Linux source formats, units and selected records while preserving exact tuning intent.
-- **CLI hardware capture:** read controls without resetting; review omissions, ranges and completeness before saving.
-- **CLI profile checks:** preview mapping, ranges, curve constraints and uncertainty without applying settings.
+- **CLI hardware capture:** read P0 and global clock controls without resetting; review omissions and ranges before saving.
+- **CLI profile checks:** preview control choices, mapping, ranges, curve constraints and uncertainty without applying settings.
 
 ### Improved
 
@@ -67,7 +67,7 @@ Curve checks, low-voltage editing, profile transfer and read-only capture improv
 
 ### Compatibility notes
 
-Existing configuration and profiles remain compatible.
+Configuration and profiles remain compatible. Update clients and services together.
 
 ### Downloads and verification
 

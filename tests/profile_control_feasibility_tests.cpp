@@ -134,6 +134,22 @@ int run_profile_control_feasibility_tests() {
     d.hasLock = 1; d.lockCi = 3; d.lockMHz = 950; d.lockMode = LOCK_MODE_FLATTEN;
     d.authoring.lockPrecise = 1; d.authoring.lockFrequencyHz = 950000000;
     if (profile_control_plan(d, o).disposition != PROFILE_CONTROL_READY) return 8947;
+    o = observation(); d = bound(o);
+    o.graphicsAlternate = o.graphics; o.graphicsAlternate.surface = CLOCK_OFFSET_SURFACE_GLOBAL;
+    o.memoryAlternate = o.memory; o.memoryAlternate.surface = CLOCK_OFFSET_SURFACE_GLOBAL;
+    d.hasGpuOffset = 1; d.gpuOffsetMHz = -17; d.authoring.graphicsPrecise = 1;
+    d.authoring.graphicsSurface = DESIRED_GRAPHICS_GLOBAL; d.authoring.graphicsOffsetHz = -17000000;
+    desired_memory_set_precise(&d, -123500000, CLOCK_OFFSET_SURFACE_GLOBAL);
+    if (profile_control_plan(d, o).disposition != PROFILE_CONTROL_READY) return 9111;
+    o.graphics.value = 1000000;
+    p = profile_control_plan(d, o);
+    if (p.disposition != PROFILE_CONTROL_CONDITIONAL || p.issueCount != 1 ||
+        p.issues[0].kind != PROFILE_CONTROL_RELATIONSHIP) return 9112;
+    o.graphics.value = 0; o.graphicsAlternate.rangeValid = 1; o.graphicsAlternate.minimum = 0; o.graphicsAlternate.maximum = 2000000;
+    if (profile_control_plan(d, o).disposition != PROFILE_CONTROL_REFUSED) return 9113;
+    o.graphicsAlternate.rangeValid = 0; o.graphicsAlternate.minimum = o.graphicsAlternate.maximum = 0;
+    o.graphicsAlternate.valid = 0;
+    if (profile_control_plan(d, o).disposition != PROFILE_CONTROL_UNAVAILABLE) return 9114;
     return 0;
 }
 #ifdef GC_PROFILE_CONTROL_FIXTURE_MAIN

@@ -101,15 +101,15 @@ The compiler checks current and frozen sizes; the native suite checks exact
 round trips, old-byte migration, checksum corruption, malformed tags, fan-only
 retention and omission cleanup. No physical replay is claimed.
 
-Protocol 35 keeps 5096-byte requests and uses 19472-byte responses. Capture
-schema 2 grows to 4864 bytes with explicit 32-byte VF constraints: exact offset
-grid, range provenance and backend write support. Reported graphics bounds and
-the application fallback remain distinct. These facts join the normalized
-control fingerprint; mixed protocol/schema peers refuse rather than guessing.
-DesiredSettings and the durable disk layouts remain unchanged.
+Protocol 37 keeps 5096-byte requests and uses 19568-byte responses. Capture
+schema 3 is 4960 bytes: its existing 32-byte VF constraints retain exact grid,
+range provenance and backend write support, and appended observations retain
+both named graphics/memory APIs. Reported bounds and fallback remain distinct.
+Both controls join consistency checks and fingerprints. Mixed protocol/schema
+peers refuse rather than guessing. This observation expansion leaves runtime
+intent and durable disk layouts unchanged.
 
-Protocol 36 activates the reserved request control-precondition fields without
-changing those sizes. The service capture revision binds physical controls and
+The active request control-precondition fields bind physical controls and
 outgoing owned intent, while its physical fingerprint stays separate. Reviewed
 Apply requires all-domain passive evidence and an explicit interactive scope;
 authoring/captured replay remains gated. See

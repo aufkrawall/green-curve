@@ -6,7 +6,7 @@
 #include "profile_domain_mask.h"
 #include "vf_offset_range_policy.h"
 
-enum { HARDWARE_CAPTURE_SCHEMA_CURRENT = 2 };
+enum { HARDWARE_CAPTURE_SCHEMA_CURRENT = 3 };
 
 // Fixed wire observation layout. It contains no pointers, C++ bool,
 // ownership claim, file path, permission or automatic-restore acknowledgment.
@@ -76,12 +76,23 @@ struct HardwareCaptureObservation {
     HardwareCaptureFan fan;
     HardwareCapturePoint points[128];
     HardwareCaptureVfLimits vfLimits;
+    HardwareCaptureScalar graphicsAlternate, memoryAlternate;
 };
+static inline const HardwareCaptureScalar* hardware_capture_named_clock(
+    const HardwareCaptureScalar& primary, const HardwareCaptureScalar& alternate, gc_u32 surface) {
+    if (surface != CLOCK_OFFSET_SURFACE_P0 && surface != CLOCK_OFFSET_SURFACE_GLOBAL) return nullptr;
+    if (primary.surface == surface) return &primary;
+    return alternate.surface == surface ? &alternate : nullptr;
+}
+static inline const char* hardware_capture_clock_surface_name(gc_u32 surface) {
+    return surface == CLOCK_OFFSET_SURFACE_P0 ? "P0" :
+        surface == CLOCK_OFFSET_SURFACE_GLOBAL ? "global" : "unresolved";
+}
 static_assert(sizeof(HardwareCaptureVfLimits) == 32, "capture VF constraints layout changed");
 static_assert(sizeof(HardwareCapturePoint) == 32, "capture point wire layout changed");
 static_assert(sizeof(HardwareCaptureScalar) == 48, "capture scalar wire layout changed");
 static_assert(sizeof(HardwareCapturePower) == 56, "capture power wire layout changed");
 static_assert(sizeof(HardwareCaptureFan) == 120, "capture fan wire layout changed");
 static_assert(sizeof(HardwareCaptureBinding) == 36, "capture binding wire layout changed");
-static_assert(sizeof(HardwareCaptureObservation) == 4864, "capture observation wire layout changed");
+static_assert(sizeof(HardwareCaptureObservation) == 4960, "capture observation wire layout changed");
 #endif

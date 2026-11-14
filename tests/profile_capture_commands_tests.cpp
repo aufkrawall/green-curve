@@ -13,6 +13,7 @@ struct CaptureIO {
     bool failCapture = false, failWrite = false, malformed = false, noControls = false;
     bool readOnly = false;
     bool constraints = false;
+    bool dualClocks = false;
     gc_i64 vfGrid = 500;
     bool read(const std::string& path, std::string& data, size_t limit, bool, ProfileCodecError& error) {
         auto found = files.find(path);
@@ -63,6 +64,18 @@ struct CaptureIO {
             out.vfLimits = {1, 1, 1, 1, VF_OFFSET_RANGE_SOURCE_NVML_GRAPHICS, -1000000000, 1000000000, vfGrid};
             out.memory.writable = 1; out.memory.grid = 500000;
             out.power.writable = 1; out.power.gridMw = 1;
+        }
+        if (dualClocks) {
+            if (domains & PROFILE_DOMAIN_GRAPHICS_OFFSET) {
+                out.composition = CAPTURE_COMPOSITION_INDEPENDENT;
+                out.graphics.writable = 1; out.graphics.grid = 1000000;
+                out.graphicsAlternate = out.graphics; out.graphicsAlternate.surface = CLOCK_OFFSET_SURFACE_GLOBAL;
+                hardware_capture_domain(out, PROFILE_DOMAIN_GRAPHICS_OFFSET, CAPTURE_COMPLETE);
+            }
+            if (domains & PROFILE_DOMAIN_MEMORY) {
+                out.memoryAlternate = out.memory; out.memoryAlternate.surface = CLOCK_OFFSET_SURFACE_GLOBAL;
+                out.memoryAlternate.value = 0;
+            }
         }
         if (malformed) out.pointCount = 129;
         return true;

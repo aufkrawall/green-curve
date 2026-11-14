@@ -243,6 +243,9 @@ Import previews replacements and assignment references before asking for
 existing GPU session. Profile checking reports exact mapping, control ranges,
 precision grids and curve constraints without applying settings. It labels
 proven refusals, conditional estimates and unavailable reads separately.
+Use `--graphics-control p0|global|vf` or `--memory-control p0|global` to preview
+a specific control for an included clock domain. These choices preserve the
+saved source; a second nonzero control requires relationship review.
 Ownership, transition and recovery checks still require service review;
 the command returns exit code 3 even when controls are representable.
 

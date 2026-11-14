@@ -10,9 +10,10 @@
 // Only getters are resolved/called here. API setup, backend refresh, cache
 // publication, ownership changes and recovery remain outside passive capture.
 static inline HardwareCaptureScalar hardware_capture_nvml_clock(const NvmlApi& api,
-    nvmlDevice_t device, unsigned int domain) {
+    nvmlDevice_t device, unsigned int domain, gc_u32 surface = CLOCK_OFFSET_SURFACE_UNSPECIFIED) {
     HardwareCaptureScalar result{};
-    const auto observed = nvml_clock_observe(api, device, domain);
+    const auto observed = surface ? NvmlClockObservation{nvml_exact_clock_read(api, device, domain, surface), surface}
+        : nvml_clock_observe(api, device, domain);
     const auto& r = observed.control;
     result.surface = observed.surface;
     result.status = (int32_t)r.status; result.rangeStatus = (int32_t)r.rangeStatus;
@@ -23,6 +24,13 @@ static inline HardwareCaptureScalar hardware_capture_nvml_clock(const NvmlApi& a
     if (r.valid) result.value = (gc_i64)r.value * unit;
     if (r.rangeValid) { result.minimum = (gc_i64)r.minimum * unit; result.maximum = (gc_i64)r.maximum * unit; }
     return result;
+}
+static inline void hardware_capture_nvml_clock_pair(const NvmlApi& api, nvmlDevice_t device, unsigned int domain,
+    HardwareCaptureScalar& primary, HardwareCaptureScalar& alternate) {
+    const auto p0 = hardware_capture_nvml_clock(api, device, domain, CLOCK_OFFSET_SURFACE_P0);
+    const auto global = hardware_capture_nvml_clock(api, device, domain, CLOCK_OFFSET_SURFACE_GLOBAL);
+    primary = p0.valid ? p0 : global;
+    alternate = p0.valid ? global : p0;
 }
 
 static inline HardwareCapturePower hardware_capture_nvml_power(const NvmlApi& api, nvmlDevice_t device) {
@@ -190,8 +198,9 @@ static inline bool hardware_capture_collect(const HardwareCaptureContext& contex
     }
     if (context.nvmlUsable && context.nvml && context.nvmlDevice) {
         if (requested & (PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_GRAPHICS_OFFSET))
-            out.graphics = hardware_capture_nvml_clock(*context.nvml, context.nvmlDevice, NVML_CLOCK_GRAPHICS);
-        if (requested & PROFILE_DOMAIN_MEMORY) out.memory = hardware_capture_nvml_clock(*context.nvml, context.nvmlDevice, NVML_CLOCK_MEM);
+            hardware_capture_nvml_clock_pair(*context.nvml, context.nvmlDevice, NVML_CLOCK_GRAPHICS, out.graphics, out.graphicsAlternate);
+        if (requested & PROFILE_DOMAIN_MEMORY)
+            hardware_capture_nvml_clock_pair(*context.nvml, context.nvmlDevice, NVML_CLOCK_MEM, out.memory, out.memoryAlternate);
         if (requested & PROFILE_DOMAIN_POWER) out.power = hardware_capture_nvml_power(*context.nvml, context.nvmlDevice);
     } else {
         out.graphics.status = out.memory.status = NVML_ERROR_NOT_SUPPORTED;
@@ -216,6 +225,13 @@ static inline bool hardware_capture_collect(const HardwareCaptureContext& contex
     }
     if (requested & PROFILE_DOMAIN_MEMORY) hardware_capture_domain(out, PROFILE_DOMAIN_MEMORY,
         out.memory.valid ? CAPTURE_COMPLETE : CAPTURE_READ_FAILED, out.memory.status);
+    // A second nonzero API is an observation, not proof of aliasing. The
+    // single-control document cannot claim complete replay of both controls.
+    if (out.graphicsAlternate.valid && out.graphicsAlternate.value &&
+        out.domainStatus[1] == CAPTURE_COMPLETE)
+        hardware_capture_domain(out, PROFILE_DOMAIN_GRAPHICS_OFFSET, CAPTURE_PARTIAL, out.graphics.status);
+    if (out.memoryAlternate.valid && out.memoryAlternate.value)
+        hardware_capture_domain(out, PROFILE_DOMAIN_MEMORY, CAPTURE_PARTIAL, out.memory.status);
     if (requested & PROFILE_DOMAIN_POWER) hardware_capture_domain(out, PROFILE_DOMAIN_POWER,
         out.power.currentValid && out.power.defaultValid ? CAPTURE_COMPLETE : CAPTURE_READ_FAILED,
         out.power.currentValid ? out.power.defaultStatus : out.power.currentStatus);

@@ -53,6 +53,18 @@ int run_service_control_review_tests() {
     current.fingerprint ^= 1; current.memory.valid = 0;
     if (service_control_review_matches(r, &owned, read, why, sizeof(why))) return 8896;
     current.memory.valid = 1;
+    current.memoryAlternate = current.memory; current.memoryAlternate.surface = CLOCK_OFFSET_SURFACE_GLOBAL;
+    current.memoryAlternate.value = 0;
+    current.fingerprint = hardware_capture_fingerprint(current);
+    service_control_review_stamp(current, &owned); r.expectedControlFingerprint = current.revision;
+    if (!service_control_review_matches(r, &owned, read, why, sizeof(why))) return 9120;
+    current.memoryAlternate.value = 500000;
+    hardware_capture_domain(current, PROFILE_DOMAIN_MEMORY, CAPTURE_PARTIAL);
+    current.fingerprint = hardware_capture_fingerprint(current);
+    if (service_control_review_matches(r, &owned, read, why, sizeof(why))) return 9121;
+    current.memoryAlternate.value = 0;
+    hardware_capture_domain(current, PROFILE_DOMAIN_MEMORY, CAPTURE_COMPLETE);
+    current.fingerprint = hardware_capture_fingerprint(current);
     changed = r; changed.expectedControlDomains = PROFILE_DOMAIN_MEMORY;
     const int before = reads;
     if (service_control_review_matches(changed, &owned, read, why, sizeof(why)) || reads != before) return 8897;

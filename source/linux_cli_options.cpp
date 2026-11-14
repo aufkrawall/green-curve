@@ -16,6 +16,7 @@ void print_linux_help() {
     puts("  greencurve --export-profiles file [--slots all|1,2] [--config path]  Export saved intent without a GPU");
     puts("  greencurve --capture-current file [--domains vf,graphics,memory,power,pin] [--allow-partial] [--representation exact]  Review passive capture before saving");
     puts("  greencurve --check-profile file [--profile N]  Check mapping and control feasibility without applying settings");
+    puts("    --graphics-control p0|global|vf --memory-control p0|global  Choose controls for this preview");
     puts("  greencurve --import-profiles file --slots 1,2 [--confirm-import] [--config path]  Review and import saved intent");
     puts("    --source-profiles all|2,4  Select input records (legacy INI slot numbers)");
     puts("    --legacy-format windows-ini|linux-ini  Read an old Green Curve INI explicitly");
