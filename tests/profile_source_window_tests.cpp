@@ -7,6 +7,9 @@ namespace {
 struct Host {
     int saves = 0, changes = 0, closes = 0, confirms = 0, checks = 0, inputChanges = 0, previewChanges = 0;
     gc_u32 graphics = 0, memory = 0;
+    int captureReads = 0, captureAccepts = 0, captureCancels = 0, domainChanges = 0;
+    gc_u32 captureDomains = 0;
+    bool partial = false, discardCapture = false;
     bool discard = false, failSave = false;
     ProfileDocument saved{};
     ProfileSourceWindow* window = nullptr;
@@ -27,6 +30,12 @@ static void input_changed(void* context) {
     if (h.window) h.window->clear_report();
 }
 static void preview_changed(void* context) { ++((Host*)context)->previewChanges; input_changed(context); }
+static void capture_read(void* context, gc_u32 domains) { auto& h = *(Host*)context; ++h.captureReads; h.captureDomains = domains; }
+static bool capture_accept(void* context, bool partial, bool discard) {
+    auto& h = *(Host*)context; ++h.captureAccepts; h.partial = partial; h.discardCapture = discard; return false;
+}
+static void capture_cancel(void* context) { ++((Host*)context)->captureCancels; }
+static void domains_changed(void* context) { ++((Host*)context)->domainChanges; }
 static void select(ProfileSourceWindow& window, int row) {
     SendMessageW(window.control(ProfileSourceWindow::LIST), LB_SETCURSEL, row, 0);
     SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::LIST, LBN_SELCHANGE), (LPARAM)window.control(ProfileSourceWindow::LIST));
@@ -51,6 +60,8 @@ int run_profile_source_window_tests() {
     ProfileSourceWindowCallbacks callbacks{host.get(), save, confirm, changed, closed, nullptr};
     callbacks.check = check; callbacks.inputChanged = input_changed;
     callbacks.previewChanged = preview_changed;
+    callbacks.captureRead = capture_read; callbacks.captureAccept = capture_accept;
+    callbacks.captureCancel = capture_cancel; callbacks.captureDomainsChanged = domains_changed;
     ProfileSourceWindow window(*model, callbacks);
     host->window = &window;
     if (!window.create(nullptr, 96, false) || IsWindowVisible(window.handle())) return 9330;
@@ -105,9 +116,9 @@ int run_profile_source_window_tests() {
         }
     }
     SendMessageW(window.handle(), WM_VSCROLL, SB_TOP, 0); SendMessageW(window.handle(), WM_HSCROLL, SB_LEFT, 0);
-    const HWND choice = window.control(ProfileSourceWindow::MEMORY_ROUTE);
-    SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::MEMORY_ROUTE, CBN_SETFOCUS), (LPARAM)choice);
-    RECT choiceRect{}, viewport{}; GetWindowRect(choice, &choiceRect);
+    const HWND memoryChoice = window.control(ProfileSourceWindow::MEMORY_ROUTE);
+    SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::MEMORY_ROUTE, CBN_SETFOCUS), (LPARAM)memoryChoice);
+    RECT choiceRect{}, viewport{}; GetWindowRect(memoryChoice, &choiceRect);
     MapWindowPoints(nullptr, window.handle(), (POINT*)&choiceRect, 2); GetClientRect(window.handle(), &viewport);
     if (choiceRect.left < 0 || choiceRect.top < 0 || choiceRect.right > viewport.right || choiceRect.bottom > viewport.bottom ||
         !window.pending() || text(window.control(ProfileSourceWindow::INPUT)) != L"1.") return 9393;
@@ -167,6 +178,68 @@ int run_profile_source_window_tests() {
     model->unsaved = true; host->discard = true;
     SendMessageW(window.handle(), WM_CLOSE, 0, 0);
     if (window.handle() || host->confirms != 2 || host->closes != 2 || window.pending()) return 9347;
+    // Capture is a temporary pane: it never stages/saves the hidden source's
+    // invalid input, and independent omission/discard decisions gate acceptance.
+    d = profile_document_make_empty(); d.domains = PROFILE_DOMAIN_MEMORY;
+    d.hasMemoryOffset = true; d.memoryOffsetHz = -123500000; d.memorySurface = CLOCK_OFFSET_SURFACE_P0;
+    model->saved = d; model->unsaved = false;
+    if (!window.create(nullptr, 96, false)) return 9397;
+    select(window, 3); SetWindowTextW(window.control(ProfileSourceWindow::INPUT), L"unfinished");
+    const int savedCount = host->saves, checkedCount = host->checks;
+    window.begin_capture(true);
+    if (!window.capture_active() || visible(window.control(ProfileSourceWindow::INPUT)) ||
+        !visible(window.control(ProfileSourceWindow::CAPTURE_READ)) || !window.pending() ||
+        window.save() || host->saves != savedCount || text(window.control(ProfileSourceWindow::INPUT)) != L"unfinished") return 9398;
+    SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::CHECK, 0);
+    SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::STAGE, 0);
+    SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::CAPTURE_ACCEPT, 0);
+    if (host->checks != checkedCount || host->captureAccepts || d.memoryOffsetHz != -123500000) return 9399;
+    for (int i = 0; i < 9; ++i) if (SendMessageW(window.control(ProfileSourceWindow::CAPTURE_DOMAIN_FIRST + i), BM_GETCHECK, 0, 0) !=
+        (i < 5 ? BST_CHECKED : BST_UNCHECKED)) return 9400;
+    SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::CAPTURE_READ, 0);
+    if (host->captureReads != 1 || host->captureDomains != 31) return 9401;
+    window.capture_report({"Snapshot", "Pin unavailable; settings omitted"}, true, PROFILE_DOMAIN_LOCK);
+    RECT capturePlacement{0, 0, 320, 250};
+    SendMessageW(window.handle(), WM_DPICHANGED, MAKEWPARAM(144, 144), (LPARAM)&capturePlacement);
+    if (!window.capture_active() || !window.pending() || text(window.handle()) != L"Capture current GPU settings" ||
+        text(window.control(ProfileSourceWindow::INPUT)) != L"unfinished" ||
+        text(window.control(ProfileSourceWindow::REPORT)).find(L"Pin unavailable") == std::wstring::npos) return 9432;
+    const HWND omissionChoice = window.control(ProfileSourceWindow::CAPTURE_ALLOW_OMISSIONS);
+    SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::CAPTURE_ALLOW_OMISSIONS, BN_SETFOCUS), (LPARAM)omissionChoice);
+    RECT omissionRect{}; GetWindowRect(omissionChoice, &omissionRect);
+    MapWindowPoints(nullptr, window.handle(), (POINT*)&omissionRect, 2); GetClientRect(window.handle(), &viewport);
+    if (omissionRect.left < 0 || omissionRect.left >= viewport.right || omissionRect.top < 0 || omissionRect.bottom > viewport.bottom) return 9433;
+    const auto mark = [&](int id, bool checked) {
+        SendMessageW(window.control(id), BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
+        SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(id, BN_CLICKED), (LPARAM)window.control(id));
+    };
+    if (IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_ACCEPT))) return 9402;
+    mark(ProfileSourceWindow::CAPTURE_ALLOW_OMISSIONS, true);
+    if (IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_ACCEPT))) return 9403;
+    SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::CAPTURE_ACCEPT, 0);
+    if (host->captureAccepts) return 9404;
+    mark(ProfileSourceWindow::CAPTURE_DISCARD, true);
+    if (!IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_ACCEPT))) return 9405;
+    SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::CAPTURE_ACCEPT, 0);
+    if (host->captureAccepts != 1 || !host->partial || !host->discardCapture ||
+        d.memoryOffsetHz != -123500000 || !window.pending() || profile_editor_document_dirty(*model)) return 9406;
+    mark(ProfileSourceWindow::CAPTURE_DOMAIN_FIRST + 1, false);
+    if (host->domainChanges != 1 || IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_ACCEPT)) ||
+        SendMessageW(window.control(ProfileSourceWindow::CAPTURE_ALLOW_OMISSIONS), BM_GETCHECK, 0, 0) != BST_UNCHECKED) return 9407;
+    SendMessageW(window.handle(), WM_CLOSE, 0, 0);
+    if (!window.handle() || window.capture_active() || !window.pending() || host->captureCancels != 1 ||
+        host->closes != 2 || host->confirms != 2 || !visible(window.control(ProfileSourceWindow::INPUT)) ||
+        text(window.control(ProfileSourceWindow::INPUT)) != L"unfinished") return 9408;
+    window.begin_capture(true);
+    for (int i = 0; i < 9; ++i) mark(ProfileSourceWindow::CAPTURE_DOMAIN_FIRST + i, false);
+    SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::CAPTURE_READ, 0);
+    if (IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_READ)) || host->captureReads != 1) return 9409;
+    SendMessageW(window.handle(), WM_CLOSE, 0, 0);
+    // With no canonical source, cancel closes only the capture pane. It never
+    // calls source.closed(), which would discard/rebase the separate live draft.
+    model->valid = false; window.reload(); window.begin_capture(false);
+    SendMessageW(window.handle(), WM_CLOSE, 0, 0);
+    if (window.handle() || host->captureCancels != 3 || host->closes != 2 || host->confirms != 2) return 9410;
     return 0;
 }
 #else

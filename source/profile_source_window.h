@@ -29,13 +29,19 @@ struct ProfileSourceWindowCallbacks {
     void (*check)(void*, const ProfileDocument&, gc_u32, gc_u32) = nullptr;
     void (*inputChanged)(void*) = nullptr;
     void (*previewChanged)(void*) = nullptr;
+    void (*captureRead)(void*, gc_u32) = nullptr;
+    bool (*captureAccept)(void*, bool, bool) = nullptr;
+    void (*captureCancel)(void*) = nullptr;
+    void (*captureDomainsChanged)(void*) = nullptr;
 };
 // The native window edits only the canonical source. It has no driver, service
 // or live-topology dependency; callbacks own storage and parent presentation.
 class ProfileSourceWindow {
 public:
     enum { LIST = 9101, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CHECK, REPORT, VIEW,
-        GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, CLOSE = IDCANCEL };
+        GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE,
+        CAPTURE_READ = 9140, CAPTURE_ACCEPT, CAPTURE_ALLOW_OMISSIONS, CAPTURE_DISCARD, CAPTURE_DOMAIN_FIRST,
+        CAPTURE_DOMAIN_LAST = CAPTURE_DOMAIN_FIRST + 8, CLOSE = IDCANCEL };
     ProfileSourceWindow(ProfileEditorDocument& model, ProfileSourceWindowCallbacks callbacks)
         : model_(model), callbacks_(callbacks) {}
     ProfileSourceWindow(const ProfileSourceWindow&) = delete;
@@ -44,6 +50,31 @@ public:
     HWND handle() const { return window_; }
     HWND control(int id) const { return window_ ? GetDlgItem(window_, id) : nullptr; }
     bool pending() const { return window_ && pending_; }
+    bool capture_active() const { return window_ && capture_; }
+    void capture_require_discard() {
+        captureNeedsDiscard_ = true; captureDiscard_ = false;
+        SendMessageW(control(CAPTURE_DISCARD), BM_SETCHECK, BST_UNCHECKED, 0); project_view();
+    }
+    void begin_capture(bool needsDiscard) {
+        capture_ = true; captureDomains_ = 31; captureNeedsDiscard_ = needsDiscard;
+        capture_reset();
+        for (int i = 0; i < 9; ++i) SendMessageW(control(CAPTURE_DOMAIN_FIRST + i), BM_SETCHECK,
+            (captureDomains_ & (1u << i)) ? BST_CHECKED : BST_UNCHECKED, 0);
+        SetWindowTextW(window_, L"Capture current GPU settings"); SetWindowTextW(control(CLOSE), L"Cancel capture");
+        SetWindowTextW(control(TITLE), L"Capture GPU controls");
+        project_view(); layout(); SetFocus(control(CLOSE));
+        notice("Choose settings; Read takes a passive snapshot without changing the previous draft");
+    }
+    void capture_reset() {
+        captureReady_ = capturePartial_ = captureDiscard_ = false; captureOmissions_ = 0;
+        SendMessageW(control(CAPTURE_ALLOW_OMISSIONS), BM_SETCHECK, BST_UNCHECKED, 0);
+        SendMessageW(control(CAPTURE_DISCARD), BM_SETCHECK, BST_UNCHECKED, 0);
+        clear_report();
+    }
+    void capture_report(const std::vector<std::string>& lines, bool ready, gc_u32 omissions) {
+        captureReady_ = ready; captureOmissions_ = omissions;
+        report(lines); project_view();
+    }
     bool route(MSG& message) const {
         if (!window_ || (message.hwnd != window_ && !IsChild(window_, message.hwnd))) return false;
         if (message.message == WM_KEYDOWN && (message.wParam == VK_ESCAPE ||
@@ -75,7 +106,9 @@ public:
     }
     void show() { if (window_) { ShowWindow(window_, SW_SHOW); SetForegroundWindow(window_); } }
     void reload() {
-        ++generation_; pending_ = false; selected_ = -1; graphics_ = memory_ = 0;
+        ++generation_; capture_ = false; pending_ = false; selected_ = -1; graphics_ = memory_ = 0;
+        SetWindowTextW(control(CLOSE), L"Close source");
+        SetWindowTextW(control(TITLE), L"Portable source draft");
         SendMessageW(control(GRAPHICS_ROUTE), CB_SETCURSEL, 0, 0); SendMessageW(control(MEMORY_ROUTE), CB_SETCURSEL, 0, 0);
         clear_report(); rebuild(-1);
         status(L"Source draft; destination review is required before Apply");
@@ -96,6 +129,7 @@ public:
         reportAvailable_ = reportVisible_ = true; project_view();
     }
     bool save() {
+        if (capture_) { notice("Cancel capture before saving the previous source draft"); return false; }
         if (!model_.valid || !commit(false) || !callbacks_.save) return false;
         const auto generation = generation_; auto saved = std::make_unique<ProfileDocument>(model_.value);
         char error[256]{};
@@ -118,11 +152,14 @@ private:
     bool pending_ = false, updating_ = false, layingOut_ = false;
     bool reportAvailable_ = false, reportVisible_ = false;
     gc_u32 graphics_ = 0, memory_ = 0;
+    bool capture_ = false, captureReady_ = false, capturePartial_ = false, captureDiscard_ = false, captureNeedsDiscard_ = false;
+    gc_u32 captureDomains_ = 31, captureOmissions_ = 0;
     unsigned long long generation_ = 0;
     std::vector<ProfileEditorSourceRow> rows_;
     int px(int value) const { return MulDiv(value, dpi_, 96); }
     void status(const wchar_t* text) { if (window_) SetWindowTextW(control(STATUS), text ? text : L""); }
     void update_title() {
+        if (capture_) { SetWindowTextW(window_, L"Capture current GPU settings"); return; }
         SetWindowTextW(window_, pending_ || profile_editor_document_dirty(model_) ? L"Profile source *" : L"Profile source");
     }
     void release() {
@@ -137,8 +174,10 @@ private:
         if (!fresh) return;
         HFONT old = font_; font_ = fresh;
         for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE, CHECK, REPORT, VIEW,
-            GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE})
+            GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE,
+            CAPTURE_READ, CAPTURE_ACCEPT, CAPTURE_ALLOW_OMISSIONS, CAPTURE_DISCARD})
             SendMessageW(control(id), WM_SETFONT, (WPARAM)font_, FALSE);
+        for (int id = CAPTURE_DOMAIN_FIRST; id <= CAPTURE_DOMAIN_LAST; ++id) SendMessageW(control(id), WM_SETFONT, (WPARAM)font_, FALSE);
         if (old) DeleteObject(old);
     }
     bool create_controls() {
@@ -167,6 +206,13 @@ private:
         }
         for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE, CHECK, REPORT, VIEW,
             GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE}) if (!control(id)) return false;
+        child(L"BUTTON", L"Read", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CAPTURE_READ);
+        child(L"BUTTON", L"Use exact", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CAPTURE_ACCEPT);
+        child(L"BUTTON", L"Allow omitted settings", BS_AUTOCHECKBOX | BS_NOTIFY | WS_TABSTOP, CAPTURE_ALLOW_OMISSIONS);
+        child(L"BUTTON", L"Replace unsaved / unfinished draft", BS_AUTOCHECKBOX | BS_NOTIFY | WS_TABSTOP, CAPTURE_DISCARD);
+        const wchar_t* domains[] = {L"VF points", L"Graphics", L"Memory", L"Power", L"Pin", L"Fan", L"XBAR", L"System", L"Video"};
+        for (int i = 0; i < 9; ++i) child(L"BUTTON", domains[i], BS_AUTOCHECKBOX | BS_NOTIFY | WS_TABSTOP, CAPTURE_DOMAIN_FIRST + i);
+        for (int id = CAPTURE_READ; id <= CAPTURE_DOMAIN_LAST; ++id) if (!control(id)) return false;
         SendMessageW(control(REPORT), EM_SETLIMITTEXT, 128 * 1024, 0);
         SendMessageW(input_, EM_SETLIMITTEXT, 31, 0);
         if (!SetWindowSubclass(input_, input_proc, 1, (DWORD_PTR)this)) return false;
@@ -226,6 +272,15 @@ private:
     }
     void project_view() {
         if (!list_) return;
+        for (int id : {HELP, INPUT, STAGE, SAVE, CHECK, GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE})
+            ShowWindow(control(id), capture_ ? SW_HIDE : SW_SHOW);
+        for (int id = CAPTURE_READ; id <= CAPTURE_DOMAIN_LAST; ++id) ShowWindow(control(id), capture_ ? SW_SHOW : SW_HIDE);
+        EnableWindow(control(CAPTURE_READ), capture_ && captureDomains_ && callbacks_.captureRead);
+        EnableWindow(control(CAPTURE_ACCEPT), capture_ && captureReady_ && (!captureOmissions_ || capturePartial_) &&
+            (!captureNeedsDiscard_ || captureDiscard_) && callbacks_.captureAccept);
+        EnableWindow(control(CAPTURE_DISCARD), capture_ && captureNeedsDiscard_);
+        EnableWindow(control(CAPTURE_ALLOW_OMISSIONS), capture_ && captureReady_ && captureOmissions_);
+        if (capture_) { ShowWindow(list_, SW_HIDE); ShowWindow(control(VIEW), SW_HIDE); ShowWindow(control(REPORT), SW_SHOW); return; }
         ShowWindow(list_, reportVisible_ ? SW_HIDE : SW_SHOW);
         ShowWindow(control(REPORT), reportVisible_ ? SW_SHOW : SW_HIDE);
         ShowWindow(control(VIEW), reportAvailable_ ? SW_SHOW : SW_HIDE);
@@ -251,14 +306,14 @@ private:
         layingOut_ = true; RECT client{};
         for (int pass = 0; pass < 2; ++pass) {
             GetClientRect(window_, &client);
-            const int width = std::max((int)client.right, px(360)), height = std::max((int)client.bottom, px(360));
+            const int width = std::max((int)client.right, px(360)), height = std::max((int)client.bottom, px(capture_ ? 420 : 360));
             SCROLLINFO x{sizeof(x), SIF_RANGE | SIF_PAGE | SIF_POS, 0, width - 1, (UINT)client.right, scrollX_, 0};
             SCROLLINFO y{sizeof(y), SIF_RANGE | SIF_PAGE | SIF_POS, 0, height - 1, (UINT)client.bottom, scrollY_, 0};
             SetScrollInfo(window_, SB_HORZ, &x, TRUE); SetScrollInfo(window_, SB_VERT, &y, TRUE);
         }
         SCROLLINFO info{}; info.cbSize = sizeof(info); info.fMask = SIF_POS;
         GetScrollInfo(window_, SB_HORZ, &info); scrollX_ = info.nPos; GetScrollInfo(window_, SB_VERT, &info); scrollY_ = info.nPos;
-        GetClientRect(window_, &client); const int w = std::max((int)client.right, px(360)), h = std::max((int)client.bottom, px(360));
+        GetClientRect(window_, &client); const int w = std::max((int)client.right, px(360)), h = std::max((int)client.bottom, px(capture_ ? 420 : 360));
         const int m = px(12), row = px(28), gap = px(8);
         const auto place = [&](int id, int x, int y, int width, int height) { MoveWindow(control(id), x - scrollX_, y - scrollY_, width, height, TRUE); };
         place(TITLE, m, m, w - 2*m - px(104), px(22)); place(VIEW, w - m - px(96), m, px(96), px(24));
@@ -271,7 +326,18 @@ private:
         place(INPUT, m, h - px(138), w - 2*m - px(128) - gap, row); place(STAGE, w - m - px(128), h - px(138), px(128), row);
         place(SAVE, m, h - px(100), px(120), row); place(CHECK, m + px(128), h - px(100), px(80), row);
         place(CLOSE, w - m - px(120), h - px(100), px(120), row);
-        place(STATUS, m, h - px(64), w - 2*m, px(56)); layingOut_ = false;
+        place(STATUS, m, h - px(64), w - 2*m, px(56));
+        if (capture_) {
+            const int column = (w - 2*m) / 3;
+            for (int i = 0; i < 9; ++i) place(CAPTURE_DOMAIN_FIRST + i, m + (i%3)*column, px(42) + (i/3)*px(28), column, px(24));
+            place(REPORT, m, px(134), w - 2*m, h - px(314));
+            place(CAPTURE_ALLOW_OMISSIONS, m, h - px(168), w - 2*m, px(24));
+            place(CAPTURE_DISCARD, m, h - px(140), w - 2*m, px(24));
+            place(CAPTURE_READ, m, h - px(104), px(80), row);
+            place(CAPTURE_ACCEPT, m + px(88), h - px(104), px(128), row);
+            place(CLOSE, w - m - px(112), h - px(104), px(112), row);
+        }
+        layingOut_ = false;
     }
     void scroll(int bar, int command) {
         SCROLLINFO info{}; info.cbSize = sizeof(info); info.fMask = SIF_ALL; GetScrollInfo(window_, bar, &info);
@@ -288,8 +354,8 @@ private:
         RECT r{}; GetWindowRect(child, &r); MapWindowPoints(nullptr, window_, (POINT*)&r, 2);
         RECT client{}; GetClientRect(window_, &client);
         for (int bar : {SB_HORZ, SB_VERT}) {
-            const int delta = bar == SB_HORZ ? (r.left < 0 ? r.left : std::max(0L, r.right - client.right)) :
-                (r.top < 0 ? r.top : std::max(0L, r.bottom - client.bottom));
+            const int delta = bar == SB_HORZ ? (r.right-r.left > client.right || r.left < 0 ? r.left : std::max(0L, r.right - client.right)) :
+                (r.bottom-r.top > client.bottom || r.top < 0 ? r.top : std::max(0L, r.bottom - client.bottom));
             SCROLLINFO info{}; info.cbSize = sizeof(info); info.fMask = SIF_POS; GetScrollInfo(window_, bar, &info);
             info.nPos += delta; SetScrollInfo(window_, bar, &info, TRUE);
             GetScrollInfo(window_, bar, &info); if (bar == SB_HORZ) scrollX_ = info.nPos; else scrollY_ = info.nPos;
@@ -312,8 +378,39 @@ private:
             case INPUT: case REPORT: case STATUS: return notification == EN_SETFOCUS;
             case GRAPHICS_ROUTE: case MEMORY_ROUTE: return notification == CBN_SETFOCUS;
             case STAGE: case SAVE: case CLOSE: case CHECK: case VIEW: return notification == BN_SETFOCUS;
-            default: return false;
+            case CAPTURE_READ: case CAPTURE_ACCEPT: case CAPTURE_ALLOW_OMISSIONS: case CAPTURE_DISCARD: return notification == BN_SETFOCUS;
+            default: return id >= CAPTURE_DOMAIN_FIRST && id <= CAPTURE_DOMAIN_LAST && notification == BN_SETFOCUS;
         }
+    }
+    bool capture_command(int id, int notification) {
+        if (!capture_ || notification != BN_CLICKED) return false;
+        if (id >= CAPTURE_DOMAIN_FIRST && id <= CAPTURE_DOMAIN_LAST) {
+            const gc_u32 bit = 1u << (id - CAPTURE_DOMAIN_FIRST);
+            if (SendMessageW(control(id), BM_GETCHECK, 0, 0) == BST_CHECKED) captureDomains_ |= bit; else captureDomains_ &= ~bit;
+            capture_reset();
+            if (callbacks_.captureDomainsChanged) callbacks_.captureDomainsChanged(callbacks_.context);
+            notice("Capture settings changed; Read a new snapshot before accepting");
+        } else if (id == CAPTURE_ALLOW_OMISSIONS || id == CAPTURE_DISCARD) {
+            const bool checked = SendMessageW(control(id), BM_GETCHECK, 0, 0) == BST_CHECKED;
+            if (id == CAPTURE_ALLOW_OMISSIONS) capturePartial_ = checked; else captureDiscard_ = checked;
+            project_view();
+        } else if (id == CAPTURE_READ) {
+            if (captureDomains_ && callbacks_.captureRead) {
+                capture_reset(); callbacks_.captureRead(callbacks_.context, captureDomains_);
+            }
+        } else if (id == CAPTURE_ACCEPT) {
+            if (captureReady_ && (!captureOmissions_ || capturePartial_) && (!captureNeedsDiscard_ || captureDiscard_) && callbacks_.captureAccept)
+                (void)callbacks_.captureAccept(callbacks_.context, capturePartial_, captureDiscard_);
+        } else return false;
+        return true;
+    }
+    void cancel_capture() {
+        capture_ = false; captureReady_ = false; clear_report();
+        SetWindowTextW(control(CLOSE), L"Close source"); SetWindowTextW(control(TITLE), L"Portable source draft");
+        update_title(); layout();
+        if (callbacks_.captureCancel) callbacks_.captureCancel(callbacks_.context);
+        if (!model_.valid) DestroyWindow(window_);
+        else notice("Capture cancelled; previous source and unfinished input kept");
     }
     static LRESULT CALLBACK input_proc(HWND hwnd, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
         auto* self = (ProfileSourceWindow*)data;
@@ -349,6 +446,8 @@ private:
             }
             case WM_COMMAND:
                 if (l && focus_notification(LOWORD(w), HIWORD(w))) self->reveal((HWND)l);
+                if (self->capture_command(LOWORD(w), HIWORD(w))) return 0;
+                if (self->capture_ && (LOWORD(w) == STAGE || LOWORD(w) == CHECK || LOWORD(w) == SAVE || LOWORD(w) == VIEW || LOWORD(w) == LIST)) return 0;
                 if (LOWORD(w) == LIST && HIWORD(w) == LBN_SELCHANGE) self->select(true);
                 else if (LOWORD(w) == INPUT && HIWORD(w) == EN_CHANGE && !self->updating_) {
                     self->pending_ = true; self->update_title();
@@ -367,14 +466,17 @@ private:
                 else if (LOWORD(w) == CLOSE && HIWORD(w) == BN_CLICKED) SendMessageW(hwnd, WM_CLOSE, 0, 0);
                 return 0;
             case WM_CLOSE:
+                if (self->capture_) { self->cancel_capture(); return 0; }
                 if ((self->pending_ || profile_editor_document_dirty(self->model_)) &&
                     (!self->callbacks_.confirmDiscard || !self->callbacks_.confirmDiscard(self->callbacks_.context))) return 0;
                 if (self->callbacks_.closed) self->callbacks_.closed(self->callbacks_.context);
                 DestroyWindow(hwnd); return 0;
             case WM_ERASEBKGND: { RECT r{}; GetClientRect(hwnd, &r); if (self->background_) FillRect((HDC)w, &r, self->background_); return 1; }
-            case WM_CTLCOLORSTATIC: case WM_CTLCOLORLISTBOX: case WM_CTLCOLOREDIT:
-                SetTextColor((HDC)w, COL_TEXT); SetBkColor((HDC)w, message == WM_CTLCOLORSTATIC ? COL_BG : COL_INPUT);
-                return (LRESULT)(message == WM_CTLCOLORSTATIC ? self->background_ : self->inputBrush_);
+            case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
+                SetTextColor((HDC)w, IsWindowEnabled((HWND)l) ? COL_TEXT : COL_LABEL);
+                SetBkColor((HDC)w, COL_BG); return (LRESULT)self->background_;
+            case WM_CTLCOLORLISTBOX: case WM_CTLCOLOREDIT:
+                SetTextColor((HDC)w, COL_TEXT); SetBkColor((HDC)w, COL_INPUT); return (LRESULT)self->inputBrush_;
             case WM_DRAWITEM: self->draw(*(DRAWITEMSTRUCT*)l); return TRUE;
             case WM_NCDESTROY:
                 self->window_ = self->list_ = self->input_ = nullptr; self->pending_ = false;

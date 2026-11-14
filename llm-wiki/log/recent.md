@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Windows capture into a source draft
+
+- Profiles & tools exposes a temporary capture pane with independent omission
+  and draft-discard decisions. Frozen acceptance installs an unsaved exact
+  source; cancel/failure preserve canonical and legacy invalid input.
+- The shared passive queue supports matching cancellation; active reads finish
+  and stale results are freed. Cases 9394-9433 exercise cancellation, native
+  controls/DPI/focus and production controller acceptance with scripted reads.
+  See [config-profiles.md](../config-profiles.md#windows-capture-into-an-unsaved-source-draft-2026-11-14).
+- Full Windows normal/ASan/UBSan, native Linux UBSan and all-target checks pass.
+  Bypassing discard fails 9417; hiding the leading checkbox fails 9433.
+  Static analysis adds no findings; the native pane was rendered offscreen.
+
 ## 2026-11-14: Explicit Windows preview controls
 
 - Native source checks offer named graphics/memory controls without changing

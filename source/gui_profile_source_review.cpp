@@ -12,6 +12,7 @@ static bool g_profileReadPending = false;
 
 static void gui_profile_source_invalidate_review(const char* reason) {
     const bool hadReview = g_profileReviewJob != nullptr;
+    if (g_profileReviewJob && g_profileReadPending) gui_service_io_cancel_capture(g_profileReviewJob->token);
     g_profileReviewJob.reset(); g_profileReview.reset(); g_profileReadPending = false;
     if (g_profileSourceWindow) {
         g_profileSourceWindow->clear_report();
@@ -20,6 +21,7 @@ static void gui_profile_source_invalidate_review(const char* reason) {
     if (hadReview) debug_log("profile-check: expired reason=%s\n", reason);
 }
 static void gui_profile_source_service_changed() {
+    gui_profile_capture_service_changed();
     if (!g_profileReviewJob) return;
     if (!gui_service_model_ready(&g_app.guiServiceModel) || g_app.applyInFlight ||
         g_app.configuredGpuSelectionUnresolved ||

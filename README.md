@@ -264,6 +264,13 @@ review exact controls before replacing the draft. Omitted settings and
 discarding unsaved edits each require an explicit choice. Acceptance creates
 an unsaved source draft; Save stores it, and Apply remains separate.
 
+On Windows, Load opens portable slots in a source editor with precise values
+and offline Save. Check previews the selected GPU with explicit graphics and
+memory control choices. Profiles & tools -> Capture current GPU settings opens
+domain selection and snapshot review. Omitted settings and replacing unfinished
+work require separate choices; Use exact creates an unsaved source, then Save
+stores it. Captured-source Apply is not enabled by this read-only workflow yet.
+
 To import an older Green Curve INI, select `--legacy-format windows-ini` or
 `--legacy-format linux-ini`. Select source slots with `--source-profiles 2,4`
 and destination slots with `--slots 1,5`. For a portable bank, source numbers

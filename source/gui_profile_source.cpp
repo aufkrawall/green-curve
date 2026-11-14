@@ -7,6 +7,7 @@
 
 static std::unique_ptr<ProfileSourceWindow> g_profileSourceWindow;
 #include "gui_profile_source_review.cpp"
+#include "gui_profile_capture.cpp"
 
 static bool gui_profile_source_confirm_discard(void*) {
     return gc_message_box(g_app.hMainWnd,
@@ -59,6 +60,10 @@ static bool gui_profile_source_open() {
         callbacks.check = gui_profile_source_check;
         callbacks.inputChanged = gui_profile_source_input_changed;
         callbacks.previewChanged = gui_profile_source_preview_changed;
+        callbacks.captureRead = gui_profile_capture_read;
+        callbacks.captureAccept = gui_profile_capture_accept;
+        callbacks.captureCancel = gui_profile_capture_cancel;
+        callbacks.captureDomainsChanged = gui_profile_capture_domains_changed;
         g_profileSourceWindow = std::make_unique<ProfileSourceWindow>(g_app.guiSource, callbacks);
     }
     return g_profileSourceWindow->create(g_app.hMainWnd, g_dpi, false);
@@ -66,6 +71,9 @@ static bool gui_profile_source_open() {
 // A false result selects the existing online legacy workflow. A true result
 // means that this source load (including refusal/cancel) has been handled.
 static bool gui_profile_source_load(int slot) {
+    if (gui_profile_capture_active()) {
+        g_profileSourceWindow->notice("Cancel capture before loading another source"); return true;
+    }
     auto candidate = std::make_unique<ProfileDocument>();
     ProfileCodecError error{}; bool found = false;
     const bool offline = !gui_service_model_ready(&g_app.guiServiceModel);
@@ -105,6 +113,9 @@ static bool gui_profile_source_load(int slot) {
     return true;
 }
 static bool gui_profile_source_save() {
+    if (gui_profile_capture_active()) {
+        g_profileSourceWindow->notice("Cancel capture before saving the previous draft"); return true;
+    }
     if (!g_app.guiSource.valid) return false;
     if (g_profileSourceWindow && !g_profileSourceWindow->save()) g_profileSourceWindow->show();
     return true;

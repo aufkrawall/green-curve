@@ -17,3 +17,7 @@ static inline bool gui_passive_capture_prepare(const GpuAdapterInfo& target, gc_
     out.request.command = SERVICE_CMD_CAPTURE_CURRENT; out.request.targetGpu = target; out.request.captureDomains = domains;
     return true;
 }
+static inline bool gui_passive_capture_cancel(bool& pending, GuiPassiveCaptureWork& work, gc_u64 token) {
+    if (!pending || !token || work.token != token) return false;
+    pending = false; work = {}; return true;
+}

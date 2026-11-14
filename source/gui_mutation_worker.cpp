@@ -247,7 +247,7 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
             capture = g_guiCaptureWork; g_guiCapturePending = false;
             g_guiWorkerBusy = true; ioKind = GUI_SERVICE_IO_CAPTURE;
             executeRead = true; presentationEpoch = gui_service_presentation_epoch();
-            StringCchCopyA(reason, ARRAY_COUNT(reason), "profile destination check");
+            StringCchCopyA(reason, ARRAY_COUNT(reason), "passive profile read");
         } else if (!g_guiWorkerBusy && !g_guiMutationActive &&
                    g_guiTelemetryPending) {
             g_guiTelemetryPending = false;

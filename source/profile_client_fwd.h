@@ -12,6 +12,13 @@ static void refresh_profile_controls_from_config();
 static void update_share_all_users_check_state();
 static void gui_profile_source_service_changed();
 static void gui_profile_source_observe_service(const ServiceResponse* response);
+static void gui_profile_capture_service_changed();
+#ifdef GREEN_CURVE_SERVICE_BINARY
+static constexpr bool gui_profile_capture_active() { return false; }
+#else
+static bool gui_profile_capture_active();
+#endif
+static void gui_profile_tools_append_menu(HMENU menu);
 static void migrate_legacy_config_if_needed(const char* path);
 static void merge_desired_settings(DesiredSettings* base, const DesiredSettings* override);
 static bool desired_has_any_action(const DesiredSettings* desired);

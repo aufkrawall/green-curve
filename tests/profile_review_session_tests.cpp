@@ -21,6 +21,12 @@ int run_profile_review_session_tests() {
     if (service_request_reject_reason(&work.request)) return 9352;
     if (gui_passive_capture_prepare(target, 512, 1, work) || gui_passive_capture_prepare(target, 0, 1, work) ||
         gui_passive_capture_prepare(target, 1, 0, work) || gui_passive_capture_prepare(GpuAdapterInfo{}, 1, 1, work)) return 9353;
+    bool pending = true;
+    if (gui_passive_capture_cancel(pending, work, 0) || gui_passive_capture_cancel(pending, work, 90) ||
+        !pending || !gui_passive_capture_cancel(pending, work, 91) || pending || work.token ||
+        work.request.command || gui_passive_capture_cancel(pending, work, 91)) return 9394;
+    if (!gui_passive_capture_prepare(target, 1, 92, work)) return 9395;
+    if (gui_passive_capture_cancel(pending, work, 92) || work.token != 92) return 9396;
     auto job = std::make_unique<ProfileEditorReviewJob>(); job->token = 91; job->sourceRevision = 17;
     job->context = context; job->source = profile_review_fixture::source();
     auto& source = job->source;

@@ -381,6 +381,9 @@ static void show_profiles_popup(HWND hwnd) {
     refresh_menu_theme_cache();
     HMENU menu = build_auto_profile_menu();
     if (!menu) return;
+#ifndef GREEN_CURVE_SERVICE_BINARY
+    gui_profile_tools_append_menu(menu);
+#endif
     POINT pt = {};
     GetCursorPos(&pt);
     SetForegroundWindow(hwnd);

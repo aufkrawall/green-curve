@@ -1,5 +1,53 @@
 # Config and Profiles
 
+## Windows capture into an unsaved source draft (2026-11-14)
+
+Source anchors: `source/gui_profile_capture.cpp`,
+`source/profile_source_window.h`, `source/gui_passive_capture_queue.cpp`,
+`source/gui_passive_capture.h`, `source/gui_profile_source.cpp`,
+`source/main_fan_runtime.cpp`, `source/ui_main_window.cpp`,
+`tests/gui_profile_capture_tests.cpp`, `tests/profile_source_window_tests.cpp`,
+`tests/profile_review_session_tests.cpp`.
+
+The main Profiles & tools popup opens a temporary capture pane in the native
+source window. Nine domain choices precede the Read action; the default mask
+excludes external fan behavior and advanced controls. Native checkboxes expose
+separate omission and unsaved/unfinished-draft decisions. The exact source,
+saved baseline and hidden edit text stay untouched on begin, Read, failure and
+Cancel. Cancelling without an existing canonical source closes only this pane;
+it never invokes the source-close live-editor rebase. Ordinary draft editing,
+personal Load/Save/Clear/slot selection and shared-profile loading are blocked
+while capture is open. Reset retains its existing gate.
+
+Read uses the same fixed getter queue and context proof as Check. A shared token
+sequence distinguishes the controllers; each reply has exactly one owner and
+stale replies are freed. Matching queued reads can be cancelled under the
+coordinator mutex; an active getter finishes within the existing bound and its
+obsolete result is ignored. No separate worker, delay or polling loop is added.
+Read results require the named binding, domain mask, fingerprint, ownership
+revision and current service/GPU/presentation context. Changing domains or
+leaving that context expires evidence, without altering the previous draft.
+
+Review and acceptance use the existing strict capture engine through its
+in-memory adapter. Accept requires readable controls, explicit omitted-domain
+permission where needed and a fresh discard decision for current unsaved or
+unfinished input. It consumes the frozen observation without another Capture
+request. Conversion must succeed before the old draft is discarded; only then
+is an unsaved canonical source installed and the native source view restored.
+Save is a separate action. Applied service intent and ownership remain intact.
+Flatten/pin proposals and mapped replay remain separate integration work.
+
+Native capture layout keeps report/checkbox text readable, retains the capture
+title and hidden input across DPI changes, and scrolls oversized checkboxes to
+keep their leading glyph visible. An offscreen native render verified the pane;
+a production desktop interaction or physical GPU write is not claimed.
+Cases 9394-9433 cover matching cancellation, native decisions/cancel/DPI/focus,
+production controller read/accept with precise offsets and owned zero, one-read
+acceptance, late replies, ownership/epoch changes, invalid fingerprints,
+allocation/queue/offline failures and legacy invalid-input preservation.
+Diagnostics use bounded `profile-read:` queue/cancel and `profile-capture:`
+open/review/expire/accept events without paths or complete document bodies.
+
 ## Windows read-only destination checks (2026-11-14)
 
 Source anchors: `source/gui_profile_source_review.cpp`,
@@ -42,7 +90,7 @@ Cases 9387-9393 also cover native API selection, absent domains, job choices,
 review invalidation, source preservation, reload defaults, DPI label fit and
 keyboard focus scrolling without losing unfinished text.
 
-Diagnostics use `profile-check:` queued/completed/expired lines with tokens,
+Diagnostics use `profile-read:` queue/cancel and `profile-check:` completed/expired lines with tokens,
 revisions, selected controls, stage/result and bounded reasons. Cases 9350-9386 cover the pure
 request/session contract, native report controls and production GUI callbacks
 with scripted transport. They include owned zero, stale/late completions,

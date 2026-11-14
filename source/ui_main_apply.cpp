@@ -142,7 +142,7 @@ static bool confirm_unified_memory_write(const DesiredSettings* desired) {
 }
 
 static void apply_changes() {
-    if (g_app.guiSource.valid) {
+    if (g_app.guiSource.valid || gui_profile_capture_active()) {
         set_profile_status_text("Review this source against the destination before Apply.");
         return;
     }

@@ -127,9 +127,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case APP_WM_SERVICE_IO_COMPLETE:
-            if (!lParam && wParam) gui_profile_source_check_allocation_failed((gc_u64)wParam);
-            else if (lParam && ((GuiServiceIoCompletion*)lParam)->kind == GUI_SERVICE_IO_CAPTURE)
-                gui_profile_source_handle_check((GuiServiceIoCompletion*)lParam);
+            if (!lParam && wParam) {
+                if (!gui_profile_capture_allocation_failed((gc_u64)wParam)) gui_profile_source_check_allocation_failed((gc_u64)wParam);
+            } else if (lParam && ((GuiServiceIoCompletion*)lParam)->kind == GUI_SERVICE_IO_CAPTURE) {
+                auto* completion = (GuiServiceIoCompletion*)lParam;
+                if (!gui_profile_capture_handle_completion(completion)) gui_profile_source_handle_check(completion);
+            }
             else handle_gui_service_io_completion((GuiServiceIoCompletion*)lParam);
             return 0;
 
@@ -706,6 +709,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             } else if (LOWORD(wParam) == PROFILE_SAVE_ID) {
                 gui_profile_save_command();
             } else if (LOWORD(wParam) == PROFILE_CLEAR_ID) {
+                if (gui_profile_capture_active()) {
+                    set_profile_status_text("Cancel capture before changing saved profiles."); break;
+                }
                 int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
                 if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
                 slot += 1;
@@ -844,6 +850,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (gui_profile_source_can_exit()) DestroyWindow(hwnd);
             } else if (LOWORD(wParam) == AUTO_PROFILE_BTN_ID && HIWORD(wParam) == BN_CLICKED) {
                 show_profiles_popup(hwnd);
+            } else if (LOWORD(wParam) == PROFILE_CAPTURE_ID) {
+                gui_profile_capture_begin();
             } else if (LOWORD(wParam) == AUTO_PROFILE_MENU_TOGGLE_ID) {
                 auto_profile_toggle_enabled(hwnd);
             } else if (LOWORD(wParam) == AUTO_PROFILE_MENU_CONFIGURE_ID) {

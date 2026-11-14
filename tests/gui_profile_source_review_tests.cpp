@@ -27,6 +27,8 @@ static gc_u64 sentToken = 0;
 static void debug_log(const char*, ...) {}
 static LONG gui_service_presentation_epoch() { return epoch; }
 static bool validate_configured_gpu_selection_for_client(char*, size_t) { return selection; }
+static void gui_service_io_cancel_capture(gc_u64) {}
+static void gui_profile_capture_service_changed() {}
 static bool gui_service_io_queue_capture(const GpuAdapterInfo& target, gc_u32 domains, gc_u64 token, char* error, size_t size) {
     ++sends; sentTarget = target; sentDomains = domains; sentToken = token;
     if (!queue) { snprintf(error, size, "fixture queue refusal"); return false; }

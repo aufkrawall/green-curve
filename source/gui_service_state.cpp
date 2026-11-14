@@ -235,7 +235,7 @@ static void gui_set_editor_enabled(bool ready) {
     actionable.ready = ready;
     const bool allowLive = gui_service_capability_enabled(
         &actionable, GUI_SERVICE_CAP_EDITOR);
-    const bool allowDraft = allowLive && !g_app.guiSource.valid;
+    const bool allowDraft = allowLive && !g_app.guiSource.valid && !gui_profile_capture_active();
     for (int vi = 0; vi < g_app.numVisible; ++vi) {
         bool tailDisabled = g_app.lockedVi >= 0 && vi > g_app.lockedVi;
         if (g_app.hEditsMhz[vi])

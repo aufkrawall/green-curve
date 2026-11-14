@@ -262,6 +262,7 @@ void init_dpi();
 #define MACHINE_LOGON_MENU_PUBLISH_ID 2042
 #define MACHINE_LOGON_MENU_CLEAR_MACHINE_SLOT_ID 2043
 #define SHARED_PROFILES_BTN_ID 2044
+#define PROFILE_CAPTURE_ID 2048
 #define MACHINE_LOGON_MENU_RESTRICT_ID 2045
 // Base for the per-slot items in the "Shared profiles" popup menu (BASE+slot).
 #define SHARED_PROFILE_MENU_BASE 2400
