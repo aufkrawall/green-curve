@@ -1068,6 +1068,8 @@ int run_tui_review_session_tests();
 int run_scalar_editor_tests();
 int run_tui_capture_draft_tests();
 int run_profile_source_window_tests();
+int run_profile_review_session_tests();
+int run_gui_profile_source_review_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -2824,6 +2826,12 @@ static int run_all_tests(int argc, char** argv) {
     }
     if (int sourceWindowFailure = run_profile_source_window_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", sourceWindowFailure); return sourceWindowFailure;
+    }
+    if (int sourceReviewFailure = run_profile_review_session_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", sourceReviewFailure); return sourceReviewFailure;
+    }
+    if (int guiSourceReviewFailure = run_gui_profile_source_review_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", guiSourceReviewFailure); return guiSourceReviewFailure;
     }
 #if defined(_WIN32)
     // Win32 config storage: the named-mutex lock and the Unicode INI writer.

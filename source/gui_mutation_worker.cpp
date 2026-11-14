@@ -12,62 +12,8 @@
 // and the result text share one vocabulary and must not drift apart.
 #include "gui_mutation_result_policy.h"
 
-enum GuiServiceIoKind {
-    GUI_SERVICE_IO_FULL_SYNC = 1,
-    GUI_SERVICE_IO_TELEMETRY = 2,
-    GUI_SERVICE_IO_ADMIN_TOGGLE = 3,
-};
-
-struct GuiMutationWork {
-    GuiMutationKind kind;
-    GuiMutationUiContext context;
-    ServiceRequest request;
-    DesiredSettings desired;
-    ServiceProfileSource profileSource;
-    ServiceApplyOrigin origin;
-    int profileSlot;
-    LONG gpuEpoch;
-    LONG presentationEpoch;
-    DWORD sessionId;
-    ULONGLONG queuedTickMs;
-    HWND notifyWindow;
-};
-
-struct GuiMutationCompletion {
-    GuiMutationWork work;
-    ServiceResponse response;
-    bool transportAttempted;
-    bool success;
-    bool serviceInstalled;
-    bool serviceRunning;
-    gc_u64 connectionEpoch;
-    ULONGLONG durationMs;
-    char result[512];
-};
-
-struct GuiServiceIoCompletion {
-    GuiServiceIoKind kind;
-    ServiceResponse response;
-    bool transportSuccess;
-    bool redrawControls;
-    bool serviceInstalled;
-    bool serviceRunning;
-    gc_u64 connectionEpoch;
-    LONG presentationEpoch;
-    ULONGLONG durationMs;
-    bool adminEnable;
-    bool adminRepair;
-    // GcServiceAdminReason for an admin toggle: WHY it failed, classified
-    // across the elevation boundary by exit code so the GUI can say something
-    // other than "exit code 1" (service_admin_reason_policy.h).
-    int adminReason;
-    // What the attempt proved about the service's EXISTENCE, as opposed to
-    // whether this particular exchange worked. Only an unreachable pipe means
-    // offline; see service_request_deadline_policy.h.
-    ServiceClientSendOutcome sendOutcome;
-    char reason[96];
-    char error[512];
-};
+#include "gui_service_io_types.h"
+#include "gui_passive_capture.h"
 #include "gui_service_io_log.h"
 
 static CRITICAL_SECTION g_guiMutationLock;
@@ -80,6 +26,8 @@ static bool g_guiMutationDispatched = false;
 static bool g_guiMutationPending = false;
 static bool g_guiFullSyncPending = false;
 static bool g_guiTelemetryPending = false;
+static bool g_guiCapturePending = false;
+static GuiPassiveCaptureWork g_guiCaptureWork{};
 static bool g_guiAdminTogglePending = false;
 static bool g_guiAdminToggleEnable = false;
 static bool g_guiAdminToggleRepair = false;
@@ -118,12 +66,19 @@ static bool gui_worker_dispatchable_locked() {
     if (g_guiMutationShuttingDown || g_guiWorkerBusy) return false;
     if (g_guiMutationActive) return !g_guiMutationDispatched;
     return g_guiAdminTogglePending || g_guiFullSyncPending ||
-        g_guiTelemetryPending;
+        g_guiCapturePending || g_guiTelemetryPending;
 }
 
 static void gui_worker_signal_if_dispatchable_locked() {
     if (gui_worker_dispatchable_locked() && g_guiMutationEvent)
         SetEvent(g_guiMutationEvent);
+}
+
+static HWND gui_worker_notification_window() {
+    EnterCriticalSection(&g_guiMutationLock);
+    HWND window = g_guiServiceNotifyWindow;
+    LeaveCriticalSection(&g_guiMutationLock);
+    return window;
 }
 
 static void gui_mutation_advance_gpu_epoch(const char* reason) {
@@ -243,6 +198,7 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
             return 1;
 
         GuiMutationWork mutation = {};
+        GuiPassiveCaptureWork capture{};
         GuiServiceIoKind ioKind = GUI_SERVICE_IO_FULL_SYNC;
         bool executeMutation = false;
         bool executeRead = false;
@@ -287,6 +243,11 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
             ioKind = GUI_SERVICE_IO_FULL_SYNC;
             executeRead = true;
             presentationEpoch = gui_service_presentation_epoch();
+        } else if (!g_guiWorkerBusy && !g_guiMutationActive && g_guiCapturePending) {
+            capture = g_guiCaptureWork; g_guiCapturePending = false;
+            g_guiWorkerBusy = true; ioKind = GUI_SERVICE_IO_CAPTURE;
+            executeRead = true; presentationEpoch = gui_service_presentation_epoch();
+            StringCchCopyA(reason, ARRAY_COUNT(reason), "profile destination check");
         } else if (!g_guiWorkerBusy && !g_guiMutationActive &&
                    g_guiTelemetryPending) {
             g_guiTelemetryPending = false;
@@ -349,6 +310,9 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
             (GuiServiceIoCompletion*)HeapAlloc(GetProcessHeap(),
                 HEAP_ZERO_MEMORY, sizeof(GuiServiceIoCompletion));
         if (!completion) {
+            HWND notifyWindow = gui_worker_notification_window();
+            if (ioKind == GUI_SERVICE_IO_CAPTURE && notifyWindow)
+                PostMessageW(notifyWindow, APP_WM_SERVICE_IO_COMPLETE, (WPARAM)capture.token, 0);
             EnterCriticalSection(&g_guiMutationLock);
             g_guiWorkerBusy = false;
             gui_worker_signal_if_dispatchable_locked();
@@ -356,6 +320,7 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
             continue;
         }
         completion->kind = ioKind;
+        completion->captureToken = capture.token;
         completion->redrawControls = redrawControls;
         completion->presentationEpoch = presentationEpoch;
         completion->adminEnable = adminEnable;
@@ -395,9 +360,14 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
         } else {
             query_background_service_state(&completion->serviceInstalled,
                 &completion->serviceRunning);
-            completion->transportSuccess = gui_worker_send_state_request(ioKind,
-                &completion->response, completion->error,
-                sizeof(completion->error), &completion->sendOutcome);
+            if (ioKind == GUI_SERVICE_IO_CAPTURE) {
+                completion->transportSuccess = service_send_state_read_request(&capture.request,
+                    &completion->response, true, completion->error, sizeof(completion->error), &completion->sendOutcome);
+            } else {
+                completion->transportSuccess = gui_worker_send_state_request(ioKind,
+                    &completion->response, completion->error,
+                    sizeof(completion->error), &completion->sendOutcome);
+            }
             completion->connectionEpoch = gui_worker_record_connection_result(
                 completion->transportSuccess,
                 completion->transportSuccess ? &completion->response : nullptr);
@@ -405,9 +375,9 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
         completion->durationMs = GetTickCount64() - started;
         gui_worker_log_read_completion(ioKind, completion);
 
-        HWND notifyWindow = g_guiServiceNotifyWindow;
-        // The notify handle is captured on the main thread during coordinator
-        // initialization.  The window owns and frees the completion.
+        HWND notifyWindow = gui_worker_notification_window();
+        // Initialization and shutdown share this handle with the worker. The
+        // coordinator lock protects reads; the window owns posted completions.
         bool posted = notifyWindow && PostMessageW(notifyWindow,
             APP_WM_SERVICE_IO_COMPLETE, 0, (LPARAM)completion);
         if (!posted) HeapFree(GetProcessHeap(), 0, completion);
@@ -443,6 +413,8 @@ static bool gui_mutation_initialize(char* err, size_t errSize) {
     }
     return true;
 }
+
+#include "gui_passive_capture_queue.cpp"
 
 static bool gui_service_io_queue_full_sync(const char* reason) {
     char err[192] = {};
@@ -509,7 +481,7 @@ static bool gui_service_io_queue_telemetry(bool redrawControls) {
     }
     EnterCriticalSection(&g_guiMutationLock);
     GuiServiceReadQueueDecision decision = gui_telemetry_queue_decide(
-        g_guiFullSyncPending, g_guiMutationActive, g_guiAdminTogglePending,
+        g_guiFullSyncPending || g_guiCapturePending, g_guiMutationActive, g_guiAdminTogglePending,
         g_guiWorkerBusy,
         g_guiTelemetryPending);
     if (decision == GUI_SERVICE_READ_DROP_BEHIND_PRIORITY_WORK) {
@@ -542,6 +514,7 @@ static bool gui_service_io_queue_telemetry(bool redrawControls) {
 // left showing a stale state by a path that forgot to refresh it.
 static void gui_apply_in_flight_presentation_changed(bool inFlight,
     const char* reason) {
+    gui_profile_source_service_changed();
     debug_log("GUI apply presentation: changes-pending state -> %d (%s)\n",
         inFlight ? 1 : 0, reason && reason[0] ? reason : "queue transition");
     update_tray_icon();
@@ -743,6 +716,7 @@ static bool gui_mutation_shutdown() {
     if (!g_guiMutationLockReady) return true;
     EnterCriticalSection(&g_guiMutationLock);
     g_guiMutationShuttingDown = true;
+    g_guiCapturePending = false;
     g_guiServiceNotifyWindow = nullptr;
     g_guiMutationPending = false;
     g_guiAdminTogglePending = false;

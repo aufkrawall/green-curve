@@ -228,6 +228,7 @@ static void gui_draft_discard() {
 }
 
 static void gui_set_editor_enabled(bool ready) {
+    gui_profile_source_service_changed();
     // `ready` is supplied by the caller rather than re-derived, because the
     // phase-only render path deliberately forces it false.
     GuiServiceActionability actionable = gui_service_actionability_from_app();
@@ -666,6 +667,8 @@ static bool gui_service_accept_response_on_main_thread(
             reason && reason[0] ? reason : "completion");
         return false;
     }
+
+    gui_profile_source_observe_service(response);
 
     bool authorityChanged = previousInstance != 0 &&
         (previousInstance != response->state.serviceInstanceId ||

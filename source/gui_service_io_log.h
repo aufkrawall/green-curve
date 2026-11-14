@@ -30,7 +30,7 @@ static void gui_worker_log_read_line(GuiServiceIoKind ioKind,
         (unsigned long long)completion->durationMs,
         ioKind == GUI_SERVICE_IO_ADMIN_TOGGLE ? 0ul
             : service_state_read_response_timeout_ms(
-                ioKind == GUI_SERVICE_IO_FULL_SYNC),
+                ioKind != GUI_SERVICE_IO_TELEMETRY),
         completion->transportSuccess ? 1 : 0,
         (unsigned long long)completion->connectionEpoch,
         // gc_u32 is `unsigned long`, which is 64-bit under the MinGW/LP64

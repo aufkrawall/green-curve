@@ -127,7 +127,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case APP_WM_SERVICE_IO_COMPLETE:
-            handle_gui_service_io_completion((GuiServiceIoCompletion*)lParam);
+            if (!lParam && wParam) gui_profile_source_check_allocation_failed((gc_u64)wParam);
+            else if (lParam && ((GuiServiceIoCompletion*)lParam)->kind == GUI_SERVICE_IO_CAPTURE)
+                gui_profile_source_handle_check((GuiServiceIoCompletion*)lParam);
+            else handle_gui_service_io_completion((GuiServiceIoCompletion*)lParam);
             return 0;
 
         // Addressed here rather than to the Updates dialog on purpose: this

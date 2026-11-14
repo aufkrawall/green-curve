@@ -1,5 +1,48 @@
 # Config and Profiles
 
+## Windows read-only destination checks (2026-11-14)
+
+Source anchors: `source/gui_profile_source_review.cpp`,
+`source/profile_editor_review_session.h`, `source/gui_passive_capture.h`,
+`source/gui_passive_capture_queue.cpp`, `source/gui_mutation_worker.cpp`,
+`source/gui_service_io_types.h`, `source/profile_source_window.h`,
+`tests/profile_review_session_tests.cpp`,
+`tests/gui_profile_source_review_tests.cpp`,
+`tests/profile_source_window_tests.cpp`.
+
+Check stages valid pending input, freezes the source revision and named shown
+GPU, and queues one passive Capture through the existing serialized GUI I/O
+coordinator. It has no Apply, recovery, initialization or file callback.
+Mutation/admin/full-sync priority is retained; the passive read precedes
+telemetry. The worker owns an immutable getter request and token, while all
+source, HWND and report state stays on the window thread. Allocation failures
+have a token-addressed failure notification, and shutdown drains posted results.
+The coordinator mutex also protects delivery-handle reads during shutdown.
+
+Completion checks the job token, source revision, presentation epoch, ready
+session, service instance, GPU generation, topology, mutation domains and
+outgoing ownership. Capture binding, physical fingerprint and ownership-bound
+revision must agree. Only then does the shared CLI check engine evaluate the
+frozen observation, without a second read. An ordinary telemetry revision or
+temperature change preserves the report. New input invalidates a pending or
+completed review immediately; source replacement, closed windows, lost readiness,
+service/GPU changes and queued writes also expire it. Source values and applied
+ownership remain unchanged, including on refused checks.
+
+Reports use a separate read-only, wrapping/scrolling native pane. Switching
+back to Source restores the exact selected value; invalid input cannot start a
+check. The report is a control/mapping preview and grants no Apply authority.
+Explicit preview-route controls, destination acceptance and mapped Apply remain
+separate integration work.
+
+Diagnostics use `profile-check:` queued/completed/expired lines with tokens,
+revisions, stage/result and bounded reasons. Cases 9350-9386 cover the pure
+request/session contract, native report controls and production GUI callbacks
+with scripted transport. They include owned zero, stale/late completions,
+invalid input, selection mismatch, duplicate reads, queue/transport/service
+refusals and allocation failure. Production GPU capture and replay are not
+claimed by these fixtures.
+
 ## Windows canonical source editor (2026-11-14)
 
 Source anchors: `source/gui_profile_source.cpp`,
@@ -30,7 +73,7 @@ The source label never claims applied ownership. Both legacy Apply gates stay
 closed while a source is open; Reset keeps its existing ready-state gate.
 Closing a source requests a coherent live-editor resync. Closing an unsaved
 source or exiting with one requires explicit discard, defaulting to No.
-Destination review and mapped Apply remain separate integration work.
+Destination acceptance and mapped Apply remain separate integration work.
 
 Diagnostics use bounded `profile-source:` load/stage/save/close events and
 `profile-bank:` commit results, without paths or document bodies. Cases

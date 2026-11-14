@@ -5,9 +5,10 @@
 #include <cstring>
 namespace {
 struct Host {
-    int saves = 0, changes = 0, closes = 0, confirms = 0;
+    int saves = 0, changes = 0, closes = 0, confirms = 0, checks = 0, inputChanges = 0;
     bool discard = false, failSave = false;
     ProfileDocument saved{};
+    ProfileSourceWindow* window = nullptr;
 };
 static bool save(void* context, const ProfileDocument& document, char* error, size_t size) {
     auto& host = *(Host*)context; ++host.saves;
@@ -17,6 +18,13 @@ static bool save(void* context, const ProfileDocument& document, char* error, si
 static bool confirm(void* context) { auto& h = *(Host*)context; ++h.confirms; return h.discard; }
 static void changed(void* context) { ++((Host*)context)->changes; }
 static void closed(void* context) { ++((Host*)context)->closes; }
+static void check(void* context, const ProfileDocument& document) {
+    auto& h = *(Host*)context; ++h.checks; h.saved = document;
+}
+static void input_changed(void* context) {
+    auto& h = *(Host*)context; ++h.inputChanges;
+    if (h.window) h.window->clear_report();
+}
 static void select(ProfileSourceWindow& window, int row) {
     SendMessageW(window.control(ProfileSourceWindow::LIST), LB_SETCURSEL, row, 0);
     SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::LIST, LBN_SELCHANGE), (LPARAM)window.control(ProfileSourceWindow::LIST));
@@ -39,7 +47,9 @@ int run_profile_source_window_tests() {
     d.power.present = true; d.power.ratio = {2, 3}; model->saved = d;
     auto host = std::make_unique<Host>();
     ProfileSourceWindowCallbacks callbacks{host.get(), save, confirm, changed, closed, nullptr};
+    callbacks.check = check; callbacks.inputChanged = input_changed;
     ProfileSourceWindow window(*model, callbacks);
+    host->window = &window;
     if (!window.create(nullptr, 96, false) || IsWindowVisible(window.handle())) return 9330;
     const LONG_PTR statusStyle = GetWindowLongPtrW(window.control(ProfileSourceWindow::STATUS), GWL_STYLE);
     if (!(statusStyle & ES_READONLY) || !(statusStyle & ES_MULTILINE) || !(statusStyle & WS_VSCROLL)) return 9348;
@@ -55,12 +65,16 @@ int run_profile_source_window_tests() {
     select(window, point);
     if (text(window.control(ProfileSourceWindow::INPUT)) != L"1200.123456" || window.pending() || profile_editor_document_dirty(*model)) return 9333;
     if (!window.save() || host->saves != 1 || host->saved.points[0].kind != PROFILE_POINT_CAPTURED_OFFSET || host->changes) return 9334;
+    SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::CHECK, 0);
+    if (host->checks != 1 || host->saved.points[0].kind != PROFILE_POINT_CAPTURED_OFFSET || host->changes) return 9364;
     SetWindowTextW(window.control(ProfileSourceWindow::INPUT), L"1200.123456");
     MSG enter{}; enter.hwnd = window.control(ProfileSourceWindow::INPUT); enter.message = WM_KEYDOWN; enter.wParam = VK_RETURN;
     if (!window.route(enter) || host->changes != 1 || d.points[0].kind != PROFILE_POINT_ABSOLUTE_FREQUENCY ||
         d.points[0].absoluteFrequencyHz != 1200123456 || d.points[1].capturedOffsetHz != -100000500 ||
         d.memoryOffsetHz != -123500000 || d.power.ratio.denominator != 3 || model->revision != 2) return 9335;
     SetWindowTextW(window.control(ProfileSourceWindow::INPUT), L"1.");
+    SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::CHECK, 0);
+    if (host->checks != 1 || !host->inputChanges) return 9365;
     if (!window.pending() || window.save() || host->saves != 1 || d.points[0].absoluteFrequencyHz != 1200123456) return 9336;
     select(window, memory);
     if (text(window.control(ProfileSourceWindow::INPUT)) != L"1." || SendMessageW(window.control(ProfileSourceWindow::LIST), LB_GETCURSEL, 0, 0) != point) return 9337;
@@ -91,6 +105,22 @@ int run_profile_source_window_tests() {
     RECT button{}, client{}; GetWindowRect(window.control(ProfileSourceWindow::CLOSE), &button);
     MapWindowPoints(nullptr, window.handle(), (POINT*)&button, 2); GetClientRect(window.handle(), &client);
     if (button.right > client.right || button.bottom > client.bottom || button.left < 0 || button.top < 0) return 9344;
+    const std::vector<std::string> report{"Destination check", "Precise request=123500001 Hz; trailing maximum=3000000000 Hz"};
+    window.report(report);
+    const auto visible = [](HWND child) { return (GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE) != 0; };
+    if (visible(window.control(ProfileSourceWindow::LIST)) || !visible(window.control(ProfileSourceWindow::REPORT)) ||
+        IsWindowEnabled(window.control(ProfileSourceWindow::INPUT)) ||
+        text(window.control(ProfileSourceWindow::REPORT)).find(L"maximum=3000000000") == std::wstring::npos) return 9366;
+    const LONG_PTR reportStyle = GetWindowLongPtrW(window.control(ProfileSourceWindow::REPORT), GWL_STYLE);
+    if (!(reportStyle & ES_READONLY) || !(reportStyle & ES_MULTILINE) || !(reportStyle & WS_VSCROLL)) return 9367;
+    SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::VIEW, 0);
+    if (!visible(window.control(ProfileSourceWindow::LIST)) || !IsWindowEnabled(window.control(ProfileSourceWindow::INPUT)) ||
+        text(window.control(ProfileSourceWindow::INPUT)) != L"-123.500001") return 9368;
+    SetWindowTextW(window.control(ProfileSourceWindow::INPUT), L"invalid");
+    if (visible(window.control(ProfileSourceWindow::VIEW)) || !window.pending() ||
+        text(window.control(ProfileSourceWindow::INPUT)) != L"invalid") return 9369;
+    SetWindowTextW(window.control(ProfileSourceWindow::INPUT), L"-123.500001");
+    if (!window.save()) return 9370;
     SendMessageW(window.handle(), WM_CLOSE, 0, 0);
     if (window.handle() || host->closes != 1 || host->confirms != 1) return 9345;
     if (!window.create(nullptr, 96, false)) return 9346;

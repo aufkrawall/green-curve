@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Windows passive destination checks
+
+- The native source editor queues a named passive read through the existing
+  coordinator and displays the shared mapping/control report. Source input,
+  ownership and session changes expire in-flight or completed reviews.
+- Cases 9350-9386 cover request/session policy, native report controls and
+  production GUI callbacks with scripted transport. See
+  [config-profiles.md](../config-profiles.md#windows-read-only-destination-checks-2026-11-14).
+- Full Windows ASan/UBSan regressions, native Linux UBSan fixtures and all-target
+  builds pass. Omitting input invalidation fails 9376; omitting ownership
+  comparison fails 9356. Static analysis adds no findings. Hardware is unverified.
+
 ## 2026-11-14: Windows source profile editing
 
 - Canonical personal slots open a separate source editor with shared precise

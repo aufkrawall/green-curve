@@ -40,7 +40,7 @@ Curve checks, profile transfer and capture improve tuning workflows.
 - **Legacy transfer:** preserve Windows/Linux units and tuning intent.
 - **Source profiles:** offline editing in Windows and the TUI survives GPU switches.
 - **Hardware capture:** CLI/TUI snapshot review identifies omissions without resetting.
-- **Profile checks:** CLI/TUI previews explain mapping, ranges and conversions; stale reviews expire.
+- **Profile checks:** Windows/CLI/TUI previews explain mapping, ranges and conversions; reviews expire when stale.
 
 ### Improved
 

@@ -3759,7 +3759,7 @@ def run_source_regression_checks():
                  "stable disconnected failures are presentation-idempotent")
     require_text(gui_draft_policy_h, "GUI_DRAFT_DETACH_DIRTY",
                  "dirty drafts detach on GPU/topology mismatch")
-    require_text(gui_mutation_worker_cpp, "LONG presentationEpoch;",
+    require_text(os.path.join(SOURCE_DIR, "gui_service_io_types.h"), "LONG presentationEpoch;",
                  "mutation completions are stamped with the presentation epoch")
     require_text(os.path.join(SOURCE_DIR, "ui_mutation_completion.cpp"),
                  "gui_service_completion_context_current(",

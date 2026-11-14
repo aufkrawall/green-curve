@@ -6,6 +6,7 @@
 #include "profile_legacy_ini.h"
 
 static std::unique_ptr<ProfileSourceWindow> g_profileSourceWindow;
+#include "gui_profile_source_review.cpp"
 
 static bool gui_profile_source_confirm_discard(void*) {
     return gc_message_box(g_app.hMainWnd,
@@ -18,11 +19,13 @@ static void gui_profile_source_refresh() {
     invalidate_main_window();
 }
 static void gui_profile_source_changed(void*) {
+    gui_profile_source_invalidate_review("Source intent changed; check the destination again");
     debug_log("profile-source: staged revision=%llu points=%d\n",
         (unsigned long long)g_app.guiSource.revision, g_app.guiSource.value.topologyCount);
     gui_profile_source_refresh();
 }
 static void gui_profile_source_closed(void*) {
+    gui_profile_source_invalidate_review("Source closed");
     g_app.guiSource = {};
     debug_log("profile-source: closed; live editor restored\n");
     // The abandoned legacy draft must be replaced by a coherent live envelope
@@ -53,6 +56,8 @@ static bool gui_profile_source_open() {
         callbacks.changed = gui_profile_source_changed;
         callbacks.closed = gui_profile_source_closed;
         callbacks.created = apply_system_titlebar_theme;
+        callbacks.check = gui_profile_source_check;
+        callbacks.inputChanged = gui_profile_source_input_changed;
         g_profileSourceWindow = std::make_unique<ProfileSourceWindow>(g_app.guiSource, callbacks);
     }
     return g_profileSourceWindow->create(g_app.hMainWnd, g_dpi, false);
@@ -89,6 +94,7 @@ static bool gui_profile_source_load(int slot) {
         return true;
     }
     gui_draft_discard();
+    gui_profile_source_invalidate_review("Another source was loaded");
     g_app.guiSource = {}; g_app.guiSource.valid = true;
     g_app.guiSource.value = g_app.guiSource.saved = *candidate;
     g_profileSourceWindow->reload(); g_profileSourceWindow->show();

@@ -26,12 +26,14 @@ struct ProfileSourceWindowCallbacks {
     void (*changed)(void*) = nullptr;
     void (*closed)(void*) = nullptr;
     void (*created)(HWND) = nullptr;
+    void (*check)(void*, const ProfileDocument&) = nullptr;
+    void (*inputChanged)(void*) = nullptr;
 };
 // The native window edits only the canonical source. It has no driver, service
 // or live-topology dependency; callbacks own storage and parent presentation.
 class ProfileSourceWindow {
 public:
-    enum { LIST = 9101, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE = IDCANCEL };
+    enum { LIST = 9101, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CHECK, REPORT, VIEW, CLOSE = IDCANCEL };
     ProfileSourceWindow(ProfileEditorDocument& model, ProfileSourceWindowCallbacks callbacks)
         : model_(model), callbacks_(callbacks) {}
     ProfileSourceWindow(const ProfileSourceWindow&) = delete;
@@ -71,8 +73,23 @@ public:
     }
     void show() { if (window_) { ShowWindow(window_, SW_SHOW); SetForegroundWindow(window_); } }
     void reload() {
-        ++generation_; pending_ = false; selected_ = -1; rebuild(-1);
+        ++generation_; pending_ = false; selected_ = -1; clear_report(); rebuild(-1);
         status(L"Source draft; destination review is required before Apply");
+    }
+    void notice(const char* message) { GcWideUtf8Arg text(message); status(text.value); }
+    void clear_report() {
+        reportAvailable_ = reportVisible_ = false;
+        if (control(REPORT)) SetWindowTextW(control(REPORT), L"");
+        project_view();
+    }
+    void report(const std::vector<std::string>& lines) {
+        std::string body;
+        for (const auto& line : lines) { body += line; body += "\r\n"; }
+        GcWideUtf8Arg text(body.c_str());
+        if (!text.valid_for(body.c_str())) { notice("Could not display the destination report"); return; }
+        SetWindowTextW(control(REPORT), text.value);
+        SendMessageW(control(REPORT), EM_SETSEL, 0, 0);
+        reportAvailable_ = reportVisible_ = true; project_view();
     }
     bool save() {
         if (!model_.valid || !commit(false) || !callbacks_.save) return false;
@@ -95,6 +112,7 @@ private:
     HBRUSH background_ = nullptr, inputBrush_ = nullptr;
     int dpi_ = 96, selected_ = -1, scrollX_ = 0, scrollY_ = 0;
     bool pending_ = false, updating_ = false, layingOut_ = false;
+    bool reportAvailable_ = false, reportVisible_ = false;
     unsigned long long generation_ = 0;
     std::vector<ProfileEditorSourceRow> rows_;
     int px(int value) const { return MulDiv(value, dpi_, 96); }
@@ -113,7 +131,7 @@ private:
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
         if (!fresh) return;
         HFONT old = font_; font_ = fresh;
-        for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE})
+        for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE, CHECK, REPORT, VIEW})
             SendMessageW(control(id), WM_SETFONT, (WPARAM)font_, FALSE);
         if (old) DeleteObject(old);
     }
@@ -129,9 +147,13 @@ private:
         input_ = child(L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, INPUT);
         child(L"BUTTON", L"Stage value", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, STAGE);
         child(L"BUTTON", L"Save source", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, SAVE);
+        child(L"BUTTON", L"Check", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CHECK);
+        child(L"BUTTON", L"Source", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, VIEW);
         child(L"BUTTON", L"Close source", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CLOSE);
         child(L"EDIT", L"", ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP, STATUS);
-        for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE}) if (!control(id)) return false;
+        child(L"EDIT", L"", ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP, REPORT);
+        for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE, CHECK, REPORT, VIEW}) if (!control(id)) return false;
+        SendMessageW(control(REPORT), EM_SETLIMITTEXT, 128 * 1024, 0);
         SendMessageW(input_, EM_SETLIMITTEXT, 31, 0);
         if (!SetWindowSubclass(input_, input_proc, 1, (DWORD_PTR)this)) return false;
         refresh_font(); reload(); layout();
@@ -151,7 +173,8 @@ private:
         if (dc) { if (old) SelectObject(dc, old); ReleaseDC(list_, dc); }
         SendMessageW(list_, LB_SETHORIZONTALEXTENT, maximum + px(20), 0);
         selected_ = selected; SendMessageW(list_, LB_SETCURSEL, selected, 0); updating_ = false;
-        select(false); EnableWindow(control(SAVE), model_.valid); update_title();
+        select(false); EnableWindow(control(SAVE), model_.valid);
+        EnableWindow(control(CHECK), model_.valid && callbacks_.check); project_view(); update_title();
     }
     bool commit(bool force) {
         if (!pending_ && !force) return true;
@@ -180,10 +203,20 @@ private:
         if (editable) seed = profile_editor_source_seed(model_.value, rows_[index].field, rows_[index].index);
         const std::wstring text(seed.begin(), seed.end()); SetWindowTextW(input_, text.c_str());
         updating_ = false; pending_ = false;
-        EnableWindow(input_, editable); EnableWindow(control(STAGE), editable);
+        EnableWindow(input_, editable && !reportVisible_); EnableWindow(control(STAGE), editable && !reportVisible_);
         SetWindowTextW(control(HELP), editable && rows_[index].field == PROFILE_EDIT_POINT ?
             L"Absolute MHz replaces this point's intent" : editable ? L"Type physical offset MHz" : L"Select a source point or offset to edit");
         if (editable) { SendMessageW(input_, EM_SETSEL, 0, -1); }
+    }
+    void project_view() {
+        if (!list_) return;
+        ShowWindow(list_, reportVisible_ ? SW_HIDE : SW_SHOW);
+        ShowWindow(control(REPORT), reportVisible_ ? SW_SHOW : SW_HIDE);
+        ShowWindow(control(VIEW), reportAvailable_ ? SW_SHOW : SW_HIDE);
+        SetWindowTextW(control(VIEW), reportVisible_ ? L"Source" : L"Report");
+        const LRESULT index = selected_ < 0 ? LB_ERR : SendMessageW(list_, LB_GETITEMDATA, selected_, 0);
+        const bool editable = !reportVisible_ && model_.valid && index >= 0 && (size_t)index < rows_.size() && rows_[index].editable;
+        EnableWindow(input_, editable); EnableWindow(control(STAGE), editable);
     }
     void layout() {
         if (!list_ || layingOut_) return;
@@ -200,10 +233,12 @@ private:
         GetClientRect(window_, &client); const int w = std::max((int)client.right, px(360)), h = std::max((int)client.bottom, px(320));
         const int m = px(12), row = px(28), gap = px(8);
         const auto place = [&](int id, int x, int y, int width, int height) { MoveWindow(control(id), x - scrollX_, y - scrollY_, width, height, TRUE); };
-        place(TITLE, m, m, w - 2*m, px(22)); place(LIST, m, px(42), w - 2*m, h - px(216));
+        place(TITLE, m, m, w - 2*m - px(104), px(22)); place(VIEW, w - m - px(96), m, px(96), px(24));
+        place(LIST, m, px(42), w - 2*m, h - px(216)); place(REPORT, m, px(42), w - 2*m, h - px(216));
         place(HELP, m, h - px(166), w - 2*m, px(22));
         place(INPUT, m, h - px(138), w - 2*m - px(128) - gap, row); place(STAGE, w - m - px(128), h - px(138), px(128), row);
-        place(SAVE, m, h - px(100), px(120), row); place(CLOSE, w - m - px(120), h - px(100), px(120), row);
+        place(SAVE, m, h - px(100), px(120), row); place(CHECK, m + px(128), h - px(100), px(80), row);
+        place(CLOSE, w - m - px(120), h - px(100), px(120), row);
         place(STATUS, m, h - px(64), w - 2*m, px(56)); layingOut_ = false;
     }
     void scroll(int bar, int command) {
@@ -274,9 +309,18 @@ private:
             case WM_COMMAND:
                 if (HIWORD(w) == EN_SETFOCUS || HIWORD(w) == BN_SETFOCUS || HIWORD(w) == LBN_SETFOCUS) self->reveal((HWND)l);
                 if (LOWORD(w) == LIST && HIWORD(w) == LBN_SELCHANGE) self->select(true);
-                else if (LOWORD(w) == INPUT && HIWORD(w) == EN_CHANGE && !self->updating_) { self->pending_ = true; self->update_title(); }
+                else if (LOWORD(w) == INPUT && HIWORD(w) == EN_CHANGE && !self->updating_) {
+                    self->pending_ = true; self->update_title();
+                    if (self->callbacks_.inputChanged) self->callbacks_.inputChanged(self->callbacks_.context);
+                }
                 else if (LOWORD(w) == STAGE && HIWORD(w) == BN_CLICKED) (void)self->commit(true);
                 else if (LOWORD(w) == SAVE && HIWORD(w) == BN_CLICKED) (void)self->save();
+                else if (LOWORD(w) == CHECK && HIWORD(w) == BN_CLICKED && self->callbacks_.check && self->model_.valid && self->commit(false))
+                    self->callbacks_.check(self->callbacks_.context, self->model_.value);
+                else if (LOWORD(w) == VIEW && HIWORD(w) == BN_CLICKED && self->reportAvailable_) {
+                    if (!self->reportVisible_ && !self->commit(false)) return 0;
+                    self->reportVisible_ = !self->reportVisible_; self->project_view();
+                }
                 else if (LOWORD(w) == CLOSE && HIWORD(w) == BN_CLICKED) SendMessageW(hwnd, WM_CLOSE, 0, 0);
                 return 0;
             case WM_CLOSE:
