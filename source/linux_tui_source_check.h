@@ -1,0 +1,32 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-License-Identifier: MIT
+#pragma once
+#include "profile_editor_check.h"
+#include <unistd.h>
+
+static void tui_check_source(TuiState* state) {
+    if (!state->document.valid) return;
+    if (state->sourceCheckVisible) {
+        state->sourceCheckVisible = false; state->sourceScroll = 0;
+        snprintf(state->status, sizeof(state->status), "Showing stored source intent"); return;
+    }
+    if (!state->serviceOnline || linux_tui_shown_gpu_write(&state->configuredGpu,
+            linux_tui_authoritative_gpu(&state->service)) != LINUX_TUI_SHOWN_GPU_WRITE_ALLOWED) {
+        snprintf(state->status, sizeof(state->status), "Destination check unavailable: the selected GPU must be shown by the daemon");
+        return;
+    }
+    const int code = profile_editor_check(state->document.value, state->sourceGraphicsChoice, state->sourceMemoryChoice,
+        [&](gc_u32 domains, HardwareCaptureObservation& out, ProfileCodecError& error) {
+            ServiceRequest request{}; auto response = std::make_unique<ServiceResponse>();
+            request.magic = SERVICE_PROTOCOL_MAGIC; request.version = SERVICE_PROTOCOL_VERSION;
+            request.command = SERVICE_CMD_CAPTURE_CURRENT; request.captureDomains = domains; request.callerPid = (gc_u32)getpid();
+            if (!linux_daemon_send(&request, response.get(), error.message, sizeof(error.message))) return false;
+            if (response->status != SERVICE_STATUS_OK || !response->capture.valid)
+                return profile_codec::fail(&error, 0, response->message[0] ? response->message : "capture is unavailable");
+            out = response->capture; return true;
+        }, state->sourceCheckLines);
+    state->sourceCheckVisible = true; state->sourceScroll = 0;
+    snprintf(state->status, sizeof(state->status), "Destination check completed; inspect mapping and feasibility before preparing a draft");
+    linux_debug_logf("profile-check: source=tui code=%d lines=%u graphics=%u memory=%u", code,
+        (unsigned)state->sourceCheckLines.size(), (unsigned)state->sourceGraphicsChoice, (unsigned)state->sourceMemoryChoice);
+}

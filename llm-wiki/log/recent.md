@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: TUI source destination checks
+
+- The TUI uses the shared CLI engine to check its in-memory source through
+  passive Capture. Control preview choices preserve source intent; reports
+  wrap and scroll without hidden trailing bounds.
+- Cases 9230-9240 cover precise API selection, uncertainty/refusal, malformed
+  evidence and compact report layouts. No Apply authority is published. See
+  [config-profiles.md](../config-profiles.md#read-only-tui-destination-checks-2026-11-14).
+- Full Windows regressions, focused ASan/UBSan, native Linux UBSan, all-target
+  builds and source gates passed. Omitting report wrapping fails 9240.
+  Static analysis retained the baseline and added no findings.
+
 ## 2026-11-14: Canonical source profiles in the TUI
 
 - The TUI retains canonical source documents independently of display values;

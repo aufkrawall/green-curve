@@ -1545,6 +1545,13 @@ def check_canonical_tui_documents(ctx, require_text):
                  "source slot commits keep the configuration lock")
     require_text(_p(ctx, "profile_slot_io_linux.h"), "profile_bank_commit_edit(edit,",
                  "source slot commits compare the reviewed generation before replacement")
+    require_text(actions, "case ACTION_CHECK_SOURCE:", "the TUI exposes explicit source destination checking")
+    require_text(_p(ctx, "linux_tui_source_check.h"), "request.command = SERVICE_CMD_CAPTURE_CURRENT;",
+                 "destination Check uses the passive command")
+    require_text(_p(ctx, "profile_editor_check.h"), "profile_check_commands_run(args, io, code)",
+                 "editor previews use the tested CLI mapping and feasibility engine")
+    require_text(_p(ctx, "linux_tui_document_view.h"), "lines.swap(wrapped);",
+                 "long feasibility details wrap before scrolling and rendering")
 
 
 def check_all(ctx, require_text, forbid_text):

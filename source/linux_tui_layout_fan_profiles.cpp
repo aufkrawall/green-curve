@@ -223,6 +223,18 @@ void draw_profile_panel(TuiCanvas* c, const TuiRect& panel) {
     c->button(TuiRect{x + 24, y + 2, 11, 1}, "CLEAR", ACTION_CLEAR_PROFILE);
     c->button(TuiRect{x + 36, y + 2, 15, 1}, "RESET DRAFT",
               ACTION_RESET_DRAFT);
+    if (vm.sourceDocument) {
+        c->button({x + 52, y + 2, 9, 1}, vm.sourceCheckLines ? "SOURCE" : "CHECK", ACTION_CHECK_SOURCE);
+        const auto name = [](gc_u32 choice) { return choice == CLOCK_OFFSET_SURFACE_P0 ? "P0" :
+            choice == CLOCK_OFFSET_SURFACE_GLOBAL ? "global" : choice == DESIRED_GRAPHICS_VF_COMPONENT ? "VF" : "auto"; };
+        const std::string graphics = std::string("Graphics preview: ") + name(vm.sourceGraphicsChoice);
+        const std::string memory = std::string("Memory preview: ") + name(vm.sourceMemoryChoice);
+        if (vm.sourceDocument->graphicsOffset.present)
+            c->button({x, y + 4, 30, 1}, graphics.c_str(), ACTION_SOURCE_GRAPHICS_CHOICE);
+        if (vm.sourceDocument->hasMemoryOffset)
+            c->button({x + 32, y + 4, 30, 1}, memory.c_str(), ACTION_SOURCE_MEMORY_CHOICE);
+        return;
+    }
     c->text(x, y + 4, panel.width - 6,
             vm.sourceDocument ? "Portable source staged; destination mapping is pending"
             : vm.dirty ? "● staged values differ from accepted intent"
@@ -476,8 +488,8 @@ void tui_draw_fan_tab(TuiCanvas* canvas, const TuiRect& content) {
 void tui_draw_profiles_tab(TuiCanvas* canvas, const TuiRect& content) {
     TuiLayout* out = canvas->layout();
     if (canvas->view().sourceDocument) {
-        draw_profile_panel(canvas, {2, content.y, content.width - 2, 7});
-        tui_draw_document_source(canvas, {2, content.y + 7, content.width - 2, content.height - 7});
+        draw_profile_panel(canvas, {2, content.y, content.width - 2, 9});
+        tui_draw_document_source(canvas, {2, content.y + 9, content.width - 2, content.height - 9});
         return;
     }
     if (out->breakpoint == TUI_BREAKPOINT_WIDE) {

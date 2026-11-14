@@ -3,10 +3,10 @@
 #pragma once
 #include "profile_document.h"
 #include <algorithm>
+#include <string>
+#include <vector>
 
-static void tui_draw_document_source(TuiCanvas* canvas, const TuiRect& panel) {
-    const auto& vm = canvas->view();
-    const auto& d = *vm.sourceDocument;
+static std::vector<std::string> tui_document_source_lines(const ProfileDocument& d) {
     std::vector<std::string> lines;
     lines.emplace_back(std::string("Name: ") + d.displayName);
     const char* scopes[] = {"update included settings", "replace owned profile", "release owned settings"};
@@ -38,12 +38,33 @@ static void tui_draw_document_source(TuiCanvas* canvas, const TuiRect& panel) {
         else line += "no point intent";
         lines.emplace_back(line);
     }
+    return lines;
+}
+static void tui_draw_document_source(TuiCanvas* canvas, const TuiRect& panel) {
+    const auto& vm = canvas->view();
+    auto lines = vm.sourceCheckLines ? *vm.sourceCheckLines : tui_document_source_lines(*vm.sourceDocument);
+    std::vector<std::string> wrapped;
+    const size_t width = (size_t)std::max(8, panel.width - 4);
+    for (auto line : lines) {
+        while (line.size() > width) {
+            size_t split = line.rfind(' ', width);
+            if (split == std::string::npos || !split) split = width;
+            while (split && ((unsigned char)line[split] & 0xc0) == 0x80) --split;
+            if (!split) split = width;
+            wrapped.emplace_back(line.substr(0, split));
+            line.erase(0, split); if (!line.empty() && line[0] == ' ') line.erase(0, 1);
+        }
+        wrapped.emplace_back(line);
+    }
+    lines.swap(wrapped);
     const int rows = std::max(1, panel.height - 4);
+    canvas->layout()->sourceVisibleRows = rows;
+    canvas->layout()->sourceLineCount = (int)lines.size();
     const int first = std::clamp(vm.sourceScroll, 0, std::max(0, (int)lines.size() - rows));
     char meta[96]{};
-    snprintf(meta, sizeof(meta), "source intent | rows %d-%d/%d | PgUp/PgDn scroll", first + 1,
+    snprintf(meta, sizeof(meta), "%s | rows %d-%d/%d | PgUp/PgDn scroll", vm.sourceCheckLines ? "read-only preview" : "source intent", first + 1,
         std::min((int)lines.size(), first + rows), (int)lines.size());
-    canvas->box(panel, "PORTABLE SOURCE", meta);
+    canvas->box(panel, vm.sourceCheckLines ? "DESTINATION CHECK (read-only)" : "PORTABLE SOURCE", meta);
     for (int row = 0; row < rows && first + row < (int)lines.size(); ++row)
         canvas->text(panel.x + 2, panel.y + 2 + row, panel.width - 4, lines[first + row].c_str(), TUI_STYLE_TEXT);
 }

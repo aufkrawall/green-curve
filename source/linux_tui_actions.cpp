@@ -340,6 +340,7 @@ void tui_answer_profile_load(TuiState* state, bool discard) {
 }
 
 #include "linux_tui_refresh.cpp"
+#include "linux_tui_source_check.h"
 
 void tui_begin_edit(TuiState* state, TuiField field, int index) {
     if (!state || field == TUI_FIELD_NONE) return;
@@ -420,6 +421,18 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
         return;
     }
     switch (action.type) {
+        case ACTION_CHECK_SOURCE:
+            tui_check_source(state);
+            break;
+        case ACTION_SOURCE_GRAPHICS_CHOICE:
+        case ACTION_SOURCE_MEMORY_CHOICE: {
+            if (!state->document.valid) break;
+            auto& choice = action.type == ACTION_SOURCE_GRAPHICS_CHOICE ? state->sourceGraphicsChoice : state->sourceMemoryChoice;
+            choice = (choice + 1) % (action.type == ACTION_SOURCE_GRAPHICS_CHOICE ? 4u : 3u);
+            state->sourceCheckVisible = false; state->sourceCheckLines.clear(); state->sourceScroll = 0;
+            snprintf(state->status, sizeof(state->status), "Control preview selection changed; use Check to review this choice");
+            break;
+        }
         case ACTION_QUIT:
             state->running = false;
             break;
@@ -584,6 +597,7 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
         }
         case ACTION_RESET_DRAFT:
             state->document = {};
+            state->sourceCheckVisible = false; state->sourceCheckLines.clear();
             state->desired = state->acceptedDesired;
             state->dirty = false;
             bind_current_draft(state);

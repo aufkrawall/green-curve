@@ -41,6 +41,9 @@ struct TuiState {
     ProfileEditorCandidate pendingProfile;
     ProfileEditorDocument document;
     int sourceScroll;
+    bool sourceCheckVisible;
+    gc_u32 sourceGraphicsChoice, sourceMemoryChoice;
+    std::vector<std::string> sourceCheckLines;
     int currentSlot;
     TuiTab tab;
     int selectedPoint;

@@ -1,5 +1,30 @@
 # Config and Profiles
 
+## Read-only TUI destination checks (2026-11-14)
+
+Source anchors: `source/profile_editor_check.h`, `source/linux_tui_source_check.h`,
+`source/profile_check_commands.h`, `source/linux_tui_document_view.h`,
+`tests/tui_profile_check_tests.cpp`.
+
+The source Profiles panel can switch between stored intent and a destination
+check. Graphics/memory preview buttons select the named APIs or VF component;
+their choices do not rewrite the canonical source. The editor adapts its
+in-memory document to the existing CLI check engine using Capture/report-only
+callbacks. No temporary file, Save or Apply callback exists in that adapter.
+The TUI checks its selected/shown GPU before reading the already bound daemon
+session, and sends only the passive Capture command.
+
+Mapping, precise scalar ranges, grids, curve constraints and conditional
+relationships use the same engine as the CLI. Reports are bounded, wrap long
+reasons and scroll by visible rows so compact terminals retain trailing bounds.
+Load, source reset and control-choice changes invalidate the displayed report.
+A completed check grants no editing or Apply authority; structured acceptance,
+mapped editing and fresh service review remain separate integration work.
+
+Cases 9230-9240 exercise exact API choices, source preservation, invalid choices
+before Capture, range refusal, alternate-control uncertainty, invalid/unavailable
+capture and report layouts at all supported breakpoints.
+
 ## Canonical source slots in the TUI (2026-11-14)
 
 Source anchors: `source/profile_editor_document.h`, `source/profile_document_slot.h`,

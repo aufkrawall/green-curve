@@ -98,6 +98,9 @@ enum ActionType {
     ACTION_LOAD,
     ACTION_PROFILE_LOAD_DISCARD,
     ACTION_PROFILE_LOAD_KEEP,
+    ACTION_CHECK_SOURCE,
+    ACTION_SOURCE_GRAPHICS_CHOICE,
+    ACTION_SOURCE_MEMORY_CHOICE,
     ACTION_SAVE,
     ACTION_CLEAR_PROFILE,
     ACTION_RESET_DRAFT,
@@ -168,6 +171,8 @@ struct TuiViewModel {
     int pendingProfileSlot;
     const ProfileDocument* sourceDocument;
     int sourceScroll;
+    const std::vector<std::string>* sourceCheckLines;
+    gc_u32 sourceGraphicsChoice, sourceMemoryChoice;
     bool serviceOnline;
     bool draftAttached;
     bool editing;
@@ -209,6 +214,8 @@ struct TuiLayout {
     TuiRect graphRect;
     int vfFirstVisible;
     int vfVisibleRows;
+    int sourceVisibleRows;
+    int sourceLineCount;
     // Rows the fan-point table can draw; zero when the fan tab is not laid out.
     // Used to stop wheel/page scrolling at the end of that list too.
     int fanVisibleRows;

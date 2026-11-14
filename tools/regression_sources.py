@@ -69,4 +69,5 @@ REGRESSION_SOURCES = (
     'linux_tui_gpu_target_tests.cpp',
     'tui_profile_load_tests.cpp',
     'tui_document_tests.cpp',
+    'tui_profile_check_tests.cpp',
 )
