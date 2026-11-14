@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "linux_tui_layout_internal.h"
+#include "linux_tui_document_view.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -223,7 +224,8 @@ void draw_profile_panel(TuiCanvas* c, const TuiRect& panel) {
     c->button(TuiRect{x + 36, y + 2, 15, 1}, "RESET DRAFT",
               ACTION_RESET_DRAFT);
     c->text(x, y + 4, panel.width - 6,
-            vm.dirty ? "● staged values differ from accepted intent"
+            vm.sourceDocument ? "Portable source staged; destination mapping is pending"
+            : vm.dirty ? "● staged values differ from accepted intent"
                      : vm.intentReadback.divergedDomains
                         ? "● accepted intent differs from hardware readback"
                         : "● editor matches accepted intent and hardware",
@@ -473,6 +475,11 @@ void tui_draw_fan_tab(TuiCanvas* canvas, const TuiRect& content) {
 
 void tui_draw_profiles_tab(TuiCanvas* canvas, const TuiRect& content) {
     TuiLayout* out = canvas->layout();
+    if (canvas->view().sourceDocument) {
+        draw_profile_panel(canvas, {2, content.y, content.width - 2, 7});
+        tui_draw_document_source(canvas, {2, content.y + 7, content.width - 2, content.height - 7});
+        return;
+    }
     if (out->breakpoint == TUI_BREAKPOINT_WIDE) {
         int half = content.width / 2;
         int top = content.height / 2;

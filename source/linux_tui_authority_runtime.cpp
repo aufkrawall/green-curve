@@ -3,6 +3,9 @@
 // Included inside linux_tui_actions.cpp's anonymous namespace.
 
 bool bind_current_draft(TuiState* state) {
+    if (state && state->document.valid) {
+        state->draftAttached = false; state->draftBinding = {}; return false;
+    }
     if (!state || !state->serviceOnline) {
         if (state) {
             state->draftAttached = false;

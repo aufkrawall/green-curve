@@ -15,6 +15,10 @@
 // separately.
 
 void apply_to_gpu(TuiState* state) {
+    if (state->document.valid) {
+        snprintf(state->status, sizeof(state->status), "Apply blocked: portable source requires destination review");
+        return;
+    }
     if (!state->serviceOnline) {
         snprintf(state->status, sizeof(state->status),
                  "Apply blocked: daemon is offline");

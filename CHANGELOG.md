@@ -36,8 +36,9 @@ Curve checks, profile transfer and capture improve tuning workflows.
 - **Dialog text copying:** Ctrl+C copies confirmations, warnings and errors.
 - **Curve points below 700 mV:** writable points appear in the editor and graph.
 - **Prepare compatible curve:** review a draft with conflicting earlier points lowered before Apply.
-- **CLI profile transfer:** transfer one or five saved profiles offline, with assignment and replacement review.
-- **Legacy profile transfer:** review Windows/Linux formats, units and selected profiles without losing tuning intent.
+- **Profile transfer:** import/export up to five profiles offline, with assignment review.
+- **Legacy transfer:** preserve Windows/Linux units and tuning intent.
+- **TUI source profiles:** inspect and save exact imported intent without a GPU.
 - **CLI hardware capture:** review P0/global clock controls, omissions and ranges without resetting.
 - **CLI profile checks:** preview control choices, mapping, ranges, constraints and uncertainty without applying.
 
@@ -53,7 +54,7 @@ Curve checks, profile transfer and capture improve tuning workflows.
 
 - **Unicode profile banks:** imports preserve existing text and encoding.
 - **Unsaved drafts:** profile loading asks before discarding edits, including invalid input.
-- **Graphics recovery:** retain exact clock controls across restarts; control switching protects handoffs and verifies both controls.
+- **Graphics recovery:** retain exact controls across restarts and verify protected control handoffs.
 - **Installer recovery:** shared readers of leftover temporary files no longer block replacement or rollback.
 - **Fixed clock-floor points:** Apply refuses fixed-point edits and locks; Capture retains observations.
 - **Linux power limits:** out-of-range requests refuse before changes.

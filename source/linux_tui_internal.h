@@ -11,6 +11,7 @@
 #include "linux_tui_layout.h"
 #include "linux_tui_diagnostic_policy.h"
 #include "linux_startup_sync.h"
+#include "profile_editor_document.h"
 
 #include <string>
 #include <vector>
@@ -37,7 +38,9 @@ struct TuiState {
     bool profileLoadPending;
     bool profileLoadPresented;
     int pendingProfileSlot;
-    DesiredSettings pendingProfile;
+    ProfileEditorCandidate pendingProfile;
+    ProfileEditorDocument document;
+    int sourceScroll;
     int currentSlot;
     TuiTab tab;
     int selectedPoint;

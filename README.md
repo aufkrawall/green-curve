@@ -249,6 +249,11 @@ saved source; a second nonzero control requires relationship review.
 Ownership, transition and recovery checks still require service review;
 the command returns exit code 3 even when controls are representable.
 
+The Linux TUI can Load portable slots as source documents. Profiles & Tools
+shows exact units and source point intent; Save preserves the complete document
+without a GPU. Destination mapping and control review are required before
+editing or applying these sources.
+
 To import an older Green Curve INI, select `--legacy-format windows-ini` or
 `--legacy-format linux-ini`. Select source slots with `--source-profiles 2,4`
 and destination slots with `--slots 1,5`. For a portable bank, source numbers

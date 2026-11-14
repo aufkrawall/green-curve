@@ -9,9 +9,10 @@
 #include "profile_check_commands.h"
 #include "linux_config_lock.h"
 #include "linux_debug_log.h"
+#include "profile_slot_io_linux.h"
 #include <stdlib.h>
 
-struct LinuxProfileCommands {
+struct LinuxProfileCommands : LinuxProfileSlotIO {
     bool capture(gc_u32 domains, HardwareCaptureObservation& output, ProfileCodecError& error) {
         ServiceRequest request{}; auto response = std::make_unique<ServiceResponse>();
         request.magic = SERVICE_PROTOCOL_MAGIC; request.version = SERVICE_PROTOCOL_VERSION;
@@ -38,28 +39,9 @@ struct LinuxProfileCommands {
             return profile_codec::fail(&error, 0, "profile file must have a distinct valid destination path");
         return true;
     }
-    bool read(const std::string& path, std::string& bytes, size_t maximum, bool missing, ProfileCodecError& error) {
-        const size_t bound = maximum > (size_t)LINUX_INI_MAX_BYTES ? (size_t)LINUX_INI_MAX_BYTES : maximum;
-        return profile_file_read(path.c_str(), bytes, bound, missing, error);
-    }
-    bool write(const std::string& path, const std::string& bytes, ProfileCodecError& error) {
-        return write_text_file_atomic(path.c_str(), bytes, error.message, sizeof(error.message));
-    }
     bool legacy(const std::string& input, int slot, ProfileDocument& document, bool& found, ProfileCodecError& error) {
         const bool ok = profile_legacy_native_slot_decode(input, PROFILE_LEGACY_LINUX_INI, slot, document, found, &error);
         linux_debug_logf("profile legacy export: platform=linux slot=%d decoded=%d found=%d", slot, ok ? 1 : 0, found ? 1 : 0);
-        return ok;
-    }
-    bool commit(const std::string& path, const ProfileBankEdit& edit, ProfileCodecError& error) {
-        if (edit.replacement.size() > (size_t)LINUX_INI_MAX_BYTES)
-            return profile_codec::fail(&error, 0, "updated profile bank exceeds configuration size limit");
-        LinuxConfigLock lock(path.c_str(), error.message, sizeof(error.message));
-        if (!lock.locked()) return false;
-        const bool ok = profile_bank_commit_edit(edit,
-            [&](std::string& bytes) { return read(path, bytes, profile_slot::MAX_CONFIG_BYTES, true, error); },
-            [&](const std::string& bytes) { return write(path, bytes, error); }, &error);
-        linux_debug_logf("profile import: committed=%d records=%d utf16=%d", ok ? 1 : 0, edit.count,
-            edit.replacement.compare(0, 2, "\xff\xfe") == 0 ? 1 : 0);
         return ok;
     }
     void message(const std::string& text) { fputs(text.c_str(), stdout); fflush(stdout); }

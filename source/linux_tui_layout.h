@@ -15,6 +15,7 @@
 #include "gpu_core.h"
 #include "intent_readback_status.h"
 #include "startup_snapshot_policy.h"
+struct ProfileDocument;
 
 enum TuiTab {
     TUI_TAB_VF = 0,
@@ -165,6 +166,8 @@ struct TuiViewModel {
     bool dirty;
     bool profileLoadPending;
     int pendingProfileSlot;
+    const ProfileDocument* sourceDocument;
+    int sourceScroll;
     bool serviceOnline;
     bool draftAttached;
     bool editing;

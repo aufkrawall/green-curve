@@ -4,6 +4,7 @@
 #define GREEN_CURVE_PROFILE_COMMANDS_H
 #include "profile_bank_edit.h"
 #include "profile_legacy_ini.h"
+#include "profile_document_slot.h"
 
 enum ProfileCommandExit { PROFILE_COMMAND_OK = 0, PROFILE_COMMAND_IO = 1,
     PROFILE_COMMAND_INVALID = 2, PROFILE_COMMAND_DECISION = 3, PROFILE_COMMAND_CONFLICT = 5 };
@@ -158,11 +159,9 @@ static inline bool profile_commands_run(const std::vector<std::string>& args,
     } else if (command.exporting) {
         for (int n = 0; n < command.count; ++n) {
             const int slot = command.slots[n];
-            std::string body;
-            bool section = false, found = false;
+            bool found = false;
             ProfileDocument& document = bank->documents[bank->count];
-            if (!profile_slot::extract(configText, slot, body, section, &error) ||
-                !profile_slot_decode(body, document, found, &error)) return reject(PROFILE_COMMAND_INVALID);
+            if (!profile_document_slot_decode(configText, slot, document, found, error)) return reject(PROFILE_COMMAND_INVALID);
             if (!found && !io.legacy(configText, slot, document, found, error)) return reject(PROFILE_COMMAND_INVALID);
             if (!found) {
                 if (command.all) continue;

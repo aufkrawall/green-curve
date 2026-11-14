@@ -1530,7 +1530,25 @@ def check_profile_draft_replacement(ctx, require_text):
                           "unavailable target comparison cannot discard dirty GUI values implicitly")
 
 
+def check_canonical_tui_documents(ctx, require_text):
+    actions = _p(ctx, "linux_tui_actions.cpp")
+    require_text(actions, "profile_editor_source_candidate(*source, loaded)",
+                 "TUI source loading retains the canonical document separately from display values")
+    ctx.require_order_in_operation(actions, "case ACTION_SAVE:", "profile_document_slot_save(io,",
+                                   "save_profile_to_config_path(", "canonical sources save before the legacy display writer")
+    ctx.require_order_in_operation(_p(ctx, "linux_tui_mutation_actions.cpp"), "void apply_to_gpu(",
+                                   "if (state->document.valid)", "if (!state->serviceOnline)",
+                                   "unreviewed source documents refuse before any Apply transport")
+    require_text(_p(ctx, "profile_commands_linux.h"), "struct LinuxProfileCommands : LinuxProfileSlotIO",
+                 "CLI and TUI use the same synchronized slot writer")
+    require_text(_p(ctx, "profile_slot_io_linux.h"), "LinuxConfigLock lock(path.c_str(),",
+                 "source slot commits keep the configuration lock")
+    require_text(_p(ctx, "profile_slot_io_linux.h"), "profile_bank_commit_edit(edit,",
+                 "source slot commits compare the reviewed generation before replacement")
+
+
 def check_all(ctx, require_text, forbid_text):
+    check_canonical_tui_documents(ctx, require_text)
     check_profile_draft_replacement(ctx, require_text)
     check_visibility_neutral_projection(ctx, require_text, forbid_text)
     check_manual_refresh_preserves_presentation(ctx, require_text, forbid_text)

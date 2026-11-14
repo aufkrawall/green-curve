@@ -109,6 +109,7 @@ void populate_view_model(const TuiState& state, TuiViewModel* vm,
     vm->focusIndex = state.focusIndex;
     vm->dirty = state.dirty;
     vm->profileLoadPending = state.profileLoadPending; vm->pendingProfileSlot = state.pendingProfileSlot;
+    vm->sourceDocument = state.document.valid ? &state.document.value : nullptr; vm->sourceScroll = state.sourceScroll;
     vm->serviceOnline = state.serviceOnline;
     vm->draftAttached = state.draftAttached;
     vm->editing = state.edit.active;
@@ -218,7 +219,12 @@ void activate_focused(TuiState* state) {
 }
 
 void scroll_current_tab(TuiState* state, int direction, bool page) {
-    if (state->tab == TUI_TAB_VF) {
+    if (state->document.valid && state->tab == TUI_TAB_PROFILES) {
+        state->sourceScroll += direction * (page ? 8 : 1);
+        if (state->sourceScroll < 0) state->sourceScroll = 0;
+        if (state->sourceScroll > VF_NUM_POINTS + 20) state->sourceScroll = VF_NUM_POINTS + 20;
+    }
+    else if (state->tab == TUI_TAB_VF) {
         int amount = page ? state->layout.vfVisibleRows : 3;
         if (amount < 1) amount = 1;
         // Stops at both ends: the top is index 0 and the bottom is the last

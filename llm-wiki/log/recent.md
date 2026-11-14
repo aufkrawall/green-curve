@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Canonical source profiles in the TUI
+
+- The TUI retains canonical source documents independently of display values;
+  Load/Save preserve hidden and precise intent without a GPU. A source viewer
+  separates exact stored intent from the live destination graph.
+- CLI and TUI share synchronized atomic slot I/O. Source candidates include the
+  full document during discard confirmation; dirty state includes persisted
+  metadata. Mapped editing and Apply activation remain pending. See
+  [config-profiles.md](../config-profiles.md#canonical-source-slots-in-the-tui-2026-11-14).
+- Cases 9210-9226 cover offline Save/restart/Load/export and conflict behavior.
+- Full Windows ASan, native Linux UBSan, both production CLI fixtures,
+  all-target builds and source gates passed; static analysis added no findings.
+  Replacing document dirty comparison with control equality fails 9221.
+
 ## 2026-11-14: Unsaved profile draft replacement
 
 - Linux Load freezes a candidate, renders explicit Keep/Discard confirmation

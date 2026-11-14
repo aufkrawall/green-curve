@@ -11,6 +11,8 @@
 #include "auto_apply_failure_notice_policy.h"
 #include "profile_save_policy.h"
 #include "linux_tui_profile_load.h"
+#include "profile_slot_io_linux.h"
+#include "profile_document_slot.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -328,6 +330,7 @@ unsigned long long tui_monotonic_ms() {
 
 void tui_recompute_dirty(TuiState* state) {
     if (!state) return;
+    if (state->document.valid) { state->dirty = true; return; }
     state->dirty = !desired_settings_equal(
         &state->desired, &state->acceptedDesired);
 }
@@ -408,6 +411,12 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
     if (state->profileLoadPending) {
         if (action.type == ACTION_PROFILE_LOAD_DISCARD) tui_answer_profile_load(state, true);
         else if (action.type == ACTION_PROFILE_LOAD_KEEP) tui_answer_profile_load(state, false);
+        return;
+    }
+    if (state->document.valid && (action.type == ACTION_FIELD_EDIT || action.type == ACTION_FIELD_STEP ||
+        action.type == ACTION_LOCK_CYCLE || action.type == ACTION_FAN_MODE_SET || action.type == ACTION_FAN_POINT_ENABLE ||
+        action.type == ACTION_FAN_ZERO_RPM_TOGGLE)) {
+        snprintf(state->status, sizeof(state->status), "Portable source is preserved; destination review is required before editing");
         return;
     }
     switch (action.type) {
@@ -491,13 +500,29 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
                      state->currentSlot);
             break;
         case ACTION_LOAD: {
-            tui_request_profile_load(*state, [&](int slot, DesiredSettings& loaded, char* why, size_t size) {
-                return load_profile_from_config_path(state->configPath, slot, &loaded, why, size);
+            tui_request_profile_load(*state, [&](int slot, ProfileEditorCandidate& loaded, char* why, size_t size) {
+                LinuxProfileSlotIO io; ProfileCodecError error; bool found = false;
+                auto source = std::make_unique<ProfileDocument>();
+                if (!profile_document_slot_load(io, state->configPath, slot, *source, found, error)) {
+                    snprintf(why, size, "%s", error.message); return false;
+                }
+                if (found) { profile_editor_source_candidate(*source, loaded); return true; }
+                return load_profile_from_config_path(state->configPath, slot, &loaded.settings, why, size);
             }, [](TuiState& draft) { bind_current_draft(&draft); tui_recompute_dirty(&draft); });
             break;
         }
         case ACTION_SAVE: {
             char error[256] = {};
+            if (state->document.valid) {
+                LinuxProfileSlotIO io; ProfileCodecError issue;
+                if (!profile_document_slot_save(io, state->configPath, state->currentSlot, state->document.value, issue)) {
+                    set_daemon_failure(state, "Source profile save failed", issue.message); break;
+                }
+                state->document.saved = state->document.value;
+                snprintf(state->status, sizeof(state->status), "Saved slot %d with all portable source intent; no GPU readings were substituted", state->currentSlot);
+                sync_startup_snapshot_after_profile_write(state, state->currentSlot, false);
+                break;
+            }
             if (!save_profile_to_config_path(state->configPath,
                     state->currentSlot, &state->desired,
                     error, sizeof(error))) {
@@ -558,6 +583,7 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
             break;
         }
         case ACTION_RESET_DRAFT:
+            state->document = {};
             state->desired = state->acceptedDesired;
             state->dirty = false;
             bind_current_draft(state);

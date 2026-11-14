@@ -1,5 +1,39 @@
 # Config and Profiles
 
+## Canonical source slots in the TUI (2026-11-14)
+
+Source anchors: `source/profile_editor_document.h`, `source/profile_document_slot.h`,
+`source/profile_slot_io_linux.h`, `source/linux_tui_profile_load.h`,
+`source/linux_tui_document_view.h`, `tests/tui_document_tests.cpp`.
+
+TUI Load stages a complete canonical document, independently of its scalar
+display projection. The source viewer lists exact physical units, point kinds
+and hidden voltages without converting source indices into destination indices.
+Save serializes that document without hardware reads. Shared CLI/TUI slot I/O
+uses the existing bounded read, configuration lock, generation comparison and
+atomic write. UTF-16 banks and the slot-one controls mirror remain supported.
+Legacy slots retain their previous loader and writable workflow.
+
+The pending-load candidate contains the source document as well as its display
+values, so cancellation never swaps hidden intent. Document dirty tracking
+compares canonical serialization, including names and metadata, rather than
+only runtime control equality. Saving updates its saved document baseline;
+accepted/applied intent remains separate. Unmapped source points and locks are
+not projected onto the live GPU graph. Source drafts stay detached and refuse
+editing/Apply until destination review is integrated; this is an explicit
+remaining editor contract, not a GPU-family restriction.
+
+Cases 9210-9226 execute Save, fresh editor construction, Load and portable
+export with no GPU; they preserve captured zero, sub-grid offsets, hidden
+points, precise absolute targets, fractional memory and rational power. They
+also cover concurrent file changes, UTF-16 storage, missing slots, display-only
+overflow handling, name dirtiness and exact source rendering.
+
+Verified 2026-11-14: full Windows ASan regressions, focused ASan/UBSan, native
+Linux UBSan, both production CLI variants, all-target builds and source gates.
+Static analysis retained 34 baseline findings and added none. Replacing stored
+document dirty comparison with control equality fails 9221.
+
 ## Confirming draft replacement (2026-11-14)
 
 Source anchors: `source/linux_tui_profile_load.h`, `source/linux_tui_actions.cpp`,

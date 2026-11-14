@@ -308,6 +308,10 @@ int tui_vf_reveal_first_visible(const TuiViewModel& vm, int selectedPoint,
 }
 
 TuiPointValues tui_point_values(const TuiViewModel& vm, int pointIndex) {
+    if (vm.sourceDocument) {
+        DesiredSettings liveOnly{}; auto live = vm; live.desired = &liveOnly; live.sourceDocument = nullptr;
+        return tui_point_values(live, pointIndex);
+    }
     TuiPointValues out = {};
     if (!vm.service || !vm.desired || pointIndex < 0 ||
         pointIndex >= VF_NUM_POINTS) return out;

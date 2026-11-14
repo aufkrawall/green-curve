@@ -49,8 +49,9 @@ inspectable document even when it currently conflicts with hardware (an
 unreachable target, a point outside the live range, a GPU that is absent or
 does not match). Offline CLI import/export and flat local-slot storage consume
 this type independently of the live wire `DesiredSettings` (`gpu_core.h`).
-The service keeps its separate resolved runtime representation; GUI/TUI draft,
-destination resolution and capture integration remain pending below.
+The service keeps its separate resolved runtime representation. The TUI now
+retains and displays canonical source documents; mapped editing, GUI document
+drafts and capture integration remain pending below.
 
 - `ProfilePointIntent` (`profile_point_intent.h`): one VF point's authoritative
   meaning. Four mutually exclusive kinds -- `PROFILE_POINT_ABSENT`,
@@ -341,8 +342,8 @@ cases 8070-8086 and the production Linux rollback fixture cover these contracts.
 
 The exhaustive version-1 key/section contract is published beside the tests:
 [profile_format_v1.md](../tests/profile_format_v1.md). The shared codec implements
-this table. Local flat-slot storage and offline CLI transfer use the same document;
-GUI/TUI draft and capture review remain pending.
+this table. Local flat-slot storage, offline CLI transfer and TUI source staging
+use the same document; mapped editing and capture review remain pending.
 
 The document now carries an independent VF point-set policy, source topology
 completeness versus unresolved legacy indices, identity-based exclusions,

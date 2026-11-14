@@ -15,10 +15,10 @@ static int run() {
     s.edit.active = true; std::snprintf(s.edit.text, sizeof(s.edit.text), "invalid");
     DesiredSettings source{}; desired_memory_set_precise(&source, -123500000, CLOCK_OFFSET_SURFACE_GLOBAL);
     int reads = 0, binds = 0; bool fail = false;
-    const auto read = [&](int slot, DesiredSettings& output, char* why, size_t size) {
+    const auto read = [&](int slot, ProfileEditorCandidate& output, char* why, size_t size) {
         ++reads;
         if (slot != 3 || fail) { std::snprintf(why, size, "unavailable profile"); return false; }
-        output = source; return true;
+        output.settings = source; return true;
     };
     const auto bind = [&](TuiState& draft) { ++binds; draft.draftAttached = false; draft.dirty = true; };
     const auto answer = [&](bool discard) { tui_finish_profile_load(s, discard, bind); };
@@ -37,7 +37,7 @@ static int run() {
     s.profileLoadPresented = true; s.currentSlot = 4; key.type = TUI_INPUT_CHARACTER; key.character = 'Y';
     if (!tui_profile_load_event(s, key, ACTION_NONE, answer) || s.profileLoadPending || binds != 1 || reads != 2 ||
         s.currentSlot != 3 || s.edit.active || desired_memory_hz(s.desired) != -123500000 ||
-        s.desired.memOffsetSurface != CLOCK_OFFSET_SURFACE_GLOBAL || s.pendingProfile.hasMemOffset) return 9194;
+        s.desired.memOffsetSurface != CLOCK_OFFSET_SURFACE_GLOBAL || s.pendingProfile.settings.hasMemOffset) return 9194;
     if (tui_profile_load_event(s, key, ACTION_NONE, answer) || binds != 1 || reads != 2) return 9195;
     s.dirty = false; fail = true;
     tui_request_profile_load(s, read, bind);
