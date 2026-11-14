@@ -8,7 +8,7 @@
 // ordering of these writes, and the fact that the per-point VF reset is NOT
 // optional, are both measured behaviour that has been re-litigated before.
 static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
-    char* result, size_t resultSize, bool* powerTargetAlreadyWrittenOut) {
+    char* result, size_t resultSize, bool* powerTargetAlreadyWrittenOut, gc_u32 preparedOutgoing = 0) {
     if (powerTargetAlreadyWrittenOut) *powerTargetAlreadyWrittenOut = false;
     if (!nvapi_read_curve()) {
         set_message(result, resultSize, "Cannot read the curve before baseline reset");
@@ -31,8 +31,9 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
     // points snap to factory base frequencies (~3300+ MHz on modern GPUs) while
     // the GPU offset from the previous profile is still active — that spike
     // (e.g. 3300 base + 475 old offset = 3775 MHz effective) causes TDR/crashes.
-    const gc_u32 namedSurface = desired ? desired_named_graphics_surface(*desired) : 0;
-    if (desired && desired->hasGpuOffset &&
+    const gc_u32 incoming = desired ? desired_named_graphics_surface(*desired) : 0;
+    const gc_u32 namedSurface = incoming ? incoming : preparedOutgoing;
+    if (desired && (desired->hasGpuOffset || preparedOutgoing) &&
         (namedSurface ? !nvapi_set_gpu_offset_precise(0, namedSurface, true)
             : !vf_curve_global_gpu_offset_supported() && !nvapi_set_gpu_offset(0, true))) {
         set_message(result, resultSize, "GPU offset did not reset before curve reset");

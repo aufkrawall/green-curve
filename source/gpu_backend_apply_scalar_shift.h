@@ -17,6 +17,18 @@ struct ApplyScalarShiftSnapshot {
     }
 };
 
+static ApplyScalarShiftSnapshot apply_scalar_shift_submission_snapshot(bool afterHandoff,
+    const int* originalFreq, const int* originalOffsets, const unsigned int* originalVoltage,
+    const VFCurvePoint* currentCurve, const int* currentOffsets) {
+    ApplyScalarShiftSnapshot snapshot(originalFreq, originalOffsets, originalVoltage);
+    if (afterHandoff) for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        snapshot.freqKHz[ci] = (int)currentCurve[ci].freq_kHz;
+        snapshot.offsetsKHz[ci] = currentOffsets[ci];
+        snapshot.voltageUv[ci] = currentCurve[ci].volt_uV;
+    }
+    return snapshot;
+}
+
 // Runtime-lock owned, in-memory evidence for the current GPU session. The
 // measurement belongs to a scalar VALUE and a voltage topology, not to one
 // Apply: a later no-reset request must not replace a compensated VF offset

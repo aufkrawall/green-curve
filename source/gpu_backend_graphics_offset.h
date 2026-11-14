@@ -12,7 +12,8 @@ static bool nvapi_prepare_named_gpu_offset(gc_u32 surface) {
     return graphics_scalar_recovery_prepare(g_app.gpuOffsetRecoverySurfaces, surface, [](gc_u32) { return true; });
 }
 
-static bool nvapi_write_named_gpu_offset(int targetMHz, gc_u32 surface) {
+static bool nvapi_write_named_gpu_offset(int targetMHz, gc_u32 surface, ScalarCurveSubmissionReview* review = nullptr) {
+    scalar_curve_note_write(review, false);
     if (!nvapi_prepare_named_gpu_offset(surface)) return false;
     g_applyScalarShiftEvidence.clear();
     g_app.gpuOffsetUncertainSurface = surface;
@@ -20,6 +21,7 @@ static bool nvapi_write_named_gpu_offset(int targetMHz, gc_u32 surface) {
     set_last_apply_phase("GPU offset exact NVML write");
     const auto written = nvml_exact_clock_write(g_nvml_api, g_app.nvmlDevice,
         NVML_CLOCK_GRAPHICS, surface, targetMHz);
+    scalar_curve_note_write(review, written.attempted);
     if (written.verified) {
         g_app.gpuClockOffsetkHz = targetMHz * 1000;
         g_app.readback.gpuOffset = true;
@@ -34,7 +36,7 @@ static bool nvapi_write_named_gpu_offset(int targetMHz, gc_u32 surface) {
 }
 
 static bool nvapi_set_gpu_offset_precise_checked(gc_i64 offsetHz, gc_u32 surface, bool forceWrite, ScalarCurveSubmissionReview* review) {
-    if (review) review->refusedWithoutWrite = false;
+    scalar_curve_note_write(review, false);
     if (offsetHz < -1000000000LL || offsetHz > 1000000000LL) return false;
     DesiredSettings request{}; request.hasGpuOffset = 1;
     request.gpuOffsetMHz = (int)(offsetHz / 1000000);
@@ -49,24 +51,25 @@ static bool nvapi_set_gpu_offset_precise_checked(gc_i64 offsetHz, gc_u32 surface
         return false;
     }
     if (review && review->beforeValid && (gc_i64)plan.before.value * 1000000 != review->beforeHz) {
-        review->refusedWithoutWrite = true;
+        scalar_curve_note_write(review, false);
         debug_log("graphics-offset: reviewed current changed surface=%u; refusing before scalar submission\n", (unsigned)surface);
         return false;
     }
     const gc_u32 previous = g_app.gpuOffsetOwnedSurface;
     if (!nvapi_prepare_named_gpu_offset(surface)) {
-        if (review) review->refusedWithoutWrite = true;
+        scalar_curve_note_write(review, false);
         return false;
     }
-    if (previous && previous != surface) {
+    if (previous && previous != surface &&
+        !(review && review->outgoingReleased && review->outgoingSurface == previous)) {
         if (!nvml_exact_clock_surface_available(g_nvml_api, NVML_CLOCK_GRAPHICS, previous) ||
             !nvml_exact_clock_read(g_nvml_api, g_app.nvmlDevice, NVML_CLOCK_GRAPHICS, previous).valid) {
             debug_log("graphics-offset: owned surface unavailable for handback; surface=%u\n", (unsigned)previous);
             return false;
         }
-        if (!nvapi_write_named_gpu_offset(0, previous)) return false;
+        if (!nvapi_write_named_gpu_offset(0, previous, review)) return false;
         g_app.gpuOffsetOwnedSurface = 0;
-        g_app.gpuOffsetRecoverySurfaces &= ~graphics_scalar_recovery_bit(previous);
+        // Keep coverage through the final combined control/VF verification.
         if (review && review->beforeValid) {
             const auto current = nvml_exact_clock_read(g_nvml_api, g_app.nvmlDevice, NVML_CLOCK_GRAPHICS, surface);
             if (!current.valid || (gc_i64)current.value * 1000000 != review->beforeHz) {
@@ -81,7 +84,7 @@ static bool nvapi_set_gpu_offset_precise_checked(gc_i64 offsetHz, gc_u32 surface
         g_app.gpuClockOffsetkHz = plan.targetMHz * 1000; g_app.readback.gpuOffset = true;
         return true;
     }
-    return nvapi_write_named_gpu_offset(plan.targetMHz, surface);
+    return nvapi_write_named_gpu_offset(plan.targetMHz, surface, review);
 }
 
 static bool nvapi_set_gpu_offset_precise(gc_i64 offsetHz, gc_u32 surface, bool forceWrite) {

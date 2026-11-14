@@ -2411,7 +2411,7 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "main_shell.cpp"), "skipping stale lock at ci=%d (lockedFreq=0", "stale lock skip only when lockedFreq=0, not when == liveMHz")
     require_text(gpu_backend_apply_diag_h, "post-apply tail bookends", "post-apply logs tail bookends even when within tolerance")
     require_text(gpu_backend_apply_diag_h, "post-apply tail: ci=%d actual=%u", "post-apply logs tail drifts > 2 MHz even when within tolerance")
-    require_text(gpu_backend_apply_cpp, "service_apply_outcome_severity_for_lock_mode(", "hard NVML pins do not surface VF tail readback as a warning")
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend_apply_outcome.h"), "service_apply_outcome_severity_for_lock_mode(", "hard NVML pins do not surface VF tail readback as a warning")
     require_text(gpu_backend_apply_cpp, "high offset warning summary", "large VF offset diagnostics are aggregated")
     require_text(gpu_backend_cpp, "update_tray_icon", "VF/GPU offset applies update tray icon from GUI-side apply path")
     require_text(gpu_backend_cpp, "parse_mhz_value_prefix", "nvidia-smi clock parsing is strict")

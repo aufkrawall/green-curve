@@ -5,6 +5,22 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Windows named graphics handoff
+
+- Passive preflight and the actual release bind outgoing/incoming APIs, require
+  installed protection for nonzero handoff and retain durable coverage until
+  successful completion. VF routing does not clear an unrelated preferred API.
+- Cases 9160-9183 cover drift, missing protection, preparation failure, coupled
+  owned zero, baseline review updates and post-handback curve reads. See
+  [clock-transition-audit.md](../clock-transition-audit.md#windows-named-control-handoff-2026-11-14).
+- Focused/full Windows ASan regressions, native Linux UBSan and all-target
+  builds passed. Omitting the actual preflight's handoff review fails 9178;
+  a read-only refusal preserves ownership of zero.
+- Incoming scalar composition is measured from the fresh post-handback sample,
+  independently of the clock increase caused by releasing an outgoing offset.
+- Static analysis retained 34 baseline findings and added none. Keeping the
+  old pre-handoff measurement sample fails 9182.
+
 ## 2026-11-14: Linux named graphics handoff
 
 - Apply releases the outgoing named API under reviewed protection, retains

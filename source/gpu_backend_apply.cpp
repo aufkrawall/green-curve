@@ -26,6 +26,8 @@
 #include "gpu_backend_apply_lock_pretail.h"
 #include "gpu_backend_apply_authoring.h"
 #include "gpu_backend_graphics_offset.h"
+#include "gpu_backend_graphics_handoff.h"
+#include "gpu_backend_apply_outcome.h"
 
 static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool interactive, char* result, size_t resultSize,
@@ -165,8 +167,10 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             set_last_apply_phase("apply: refused (transition clamp unavailable)");
             return false;
         }
+        if (!apply_release_graphics_handoff(*desired, scalarReview, clockCeiling, result, resultSize, hardwareWriteAttemptedOut)) return false;
         if (!reset_oc_before_gui_apply(desired, result, resultSize,
-                                       &powerTargetWrittenByReset))
+                                       &powerTargetWrittenByReset, scalarReview.outgoingSurface) ||
+            !nvapi_graphics_baseline_review(*desired, scalarReview))
             return apply_recover_clock_failure(clockCeiling, result, result, resultSize);
         // TDR settle after reset-to-stock: let VRM/memory controllers stabilize
         // before the new aggressive clocks (commit 4b225e1). The 1s default is
@@ -501,12 +505,16 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         set_last_apply_phase("apply: refused (transition clamp unavailable)");
         return false;
     }
-    bool gpuApplied = false;
+    if (!apply_release_graphics_handoff(*desired, scalarReview, clockCeiling, result, resultSize, hardwareWriteAttemptedOut)) return false;
+    if (!apply_handoff_curve_snapshot(scalarReview))
+        return apply_recover_clock_failure(clockCeiling, "Fresh curve readback after graphics handoff failed", result, resultSize);
+    bool gpuApplied = scalarReview.outgoingReleased;
     // The NVML-free sample for measuring what the NVML write below does to each
     // point (curve_point_scalar_shift_measurable()).  Trusted only right after
     // a reset that owned the GPU-offset domain: that reset forced the NVML
     // offset to 0 and re-read the curve settled, so these originals are stock.
-    const ApplyScalarShiftSnapshot preScalar(originalCurveFreqkHz, originalCurveOffsets, originalCurveVoltUv);
+    const auto preScalar = apply_scalar_shift_submission_snapshot(scalarReview.outgoingReleased,
+        originalCurveFreqkHz, originalCurveOffsets, originalCurveVoltUv, g_app.curve, g_app.freqOffsets);
     const bool scalarBeforeKnownZero = desired->resetOcBeforeApply && desired->hasGpuOffset &&
         g_app.readback.gpuOffset && g_app.gpuClockOffsetkHz == 0;
     // A separate scalar precedes the VF batch; its reviewed guard, when needed,
@@ -515,7 +523,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         set_last_apply_phase("apply: dedicated GPU offset write");
         if (desired_named_graphics_surface(*desired)
             ? nvapi_set_gpu_offset_precise_checked(desired_graphics_hz(*desired), desired_named_graphics_surface(*desired),
-                false, scalarReview.beforeValid ? &scalarReview : nullptr)
+                false, &scalarReview)
             : nvapi_set_gpu_offset(targetGpuOffsetkHz)) {
             successCount++;
             gpuApplied = true;
@@ -553,7 +561,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     // (Blackwell uniform<->selective, or pre-Blackwell uniform->selective),
     // zero the prior uniform offset first so the VF batch writes from a clean
     // baseline without compounding a live scalar offset.
-    if (offsetRouting.zeroPriorScalarBeforeCurveBatch) {
+    if (offsetRouting.zeroPriorScalarBeforeCurveBatch && !scalarReview.outgoingReleased) {
         set_last_apply_phase("apply: zero prior GPU offset");
         debug_log("selective offset: zeroing prior offset %d MHz before transition\n", currentAppliedGpuOffsetMHz);
         if (nvapi_set_gpu_offset(0)) {
@@ -1224,6 +1232,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     }
     if (failCount > 0)
         return apply_recover_clock_failure(clockCeiling, failureDetails, result, resultSize);
+    if (!nvapi_verify_graphics_handoff(*desired, scalarReview))
+        return apply_recover_clock_failure(clockCeiling, "Named graphics controls changed before clock handover", result, resultSize);
     // Reset locked clocks only when this request intentionally owns/replaces
     // the VF/lock domain. A sparse fan/memory/power request must preserve an
     // external hard lock and an ad-hoc fan update must preserve Green Curve's
@@ -1436,47 +1446,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             invalidate_main_window();
         }
     }
+    if (failCount == 0) nvapi_retire_graphics_handoff(*desired, scalarReview);
     LeaveCriticalSection(&g_appLock);
     set_last_apply_phase(failCount == 0 ? "apply: complete" : "apply: failed");
-    // The verify counters are the only place the difference between "did what
-    // was asked" and "committed something close to it" exists; the summary text
-    // below already reports it to a human, and this reports it to the client.
-    gc_u32 outcomeSeverity = service_apply_outcome_severity_for_lock_mode(
-        lockMode == LOCK_MODE_HARD, failCount, userBoostFailed, flattenFailed);
-    if (outcomeSeverityOut) *outcomeSeverityOut = outcomeSeverity;
-    const ULONGLONG applyElapsedMs = GetTickCount64() - applyStartTickMs;
-    debug_log("apply outcome: severity=%s failCount=%d successCount=%d boostUnmatched=%d flattenUnmatched=%d elapsedMs=%llu budgetMs=%lu%s\n",
-        service_outcome_severity_name(outcomeSeverity), failCount, successCount,
-        userBoostFailed, flattenFailed, (unsigned long long)applyElapsedMs,
-        (unsigned long)SERVICE_APPLY_HANDLER_BUDGET_MS,
-        applyElapsedMs > SERVICE_APPLY_HANDLER_BUDGET_MS
-            ? " OVER-BUDGET (the client has already timed out)" : "");
-    if (successCount == 0 && failCount == 0) {
-        set_message(result, resultSize, "No setting changes needed.");
-    } else if (failCount == 0) {
-        set_message(result, resultSize, "Applied %d setting changes successfully.%s", successCount, curveVerifySummary);
-    } else {
-        char logErr[256] = {};
-        bool logWritten = write_error_report_log("Setting apply reported one or more failures", failureDetails, logErr, sizeof(logErr));
-        if (failureDetails[0]) {
-            set_message(result, resultSize, "%sApplied %d OK, %d failed: %s%s%s",
-                partialApplyRisk ? "Live state may now be a mixed partial apply. " : "",
-                successCount,
-                failCount,
-                failureDetails,
-                logWritten ? " See " : "",
-                logWritten ? error_log_path() : "");
-        } else {
-            set_message(result, resultSize, "%sApplied %d OK, %d failed.%s%s",
-                partialApplyRisk ? "Live state may now be a mixed partial apply. " : "",
-                successCount,
-                failCount,
-                logWritten ? " See " : "",
-                logWritten ? error_log_path() : "");
-        }
-        if (!logWritten && logErr[0]) {
-            debug_log("failed to write error report: %s\n", logErr);
-        }
-    }
-    return failCount == 0;
+    return apply_report_outcome(lockMode, failCount, successCount, userBoostFailed, flattenFailed,
+        applyStartTickMs, partialApplyRisk, failureDetails, curveVerifySummary, result, resultSize, outcomeSeverityOut);
 }

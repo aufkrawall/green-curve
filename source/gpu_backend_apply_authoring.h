@@ -7,6 +7,13 @@
 #include "vf_control_write_policy.h"
 #include "scalar_curve_submission_policy.h"
 #include "graphics_offset_control.h"
+#include "windows_graphics_handoff_review.h"
+
+static bool apply_handoff_curve_snapshot(const ScalarCurveSubmissionReview& review) {
+    if (!review.outgoingReleased || !review.writeAttempted) return true;
+    bool offsetsOk = false;
+    return read_live_curve_snapshot_settled(1, 0, &offsetsOk) && offsetsOk;
+}
 
 template <class Guard>
 static bool apply_authoring_scalar_review_refusal(Guard& guard, char* why, size_t size,
@@ -65,7 +72,10 @@ static bool apply_verify_authoring_curve_targets(const CurveAuthoringTargets& ta
 
 static bool apply_authoring_precheck_before_writes(const DesiredSettings* d, bool composeGraphics,
     char* why, size_t whySize, ScalarCurveSubmissionReview* review = nullptr) {
-    if (review) *review = {};
+    ScalarCurveSubmissionReview local{};
+    if (!review) review = &local;
+    *review = {};
+    if (!apply_graphics_handoff_precheck(d, *review, why, whySize)) return false;
     if (!curve_authoring_needs_exact_targets(d)) return true;
     bool offsetsOk = false;
     if (!read_live_curve_snapshot_settled(1, 0, &offsetsOk) || !offsetsOk ||
@@ -101,7 +111,7 @@ static bool apply_authoring_precheck_before_writes(const DesiredSettings* d, boo
         const auto transition = scalar_curve_submission_plan(*d, graphics_offset_control_ready(scalar),
             (long long)scalar.before.value * 1000000, in.programmedOffsetsHz, true,
             g_nvml_api.setGpuLockedClocks && g_nvml_api.resetGpuLockedClocks,
-            g_app.gpuOffsetOwnedSurface && g_app.gpuOffsetOwnedSurface != scalar.surface);
+            review->outgoingSurface && review->outgoingBeforeHz != 0);
         debug_log("scalar-curve: preflight status=%d loweredCaptured=%d baselineDependent=%d\n",
             (int)transition.status, transition.loweredCaptured, transition.baselineDependent ? 1 : 0);
         if (!scalar_curve_submission_allowed(transition)) {
@@ -109,7 +119,11 @@ static bool apply_authoring_precheck_before_writes(const DesiredSettings* d, boo
             return false;
         }
         if (review) {
-            review->installedGuardRequired = transition.status == SCALAR_CURVE_INSTALL_GUARD;
+            if (review->beforeValid && (long long)scalar.before.value * 1000000 != review->beforeHz) {
+                set_message(why, whySize, "The incoming graphics control changed during review. Nothing was changed.");
+                return false;
+            }
+            review->installedGuardRequired |= transition.status == SCALAR_CURVE_INSTALL_GUARD;
             review->beforeValid = graphics_offset_control_ready(scalar);
             review->beforeHz = (long long)scalar.before.value * 1000000;
         }

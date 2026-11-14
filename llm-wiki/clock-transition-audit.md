@@ -1,5 +1,43 @@
 # Clock transition hardening
 
+## Windows named-control handoff (2026-11-14)
+
+Source anchors: `source/windows_graphics_handoff_review.h`,
+`source/gpu_backend_graphics_handoff.h`, `source/gpu_backend_apply_authoring.h`,
+`source/gpu_backend_apply.cpp`, `tests/windows_graphics_handoff_cases.h`,
+`tests/windows_vf_exact_tests.cpp`.
+
+The Windows preflight reviews an outgoing named graphics API even when no
+exact VF point edits exist. A nonzero handoff requires the declared clock
+target and installed protection; owned zero needs no guessed clamp. Passive
+review reads both exact named APIs without setters. The actual release checks
+both values again, prepares conservative durable coverage for both, then
+zeros the outgoing API. Incoming drift or API coupling cannot silently rebase
+the review. A failed second submission preserves the first write's evidence.
+
+The curve is reread after handback. Incoming scalar measurement starts at this
+fresh boundary, so releasing the outgoing offset is not counted as the new
+scalar's contribution. VF routing does not perform an additional
+legacy clear through another preferred API. Baseline reset uses the prepared
+outgoing API when no incoming scalar exists, and updates the incoming review
+binding only after proving its authorized zero. Combined control readback
+precedes final lock handover. Outgoing coverage retires only on complete
+success; failures use protected core recovery. Outcome reporting resides in
+`source/gpu_backend_apply_outcome.h` to keep submission code from growing.
+
+Cases 9160-9183 execute passive review, durable preparation, drift and absent
+protection refusals, failed second submission, owned-zero coupling, baseline
+review updates, named-to-VF handback and final readback. Hardware coupling
+and modeled lockless protection remain unverified; authoring activation stays
+gated pending the remaining document/editor and transition contracts.
+
+Verified 2026-11-14: focused and full Windows ASan/UBSan regressions, native
+Linux UBSan fixtures and all-target builds. Removing the real preflight's
+handoff review fails 9178. A read-only incoming refusal preserves owned zero.
+The scalar-shift fixture verifies the post-handoff measurement boundary.
+Static analysis retained 34 baseline findings and added none. Retaining the
+old pre-handoff sample fails 9182.
+
 ## Linux named-control handoff (2026-11-14)
 
 Source anchors: `source/linux_graphics_offset_control.h`,

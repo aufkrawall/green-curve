@@ -42,6 +42,20 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "Windows scalar-to-curve review reaches the actual ceiling guard")
     require_text(guard_h, "plan.reason, installedGuardRequired",
                  "strict Windows protection cannot use the unsupported-clamp exception")
+    require_text(_p(ctx, "gpu_backend_apply_authoring.h"),
+                 "apply_graphics_handoff_precheck(d, *review, why, whySize)",
+                 "Windows reviews named handoffs even without exact VF edits")
+    require_text(_p(ctx, "gpu_backend_graphics_handoff.h"),
+                 "review.installedGuardRequired && !guardInstalled",
+                 "Windows named release refuses without the required installed ceiling")
+    require_order_in_operation(apply_cpp, "static bool apply_desired_settings_service(",
+                 "if (!nvapi_verify_graphics_handoff(*desired, scalarReview))",
+                 "bool replacesLockDomain =",
+                 "both named APIs are verified before final clock handover")
+    require_text(apply_cpp, "if (failCount == 0) nvapi_retire_graphics_handoff(*desired, scalarReview);",
+                 "Windows retains outgoing recovery coverage until successful completion")
+    require_text(apply_cpp, "apply_scalar_shift_submission_snapshot(scalarReview.outgoingReleased,",
+                 "incoming scalar measurement starts after the outgoing control handoff")
     require_text(linux_mutation_cpp, "context->scalarReview.installedGuardRequired",
                  "Linux scalar-to-curve review reaches the actual ceiling phase")
     require_text(linux_ceiling_h, "plan.reason, installedGuardRequired",
@@ -344,8 +358,8 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "named scalar state requires its own verified reset even on VF-global backends")
     require_text(rollback_h, "return nvapi_reset_graphics_scalar_controls(false);",
                  "rollback repairs the selected graphics scalar before resetting the curve")
-    require_text(reset_cpp, "if (desired && desired->hasGpuOffset &&",
-                 "baseline reset owns the requested GPU-offset domain")
+    require_text(reset_cpp, "if (desired && (desired->hasGpuOffset || preparedOutgoing) &&",
+                 "baseline reset uses the requested or durably prepared outgoing graphics API")
     require_order_in_operation(reset_cpp, "static bool reset_oc_before_gui_apply(",
                                "nvapi_set_gpu_offset_precise(0, namedSurface, true)",
                                "if (!apply_curve_offsets_verified(resetOffsets, resetMask, 2))",
@@ -457,9 +471,9 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_order_in_operation(
         apply_cpp,
         "static bool apply_desired_settings_service(const DesiredSettings* desired",
-        "const ApplyScalarShiftSnapshot preScalar(originalCurveFreqkHz,",
+        "const auto preScalar = apply_scalar_shift_submission_snapshot(scalarReview.outgoingReleased,",
         ": nvapi_set_gpu_offset(targetGpuOffsetkHz)) {",
-        "the NVML-free sample is taken before the NVML write")
+        "the incoming scalar sample follows handback and precedes the new NVML write")
     # The deferral is only temporary if field logs can answer it: the apply
     # logs NVML/VF composition evidence on the separate NVML route.
     require_text(apply_cpp, "apply_log_nvml_composition_evidence(desired, offsetInVfTable,",
@@ -633,8 +647,8 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "flat-tail live-base projection is confined to the VF-table route")
     require_text(apply_cpp, "correction.offsetInVfTable = offsetInVfTable;",
                  "the flat-tail check receives the request's VF-table routing")
-    require_text(apply_cpp, "if (offsetRouting.zeroPriorScalarBeforeCurveBatch) {",
-                 "uniform-to-selective transitions clear a prior scalar GPU offset before the VF batch")
+    require_text(apply_cpp, "if (offsetRouting.zeroPriorScalarBeforeCurveBatch && !scalarReview.outgoingReleased) {",
+                 "uniform-to-selective transitions clear the prior scalar once through its reviewed API")
     require_text(apply_cpp, "g_app.lastApplyUsedGpuOffset = offsetRouting.lastApplyUsedGpuOffset;",
                  "curve-batch completion preserves lastApplyUsedGpuOffset across uniform and selective routes")
     require_text(apply_cpp, "int violationCi = apply_correction_tail_monotonic_violation(correction,",

@@ -74,6 +74,20 @@ struct Fixture {
 };
 
 static int run() {
+    {
+        Fixture f(100, 100000); int original[VF_NUM_POINTS]{};
+        for (int ci = 0; ci < 8; ++ci) {
+            original[ci] = f.preFreq[ci] - 50000; // Outgoing negative scalar still present.
+            f.curve[ci].freq_kHz = (unsigned)f.preFreq[ci]; // It has now been released.
+        }
+        const auto old = apply_scalar_shift_submission_snapshot(false, original, f.offsets, f.voltage, nullptr, nullptr);
+        const auto before = apply_scalar_shift_submission_snapshot(true, original, f.offsets, f.voltage, f.curve, f.offsets);
+        if (old.freqKHz[2] != original[2] || before.freqKHz[2] != f.preFreq[2] ||
+            before.offsetsKHz[2] || before.voltageUv[2] != f.voltage[2]) return 9182;
+        if (!apply_resolve_provenance_scalar_shift(&f.desired, false, true, true, 100000,
+            before.freqKHz, before.offsetsKHz, before.voltageUv, f.postFreq, f.offsets, f.voltage,
+            f.tail, f.shift, &f.compensated) || !f.compensated || f.shift[2] != 100000) return 9183;
+    }
     // Same request, same scalar, same GPU session: its VF target cannot gain
     // the NVML contribution on the second apply. Includes no/partial shift
     // and negative offsets; no linear-composition model is assumed.

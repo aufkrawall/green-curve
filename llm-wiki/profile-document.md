@@ -7,8 +7,9 @@ Source anchors: `source/profile_document.h`, `source/profile_point_intent.h`,
 
 ## Named clock controls in passive review (2026-11-14)
 
-Linux Apply's prepared control handoff and final verification are documented
-in [clock-transition-audit.md](clock-transition-audit.md#linux-named-control-handoff-2026-11-14).
+Prepared control handoff and final verification are documented for
+[Linux](clock-transition-audit.md#linux-named-control-handoff-2026-11-14) and
+[Windows](clock-transition-audit.md#windows-named-control-handoff-2026-11-14).
 
 Source anchors: `source/hardware_capture_getters.h`,
 `source/hardware_capture_wire_validation.h`, `source/profile_control_feasibility.h`,
@@ -940,5 +941,6 @@ Windows named-control recovery now persists conservative surface coverage before
 submission and retains owned zero; see
 [persistence-schema.md](persistence-schema.md#windows-graphics-control-recovery-marker-2026-11-13).
 This closes process-local recovery evidence loss for those controls. Linux
-durability and guarded handoff are also implemented; Windows cross-surface
-Apply cleanup and lockless modeled-peak protection still gate replay activation.
+durability and guarded handoff are also implemented. Both platforms now retain
+outgoing controls through final handover verification; lockless modeled-peak
+protection and document/editor integration still gate replay activation.

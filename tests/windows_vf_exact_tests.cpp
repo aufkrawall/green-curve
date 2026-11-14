@@ -132,6 +132,29 @@ static void initialize() {
     nvapi_read_offsets();
 }
 static int windows_scalar_curve_submission_cases() {
+    {
+        initialize(); driver.modelFrequency = true;
+        for (int i = 0; i < 8; ++i) driver.baseHz[i] = 1500000000;
+        nvapi_read_curve();
+        driver.scalarMHz = -50; g_app.gpuOffsetOwnedSurface = CLOCK_OFFSET_SURFACE_P0;
+        g_nvml_api.getClockOffsets = scalar_get; g_nvml_api.setClockOffsets = scalar_set;
+        DesiredSettings handoff{}; handoff.hasGpuOffset = 1;
+        handoff.authoring.graphicsPrecise = 1; handoff.authoring.graphicsSurface = DESIRED_GRAPHICS_VF_COMPONENT;
+        handoff.authoring.topologyBound = 1; handoff.authoring.topologyCount = 8;
+        for (int i = 0; i < 8; ++i) handoff.authoring.voltageUv[i] = g_app.curve[i].volt_uV;
+        ScalarCurveSubmissionReview reviewed{}; char why[256]{};
+        if (apply_authoring_precheck_before_writes(&handoff, true, why, sizeof(why), &reviewed) ||
+            driver.sets || driver.scalarWrites || driver.capWrites) return 9178;
+        handoff.hasLock = 1; handoff.lockMode = LOCK_MODE_FLATTEN; handoff.lockMHz = 1600; handoff.lockCi = 4;
+        g_nvml_api.setGpuLockedClocks = cap_set; g_nvml_api.resetGpuLockedClocks = cap_reset;
+        if (!apply_authoring_precheck_before_writes(&handoff, true, why, sizeof(why), &reviewed) ||
+            !reviewed.installedGuardRequired || reviewed.outgoingSurface != CLOCK_OFFSET_SURFACE_P0 ||
+            driver.sets || driver.scalarWrites || driver.capWrites) {
+            std::fprintf(stderr, "graphics handoff preflight: %s\n", why); return 9179;
+        }
+        reviewed.outgoingReleased = reviewed.writeAttempted = true; driver.failRead = true;
+        if (apply_handoff_curve_snapshot(reviewed) || driver.sets || driver.scalarWrites || driver.capWrites) return 9180;
+    }
     initialize(); driver.modelFrequency = true;
     for (int i = 0; i < 8; ++i) driver.baseHz[i] = 900000500LL + i * 100000000LL;
     nvapi_read_curve();

@@ -1002,7 +1002,9 @@ def check_manual_mutation_result_presentation(ctx, require_text, forbid_text):
         daemon_cpp, "static void handle_request(",
         "resp->outcomeSeverity = service_response_resolve_outcome_severity(",
         "the Linux daemon resolves severity on every response it answers")
-    require_text(apply_cpp, "service_apply_outcome_severity_for_lock_mode(",
+    require_text(apply_cpp, "return apply_report_outcome(lockMode, failCount, successCount,",
+                 "the real apply returns the outcome helper's result")
+    require_text(_p(ctx, "gpu_backend_apply_outcome.h"), "service_apply_outcome_severity_for_lock_mode(",
                  "the apply backend reports a committed-but-unmatched write as "
                  "a warning instead of a silent success, while a hard NVML pin "
                  "ignores VF tail readback")

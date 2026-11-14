@@ -101,6 +101,8 @@ static void StringCchCopyA(char* out, size_t size, const char* value) {
 }
 static void refresh_global_state(char*, size_t) {}
 #include "gpu_backend_apply_failure.h"
+#include "windows_graphics_handoff_review.h"
+#include "gpu_backend_graphics_handoff.h"
 #include "gpu_selection_write_evidence.h"
 
 static void initialize(bool canVerifyReset) {
@@ -263,6 +265,7 @@ static int run_precise_graphics_tests() {
     review.beforeHz = 0;
     if (!nvapi_set_gpu_offset_precise_checked(247000000, CLOCK_OFFSET_SURFACE_P0, false, &review) ||
         review.refusedWithoutWrite || p0Writes != 1 || writes) return 8975;
+    review.writeAttempted = false; // A separate operation starts a new review's attempt evidence.
     if (nvapi_set_gpu_offset_precise_checked(100000000, CLOCK_OFFSET_SURFACE_P0, false, &review) ||
         !review.refusedWithoutWrite || p0Writes != 1 || writes ||
         g_app.gpuOffsetOwnedSurface != CLOCK_OFFSET_SURFACE_P0 || g_app.gpuOffsetUncertainSurface) return 8976;
@@ -542,9 +545,11 @@ static int run() {
     if (!nvapi_set_mem_offset(0, false) || writes) return 7558;
     return run_pstate_evidence_tests();
 }
+#include "windows_graphics_handoff_cases.h"
 } // namespace memory_recovery_fixture
 
 int run_memory_recovery_tests() {
+    if (int failure = memory_recovery_fixture::windows_graphics_handoff_cases()) return failure;
     int result = memory_recovery_fixture::run_precise_graphics_tests();
     if (!result) result = memory_recovery_fixture::run_precise_memory_tests();
     if (!result) result = memory_recovery_fixture::run();

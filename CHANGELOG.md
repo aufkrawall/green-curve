@@ -52,7 +52,7 @@ Curve checks, low-voltage editing, profile transfer and read-only capture improv
 ### Fixed
 
 - **Unicode profile banks:** imports preserve existing text and encoding.
-- **Graphics recovery:** retain exact clock controls across restarts; Linux control switching protects handoffs and verifies both controls.
+- **Graphics recovery:** retain exact clock controls across restarts; control switching protects handoffs and verifies both controls.
 - **Installer recovery:** shared readers of leftover temporary files no longer block replacement or rollback.
 - **Fixed clock-floor points:** Apply refuses fixed-point edits and locks; Capture retains observations.
 - **Linux power limits:** out-of-range requests refuse before changes.
