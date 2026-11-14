@@ -117,9 +117,15 @@ static inline bool profile_resolve_runtime(const ProfileDocument& source,
         next.lockTracksAnchor = source.lock.trackAnchor;
         next.authoring.lockPrecise = 1; next.authoring.lockFrequencyHz = source.lock.targetFrequencyHz;
     }
-    if (source.hasMemoryOffset && !desired_memory_set_precise(&next, source.memoryOffsetHz,
-            source.memorySurface ? source.memorySurface : routes.memory))
-        return fail("memory intent exceeds application bounds; edit the draft explicitly");
+    if (source.hasMemoryOffset) {
+        if (source.memoryOffsetHz < -3000000000LL || source.memoryOffsetHz > 3000000000LL)
+            return fail("memory intent exceeds application bounds; edit the draft explicitly");
+        int effective = 0;
+        if (!memory_offset_effective_mhz_from_hz(source.memoryOffsetHz, &effective))
+            return fail("memory intent requires explicit conversion to the runtime's 500000 Hz grid; source preserved");
+        if (!desired_memory_set_precise(&next, source.memoryOffsetHz, source.memorySurface ? source.memorySurface : routes.memory))
+            return fail("memory control selection is invalid; source preserved");
+    }
     if (source.power.present && !desired_power_set_ratio(&next, source.power.ratio)) return fail("invalid power ratio");
     if (source.fan.present) {
         next.hasFan = 1; next.fanAuto = source.fan.fanAuto; next.fanMode = source.fan.fanMode;

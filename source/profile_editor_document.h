@@ -7,6 +7,7 @@
 
 struct ProfileEditorDocument {
     bool valid = false;
+    gc_u64 revision = 1; // local draft revision, never serialized or authorization
     ProfileDocument value{}, saved{};
 };
 struct ProfileEditorCandidate {

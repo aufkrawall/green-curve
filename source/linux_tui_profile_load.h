@@ -10,7 +10,7 @@
 template<class Bind>
 static inline void tui_install_profile_load(TuiState& state, const ProfileEditorCandidate& loaded, int slot, Bind bind) {
     state.desired = loaded.settings; state.document = loaded.source; state.currentSlot = slot; state.edit = {};
-    state.sourceCheckVisible = false; state.sourceCheckLines.clear();
+    state.sourceCheckVisible = false; state.sourceCheckLines.clear(); state.sourceReview.reset();
     state.sourceGraphicsChoice = state.sourceMemoryChoice = 0;
     bind(state);
     if (state.document.valid) {

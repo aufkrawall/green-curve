@@ -52,12 +52,14 @@ int run_tui_source_edit_tests() {
         std::strcmp(state->edit.text, "1200.123456") || !state->edit.selectAll || state->serviceOnline ||
         encode(d) != original || profile_editor_document_dirty(state->document)) return 9246;
     state->sourceCheckLines = {"old report"}; state->draftAttached = true;
+    state->sourceReview = std::make_unique<ProfileDestinationReview>(); state->sourceReview->stage = PROFILE_REVIEW_PLANNED;
     // Even typing the observed number is an explicit kind conversion, without
     // a baseline, destination index, clamp or edit to any other document field.
     auto expected = std::make_unique<ProfileDocument>(d);
     expected->points[0].kind = PROFILE_POINT_ABSOLUTE_FREQUENCY;
     expected->points[0].absoluteFrequencyHz = 1200123456;
     if (!tui_commit_source_edit(*state) || state->edit.active || state->draftAttached ||
+        state->sourceReview || state->document.revision != 2 ||
         !state->sourceCheckLines.empty() || !state->dirty || !profile_editor_document_dirty(state->document) ||
         encode(d) != encode(*expected)) return 9247;
     if (tui_begin_source_edit(*state, TUI_FIELD_SOURCE_POINT, 1) ||
@@ -65,9 +67,11 @@ int run_tui_source_edit_tests() {
         tui_begin_source_edit(*state, TUI_FIELD_SOURCE_POINT, 3)) return 9248;
     if (!tui_begin_source_edit(*state, TUI_FIELD_SOURCE_POINT, 2) || state->edit.text[0]) return 9249;
     const auto beforeInvalid = encode(d);
+    const auto beforeRevision = state->document.revision;
     for (const char* invalid : {"0", "-1", "1.0000001", "9223372036855"}) {
         std::snprintf(state->edit.text, sizeof(state->edit.text), "%s", invalid);
-        if (tui_commit_source_edit(*state) || !state->edit.active || encode(d) != beforeInvalid) return 9250;
+        if (tui_commit_source_edit(*state) || !state->edit.active || encode(d) != beforeInvalid ||
+            state->document.revision != beforeRevision) return 9250;
     }
     std::snprintf(state->edit.text, sizeof(state->edit.text), "9999.000001");
     if (!tui_commit_source_edit(*state) || d.points[2].kind != PROFILE_POINT_ABSOLUTE_FREQUENCY ||

@@ -12,6 +12,7 @@
 #include "linux_tui_diagnostic_policy.h"
 #include "linux_startup_sync.h"
 #include "profile_editor_document.h"
+#include "profile_destination_review.h"
 
 #include <string>
 #include <vector>
@@ -44,6 +45,7 @@ struct TuiState {
     bool sourceCheckVisible;
     gc_u32 sourceGraphicsChoice, sourceMemoryChoice;
     std::vector<std::string> sourceCheckLines;
+    std::unique_ptr<ProfileDestinationReview> sourceReview;
     int currentSlot;
     TuiTab tab;
     int selectedPoint;

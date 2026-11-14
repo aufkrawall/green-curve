@@ -3,19 +3,21 @@
 #ifndef GREEN_CURVE_PROFILE_CHECK_COMMANDS_H
 #define GREEN_CURVE_PROFILE_CHECK_COMMANDS_H
 #include "profile_commands.h"
-#include "profile_runtime_resolution.h"
-#include "profile_control_feasibility.h"
+#include "profile_destination_review.h"
 
 // The command deliberately has no write/commit/Apply callback. It parses before
 // contacting the existing bound service session, through passive Capture only.
 template <class IO>
-static inline bool profile_check_commands_run(const std::vector<std::string>& args, IO& io, int& exitCode) {
+static inline bool profile_check_commands_run(const std::vector<std::string>& args, IO& io, int& exitCode,
+    ProfileDestinationReview* review = nullptr, gc_u64 sourceRevision = 1) {
+    if (review) *review = {};
     bool handled = false;
     for (const auto& arg : args) handled |= arg == "--check-profile";
     if (!handled) return false;
     ProfileCodecError error; std::string file; int selected = 0;
     gc_u32 graphicsChoice = 0, memoryChoice = 0;
     const auto reject = [&](int code) {
+        if (review) review->error = error;
         io.message(std::string("Profile check: ") + error.message + "\n"); exitCode = code; return true;
     };
     for (size_t i = 0; i < args.size(); ++i) {
@@ -49,6 +51,7 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
     }
     if (!selected) selected = 1;
     const auto& source = bank->documents[selected - 1];
+    if (review) { review->source = source; review->sourceRevision = sourceRevision; review->stage = PROFILE_REVIEW_SOURCE; }
     if ((graphicsChoice && !source.graphicsOffset.present) || (memoryChoice && !source.hasMemoryOffset)) {
         profile_codec::fail(&error, 0, "clock control selection requires that profile domain");
         return reject(PROFILE_COMMAND_INVALID);
@@ -64,6 +67,7 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
         !profile_destination_from_capture(*capture, destination, error.message, sizeof(error.message))) {
         profile_codec::fail(&error, 0, "destination capture is invalid or differs from the request"); return reject(PROFILE_COMMAND_IO);
     }
+    if (review) { review->capture = *capture; review->stage = PROFILE_REVIEW_CAPTURE; }
     ProfileRuntimeRoutes routes;
     routes.memory = memoryChoice ? memoryChoice : capture->memory.valid ? capture->memory.surface : 0;
     if (source.graphicsOffset.present) {
@@ -78,8 +82,12 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
     auto runtime = std::make_unique<DesiredSettings>(); ProfileMappingReport mapping;
     auto reviewedSource = std::make_unique<ProfileDocument>(source);
     if (memoryChoice) reviewedSource->memorySurface = memoryChoice;
-    const bool resolved = profile_resolve_runtime(*reviewedSource, destination, 1, routes, *runtime, mapping,
+    const bool resolved = profile_resolve_runtime(*reviewedSource, destination, sourceRevision, routes, *runtime, mapping,
         error.message, sizeof(error.message));
+    if (review) {
+        review->routes = routes; review->mapping = mapping;
+        if (resolved) { review->runtime = *runtime; review->stage = PROFILE_REVIEW_MAPPED; }
+    }
     const char* issueNames[] = {"offline", "invalid topology", "incomplete topology", "legacy index requires review",
         "legacy exclusions require review", "missing voltage", "ambiguous voltage", "read-only point",
         "duplicate destination", "unavailable domain"};
@@ -109,6 +117,7 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
         io.message("Power: " + std::to_string(ratio.numerator) + "/" + std::to_string(ratio.denominator) + " of the destination default\n"); }
     if (runtime->hasLock) io.message("Lock: " + std::to_string(desired_lock_hz(*runtime)) + " Hz\n");
     const auto plan = profile_control_plan(*runtime, *capture);
+    if (review) { review->controls = plan; review->stage = PROFILE_REVIEW_PLANNED; }
     io.message(std::string("Control feasibility: disposition=") + profile_control_disposition_name(plan.disposition) + "\n");
     if (plan.curveChecked) {
         io.message(std::string("Curve: disposition=") + curve_plan_disposition_name(plan.curve.disposition) +

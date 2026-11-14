@@ -1,5 +1,35 @@
 # Config and Profiles
 
+## Structured destination review (2026-11-14)
+
+Source anchors: `source/profile_destination_review.h`,
+`source/profile_check_commands.h`, `source/profile_editor_check.h`,
+`source/linux_tui_source_check.h`, `tests/tui_profile_check_tests.cpp`.
+
+The shared check engine optionally publishes a typed result with explicit
+source/capture/mapped/planned stages, source revision, original document,
+full returned observation, selected routes, mapping, compiled runtime intent,
+control/curve plans and failure details. It clears the previous result even
+for unhandled or invalid input. Mapping/compilation refusals never publish
+runtime intent, and failed/invalid reads never publish a capture. A refused
+control plan remains a completed preview, distinct from a mapping failure.
+No stage grants permission to Apply or proves operation-level feasibility.
+
+The TUI retains this result on the heap and summarizes its typed stage and
+disposition without parsing report text. Successful source edits increment a
+local revision, preserve the saved baseline and invalidate the result. Load,
+Reset Draft and control-preview changes also invalidate it. A fresh check uses
+the current revision; original source API metadata stays separate from an
+explicit preview control choice. Operation acceptance still needs fresh
+ownership, transition and recovery review over every affected domain.
+
+Memory compilation distinguishes application bounds from the runtime's
+half-MHz physical grid. Sub-grid source values remain inspectable and require
+explicit conversion; no preview rounds them into applicable runtime intent.
+Cases 9265-9274 cover stage progression, exact choices, revision binding,
+failure reset, malformed capture, source-preserving conversion refusal,
+mapping failure and a completed refused control plan.
+
 ## Offline TUI source edits (2026-11-14)
 
 Source anchors: `source/profile_editor_source_edit.h`,
@@ -44,7 +74,7 @@ session, and sends only the passive Capture command.
 Mapping, precise scalar ranges, grids, curve constraints and conditional
 relationships use the same engine as the CLI. Reports are bounded, wrap long
 reasons and scroll by visible rows so compact terminals retain trailing bounds.
-Load, source reset and control-choice changes invalidate the displayed report.
+Load, source edits/reset and control-choice changes invalidate the displayed report.
 A completed check grants no destination editing or Apply authority; structured acceptance,
 mapped editing and fresh service review remain separate integration work.
 

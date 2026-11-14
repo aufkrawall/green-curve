@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Typed destination review results
+
+- CLI/editor checks share staged source, capture, mapping, runtime and planner
+  results. The TUI consumes typed fields, binds its local revision and clears
+  stale reviews on source/control changes. No Apply authority is granted.
+- Memory grid conversion and application-range refusals have distinct reasons;
+  exact source values are preserved. Cases 9265-9274 cover the result stages,
+  refusals and reset contract. See
+  [config-profiles.md](../config-profiles.md#structured-destination-review-2026-11-14).
+- Full Windows regressions, focused ASan/UBSan, native Linux UBSan and
+  all-target builds passed. Omitting result reset fails 9266; static analysis
+  retained 34 baseline findings and added none.
+
 ## 2026-11-14: Offline TUI source editing
 
 - Source points and included clock offsets accept exact decimal MHz without a

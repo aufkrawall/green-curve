@@ -40,7 +40,7 @@ Curve checks, profile transfer and capture improve tuning workflows.
 - **Legacy transfer:** preserve Windows/Linux units and tuning intent.
 - **TUI source profiles:** inspect, edit and save exact imported point/offset intent without a GPU.
 - **CLI hardware capture:** review P0/global clock controls, omissions and ranges without resetting.
-- **Profile checks:** preview CLI/TUI control choices, mapping, ranges, constraints and uncertainty without applying.
+- **Profile checks:** preview CLI/TUI mapping, ranges, control choices and required conversions without applying.
 
 ### Improved
 

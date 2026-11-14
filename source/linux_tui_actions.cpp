@@ -438,7 +438,7 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
             if (!state->document.valid) break;
             auto& choice = action.type == ACTION_SOURCE_GRAPHICS_CHOICE ? state->sourceGraphicsChoice : state->sourceMemoryChoice;
             choice = (choice + 1) % (action.type == ACTION_SOURCE_GRAPHICS_CHOICE ? 4u : 3u);
-            state->sourceCheckVisible = false; state->sourceCheckLines.clear(); state->sourceScroll = 0;
+            state->sourceCheckVisible = false; state->sourceCheckLines.clear(); state->sourceReview.reset(); state->sourceScroll = 0;
             snprintf(state->status, sizeof(state->status), "Control preview selection changed; use Check to review this choice");
             break;
         }
@@ -606,7 +606,7 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
         }
         case ACTION_RESET_DRAFT:
             state->document = {};
-            state->sourceCheckVisible = false; state->sourceCheckLines.clear();
+            state->sourceCheckVisible = false; state->sourceCheckLines.clear(); state->sourceReview.reset();
             state->desired = state->acceptedDesired;
             state->dirty = false;
             bind_current_draft(state);

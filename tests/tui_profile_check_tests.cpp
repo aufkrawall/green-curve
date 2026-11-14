@@ -77,5 +77,45 @@ int run_tui_profile_check_tests() {
         std::string cells; for (const auto& cell : layout.cells) cells += cell.glyph;
         if (cells.find("maximum=987654321") == std::string::npos) return 9240;
     }
+    auto review = std::make_unique<ProfileDestinationReview>();
+    state.fail = false;
+    if (profile_editor_check(*source, 0, CLOCK_OFFSET_SURFACE_GLOBAL, capture, lines, review.get(), 91) != PROFILE_COMMAND_DECISION ||
+        !review->mapped() || !review->planned() || review->sourceRevision != 91 || review->mapping.sourceRevision != 91 ||
+        review->capture.gpuGeneration != 3 || review->capture.fingerprint != 7 ||
+        review->source.memorySurface != CLOCK_OFFSET_SURFACE_P0 || review->runtime.memOffsetSurface != CLOCK_OFFSET_SURFACE_GLOBAL ||
+        desired_memory_hz(review->runtime) != source->memoryOffsetHz || review->controls.disposition != PROFILE_CONTROL_READY) return 9265;
+    const int beforeInvalid = state.calls;
+    if (profile_editor_check(*source, 0, 3, capture, lines, review.get()) != PROFILE_COMMAND_INVALID ||
+        state.calls != beforeInvalid || review->stage != PROFILE_REVIEW_EMPTY || review->runtime.hasMemOffset ||
+        !review->error.message[0]) return 9266;
+    state.fail = true;
+    if (profile_editor_check(*source, 0, 0, capture, lines, review.get()) != PROFILE_COMMAND_IO ||
+        review->stage != PROFILE_REVIEW_SOURCE || review->capture.valid || review->runtime.hasMemOffset ||
+        std::string(review->error.message).find("session unavailable") == std::string::npos) return 9267;
+    state.fail = false; state.malformed = true;
+    if (profile_editor_check(*source, 0, 0, capture, lines, review.get()) != PROFILE_COMMAND_IO ||
+        review->stage != PROFILE_REVIEW_SOURCE || review->capture.valid || review->planned()) return 9268;
+    state.malformed = false; source->memoryOffsetHz = -500;
+    if (profile_editor_check(*source, 0, 0, capture, lines, review.get()) != PROFILE_COMMAND_DECISION ||
+        review->stage != PROFILE_REVIEW_CAPTURE || review->runtime.hasMemOffset || !review->mapping.ready() ||
+        review->source.memoryOffsetHz != -500 || std::string(review->error.message).find("500000 Hz grid") == std::string::npos) return 9269;
+    source->memoryOffsetHz = -3000000001LL;
+    if (profile_editor_check(*source, 0, 0, capture, lines, review.get()) != PROFILE_COMMAND_DECISION ||
+        review->stage != PROFILE_REVIEW_CAPTURE || std::string(review->error.message).find("bounds") == std::string::npos) return 9270;
+    source->memoryOffsetHz = -123500000;
+    if (profile_editor_check(*source, 0, 0, capture, lines, review.get(), 0) != PROFILE_COMMAND_DECISION ||
+        review->stage != PROFILE_REVIEW_CAPTURE || review->mapping.sourceRevision || review->mapped()) return 9271;
+    source->domains |= PROFILE_DOMAIN_VF_CURVE; source->topologyCount = 1;
+    source->topology[0] = {42, 77, 650000, 1}; source->points[0].kind = PROFILE_POINT_CAPTURED_OFFSET;
+    if (profile_editor_check(*source, 0, 0, capture, lines, review.get()) != PROFILE_COMMAND_DECISION ||
+        review->stage != PROFILE_REVIEW_CAPTURE || review->mapping.ready() || review->runtime.curvePointCaptured[22] ||
+        !review->mapping.issueCount || review->mapping.issues[0].kind != PROFILE_MAP_MISSING_VOLTAGE) return 9272;
+    source->domains = PROFILE_DOMAIN_MEMORY; source->topologyCount = 0; source->points[0] = {};
+    state.narrowAlternate = true;
+    if (profile_editor_check(*source, 0, CLOCK_OFFSET_SURFACE_GLOBAL, capture, lines, review.get()) != PROFILE_COMMAND_DECISION ||
+        !review->planned() || !review->mapped() || review->controls.disposition != PROFILE_CONTROL_REFUSED) return 9273;
+    ProfileEditorCheckIO<decltype(capture)> io{*source, capture, lines}; int code = 42;
+    if (profile_check_commands_run({}, io, code, review.get()) || code != 42 || review->stage != PROFILE_REVIEW_EMPTY ||
+        review->capture.valid || review->runtime.hasMemOffset) return 9274;
     return 0;
 }

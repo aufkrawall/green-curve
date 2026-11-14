@@ -1548,8 +1548,10 @@ def check_canonical_tui_documents(ctx, require_text):
     require_text(actions, "case ACTION_CHECK_SOURCE:", "the TUI exposes explicit source destination checking")
     require_text(_p(ctx, "linux_tui_source_check.h"), "request.command = SERVICE_CMD_CAPTURE_CURRENT;",
                  "destination Check uses the passive command")
-    require_text(_p(ctx, "profile_editor_check.h"), "profile_check_commands_run(args, io, code)",
+    require_text(_p(ctx, "profile_editor_check.h"), "profile_check_commands_run(args, io, code, review, sourceRevision)",
                  "editor previews use the tested CLI mapping and feasibility engine")
+    require_text(_p(ctx, "linux_tui_source_check.h"), "state->sourceReview->planned()",
+                 "the editor summarizes typed review results rather than parsing report text")
     require_text(_p(ctx, "linux_tui_document_view.h"), "lines.swap(wrapped);",
                  "long feasibility details wrap before scrolling and rendering")
     ctx.require_order_in_operation(actions, "void tui_begin_edit(", "tui_begin_source_edit(*state, field, index)",

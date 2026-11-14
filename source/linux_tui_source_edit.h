@@ -30,8 +30,9 @@ static inline bool tui_commit_source_edit(TuiState& state) {
         return false;
     }
     state.edit = {}; state.dirty = true; state.draftAttached = false; state.draftBinding = {};
+    state.document.revision = !state.document.revision || state.document.revision == ULLONG_MAX ? 0 : state.document.revision + 1;
     profile_editor_source_display(state.document.value, state.desired);
-    state.sourceCheckVisible = false; state.sourceCheckLines.clear();
+    state.sourceCheckVisible = false; state.sourceCheckLines.clear(); state.sourceReview.reset();
     std::snprintf(state.status, sizeof(state.status), "Source intent updated; Save preserves it; Check reviews the destination again");
     return true;
 }
