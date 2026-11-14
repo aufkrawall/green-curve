@@ -1,5 +1,34 @@
 # Config and Profiles
 
+## TUI review session lifetime (2026-11-14)
+
+Source anchors: `source/linux_tui_review_context.h`,
+`source/linux_tui_review_lifetime.h`, `source/linux_tui_source_check.h`,
+`source/linux_tui_refresh.cpp`, `source/service_control_review_revision.h`,
+`tests/tui_review_session_tests.cpp`, `tests/tui_review_lifetime_cases.h`.
+
+Check freezes the shown GPU into the passive request. The service refuses a
+different target without selecting or initializing it. The client compares
+the returned service instance, GPU generation and outgoing intent against
+the reviewed context before publishing capture. Passive responses do not
+carry an ordinary refreshed snapshot; the TUI does not adopt their empty
+telemetry as live state. The outgoing-intent hash is the existing service
+review policy extracted unchanged into a pure header.
+
+Cached previews expire on disconnect, source-revision mismatch, selection,
+service/GPU/topology lifetime, available mutation domains, recovery phase or
+outgoing-intent changes. Expiry clears only the report/result, preserves the
+canonical source and emits one diagnostic. Normal response revision and
+temperature changes do not discard a readable snapshot report. Physical
+controls still need a fresh all-domain review before any future Apply.
+
+Portable source drafts have no destination ownership and can remain open
+across GPU selection/adoption. Legacy attached drafts keep their existing
+switch guard; active daemon-owned settings still prevent a device switch.
+Cases 9275-9285 execute the actual TUI Check and refresh/selector helpers with
+scripted transport: exact target, passive payload, changed-session rejection,
+cache expiry, telemetry retention and source preservation across selection.
+
 ## Structured destination review (2026-11-14)
 
 Source anchors: `source/profile_destination_review.h`,

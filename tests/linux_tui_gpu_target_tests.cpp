@@ -184,6 +184,8 @@ bool linux_daemon_get_state_ex(const GpuAdapterInfo* target,
 
 namespace {
 
+#include "tui_review_lifetime_cases.h"
+
 int policy_tests() {
     const GpuAdapterInfo a = twin_at(6), b = twin_at(7);
     // 7400: a selection that names a GPU allows a write only while exactly
@@ -690,6 +692,7 @@ int recovery_tests() {
 }  // namespace
 
 int run_linux_tui_gpu_target_tests() {
+    if (int r = review_lifetime_tests()) return r;
     if (int r = policy_tests()) return r;
     if (int r = refresh_tests()) return r;
     if (int r = recovery_tests()) return r;

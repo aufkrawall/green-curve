@@ -11,8 +11,10 @@ static void tui_check_source(TuiState* state) {
         snprintf(state->status, sizeof(state->status), "Showing stored source intent"); return;
     }
     state->sourceReview.reset();
-    if (!state->serviceOnline || linux_tui_shown_gpu_write(&state->configuredGpu,
-            linux_tui_authoritative_gpu(&state->service)) != LINUX_TUI_SHOWN_GPU_WRITE_ALLOWED) {
+    const auto* shown = linux_tui_authoritative_gpu(&state->service);
+    state->sourceReviewContext = linux_tui_review_context(state->service);
+    if (!state->serviceOnline || !shown || !state->sourceReviewContext.serviceInstanceId ||
+        linux_tui_shown_gpu_write(&state->configuredGpu, shown) != LINUX_TUI_SHOWN_GPU_WRITE_ALLOWED) {
         snprintf(state->status, sizeof(state->status), "Destination check unavailable: the selected GPU must be shown by the daemon");
         return;
     }
@@ -22,9 +24,12 @@ static void tui_check_source(TuiState* state) {
             ServiceRequest request{}; auto response = std::make_unique<ServiceResponse>();
             request.magic = SERVICE_PROTOCOL_MAGIC; request.version = SERVICE_PROTOCOL_VERSION;
             request.command = SERVICE_CMD_CAPTURE_CURRENT; request.captureDomains = domains; request.callerPid = (gc_u32)getpid();
+            request.targetGpu = state->sourceReviewContext.gpu;
             if (!linux_daemon_send(&request, response.get(), error.message, sizeof(error.message))) return false;
             if (response->status != SERVICE_STATUS_OK || !response->capture.valid)
                 return profile_codec::fail(&error, 0, response->message[0] ? response->message : "capture is unavailable");
+            if (!linux_tui_review_capture_matches(state->sourceReviewContext, *response))
+                return profile_codec::fail(&error, 0, "GPU session or ownership changed during Check; Refresh and check again");
             out = response->capture; return true;
         }, state->sourceCheckLines, state->sourceReview.get(), state->document.revision);
     state->sourceCheckVisible = true; state->sourceScroll = 0;

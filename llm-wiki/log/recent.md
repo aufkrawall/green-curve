@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Destination-check session lifetime
+
+- TUI Check names the shown GPU and rejects changed service/GPU/ownership
+  evidence. Cached previews expire on lifetime changes while preserving the
+  source; ordinary telemetry keeps the report readable.
+- Portable source drafts survive GPU selection. Legacy draft and active-GPU
+  ownership guards remain in force. Cases 9275-9285 drive production Check,
+  refresh and selector helpers through scripted transport. See
+  [config-profiles.md](../config-profiles.md#tui-review-session-lifetime-2026-11-14).
+- Focused ASan/UBSan, full Windows regressions, native Linux UBSan and
+  all-target builds passed. Omitting the named target fails 9275; omitting
+  reconciliation fails 9280. The extracted hash body is unchanged after
+  newline normalization. Static analysis added no findings.
+
 ## 2026-11-14: Typed destination review results
 
 - CLI/editor checks share staged source, capture, mapping, runtime and planner

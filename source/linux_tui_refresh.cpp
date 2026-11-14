@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 // Included by linux_tui_actions.cpp; do not compile separately.
+#include "linux_tui_review_lifetime.h"
 
 static const GpuAdapterInfo* tui_shown_gpu(const TuiState* state) {
     return state->targetGpu.valid ? &state->targetGpu : nullptr;
@@ -14,7 +15,7 @@ static bool tui_refresh_from_daemon(TuiState* state, bool userRequested,
 static LinuxTuiGpuAdoption tui_gpu_adoption_step(const TuiState* state) {
     const LinuxConfiguredGpu* gpu = &state->configuredGpu;
     return linux_tui_gpu_adoption(gpu, tui_shown_gpu(state),
-        state->service.state.activeDesiredValid != 0, state->dirty,
+        state->service.state.activeDesiredValid != 0, state->dirty && !state->document.valid,
         linux_tui_switch_refusal_matches(&state->switchRefusal, &gpu->target,
                                          &state->service));
 }
@@ -198,7 +199,7 @@ bool tui_configured_gpu_allows_write(TuiState* state, const char* action) {
 // and lifts its write block once the daemon shows it; `--gpu` persists one.
 bool tui_select_gpu_step(TuiState* state, int delta) {
     if (!state) return false;
-    if (state->dirty) {
+    if (state->dirty && !state->document.valid) {
         snprintf(state->status, sizeof(state->status),
                  "Reset or save staged changes before switching GPUs");
         return false;
@@ -230,6 +231,8 @@ bool tui_select_gpu_step(TuiState* state, int delta) {
     // The choice advances even when the daemon must keep showing another GPU.
     // The shown-GPU write gate remains responsible for mutation authority.
     state->configuredGpu.target = chosen;
+    if (state->sourceReview && !linux_gpu_identity_matches(&state->sourceReviewContext.gpu, &chosen))
+        tui_expire_source_review(*state, "selected GPU changed");
     state->configuredGpu.status = LINUX_CONFIGURED_GPU_EXPLICIT;
     state->configuredGpu.role = linux_gpu_location_role_for_selection(
         &chosen, state->service.snapshot.adapters, count);
@@ -283,6 +286,7 @@ static bool tui_refresh_from_daemon(TuiState* state, bool userRequested,
             return false;
         }
         state->serviceOnline = false;
+        tui_expire_source_review(*state, "daemon disconnected");
         state->draftAttached = false;
         // A reconnect says again why writes are blocked.
         state->gpuAdoption = LINUX_TUI_GPU_ADOPTION_NONE;
@@ -408,6 +412,7 @@ static bool tui_refresh_from_daemon(TuiState* state, bool userRequested,
     }
     state->nextTelemetryMs = tui_monotonic_ms() + 1000;
     if (!requestedTarget) tui_adopt_configured_gpu(state, userRequested);
+    tui_reconcile_source_review(*state);
     return true;
 }
 

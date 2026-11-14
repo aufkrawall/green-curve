@@ -1552,6 +1552,12 @@ def check_canonical_tui_documents(ctx, require_text):
                  "editor previews use the tested CLI mapping and feasibility engine")
     require_text(_p(ctx, "linux_tui_source_check.h"), "state->sourceReview->planned()",
                  "the editor summarizes typed review results rather than parsing report text")
+    require_text(_p(ctx, "linux_tui_source_check.h"), "request.targetGpu = state->sourceReviewContext.gpu;",
+                 "source checks name the shown GPU without selecting or initializing another one")
+    require_text(_p(ctx, "linux_tui_source_check.h"), "linux_tui_review_capture_matches(state->sourceReviewContext, *response)",
+                 "Capture adoption checks the service and GPU lifetime")
+    require_text(_p(ctx, "linux_tui_refresh.cpp"), "tui_reconcile_source_review(*state);",
+                 "answered refreshes expire stale destination previews")
     require_text(_p(ctx, "linux_tui_document_view.h"), "lines.swap(wrapped);",
                  "long feasibility details wrap before scrolling and rendering")
     ctx.require_order_in_operation(actions, "void tui_begin_edit(", "tui_begin_source_edit(*state, field, index)",
