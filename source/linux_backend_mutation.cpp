@@ -6,6 +6,7 @@
 // F-APPLY-CEILING: the transition clock ceiling this transaction arms
 // before anything that can raise a clock.
 #include "linux_apply_ceiling.h"
+#include "linux_graphics_offset_control.h"
 
 // ===========================================================================
 // Apply / reset  (ports apply_desired_settings_service ordering)
@@ -63,11 +64,18 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
         return false;
     }
     memset(snapshot, 0, sizeof(*snapshot));
+    linux_capture_graphics_recovery_snapshot(g, snapshot);
     NvmlClockOffsetReadback gpuOffset =
         nvml_read_clock_offset(g, NVML_CLOCK_GRAPHICS);
     if (gpuOffset.offsetValid) {
         snapshot->gpuOffsetMHz = gpuOffset.offsetMHz;
         snapshot->gpuOffsetValid = true;
+    }
+    if (!snapshot->gpuOffsetValid && snapshot->graphicsPreimage.validMask) {
+        const bool p0 = (snapshot->graphicsPreimage.validMask & GRAPHICS_SCALAR_RECOVERY_P0) != 0;
+        snapshot->gpuOffsetValid = snapshot->gpuOffsetExact = true;
+        snapshot->gpuOffsetSurface = p0 ? CLOCK_OFFSET_SURFACE_P0 : CLOCK_OFFSET_SURFACE_GLOBAL;
+        snapshot->gpuOffsetMHz = p0 ? snapshot->graphicsPreimage.p0MHz : snapshot->graphicsPreimage.globalMHz;
     }
     NvmlClockOffsetReadback memOffset =
         nvml_read_clock_offset(g, NVML_CLOCK_MEM);
@@ -253,6 +261,12 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
     return snapshot->valid;
 }
 
+bool linux_backend_capture_apply_snapshot(LinuxGpuState* g, const DesiredSettings* d,
+    LinuxHardwareSnapshot* snapshot, char* err, size_t errSize) {
+    return linux_backend_capture_snapshot(g, snapshot, err, errSize) &&
+        linux_bind_graphics_snapshot(g, d, snapshot, err, errSize);
+}
+
 // Rollback: putting the captured hardware snapshot back, and deciding whether
 // the clock restriction protecting it may be lifted.
 #include "linux_backend_rollback.h"
@@ -304,7 +318,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             return linux_apply_reset_baseline(g, d);
         case LINUX_MUTATION_GPU_OFFSET:
             if (desired_named_graphics_surface(*d)) return linux_apply_named_graphics_offset(g, d,
-                context->scalarReview.beforeValid ? &context->scalarReview : nullptr);
+                &context->scalarReview);
             return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS,
                 context->composedGpuOffset ? 0 : d->gpuOffsetMHz);
         case LINUX_MUTATION_MEM_OFFSET: {
@@ -437,6 +451,14 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         return mutation;
     }
     ScalarCurveSubmissionReview scalarReview{};
+    const gc_u32 graphicsDomains = SERVICE_MUTATION_DOMAIN_GPU_OFFSET | SERVICE_MUTATION_DOMAIN_VF_CURVE |
+        SERVICE_MUTATION_DOMAIN_LOCK | SERVICE_MUTATION_DOMAIN_RESET_BASELINE;
+    if (!linux_graphics_apply_precheck(g, d, (service_desired_mutation_domains(d) & graphicsDomains) != 0,
+        preflight, sizeof(preflight))) {
+        LinuxMutationResult mutation{};
+        if (result) gc_strlcpy(result, resultSize, preflight);
+        return mutation;
+    }
     if (!linux_authoring_scalar_transition_precheck(g, d, snapshot, scalarReview, preflight, sizeof(preflight)) ||
         !linux_backend_preflight(g, d, &snapshot, preflight, sizeof(preflight), graphicsRouteOverride)) {
         LinuxMutationResult mutation = {};
@@ -576,6 +598,13 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     LinuxMutationResult mutation = linux_execute_transaction(
         requested, linux_apply_transaction_step, linux_apply_transaction_rollback, &context);
     scalar_curve_finalize_write_evidence(context.scalarReview, LINUX_MUTATION_GPU_OFFSET, mutation);
+    if (context.scalarReview.refusedWithoutWrite)
+        mutation.attemptedPhases &= ~LINUX_MUTATION_GPU_OFFSET;
+    if (mutation.success && committedIntent && (requested & (LINUX_MUTATION_GPU_OFFSET | LINUX_MUTATION_RESET_BASELINE))) {
+        const gc_u32 surface = desired_named_graphics_surface(*committedIntent);
+        g->graphicsRecovery.ownedSurface = surface;
+        g->graphicsRecovery.covered = graphics_scalar_recovery_bit(surface);
+    }
     char msg[512] = {};
     gc_snprintf(msg, sizeof(msg), "%s: %d phase(s), %d failed%s%s",
                 mutation.success ? "Applied" : "Apply failed",
@@ -609,6 +638,7 @@ static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
             return ok;
         }
         case LINUX_MUTATION_GPU_OFFSET:
+            if (g->graphicsRecovery.covered) return linux_reset_named_graphics(g);
             return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0);
         case LINUX_MUTATION_MEM_OFFSET:
             return nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0);
@@ -660,9 +690,19 @@ LinuxMutationResult linux_backend_reset(LinuxGpuState* g, char* result, size_t r
     LinuxHardwareSnapshot snapshot = {};
     char detail[256] = {};
     linux_backend_refresh(g);
+    if (g->graphicsRecovery.covered & ~g->graphicsRecovery.prepared) {
+        if (result) gc_strlcpy(result, resultSize, "Reset requires durable preparation for every named graphics control");
+        return mutation;
+    }
     if (!linux_backend_capture_snapshot(g, &snapshot, detail, sizeof(detail)) ||
         !g->writeIdentityResolved) {
         if (result) gc_strlcpy(result, resultSize, detail[0] ? detail : "Reset preflight failed");
+        return mutation;
+    }
+    if (!linux_graphics_recovery_snapshot_complete(g, &snapshot)) {
+        if (result) gc_strlcpy(result, resultSize, "Reset cannot read every named graphics recovery control");
+        lb_log("graphics-offset: Reset preimage incomplete covered=%u readable=%u\n",
+            g->graphicsRecovery.covered, snapshot.graphicsPreimage.validMask);
         return mutation;
     }
     if (!linux_reset_preflight_domains_supported(

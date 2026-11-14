@@ -7,6 +7,7 @@
 static void lb_log(const char*, ...) {}
 #include "linux_backend_clock_offsets.h"
 #include "linux_graphics_offset_control.h"
+#include "linux_graphics_recovery_policy.h"
 
 namespace {
 struct Driver {
@@ -66,6 +67,132 @@ static void initialize(Driver* d, LinuxGpuState* g) {
     g->nvml.setClockOffsets = set_p0; g->nvml.getClockOffsets = get_p0;
     g->nvml.setMemClkVfOffset = set_global; g->nvml.getMemClkVfOffset = get_global;
     g->nvml.setGpcClkVfOffset = set_global; g->nvml.getGpcClkVfOffset = get_global;
+    // These setter fixtures start after a successful synthetic journal store.
+    // The recovery cases below explicitly exercise denied and fresh permits.
+    g->graphicsRecovery.prepared = GRAPHICS_SCALAR_RECOVERY_ALL;
+}
+
+static int graphics_recovery_cases() {
+    Driver state{}; LinuxGpuState g{}; initialize(&state, &g);
+    DesiredSettings d{}; d.hasGpuOffset = 1;
+    d.authoring.graphicsPrecise = 1; d.authoring.graphicsSurface = DESIRED_GRAPHICS_GLOBAL;
+    ScalarCurveSubmissionReview review{};
+    {
+        GraphicsScalarOperation operation(g.graphicsRecovery);
+        int stores = 0;
+        if (graphics_scalar_operation_prepare(g.graphicsRecovery, GRAPHICS_SCALAR_RECOVERY_GLOBAL,
+                [&] { ++stores; return false; }) ||
+            linux_apply_named_graphics_offset(&g, &d, &review) || !review.refusedWithoutWrite ||
+            stores != 1 || state.globalWrites || g.graphicsRecovery.covered) return 9060;
+        if (!graphics_scalar_operation_prepare(g.graphicsRecovery, GRAPHICS_SCALAR_RECOVERY_GLOBAL,
+                [&] { ++stores; return !g.graphicsRecovery.prepared; }) ||
+            !linux_apply_named_graphics_offset(&g, &d, &review) || state.globalWrites ||
+            g.graphicsRecovery.covered != GRAPHICS_SCALAR_RECOVERY_GLOBAL ||
+            g.graphicsRecovery.ownedSurface != CLOCK_OFFSET_SURFACE_GLOBAL ||
+            g.graphicsRecovery.attempted || stores != 2) return 9061;
+    }
+    if (g.graphicsRecovery.prepared || g.graphicsRecovery.attempted ||
+        !g.graphicsRecovery.covered) return 9062;
+    initialize(&state, &g);
+    state.p0Value = 71; state.globalValue = -243;
+    g.graphicsRecovery.covered = GRAPHICS_SCALAR_RECOVERY_ALL;
+    g.graphicsRecovery.uncertain = GRAPHICS_SCALAR_RECOVERY_ALL;
+    LinuxHardwareSnapshot snapshot{};
+    if (!linux_capture_named_graphics(&g, &snapshot, g.graphicsRecovery.covered) ||
+        snapshot.graphicsPreimage.p0MHz != 71 || snapshot.graphicsPreimage.globalMHz != -243 ||
+        state.p0Writes || state.globalWrites) return 9063;
+    state.failP0Set = true;
+    if (linux_reset_named_graphics(&g) || state.p0Writes != 1 || state.globalWrites != 1 ||
+        g.graphicsRecovery.covered != GRAPHICS_SCALAR_RECOVERY_ALL ||
+        g.graphicsRecovery.uncertain != GRAPHICS_SCALAR_RECOVERY_P0 ||
+        g.graphicsRecovery.attempted != GRAPHICS_SCALAR_RECOVERY_ALL) return 9064;
+    state.failP0Set = false;
+    if (!graphics_scalar_restore(g.graphicsRecovery, snapshot.graphicsPreimage,
+            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(&g, NVML_CLOCK_GRAPHICS, value, surface); }) ||
+        state.p0Value != 71 || state.globalValue != -243 ||
+        g.graphicsRecovery.covered != GRAPHICS_SCALAR_RECOVERY_ALL ||
+        g.graphicsRecovery.uncertain != GRAPHICS_SCALAR_RECOVERY_ALL) return 9065;
+    if (!linux_reset_named_graphics(&g) || state.p0Value || state.globalValue ||
+        g.graphicsRecovery.covered || g.graphicsRecovery.uncertain) return 9066;
+    state.failP0Set = true;
+    if (graphics_scalar_restore(g.graphicsRecovery, snapshot.graphicsPreimage,
+            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(&g, NVML_CLOCK_GRAPHICS, value, surface); }) ||
+        g.graphicsRecovery.covered != GRAPHICS_SCALAR_RECOVERY_ALL ||
+        g.graphicsRecovery.uncertain != GRAPHICS_SCALAR_RECOVERY_ALL) return 9082;
+    initialize(&state, &g); state.p0Value = 13; state.globalValue = 99;
+    snapshot = {};
+    if (!linux_capture_named_graphics(&g, &snapshot, GRAPHICS_SCALAR_RECOVERY_P0)) return 9067;
+    state.failP0Set = true;
+    if (linux_write_named_graphics(&g, CLOCK_OFFSET_SURFACE_P0, 45) ||
+        g.graphicsRecovery.attempted != GRAPHICS_SCALAR_RECOVERY_P0 ||
+        g.graphicsRecovery.uncertain != GRAPHICS_SCALAR_RECOVERY_P0) return 9068;
+    state.failP0Set = false;
+    if (!graphics_scalar_restore(g.graphicsRecovery, snapshot.graphicsPreimage,
+            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(&g, NVML_CLOCK_GRAPHICS, value, surface); }) ||
+        state.p0Value != 13 || state.globalValue != 99 || state.globalWrites ||
+        g.graphicsRecovery.covered || g.graphicsRecovery.uncertain) return 9069;
+    g.graphicsRecovery.attempted = GRAPHICS_SCALAR_RECOVERY_GLOBAL;
+    const int writes = state.p0Writes;
+    if (graphics_scalar_restore(g.graphicsRecovery, snapshot.graphicsPreimage,
+            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(&g, NVML_CLOCK_GRAPHICS, value, surface); }) ||
+        state.p0Writes != writes || state.globalWrites) return 9070;
+    snapshot = {}; state.failGlobalRead = true;
+    const auto before = snapshot;
+    if (linux_capture_named_graphics(&g, &snapshot, GRAPHICS_SCALAR_RECOVERY_ALL) ||
+        memcmp(&before, &snapshot, sizeof(before))) return 9071;
+    initialize(&state, &g);
+    g.graphicsRecovery.prepared = 0;
+    if (linux_reset_named_graphics(&g) || state.p0Writes || state.globalWrites) return 9072;
+    GpuAdapterInfo gpu{}; gpu.valid = gpu.pciInfoValid = 1;
+    gpu.pciDomain = 2; gpu.pciBus = 3; gpu.pciDevice = 1;
+    g.adapters[0] = g.selectedGpu = gpu; g.adapterCount = 1;
+    g.writeIdentityResolved = true;
+    LinuxDaemonStateRecord record{};
+    linux_daemon_record_initialize(&record, LINUX_DAEMON_RECORD_PREPARED, &gpu, &d,
+        0, SERVICE_OPERATION_NONE, GPU_LOCATION_ROLE_REQUIRED, nullptr, GRAPHICS_SCALAR_RECOVERY_ALL);
+    if (!linux_daemon_record_valid(&record) ||
+        !linux_daemon_record_requires_recovery(record, false) || !linux_daemon_record_requires_recovery(record, true) ||
+        linux_graphics_adopt_pending_record(&g, &record, false) || g.graphicsRecovery.covered) return 9073;
+    g.adapters[0].pciBus = 4;
+    if (linux_graphics_adopt_pending_record(&g, &record, true) || g.graphicsRecovery.covered) return 9074;
+    g.adapters[0] = gpu;
+    if (!linux_graphics_adopt_pending_record(&g, &record, true) ||
+        g.graphicsRecovery.covered != GRAPHICS_SCALAR_RECOVERY_ALL ||
+        g.graphicsRecovery.uncertain != GRAPHICS_SCALAR_RECOVERY_ALL ||
+        g.graphicsRecovery.prepared || g.graphicsRecovery.ownedSurface) return 9075;
+    record.state = LINUX_DAEMON_RECORD_ACTIVE;
+    if (!linux_daemon_record_requires_recovery(record, false) || linux_daemon_record_requires_recovery(record, true)) return 9076;
+    record.targetUuid = linux_gpu_uuid_parse("GPU-11111111-2222-3333-4444-555555555555");
+    g.adapterUuids[0] = linux_gpu_uuid_parse("GPU-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    if (linux_graphics_adopt_pending_record(&g, &record, true)) return 9077;
+    record.graphicsControlSurfaces = 4; record.checksum = linux_daemon_record_checksum(&record);
+    if (linux_daemon_record_valid(&record)) return 9078;
+    initialize(&state, &g); state.failP0Read = true;
+    g.graphicsRecovery.covered = GRAPHICS_SCALAR_RECOVERY_P0;
+    g.graphicsRecovery.ownedSurface = CLOCK_OFFSET_SURFACE_P0;
+    snapshot = {};
+    linux_capture_graphics_recovery_snapshot(&g, &snapshot);
+    DesiredSettings power{}; power.hasPowerLimit = 1; power.powerLimitPct = 80; char why[160]{};
+    if (linux_graphics_recovery_snapshot_complete(&g, &snapshot) ||
+        snapshot.graphicsPreimage.covered != GRAPHICS_SCALAR_RECOVERY_P0 ||
+        snapshot.graphicsPreimage.validMask || !linux_graphics_apply_precheck(&g, &power, false, why, sizeof(why)) ||
+        linux_graphics_apply_precheck(&g, &power, true, why, sizeof(why)) ||
+        state.p0Writes || state.globalWrites) return 9083;
+    d.authoring.graphicsSurface = DESIRED_GRAPHICS_P0;
+    g.graphicsRecovery.prepared = 0;
+    if (linux_graphics_apply_precheck(&g, &d, true, why, sizeof(why)) || state.p0Writes || state.globalWrites) return 9084;
+    g.selectedGpu = gpu; g.adapterCount = 1;
+    g.adapterUuids[0] = linux_gpu_uuid_parse("GPU-11111111-2222-3333-4444-555555555555");
+    LinuxGpuState moved = g; moved.selectedGpu.pciBus++;
+    if (!linux_backend_recovery_binding_matches(&g, &moved)) return 9085;
+    moved.adapterUuids[0] = linux_gpu_uuid_parse("GPU-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    moved.selectedGpu = g.selectedGpu;
+    if (linux_backend_recovery_binding_matches(&g, &moved)) return 9086;
+    moved.adapterUuids[0] = {}; moved.selectedGpu.pciBus++;
+    if (linux_backend_recovery_binding_matches(&g, &moved)) return 9087;
+    moved.selectedGpu = g.selectedGpu;
+    if (!linux_backend_recovery_binding_matches(&g, &moved)) return 9088;
+    return 0;
 }
 
 static int graphics_control_cases() {
@@ -123,6 +250,7 @@ static int graphics_control_cases() {
 }
 
 int run_linux_clock_offset_tests() {
+    if (int failure = graphics_recovery_cases()) return failure;
     {
         Driver state{}; LinuxGpuState g{}; initialize(&state, &g);
         g.vfOffsetsHzValid = true;

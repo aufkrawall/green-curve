@@ -8,7 +8,7 @@ changed underneath them**:
 
 | File | Record | Current version | Frozen predecessor |
 |------|--------|-----------------|--------------------|
-| Linux `active.bin` | `LinuxDaemonStateRecord` (4808 B) | `LINUX_DAEMON_RECORD_VERSION = 10` | schema 6 (2472 B, v9), schema 5 (2440 B, v8), schema 4 (1280 B, v7), `LinuxDaemonStateRecordSchema3` (1184 B, versions 5-6), `LinuxDaemonStateRecordSchema2` (1176 B, version 4), `LinuxDaemonStateRecordSchema1` (1048 B, versions 2-3), `LinuxDaemonStateRecordSchema1V1` (1036 B, version 1) |
+| Linux `active.bin` | `LinuxDaemonStateRecord` (4816 B) | `LINUX_DAEMON_RECORD_VERSION = 11` | schema 7 (4808 B, v10), schema 6 (2472 B, v9), schema 5 (2440 B, v8), schema 4 (1280 B, v7), `LinuxDaemonStateRecordSchema3` (1184 B, versions 5-6), `LinuxDaemonStateRecordSchema2` (1176 B, version 4), `LinuxDaemonStateRecordSchema1` (1048 B, versions 2-3), `LinuxDaemonStateRecordSchema1V1` (1036 B, version 1) |
 | Linux `startup.bin` | `LinuxDaemonStartupRecord` (4864 B) | `LINUX_DAEMON_STARTUP_VERSION = 9` | schema 6 (2528 B, v8), schema 5 (2496 B, v7), schema 4 (1336 B, v6), `LinuxDaemonStartupRecordSchema3` (1240 B, versions 4-5), `LinuxDaemonStartupRecordSchema2` (1236 B, version 3), `LinuxDaemonStartupRecordSchema1` (1108 B, versions 1-2) |
 | Windows restart snapshot | `ServiceRestartReapplySnapshot` (4688 B) | `SERVICE_ACTIVE_DESIRED_VERSION = 9u` | schema 4 (2352 B, v8), schema 3 (2320 B, v7), schema 2 (1160 B, v6), `ServiceRestartReapplySnapshotSchema1` (1032 B, version 5) |
 
@@ -184,8 +184,49 @@ Fixtures execute the production named setter/reset with a fake durable store,
 verify zero setters on store failure, retain owned zero, restore two controls
 from coverage alone, test failed repair and frozen padding, and check target
 switch evidence retirement. Native GPU behavior remains unverified. Full
-cross-surface Apply cleanup and Linux durable named-control recovery remain
-separate replay-activation requirements.
+cross-surface Apply cleanup and reviewed transition protection remain separate
+replay-activation requirements. Linux durability is described below.
+
+## Linux graphics-control recovery (2026-11-14)
+
+Source anchors: `source/linux_daemon_graphics_recovery_schema.h`,
+`source/linux_graphics_recovery_policy.h`, `source/linux_graphics_offset_control.h`,
+`source/linux_backend_rollback.h`, `source/linux_daemon_record_recovery.h`,
+`tests/linux_clock_offset_tests.cpp`, `tests/desired_authoring_schema_cases.h`.
+
+- Active version 11 adds validated named-control coverage and a zero reserved
+  field. Version 10 remains frozen at 4808 bytes, including its old checksum
+  boundary; migration preserves authoring intent and grants no recovery
+  authority from padding. Its embedded authoring layout is explicitly frozen.
+- Explicit Apply, Reset and automatic restore publish operation-scoped write
+  permission only after PREPARED is durable. Owned zero retains its exact API.
+  Snapshot and rollback track both named preimages and actually attempted APIs;
+  failed rollback retains coverage even after a successful forward Reset.
+  Missing named readback blocks affected writes and Reset, while independent
+  power-only updates preserve that control without requiring its getter.
+- PREPARED/UNCERTAIN records require recovery regardless of startup policy.
+  Non-replayed ACTIVE named controls also remain pending; a blocked startup
+  replay cannot discard them. Explicit Reset adopts coverage only after the
+  stored location role and optional UUID resolve to the selected GPU.
+  Positive UUID identity still follows PCI movement during backend rebind;
+  without comparable UUIDs the existing exact PCI/model identity is required.
+- New named writes refuse unresolved recovery and control-surface handoffs.
+  Full authoring replay remains closed pending cross-surface transitions and
+  reviewed transition/pin evidence. Legacy unknown-GPU fallback remains enabled.
+- The native file fixture adapts root identity only for its own scratch tree;
+  production loader/store, permissions, links, fsync and atomic replacement
+  execute unchanged. It checks old-file migration without rewriting, current
+  coverage persistence and rejection without damaging the previous record.
+- Diagnostics use the stable graphics-offset prefix with surface, coverage,
+  attempt and verification fields. Cases 9060-9088 cover denied preparation,
+  owned zero, dual-control Reset, exact rollback, target binding and migration;
+  the transition fixture covers early protection refusal and no-write rollback.
+
+Last verified: 2026-11-14 against compiler-checked Windows/Linux layouts and
+the hardware-free fixtures. Native Linux files passed both the ordinary-user
+fixture and real root ownership path. ASan/UBSan, all-target compile checks and
+static analysis passed; disabling preparation fails case 9060. Physical GPU
+recovery remains unverified.
 
 ## The rule
 

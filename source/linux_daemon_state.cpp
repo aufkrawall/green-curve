@@ -165,6 +165,16 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
         storedVersion = record.version;
         storedRole = record.targetLocationRole;
     } else if (protectedRegular &&
+               st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema7)) {
+        LinuxDaemonStateRecordSchema7 legacy{};
+        count = gc_read_record(::read, fd, &legacy, sizeof(legacy));
+        if (count == (ssize_t)sizeof(legacy) && linux_daemon_state_record_widen_schema7(&record, &legacy)) {
+            count = (ssize_t)sizeof(record);
+            generation = LINUX_DAEMON_RECORD_GENERATION_SCHEMA7;
+            storedVersion = legacy.version; storedRole = legacy.targetLocationRole;
+            migratedFromLegacy = true;
+        }
+    } else if (protectedRegular &&
                st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema6)) {
         LinuxDaemonStateRecordSchema6 legacy = {};
         count = gc_read_record(::read, fd, &legacy, sizeof(legacy));
@@ -256,6 +266,7 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
     close(fd);
     if (protectedRegular && count < 0 &&
         (st.st_size == (off_t)sizeof(LinuxDaemonStateRecord) ||
+         st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema7) ||
          st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema6) ||
          st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema5) ||
          st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema4) ||
@@ -286,8 +297,9 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
         } else if (count != (ssize_t)sizeof(record)) {
             gc_snprintf(err, errSize,
                 "daemon state rejected: %lld bytes matches no known record "
-                "layout (current=%zu schema6=%zu schema5=%zu schema4=%zu schema3=%zu schema2=%zu schema1=%zu schema1v1=%zu)",
+                "layout (current=%zu schema7=%zu schema6=%zu schema5=%zu schema4=%zu schema3=%zu schema2=%zu schema1=%zu schema1v1=%zu)",
                 (long long)st.st_size, sizeof(LinuxDaemonStateRecord),
+                sizeof(LinuxDaemonStateRecordSchema7),
                 sizeof(LinuxDaemonStateRecordSchema6),
                 sizeof(LinuxDaemonStateRecordSchema5),
                 sizeof(LinuxDaemonStateRecordSchema4),
@@ -329,7 +341,8 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
             gc_snprintf(err, errSize,
                 "loaded %lld-byte %s daemon state v%u -> v%u; location role=%s; %s",
                 (long long)st.st_size,
-                generation == LINUX_DAEMON_RECORD_GENERATION_SCHEMA6 ? "pre-authoring"
+                generation == LINUX_DAEMON_RECORD_GENERATION_SCHEMA7 ? "pre-graphics-recovery"
+                    : generation == LINUX_DAEMON_RECORD_GENERATION_SCHEMA6 ? "pre-authoring"
                     : generation == LINUX_DAEMON_RECORD_GENERATION_SCHEMA5 ? "pre-precise-scalar"
                     : generation == LINUX_DAEMON_RECORD_GENERATION_SCHEMA4
                     ? "pre-captured-offset"

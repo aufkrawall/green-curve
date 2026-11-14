@@ -136,7 +136,7 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
         ctx.require_order_in_operation(
             linux_daemon_cpp, f"case SERVICE_CMD_{command}:",
             "daemon_fan_ownership_allows_selected_write(",
-            "linux_backend_capture_snapshot(",
+            "linux_backend_capture_apply_snapshot(" if command == "APPLY" else "linux_backend_capture_snapshot(",
             f"Linux {command} checks outstanding fan ownership before mutation")
     runtime = _p(ctx, "linux_auto_restore_runtime.h")
     ctx.require_order_in_operation(

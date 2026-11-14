@@ -134,10 +134,12 @@ LINUX_FIXTURES = (
     ("linux_transport_regression", "socket transport"),
     ("linux_crash_report_regression", "crash report"),
     ("linux_gpu_selection_store_regression", "GPU selection store"),
+    ("linux_daemon_state_regression", "daemon recovery state"),
 )
 LINUX_FIXTURE_EXTRA_SOURCES = {
     "linux_transport_regression": ("fan_curve.cpp", "config_text_utils.cpp"),
     "linux_crash_report_regression": (),
+    "linux_daemon_state_regression": ("fan_curve.cpp", "config_text_utils.cpp"),
     # The [gpu] record I/O, the INI reader/writer it uses, and the shared
     # text/fan-curve helpers gpu_core.h's IPC validators reach.
     "linux_gpu_selection_store_regression": (

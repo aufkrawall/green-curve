@@ -586,6 +586,14 @@ bool linux_backend_select_target(LinuxGpuState* g,
     // only repeat the same resolution.
     int current = linux_resolve_stored_gpu_target(target,
         role, g->adapters, g->adapterCount, nullptr);
+    if (g->graphicsRecovery.covered) {
+        const auto recoveryTarget = linux_gpu_restore_selection(target, role, g->adapters, g->adapterCount,
+            uuid, g->adapterUuids, nullptr);
+        if (recoveryTarget.index < 0 || (unsigned int)recoveryTarget.index != g->selectedAdapterIndex) {
+            gc_strlcpy(err, errSize, "Reset named graphics controls on their selected GPU before changing targets");
+            return false;
+        }
+    }
     if (g->writeIdentityResolved && current >= 0 &&
         (unsigned int)current == g->selectedAdapterIndex) {
         const LinuxGpuUuid observed = linux_gpu_read_uuid(g->getUuid, g->nvmlDevice);
@@ -610,6 +618,14 @@ bool linux_backend_select_target(LinuxGpuState* g,
             gc_strlcpy(err, errSize,
                 "selected GPU could not be resolved uniquely");
         return false;
+    }
+    if (g->graphicsRecovery.covered) {
+        if (!linux_backend_recovery_binding_matches(g, &replacement)) {
+            linux_backend_shutdown(&replacement);
+            gc_strlcpy(err, errSize, "Backend replacement cannot discard named graphics recovery");
+            return false;
+        }
+        replacement.graphicsRecovery = g->graphicsRecovery;
     }
     linux_backend_shutdown(g);
     if (uuidVerdict) *uuidVerdict = replacement.uuidVerdict;

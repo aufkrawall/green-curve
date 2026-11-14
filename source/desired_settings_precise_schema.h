@@ -143,4 +143,5 @@ static inline void desired_settings_narrow_schema4(DesiredSettingsSchema4* out,
     out->powerRatioNumerator = in->powerRatioNumerator;
     out->powerRatioDenominator = in->powerRatioDenominator;
 }
+#include "desired_settings_authoring_schema.h"
 #endif

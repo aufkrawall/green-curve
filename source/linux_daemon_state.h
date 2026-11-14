@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "gpu_core.h"
+#include "graphics_scalar_recovery.h"
 #include "gpu_selection_policy.h"
 #include "linux_gpu_uuid.h"
 #include "linux_auto_restore_policy.h"
@@ -50,7 +51,8 @@ enum {
     // provenance, 0.26.0).  The layout GREW, which is why the version had to
     // move: see desired_settings_schema.h for why size, not version, now
     // selects the layout a loader decodes with.
-    LINUX_DAEMON_RECORD_VERSION = 10,
+    LINUX_DAEMON_RECORD_VERSION = 11,
+    LINUX_DAEMON_RECORD_PRE_GRAPHICS_RECOVERY_VERSION = 10,
     LINUX_DAEMON_RECORD_PRE_AUTHORING_VERSION = 9,
     LINUX_DAEMON_RECORD_PRE_PRECISE_SCALAR_VERSION = 8,
     LINUX_DAEMON_RECORD_PRE_CAPTURED_OFFSET_VERSION = 7,
@@ -79,13 +81,15 @@ struct LinuxDaemonStateRecord {
     gc_u32 operationState;
     gc_u32 targetLocationRole; // GpuLocationRole, part of write authority
     LinuxGpuUuid targetUuid; // optional physical-device identity
+    gc_u32 graphicsControlSurfaces;
+    gc_u32 recoveryReserved;
     gc_u32 checksum;
 };
 
 // The live record's size is part of the upgrade contract, because the loader
 // admits a file by comparing st_size against it.  GpuAdapterInfo is embedded
 // here too, so this assert covers a change to either struct.
-static_assert(sizeof(LinuxDaemonStateRecord) == 4808,
+static_assert(sizeof(LinuxDaemonStateRecord) == 4816,
               "LinuxDaemonStateRecord changed size: freeze the outgoing layout "
               "as LinuxDaemonStateRecordSchema<N>, teach the loader its size, "
               "and bump LINUX_DAEMON_RECORD_VERSION "
@@ -195,7 +199,8 @@ static inline void linux_daemon_record_initialize(LinuxDaemonStateRecord* record
                                                   gc_u64 operationId = 0,
                                                   gc_u32 operationState = SERVICE_OPERATION_NONE,
                                                   GpuLocationRole role = GPU_LOCATION_ROLE_REQUIRED,
-                                                  const LinuxGpuUuid* uuid = nullptr) {
+                                                  const LinuxGpuUuid* uuid = nullptr,
+                                                  gc_u32 graphicsControlSurfaces = 0) {
     if (!record) return;
     memset(record, 0, sizeof(*record));
     record->magic = LINUX_DAEMON_RECORD_MAGIC;
@@ -208,6 +213,7 @@ static inline void linux_daemon_record_initialize(LinuxDaemonStateRecord* record
     record->operationState = operationState;
     record->targetLocationRole = (gc_u32)role;
     record->targetUuid = linux_gpu_uuid_retain(uuid, nullptr);
+    record->graphicsControlSurfaces = graphicsControlSurfaces;
     record->checksum = linux_daemon_record_checksum(record);
 }
 
@@ -220,7 +226,7 @@ static inline LinuxDaemonStateRecord linux_daemon_record_as_uncertain(
         linux_daemon_record_initialize(&record, LINUX_DAEMON_RECORD_UNCERTAIN,
             &previous->targetGpu, &previous->desired, previous->operationId,
             previous->operationState, (GpuLocationRole)previous->targetLocationRole,
-            &previous->targetUuid);
+            &previous->targetUuid, previous->graphicsControlSurfaces);
     return record;
 }
 
@@ -239,6 +245,8 @@ static inline bool linux_daemon_record_valid_except_version(
            desired_authoring_valid(&record->desired) &&
            desired_application_scope_valid(record->desired.applicationScope) &&
            record->targetLocationRole <= GPU_LOCATION_ROLE_REQUIRED &&
+           graphics_scalar_recovery_mask_valid(record->graphicsControlSurfaces) && !record->recoveryReserved &&
+           (!record->graphicsControlSurfaces || record->targetGpu.valid == 1) &&
            record->checksum == linux_daemon_record_checksum(record);
 }
 
@@ -272,6 +280,7 @@ enum LinuxDaemonRecordGeneration : gc_u32 {
     LINUX_DAEMON_RECORD_GENERATION_SCHEMA4 = 6,
     LINUX_DAEMON_RECORD_GENERATION_SCHEMA5 = 7,
     LINUX_DAEMON_RECORD_GENERATION_SCHEMA6 = 8,
+    LINUX_DAEMON_RECORD_GENERATION_SCHEMA7 = 9,
     LINUX_DAEMON_RECORD_GENERATION_PRE_TRUSTED_ROLE = 4, // current layout, version 5
 };
 
@@ -582,6 +591,7 @@ static inline bool linux_daemon_startup_widen_schema1(
 #include "linux_daemon_captured_offset_schema.h"
 #include "linux_daemon_precise_scalar_schema.h"
 #include "linux_daemon_authoring_schema.h"
+#include "linux_daemon_graphics_recovery_schema.h"
 
 // Automatic-restore guard.  Stored beside active.bin with the same root-owned
 // checksummed atomic write, for the same reason: it decides whether an

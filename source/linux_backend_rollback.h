@@ -22,6 +22,10 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
         LINUX_MUTATION_GPU_OFFSET | LINUX_MUTATION_CURVE |
         LINUX_MUTATION_LOCK | LINUX_MUTATION_LOCK_CEILING;
     const bool noClockControl = linux_clock_control_proven_absent(g);
+    if (phaseMask & (LINUX_MUTATION_RESET_BASELINE | LINUX_MUTATION_GPU_OFFSET)) {
+        g->graphicsRecovery.covered |= g->graphicsRecovery.attempted;
+        g->graphicsRecovery.uncertain |= g->graphicsRecovery.attempted;
+    }
     if (phaseMask & clockPhases) {
         unsigned int bound = g_linuxOutgoingCeilingMHz;
         if (g_linuxCeilingPlan.ceilingMHz > 0 &&
@@ -54,7 +58,11 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
     }
     bool ok = true;
     bool baseline = (phaseMask & LINUX_MUTATION_RESET_BASELINE) != 0;
-    if ((baseline || (phaseMask & LINUX_MUTATION_GPU_OFFSET)) && snapshot->gpuOffsetValid) {
+    if ((baseline || (phaseMask & LINUX_MUTATION_GPU_OFFSET)) && g->graphicsRecovery.attempted) {
+        ok &= graphics_scalar_restore(g->graphicsRecovery, snapshot->graphicsPreimage,
+            [&](gc_u32 surface, int value) { return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, value, surface); });
+    } else if ((baseline || (phaseMask & LINUX_MUTATION_GPU_OFFSET)) &&
+        !snapshot->graphicsPreimage.validMask && snapshot->gpuOffsetValid) {
         if (snapshot->gpuOffsetExact && !snapshot->gpuOffsetSurface) {
             lb_log("graphics-offset: exact rollback surface is unavailable\n"); ok = false;
         } else ok &= nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, snapshot->gpuOffsetMHz,
@@ -160,6 +168,11 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
     }
     if (!ok) gc_strlcpy(err, errSize, "one or more GPU rollback phases failed");
     linux_backend_refresh(g);
+    if (ok && !g->graphicsRecovery.attempted) {
+        g->graphicsRecovery.covered = snapshot->graphicsPreimage.covered;
+        g->graphicsRecovery.uncertain = snapshot->graphicsPreimage.uncertain;
+        g->graphicsRecovery.ownedSurface = snapshot->graphicsPreimage.ownedSurface;
+    }
     return ok;
 }
 

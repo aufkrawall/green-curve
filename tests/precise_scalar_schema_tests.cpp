@@ -197,7 +197,7 @@ int run_precise_scalar_schema_tests() {
     old.checksum = linux_daemon_record_hash_bytes(&old, offsetof(LinuxDaemonStateRecordSchema6, checksum));
     LinuxDaemonStateRecord record{};
     if (!linux_daemon_state_record_widen_schema6(&record, &old) || !desired_settings_equal(&record.desired, &current) ||
-        sizeof(old) != 2472 || sizeof(record) != 4808) return 8641;
+        sizeof(old) != 2472 || sizeof(record) != 4816) return 8641;
     old.checksum ^= 1;
     if (linux_daemon_state_record_widen_schema6(&record, &old)) return 8642;
     LinuxDaemonStartupRecordSchema6 startup{};

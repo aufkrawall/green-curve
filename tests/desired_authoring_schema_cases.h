@@ -63,6 +63,24 @@ static int authoring_schema_cases() {
     if (!linux_daemon_record_valid(&record) || !desired_settings_equal(&d, &record.desired)) return 8670;
     record.desired.authoring.voltageUv[20]++;
     if (linux_daemon_record_valid(&record)) return 8671;
+    LinuxDaemonStateRecordSchema7 frozen{};
+    frozen.magic = LINUX_DAEMON_RECORD_MAGIC;
+    frozen.version = LINUX_DAEMON_RECORD_PRE_GRAPHICS_RECOVERY_VERSION;
+    frozen.size = sizeof(frozen); frozen.state = LINUX_DAEMON_RECORD_ACTIVE;
+    frozen.targetGpu = gpu; frozen.targetLocationRole = GPU_LOCATION_ROLE_REQUIRED;
+    desired_settings_narrow_schema5(&frozen.desired, &d);
+    frozen.checksum = linux_daemon_record_hash_bytes(&frozen, offsetof(LinuxDaemonStateRecordSchema7, checksum));
+    // Old tail padding cannot become recovery authority.
+    memset((unsigned char*)&frozen + offsetof(LinuxDaemonStateRecordSchema7, checksum) + sizeof(frozen.checksum),
+        0xff, sizeof(frozen) - offsetof(LinuxDaemonStateRecordSchema7, checksum) - sizeof(frozen.checksum));
+    if (!linux_daemon_state_record_widen_schema7(&record, &frozen) || !linux_daemon_record_valid(&record) ||
+        record.graphicsControlSurfaces || !desired_settings_equal(&record.desired, &d)) return 9079;
+    const auto unchangedRecord = record;
+    frozen.desired.authoring.pointFrequencyHz[20]++;
+    if (linux_daemon_state_record_widen_schema7(&record, &frozen) ||
+        memcmp(&unchangedRecord, &record, sizeof(record))) return 9080;
+    record.recoveryReserved = 1; record.checksum = linux_daemon_record_checksum(&record);
+    if (linux_daemon_record_valid(&record)) return 9081;
     LinuxDaemonStartupRecord startup{};
     linux_daemon_startup_initialize(&startup, SERVICE_STARTUP_POLICY_PROFILE, 2, "Exact", &gpu, &d);
     if (!linux_daemon_startup_valid(&startup) || !desired_settings_equal(&d, &startup.desired)) return 8672;

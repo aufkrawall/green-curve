@@ -55,6 +55,7 @@ struct Api {
  int (*getFanControlPolicy)(int,unsigned int,unsigned int*){};
 };
 struct LinuxGpuState {
+ GraphicsScalarRecoveryState graphicsRecovery{};
  unsigned int retainedTransitionCeilingMHz{};
  GpuFamily family{};
  Api nvml{}; int nvmlDevice{}; Point curve[VF_NUM_POINTS]{};
@@ -83,6 +84,7 @@ enum ServiceMutationDomain : gc_u32 {
     SERVICE_MUTATION_DOMAIN_VIDEO_CLK = 1u << 9,
 };
 struct LinuxHardwareSnapshot {
+    GraphicsScalarPreimage graphicsPreimage{};
     bool valid;
     gc_u32 availableMutationDomains;
     bool gpuOffsetValid;
@@ -149,6 +151,9 @@ static bool apply_curve_offsets_verified(LinuxGpuState*,const int*,const bool*,i
 }
 #include "linux_backend_rollback.h"
 static bool linux_apply_reset_baseline_vf_curve(LinuxGpuState*) {++curveOffsetWrites;return true;}
+static bool linux_write_named_graphics(LinuxGpuState* g, gc_u32 surface, int value) {
+ return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, value, surface);
+}
 #include "linux_apply_baseline.h"
 struct ProbeContext {LinuxGpuState* gpu; DesiredSettings* d; LinuxHardwareSnapshot* s;};
 static bool probeStep(void* raw,unsigned int phase){
@@ -919,6 +924,21 @@ static int run(){
    refuseArm=false;
    {ApplyClockCeilingGuard guarded(&split,false,true);guarded.arm();CHECK(!guarded.must_refuse_transition());guarded.adopt("fixture");}
    CHECK(cap==1000);cap=0;
+ }
+ {
+   LinuxGpuState pending{}; LinuxHardwareSnapshot before{}; before.valid=true;
+   pending.graphicsRecovery.attempted=GRAPHICS_SCALAR_RECOVERY_ALL;
+   char why[160]{}; const auto writesBefore=clockOffsetWrites;
+   CHECK(!linux_backend_restore_snapshot(&pending,&before,LINUX_MUTATION_GPU_OFFSET,why,sizeof(why)));
+   CHECK(pending.graphicsRecovery.covered==GRAPHICS_SCALAR_RECOVERY_ALL);
+   CHECK(pending.graphicsRecovery.uncertain==GRAPHICS_SCALAR_RECOVERY_ALL);
+   CHECK(clockOffsetWrites==writesBefore);
+   pending.graphicsRecovery={};
+   pending.graphicsRecovery.covered=GRAPHICS_SCALAR_RECOVERY_GLOBAL;
+   pending.graphicsRecovery.ownedSurface=CLOCK_OFFSET_SURFACE_GLOBAL;
+   CHECK(linux_backend_restore_snapshot(&pending,&before,0,why,sizeof(why)));
+   CHECK(!pending.graphicsRecovery.covered&&!pending.graphicsRecovery.ownedSurface);
+   CHECK(clockOffsetWrites==writesBefore);
  }
  for(const auto range:{vf_offset_range_from_probe(true,0,500000),
                       vf_offset_range_from_probe(true,-400000,250000),

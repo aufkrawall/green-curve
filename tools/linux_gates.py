@@ -1131,7 +1131,7 @@ def check_mem_offset_migration(ctx, require_text, forbid_text, require_order):
                  "the widening path is where the halving happens, once")
     require_text(state_h, "LINUX_DAEMON_STARTUP_VERSION = 9",
                  "the startup record generation moved with the layout change")
-    require_text(state_h, "LINUX_DAEMON_RECORD_VERSION = 10",
+    require_text(state_h, "LINUX_DAEMON_RECORD_VERSION = 11",
                  "the committed record generation moved with the layout change")
     require_text(state_h, "LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION = 1",
                  "the pre-parity startup generation is still recognized")

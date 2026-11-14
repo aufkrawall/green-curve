@@ -656,7 +656,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                                "linux_bind_graphics_snapshot(g, d, &snapshot,", "linux_backend_preflight(g, d, &snapshot,",
                                "the named graphics rollback preimage is bound before transaction preflight")
     require_text(_p(ctx, "linux_apply_baseline.h"),
-                 "nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0, desired_named_graphics_surface(*d))",
+                 "namedSurface ? linux_write_named_graphics(g, namedSurface, 0)",
                  "baseline reset keeps the reviewed graphics scalar surface")
     require_text(_p(ctx, "linux_backend_rollback.h"),
                  "snapshot->gpuOffsetExact ? snapshot->gpuOffsetSurface : 0",
@@ -921,6 +921,19 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     handback_cpp = _p(ctx, "main_service_ownership_handback.cpp")
     apply_runtime_cpp = _p(ctx, "main_service_apply_runtime.cpp")
     named_graphics_h = _p(ctx, "gpu_backend_graphics_offset.h")
+    require_order_in_operation(
+        _p(ctx, "linux_graphics_offset_control.h"), "static inline bool linux_write_named_graphics(",
+        "!(state.prepared & bit)", "nvml_exact_clock_write(",
+        "Linux named graphics writes require durable preparation before a setter")
+    require_text(_p(ctx, "linux_daemon.cpp"), "graphics_scalar_operation_prepare(g_gpu.graphicsRecovery, record.graphicsControlSurfaces,",
+                 "the Linux journal publishes named write permission only after a durable store")
+    require_order_in_operation(
+        _p(ctx, "linux_auto_restore_runtime.h"), "static LinuxAutoRestoreOutcome daemon_automatic_restore_write(",
+        "!store_daemon_record(LINUX_DAEMON_RECORD_PREPARED", "linux_backend_apply(&g_gpu, &request,",
+        "automatic Linux replay prepares a durable recovery journal before hardware writes")
+    require_text(_p(ctx, "linux_daemon.cpp"),
+                 'daemon_enter_uncertain_state("saved named graphics controls were not restored")',
+                 "an aborted startup replay retains pending named-control recovery")
     require_order_in_operation(
         named_graphics_h, "static bool nvapi_write_named_gpu_offset(",
         "!nvapi_prepare_named_gpu_offset(surface)", "nvml_exact_clock_write(",

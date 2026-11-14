@@ -5,6 +5,23 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Durable Linux named graphics recovery
+
+- Active records freeze the previous authoring layout and add named-control
+  coverage. Every named write, including automatic replay, requires a durable
+  PREPARED record and a fresh operation permission.
+- Exact snapshots and rollback preserve both APIs, owned zero and attempted
+  controls. Failed rollback after Reset retains recovery coverage. Pending
+  records bind explicit Reset to their stored GPU even with startup replay off.
+- Cases 9060-9088 and the transition fixture cover preparation refusal, precise
+  recovery, no-write ownership rollback, target mismatch, migration and old
+  padding. Cross-surface replay activation remains pending. See
+  [persistence-schema.md](../persistence-schema.md#linux-graphics-control-recovery-2026-11-14).
+- Native Linux file tests passed with real root ownership and ordinary-user
+  identity adaptation. ASan/UBSan, all-target checks and static analysis passed;
+  removing preparation fails 9060. Positive UUID matches preserve recovery
+  across PCI movement; incompatible replacements refuse before transfer.
+
 ## 2026-11-14: Native Linux production profile-transfer verification
 
 - The verified production ELF passed the complete offline transfer fixture in

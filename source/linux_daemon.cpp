@@ -13,6 +13,7 @@
 #include "linux_backend.h"
 #include "linux_crash_breadcrumb.h"
 #include "linux_daemon_state.h"
+#include "linux_graphics_recovery_policy.h"
 #include "linux_debug_log.h"
 #include "linux_gpu_selection.h"
 // The SAME per-identity admission policy the Windows pipe transport runs.  It is
@@ -154,7 +155,12 @@ static bool store_daemon_record(LinuxDaemonRecordState state,
         ? linux_backend_selected_uuid(&g_gpu) : nullptr;
     const LinuxGpuUuid binding = linux_gpu_uuid_retain(observed, uuid);
     linux_daemon_record_initialize(&record, state, target, desired,
-        operationId, operationState, role, &binding);
+        operationId, operationState, role, &binding,
+        g_gpu.graphicsRecovery.covered | (state == LINUX_DAEMON_RECORD_PREPARED && desired
+            ? graphics_scalar_recovery_bit(desired_named_graphics_surface(*desired)) : 0u));
+    if (state == LINUX_DAEMON_RECORD_PREPARED)
+        return graphics_scalar_operation_prepare(g_gpu.graphicsRecovery, record.graphicsControlSurfaces,
+            [&] { return linux_daemon_state_store(GC_DAEMON_STATE_FILE, &record, err, errSize); });
     return linux_daemon_state_store(GC_DAEMON_STATE_FILE, &record, err, errSize);
 }
 
@@ -192,25 +198,7 @@ static bool restore_committed_record(bool wasUncertain, bool hadPrevious,
     return linux_daemon_state_remove(GC_DAEMON_STATE_FILE, err, sizeof(err));
 }
 
-// Capture before PREPARED replaces the durable record. An I/O failure does
-// not justify discarding evidence; abort the operation before a hardware write.
-static bool capture_uncertain_record(bool uncertain, LinuxDaemonStateRecord* record,
-                                     bool* captured, char* err, size_t errSize) {
-    *captured = false;
-    if (!uncertain) return true;
-    bool migrated = false;
-    const LinuxDaemonStateLoadResult result = linux_daemon_state_load(
-        GC_DAEMON_STATE_FILE, record, err, errSize, &migrated);
-    if (result == LINUX_DAEMON_STATE_IO_ERROR) {
-        dlog("daemon state: cannot preserve uncertain intent before mutation: %s\n",
-             err[0] ? err : "state read failed");
-        return false;
-    }
-    *captured = result == LINUX_DAEMON_STATE_LOADED;
-    dlog("daemon state: prior uncertain intent captured=%d load=%d\n",
-         *captured ? 1 : 0, (int)result);
-    return true;
-}
+#include "linux_daemon_record_recovery.h"
 
 // The fan ownership marker and once-per-crash startup handback.  Before the
 // unattended-write path below, which records ownership through it.
@@ -382,12 +370,13 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             }
             LinuxHardwareSnapshot before = {};
             char stateErr[256] = {};
+            GraphicsScalarOperation graphicsOperation(g_gpu.graphicsRecovery);
             LinuxDaemonStateRecord uncertainRecord = {};
             bool capturedUncertain = false;
             if (!capture_uncertain_record(wasUncertain, &uncertainRecord,
                                           &capturedUncertain, stateErr, sizeof(stateErr)) ||
                 !daemon_fan_ownership_allows_selected_write(stateErr, sizeof(stateErr)) ||
-                !linux_backend_capture_snapshot(&g_gpu, &before, stateErr, sizeof(stateErr)) ||
+                !linux_backend_capture_apply_snapshot(&g_gpu, &d, &before, stateErr, sizeof(stateErr)) ||
                 !daemon_fan_ownership_ensure_before_write(&committedDesired,
                                                           stateErr, sizeof(stateErr)) ||
                 !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu,
@@ -497,10 +486,11 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             LinuxHardwareSnapshot before = {};
             char stateErr[256] = {};
             DesiredSettings empty = {};
+            GraphicsScalarOperation graphicsOperation(g_gpu.graphicsRecovery);
             LinuxDaemonStateRecord uncertainRecord = {};
             bool capturedUncertain = false;
             if (!capture_uncertain_record(wasUncertain, &uncertainRecord,
-                                          &capturedUncertain, stateErr, sizeof(stateErr)) ||
+                                          &capturedUncertain, stateErr, sizeof(stateErr), true) ||
                 !daemon_fan_ownership_allows_selected_write(stateErr, sizeof(stateErr), true) ||
                 !linux_backend_capture_snapshot(&g_gpu, &before, stateErr, sizeof(stateErr)) ||
                 !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu,
@@ -697,6 +687,8 @@ int linux_daemon_run(const char* configPath) {
         g_stateUncertain = true;
         dlog("daemon: state load failed closed: %s\n", err);
     } else if (loadResult == LINUX_DAEMON_STATE_LOADED) {
+        if (linux_daemon_record_requires_recovery(saved, g_startupPolicy.mode == SERVICE_STARTUP_POLICY_RESTORE_LAST))
+            g_stateUncertain = true;
         if (saved.operationId != 0) {
             gc_u32 restoredState = saved.operationState;
             if (saved.state != LINUX_DAEMON_RECORD_ACTIVE ||
@@ -716,7 +708,10 @@ int linux_daemon_run(const char* configPath) {
                     ? "operation restored from committed daemon state"
                     : "operation outcome became uncertain across daemon restart");
         }
-        if (g_startupPolicy.mode != SERVICE_STARTUP_POLICY_RESTORE_LAST) {
+        if (saved.state != LINUX_DAEMON_RECORD_ACTIVE) {
+            g_stateUncertain = true;
+            dlog("daemon: startup state=%u is not ACTIVE; no automatic write\n", saved.state);
+        } else if (g_startupPolicy.mode != SERVICE_STARTUP_POLICY_RESTORE_LAST) {
             // The administrator asked for something other than "replay what was
             // applied last", so the committed record stays on disk untouched
             // and is simply not written to the GPU.  A later explicit Apply or
@@ -724,9 +719,10 @@ int linux_daemon_run(const char* configPath) {
             dlog("daemon: committed intent present but startup policy is %s; "
                  "not replaying it\n",
                  service_startup_policy_mode_name(g_startupPolicy.mode));
-        } else if (saved.state != LINUX_DAEMON_RECORD_ACTIVE) {
-            g_stateUncertain = true;
-            dlog("daemon: startup state=%u is not ACTIVE; no automatic write\n", saved.state);
+            if (saved.graphicsControlSurfaces) {
+                g_stateUncertain = true;
+                dlog("graphics-offset: saved named controls require explicit Reset before new ownership\n");
+            }
         } else {
             // One unattended-write path for all three automatic origins: it
             // owns the crash-loop guard, the GPU re-selection, and -- the part
@@ -737,7 +733,9 @@ int linux_daemon_run(const char* configPath) {
             LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(
                 LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST,
                 &saved.targetGpu, &saved.desired,
-                (GpuLocationRole)saved.targetLocationRole, &saved.targetUuid);
+                (GpuLocationRole)saved.targetLocationRole, &saved.targetUuid, saved.graphicsControlSurfaces);
+            if (!outcome.success && saved.graphicsControlSurfaces)
+                daemon_enter_uncertain_state("saved named graphics controls were not restored");
             if (!outcome.success)
                 dlog("daemon: startup reapply did not commit -> %s\n",
                      outcome.message[0] ? outcome.message : "unknown reason");

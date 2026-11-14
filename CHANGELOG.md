@@ -29,41 +29,41 @@
 
 ## Unreleased
 
-Curves are checked before Apply, low-voltage points become editable, and dialogs support copying.
+Curve checks, low-voltage editing, profile transfer and read-only capture improve tuning workflows.
 
 ### New
 
-- **Dialog text copying:** Ctrl+C copies confirmation, warning and error dialogs.
+- **Dialog text copying:** Ctrl+C copies confirmations, warnings and errors.
 - **Curve points below 700 mV:** writable points appear in the editor and graph.
-- **Prepare compatible curve:** Apply can offer to lower conflicting earlier points; review the draft before applying.
-- **CLI profile transfer:** import and export saved profiles offline; review replacements and assignments before confirming.
-- **Legacy profile transfer:** select Windows or Linux source formats and records; review ambiguous units while preserving exact memory offsets and point intent.
-- **CLI hardware capture:** read controls without resetting; review omissions, source ranges and exact or partial capture before saving.
-- **CLI profile checks:** inspect mapping, exact control ranges and curve constraints without applying settings; uncertainty stays explicit.
+- **Prepare compatible curve:** review a draft with conflicting earlier points lowered before Apply.
+- **CLI profile transfer:** transfer one or five saved profiles offline, with assignment and replacement review.
+- **Legacy profile transfer:** review Windows/Linux source formats, units and selected records while preserving exact tuning intent.
+- **CLI hardware capture:** read controls without resetting; review omissions, ranges and completeness before saving.
+- **CLI profile checks:** preview mapping, ranges, curve constraints and uncertainty without applying settings.
 
 ### Improved
 
-- **Curve checks before Apply:** proven conflicts are refused before tuning changes, with exact frequency, voltage and range details.
-- **Saving over another tool's curve:** Save identifies a curve that Green Curve does not own and the slot omits.
-- **Linux profile switching:** leftover curve points are cleared first; flatten and lock results are verified after Apply.
-- **Linux memory clocks:** curve-only changes preserve memory tuning; failed baseline preparation restores the prior curve.
-- **Profile matching:** exact offsets and power ratios stay matched despite changing previews.
+- **Curve checks before Apply:** proven conflicts refuse tuning changes and identify exact frequency, voltage or range.
+- **Saving over another tool's curve:** Save reports unowned curves omitted from a slot.
+- **Linux profile switching:** replaced points clear first; flatten and lock readback are verified.
+- **Linux memory clocks:** curve-only changes preserve memory; failed preparation restores prior curves.
+- **Profile matching:** exact offsets and power ratios remain matched as previews change.
 
 ### Fixed
 
-- **Unicode profile banks:** importing preserves existing Unicode text and encoding.
-- **Graphics recovery:** the Windows service remembers affected clock controls across restarts, including explicit zero offsets.
-- **Installer recovery:** leftover temporary files held by shared readers no longer block replacement or rollback.
-- **Fixed clock-floor points:** Apply refuses fixed floor edits and locks, even where displayed; Capture retains observations.
-- **Linux power limits:** out-of-range requests are refused before tuning changes.
-- **Partial profiles:** point replacement requires included curve controls; scalar captures retain omitted curves.
-- **Linux memory recovery:** fractional offsets stay exact; driver rounding or unavailable verification reports a mismatch.
-- **Clock offset readback:** missing driver ranges no longer hide valid Windows clock controls.
-- **Windows memory precision:** fractional tuning is verified through the control that was written; failed writes cannot switch controls.
-- **Memory changes:** preserve exact curve offsets on both platforms; unavailable preservation is reported before tuning changes.
-- **Precise curve recovery:** Linux restores fractional curve offsets exactly, and Reset checks the programmed value before treating a curve point as zero.
-- **VF curve flatten editing:** retyping the target frequency in a ticked flatten point's edit box preserves normal left-to-right typing order without caret resets.
-- **Flatten detection:** plateau detection selects the real starting point, including hidden low-voltage points.
+- **Unicode profile banks:** imports preserve existing text and encoding.
+- **Graphics recovery:** services retain affected clock controls across restarts, including explicit zero offsets.
+- **Installer recovery:** shared readers of leftover temporary files no longer block replacement or rollback.
+- **Fixed clock-floor points:** Apply refuses fixed-point edits and locks; Capture retains observations.
+- **Linux power limits:** out-of-range requests refuse before changes.
+- **Partial profiles:** point replacement requires included curves; scalar captures retain omitted curves.
+- **Linux memory recovery:** fractional offsets stay exact; rounding or unavailable verification reports mismatches.
+- **Clock offset readback:** missing ranges no longer hide readable Windows clock controls.
+- **Windows memory precision:** exact verification uses the written control; failures cannot switch controls.
+- **Memory changes:** preserve exact curves on both platforms or refuse before changes.
+- **Precise curve recovery:** Linux restores fractional offsets exactly; Reset verifies programmed zero offsets.
+- **VF curve flatten editing:** retyping a ticked flatten target preserves normal typing and caret position.
+- **Flatten detection:** selects the true plateau start, including hidden low-voltage points.
 
 ### Compatibility notes
 
@@ -71,7 +71,7 @@ Existing configuration and profiles remain compatible.
 
 ### Downloads and verification
 
-These changes are in development; no new public release has been published. Current downloads and verification information remain in the latest release section below.
+In development. Downloads and verification remain in the latest release section below.
 
 **Full changelog:** [0.31.0...HEAD](https://github.com/aufkrawall/green-curve/compare/0.31.0...HEAD)
 

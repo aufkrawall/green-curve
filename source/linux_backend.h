@@ -18,6 +18,7 @@
 #define GREEN_CURVE_LINUX_BACKEND_H
 
 #include "gpu_core.h"
+#include "graphics_scalar_recovery.h"
 #include "gpu_selection_policy.h"
 #include "gpu_capability_policy.h"
 #include "linux_architecture_policy.h"
@@ -31,6 +32,7 @@
 #include "platform.h"
 
 struct LinuxGpuState {
+    GraphicsScalarRecoveryState graphicsRecovery;
     // NvAPI
     PlLib nvapiLib;
     void* (*nvapiQi)(unsigned int);
@@ -157,11 +159,19 @@ static inline const LinuxGpuUuid* linux_backend_selected_uuid(const LinuxGpuStat
     return g && g->selectedAdapterIndex < g->adapterCount
         ? &g->adapterUuids[g->selectedAdapterIndex] : nullptr;
 }
+static inline bool linux_backend_recovery_binding_matches(const LinuxGpuState* before, const LinuxGpuState* after) {
+    const auto* oldUuid = linux_backend_selected_uuid(before);
+    const auto* newUuid = linux_backend_selected_uuid(after);
+    if (linux_gpu_uuid_valid(oldUuid) && linux_gpu_uuid_valid(newUuid))
+        return strcmp(oldUuid->text, newUuid->text) == 0;
+    return linux_gpu_identity_matches(&before->selectedGpu, &after->selectedGpu);
+}
 
 bool linux_backend_capture_current(const LinuxGpuState* gpu, gc_u64 generation, gc_u32 domains,
     const DesiredSettings* ownedFan, HardwareCaptureObservation* output, char* why, size_t size);
 
 struct LinuxHardwareSnapshot {
+    GraphicsScalarPreimage graphicsPreimage;
     bool valid;
     gc_u32 availableMutationDomains;
     bool gpuOffsetValid;
@@ -205,6 +215,8 @@ struct LinuxBackendRefreshResult {
     bool vfFresh;
     ServiceGpuHealth health;
 };
+bool linux_backend_capture_apply_snapshot(LinuxGpuState* g, const DesiredSettings* d,
+    LinuxHardwareSnapshot* snapshot, char* err, size_t errSize);
 
 // Load the driver libraries and initialise the selected GPU (ordinal `index`).
 // On success the curve, masks and ranges are read.  Returns false + message on

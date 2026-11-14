@@ -306,7 +306,7 @@ static bool auto_restore_prepare_backend(const GpuAdapterInfo* target,
 // becomes, and what the failure means.
 static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     LinuxAutoRestoreTrigger trigger, const GpuAdapterInfo* target,
-    const DesiredSettings* intent, GpuLocationRole role, const LinuxGpuUuid* uuid) {
+    const DesiredSettings* intent, GpuLocationRole role, const LinuxGpuUuid* uuid, gc_u32 graphicsCoverage = 0) {
     LinuxAutoRestoreOutcome outcome = {};
     if (!target || !intent) {
         gc_strlcpy(outcome.message, sizeof(outcome.message),
@@ -355,6 +355,17 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     if (role != GPU_LOCATION_ROLE_REQUIRED)
         role = linux_gpu_location_role_for_selection(&g_gpu.selectedGpu,
             g_gpu.adapters, g_gpu.adapterCount);
+    GraphicsScalarOperation graphicsOperation(g_gpu.graphicsRecovery);
+    if (graphicsCoverage) {
+        const gc_u32 ownedSurface = desired_named_graphics_surface(*intent);
+        if (graphicsCoverage & ~graphics_scalar_recovery_bit(ownedSurface)) {
+            daemon_enter_uncertain_state("automatic restore has unresolved named graphics controls");
+            gc_strlcpy(outcome.message, sizeof(outcome.message), "Named graphics recovery requires explicit Reset");
+            return outcome;
+        }
+        g_gpu.graphicsRecovery.covered |= graphicsCoverage;
+        g_gpu.graphicsRecovery.ownedSurface = ownedSurface;
+    }
     char postPrepareOwnershipErr[192] = {};
     const bool selectedFanTargetOwned =
         daemon_fan_ownership_allows_selected_write(
@@ -413,7 +424,7 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     }
     LinuxHardwareSnapshot before = {};
     char captureErr[256] = {};
-    if (!linux_backend_capture_snapshot(&g_gpu, &before, captureErr,
+    if (!linux_backend_capture_apply_snapshot(&g_gpu, &request, &before, captureErr,
                                         sizeof(captureErr))) {
         gc_snprintf(outcome.message, sizeof(outcome.message),
                     "could not capture hardware state before automatic "
@@ -426,10 +437,11 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
         return outcome;
     }
     char ownershipErr[256] = {};
-    if (!daemon_fan_ownership_ensure_before_write(&committed, ownershipErr,
-                                                  sizeof(ownershipErr))) {
+    if (!daemon_fan_ownership_ensure_before_write(&committed, ownershipErr, sizeof(ownershipErr)) ||
+        !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu, &committed,
+            ownershipErr, sizeof(ownershipErr), 0, SERVICE_OPERATION_NONE, role, &binding)) {
         gc_snprintf(outcome.message, sizeof(outcome.message),
-                    "fan ownership could not be recorded before automatic "
+                    "recovery ownership could not be recorded before automatic "
                     "restore: %s",
                     ownershipErr[0] ? ownershipErr : "unknown error");
         dlog("daemon auto-restore: %s aborted before any write: %s\n",

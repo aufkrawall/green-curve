@@ -81,8 +81,13 @@ def check_all(ctx, require_text, forbid_text):
 
     # Every record that embeds DesiredSettings pins its own size, so a change to
     # DesiredSettings *or* GpuAdapterInfo breaks the build at the record.
-    require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecord) == 4808",
+    require_text(daemon_state_h, "sizeof(LinuxDaemonStateRecord) == 4816",
                  "the live daemon state record pins its on-disk size")
+    require_text(_p(ctx, "linux_daemon_graphics_recovery_schema.h"),
+                 "sizeof(LinuxDaemonStateRecordSchema7) == 4808",
+                 "the pre-recovery active record remains byte-frozen")
+    require_text(daemon_state_cpp, "linux_daemon_state_record_widen_schema7(&record, &legacy)",
+                 "the real active-record loader widens its pre-recovery layout")
     require_text(daemon_state_h, "sizeof(LinuxDaemonStartupRecord) == 4864",
                  "the live startup-policy record pins its on-disk size")
     for kind, size in (("State", 2472), ("Startup", 2528)):
