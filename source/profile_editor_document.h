@@ -7,6 +7,7 @@
 
 struct ProfileEditorDocument {
     bool valid = false;
+    bool unsaved = false;
     gc_u64 revision = 1; // local draft revision, never serialized or authorization
     ProfileDocument value{}, saved{};
 };
@@ -16,6 +17,7 @@ struct ProfileEditorCandidate {
 };
 static inline bool profile_editor_document_dirty(const ProfileEditorDocument& source) {
     if (!source.valid) return false;
+    if (source.unsaved) return true;
     auto bank = std::make_unique<ProfileBank>(); bank->count = 1;
     std::string saved, current;
     bank->documents[0] = source.saved;

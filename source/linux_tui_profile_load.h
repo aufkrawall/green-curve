@@ -8,14 +8,15 @@
 // Freeze the loaded record before asking. Confirmation never rereads another
 // process's newer file generation, writes a slot or invokes the daemon.
 template<class Bind>
-static inline void tui_install_profile_load(TuiState& state, const ProfileEditorCandidate& loaded, int slot, Bind bind) {
+static inline void tui_install_profile_load(TuiState& state, const ProfileEditorCandidate& loaded, int slot, Bind bind, bool captured = false) {
     state.desired = loaded.settings; state.document = loaded.source; state.currentSlot = slot; state.edit = {};
     state.sourceCheckVisible = false; state.sourceCheckLines.clear(); state.sourceReview.reset();
     state.sourceGraphicsChoice = state.sourceMemoryChoice = 0;
     bind(state);
     if (state.document.valid) {
-        state.draftAttached = false; state.draftBinding = {}; state.sourceScroll = 0; state.tab = TUI_TAB_PROFILES;
-        snprintf(state.status, sizeof(state.status), "Loaded slot %d as portable source; destination review is required before Apply", slot);
+        state.dirty = true; state.draftAttached = false; state.draftBinding = {}; state.sourceScroll = 0; state.tab = TUI_TAB_PROFILES;
+        if (captured) snprintf(state.status, sizeof(state.status), "Captured source draft; Save stores it; destination review is required before Apply");
+        else snprintf(state.status, sizeof(state.status), "Loaded slot %d as portable source; destination review is required before Apply", slot);
     }
     else if (state.draftAttached)
         snprintf(state.status, sizeof(state.status), "Loaded slot %d into the staged editor", slot);
@@ -28,7 +29,7 @@ static inline void tui_install_profile_load(TuiState& state, const ProfileEditor
     }
     else
         snprintf(state.status, sizeof(state.status), "Loaded slot %d locally; daemon is offline, so Apply remains detached", slot);
-    linux_debug_logf("profile-draft: loaded slot=%d attached=%d", slot, state.draftAttached ? 1 : 0);
+    linux_debug_logf("profile-draft: staged source=%s slot=%d attached=%d", captured ? "capture" : "load", slot, state.draftAttached ? 1 : 0);
 }
 template<class Read, class Bind>
 static inline void tui_request_profile_load(TuiState& state, Read read, Bind bind) {

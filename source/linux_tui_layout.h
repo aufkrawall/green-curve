@@ -104,6 +104,13 @@ enum ActionType {
     ACTION_CHECK_SOURCE,
     ACTION_SOURCE_GRAPHICS_CHOICE,
     ACTION_SOURCE_MEMORY_CHOICE,
+    ACTION_CAPTURE_SOURCE,
+    ACTION_CAPTURE_DOMAIN,
+    ACTION_CAPTURE_READ,
+    ACTION_CAPTURE_PARTIAL,
+    ACTION_CAPTURE_DISCARD,
+    ACTION_CAPTURE_ACCEPT,
+    ACTION_CAPTURE_CANCEL,
     ACTION_SAVE,
     ACTION_CLEAR_PROFILE,
     ACTION_RESET_DRAFT,
@@ -160,6 +167,13 @@ struct TuiPointValues {
     TuiPointRule rule;
 };
 
+struct TuiCaptureView {
+    bool active = false, hasObservation = false, allowPartial = false, discardConfirmed = false, needsDiscard = false;
+    gc_u32 domains = 31, omissions = 0;
+    int scroll = 0;
+    const std::vector<std::string>* report = nullptr;
+};
+
 struct TuiViewModel {
     const DesiredSettings* desired;
     const ServiceResponse* service;
@@ -176,6 +190,7 @@ struct TuiViewModel {
     int sourceScroll;
     const std::vector<std::string>* sourceCheckLines;
     gc_u32 sourceGraphicsChoice, sourceMemoryChoice;
+    TuiCaptureView capture;
     bool serviceOnline;
     bool draftAttached;
     bool editing;
@@ -219,6 +234,8 @@ struct TuiLayout {
     int vfVisibleRows;
     int sourceVisibleRows;
     int sourceLineCount;
+    bool captureVisible = false;
+    int captureVisibleRows = 0, captureLineCount = 0;
     // Rows the fan-point table can draw; zero when the fan tab is not laid out.
     // Used to stop wheel/page scrolling at the end of that list too.
     int fanVisibleRows;

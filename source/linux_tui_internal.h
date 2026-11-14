@@ -48,6 +48,10 @@ struct TuiState {
     std::vector<std::string> sourceCheckLines;
     std::unique_ptr<ProfileDestinationReview> sourceReview;
     LinuxTuiReviewContext sourceReviewContext;
+    TuiCaptureView capture;
+    bool capturePresented;
+    std::unique_ptr<HardwareCaptureObservation> captureObservation;
+    std::vector<std::string> captureLines;
     int currentSlot;
     TuiTab tab;
     int selectedPoint;

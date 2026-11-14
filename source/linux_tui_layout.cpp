@@ -576,4 +576,5 @@ void build_tui_layout(const TuiViewModel& vm, int width, int height,
         canvas.button({dialog.x + 3, dialog.y + 5, 28, 3}, "Discard and load", ACTION_PROFILE_LOAD_DISCARD);
         canvas.button({dialog.x + 34, dialog.y + 5, 26, 3}, "Keep draft", ACTION_PROFILE_LOAD_KEEP);
     }
+    if (vm.capture.active) tui_draw_capture_dialog(&canvas);
 }

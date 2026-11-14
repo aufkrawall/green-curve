@@ -3,6 +3,7 @@
 
 #include "linux_tui_internal.h"
 #include "linux_tui_source_edit.h"
+#include "linux_tui_capture_input.h"
 #include "linux_tui_profile_load.h"
 
 #include <errno.h>
@@ -113,6 +114,7 @@ void populate_view_model(const TuiState& state, TuiViewModel* vm,
     vm->sourceDocument = state.document.valid ? &state.document.value : nullptr; vm->sourceScroll = state.sourceScroll;
     vm->sourceCheckLines = state.sourceCheckVisible ? &state.sourceCheckLines : nullptr;
     vm->sourceGraphicsChoice = state.sourceGraphicsChoice; vm->sourceMemoryChoice = state.sourceMemoryChoice;
+    vm->capture = state.capture; vm->capture.report = &state.captureLines;
     vm->serviceOnline = state.serviceOnline;
     vm->draftAttached = state.draftAttached;
     vm->editing = state.edit.active;
@@ -364,6 +366,7 @@ void tui_render(TuiState* state) {
                  "Internal layout collision detected; controls disabled safely");
     }
     state->profileLoadPresented = state->profileLoadPending && !state->layout.tooSmall && state->layout.actions.size() == 2;
+    tui_capture_present_layout(*state);
     int actionCount = (int)state->layout.actions.size();
     if (actionCount == 0) state->focusIndex = -1;
     else if (state->focusIndex < 0) state->focusIndex = 0;
@@ -485,6 +488,11 @@ static int tui_action_index_at(const TuiState& state, int x, int y) {
 
 void tui_handle_event(TuiState* state, const TuiInputEvent& event) {
     if (!state || event.type == TUI_INPUT_NONE) return;
+    if (tui_capture_modal_event(*state, event,
+        [&](const ClickAction& action) { tui_apply_action(state, action); },
+        [&](int direction) { focus_linear(state, direction); },
+        [&] { activate_focused(state); },
+        [&](int x, int y) { return tui_action_index_at(*state, x, y); })) return;
     ActionType clicked = ACTION_NONE;
     if (state->profileLoadPending && event.type == TUI_INPUT_MOUSE && event.mousePress && event.mouseButton == 0) {
         const int hit = tui_action_index_at(*state, event.mouseX, event.mouseY);

@@ -1546,15 +1546,15 @@ def check_canonical_tui_documents(ctx, require_text):
     require_text(_p(ctx, "profile_slot_io_linux.h"), "profile_bank_commit_edit(edit,",
                  "source slot commits compare the reviewed generation before replacement")
     require_text(actions, "case ACTION_CHECK_SOURCE:", "the TUI exposes explicit source destination checking")
-    require_text(_p(ctx, "linux_tui_source_check.h"), "request.command = SERVICE_CMD_CAPTURE_CURRENT;",
+    require_text(_p(ctx, "linux_tui_capture_transport.h"), "request.command = SERVICE_CMD_CAPTURE_CURRENT;",
                  "destination Check uses the passive command")
     require_text(_p(ctx, "profile_editor_check.h"), "profile_check_commands_run(args, io, code, review, sourceRevision)",
                  "editor previews use the tested CLI mapping and feasibility engine")
     require_text(_p(ctx, "linux_tui_source_check.h"), "state->sourceReview->planned()",
                  "the editor summarizes typed review results rather than parsing report text")
-    require_text(_p(ctx, "linux_tui_source_check.h"), "request.targetGpu = state->sourceReviewContext.gpu;",
+    require_text(_p(ctx, "linux_tui_capture_transport.h"), "request.targetGpu = context.gpu;",
                  "source checks name the shown GPU without selecting or initializing another one")
-    require_text(_p(ctx, "linux_tui_source_check.h"), "linux_tui_review_capture_matches(state->sourceReviewContext, *response)",
+    require_text(_p(ctx, "linux_tui_capture_transport.h"), "linux_tui_review_capture_matches(context, *response)",
                  "Capture adoption checks the service and GPU lifetime")
     require_text(_p(ctx, "linux_tui_refresh.cpp"), "tui_reconcile_source_review(*state);",
                  "answered refreshes expire stale destination previews")
@@ -1570,6 +1570,12 @@ def check_canonical_tui_documents(ctx, require_text):
                  "typed memory replaces precise authority while keeping the named control")
     require_text(actions, "desired_power_edit_percent(&desired, clamp_power_limit_pct(value))",
                  "typed power replaces the previous rational authority")
+    require_text(actions, "case ACTION_CAPTURE_SOURCE: tui_capture_begin(*state);",
+                 "Capture enters an explicit source-draft workflow")
+    require_text(actions, "tui_capture_read(*state,", "Capture reads through the bounded passive adapter")
+    require_text(actions, "state->document.unsaved = false;", "successful source Save clears the unsaved-capture marker")
+    ctx.require_order_in_operation(_p(ctx, "linux_tui_render.cpp"), "void tui_handle_event(", "tui_capture_modal_event(*state, event,",
+                                   "tui_profile_load_event(", "capture modals isolate input before draft edits and file actions")
 
 
 def check_all(ctx, require_text, forbid_text):

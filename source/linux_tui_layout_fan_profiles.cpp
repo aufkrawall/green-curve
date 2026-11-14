@@ -218,6 +218,7 @@ void draw_profile_panel(TuiCanvas* c, const TuiRect& panel) {
     c->fill(x + 20, y, 12, 1, TUI_STYLE_FIELD);
     c->text(x + 20, y, 12, slot, TUI_STYLE_FIELD);
     c->button(TuiRect{x + 33, y, 4, 1}, ">", ACTION_SLOT_DELTA, 0, 1);
+    c->button({x + 40, y, 21, 1}, "CAPTURE...", ACTION_CAPTURE_SOURCE);
     c->button(TuiRect{x, y + 2, 11, 1}, "LOAD", ACTION_LOAD);
     c->button(TuiRect{x + 12, y + 2, 11, 1}, "SAVE", ACTION_SAVE);
     c->button(TuiRect{x + 24, y + 2, 11, 1}, "CLEAR", ACTION_CLEAR_PROFILE);
@@ -515,6 +516,52 @@ void tui_draw_profiles_tab(TuiCanvas* canvas, const TuiRect& content) {
                 TuiRect{2, content.y + profileHeight + toolsHeight,
                         content.width - 2, serviceHeight});
     }
+}
+
+void tui_draw_capture_dialog(TuiCanvas* canvas) {
+    auto* layout = canvas->layout(); const auto& view = canvas->view().capture;
+    layout->actions.clear(); layout->captureVisible = true;
+    const TuiRect panel{3, 2, layout->width - 6, layout->height - 4};
+    canvas->fill(panel.x, panel.y, panel.width, panel.height, TUI_STYLE_PANEL);
+    const bool report = view.report && !view.report->empty();
+    canvas->box(panel, report ? "REVIEW CAPTURED SETTINGS" : "CAPTURE CURRENT GPU");
+    const int x = panel.x + 2, y = panel.y + 2, width = panel.width - 4;
+    if (!report) {
+        canvas->text(x, y, width, "Choose settings to read from the shown GPU", TUI_STYLE_TEXT);
+        const char* domains[] = {"VF curve", "Graphics offset", "Memory offset", "Power", "Clock pin", "Fans", "XBAR", "System clock", "Video clock"};
+        for (int i = 0; i < 9; ++i) {
+            const bool selected = (view.domains & (1u << i)) != 0;
+            const std::string label = std::string(selected ? "[x] " : "[ ] ") + domains[i];
+            canvas->button({x + (i % 3) * 20, y + 2 + (i / 3) * 2, 19, 1}, label.c_str(), ACTION_CAPTURE_DOMAIN, i, 0, selected);
+        }
+        if (view.domains) canvas->button({x, y + 9, 21, 1}, "READ SNAPSHOT", ACTION_CAPTURE_READ);
+        canvas->button({panel.x + panel.width - 16, y + 9, 14, 1}, "CANCEL", ACTION_CAPTURE_CANCEL);
+        canvas->text(x, y + 12, width, "Read performs no resets or hardware writes.", TUI_STYLE_MUTED);
+        canvas->text(x, y + 13, width, "Esc keeps the current draft and edit text.", TUI_STYLE_MUTED);
+        return;
+    }
+    std::vector<TuiSourceLine> lines;
+    for (const auto& line : *view.report) lines.push_back({line});
+    tui_wrap_source_lines(lines, (size_t)std::max(8, width));
+    const int rows = std::max(1, panel.height - 9);
+    layout->captureVisibleRows = rows; layout->captureLineCount = (int)lines.size();
+    const int first = std::clamp(view.scroll, 0, std::max(0, (int)lines.size() - rows));
+    char meta[128]{};
+    std::snprintf(meta, sizeof(meta), "Snapshot rows %d-%d/%d | PgUp/PgDn scroll | draft unchanged", first + 1,
+        std::min((int)lines.size(), first + rows), (int)lines.size());
+    canvas->text(x, panel.y + 1, width, meta, TUI_STYLE_MUTED);
+    for (int row = 0; row < rows && first + row < (int)lines.size(); ++row)
+        canvas->text(x, panel.y + 3 + row, width, lines[first + row].text.c_str(), TUI_STYLE_TEXT);
+    const int choices = panel.y + panel.height - 5, buttons = panel.y + panel.height - 3;
+    if (view.omissions) canvas->button({x, choices, 29, 1}, view.allowPartial ? "[x] Allow omitted settings" : "[ ] Allow omitted settings",
+        ACTION_CAPTURE_PARTIAL, 0, 0, view.allowPartial);
+    if (view.needsDiscard) canvas->button({x + 32, choices, 29, 1}, view.discardConfirmed ? "[x] Discard unsaved draft" : "[ ] Discard unsaved draft",
+        ACTION_CAPTURE_DISCARD, 0, 0, view.discardConfirmed);
+    if (view.hasObservation && (!view.omissions || view.allowPartial) && (!view.needsDiscard || view.discardConfirmed))
+        canvas->button({x, buttons, 24, 1}, "USE EXACT CONTROLS", ACTION_CAPTURE_ACCEPT);
+    else canvas->text(x, buttons, 24, view.hasObservation ? "Review choices required" : "Capture unavailable", TUI_STYLE_MUTED);
+    canvas->button({x + 27, buttons, 16, 1}, "READ AGAIN", ACTION_CAPTURE_READ);
+    canvas->button({panel.x + panel.width - 16, buttons, 14, 1}, "CANCEL", ACTION_CAPTURE_CANCEL);
 }
 
 void tui_draw_advanced_tab(TuiCanvas* canvas, const TuiRect& content) {

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "profile_check_commands.h"
+#include "profile_editor_report.h"
 
 template<class Capture>
 struct ProfileEditorCheckIO {
@@ -18,19 +19,7 @@ struct ProfileEditorCheckIO {
         return readCurrent(domains, out, error);
     }
     void message(const std::string& text) {
-        size_t at = 0;
-        while (at < text.size()) {
-            if (lines.size() >= 192) {
-                if (!truncated) { lines.emplace_back("Additional destination details omitted"); truncated = true; }
-                return;
-            }
-            const size_t end = text.find('\n', at), length = (end == std::string::npos ? text.size() : end) - at;
-            std::string line = text.substr(at, length < 512 ? length : 512);
-            if (lines.empty() && line.compare(0, 11, "Profile 1: ") == 0) line = "Draft: " + line.substr(11);
-            lines.emplace_back(line);
-            if (end == std::string::npos) break;
-            at = end + 1;
-        }
+        profile_editor_report_append(lines, truncated, text, "Additional destination details omitted", true);
     }
 };
 // Reuse the CLI's mapping, exact-control and curve planner on an in-memory

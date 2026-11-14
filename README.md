@@ -259,6 +259,10 @@ Use Check in Profiles & Tools to inspect destination mapping and feasibility.
 The graphics and memory buttons change only this preview's control choices.
 Source drafts stay intact when choosing another GPU. Check names the shown
 GPU, and its cached result expires when the daemon/GPU session changes.
+Capture in Profiles & Tools lets you choose domains, read a snapshot, and
+review exact controls before replacing the draft. Omitted settings and
+discarding unsaved edits each require an explicit choice. Acceptance creates
+an unsaved source draft; Save stores it, and Apply remains separate.
 
 To import an older Green Curve INI, select `--legacy-format windows-ini` or
 `--legacy-format linux-ini`. Select source slots with `--source-profiles 2,4`

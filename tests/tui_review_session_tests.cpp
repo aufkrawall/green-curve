@@ -53,7 +53,7 @@ static int run() {
         tui_check_source(state.get());
         if (!state->sourceReview || state->sourceReview->stage != PROFILE_REVIEW_SOURCE ||
             state->sourceReview->capture.valid || !state->sourceCheckVisible ||
-            std::string(state->sourceReview->error.message).find("changed during Check") == std::string::npos) return 9277;
+            std::string(state->sourceReview->error.message).find("changed during the read") == std::string::npos) return 9277;
     }
     state->sourceCheckVisible = false; state->service.state.serviceInstanceId = 0;
     const int beforeUnavailable = calls;

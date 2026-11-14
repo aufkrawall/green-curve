@@ -49,15 +49,8 @@ static std::vector<TuiSourceLine> tui_document_source_lines(const ProfileDocumen
     }
     return lines;
 }
-static void tui_draw_document_source(TuiCanvas* canvas, const TuiRect& panel) {
-    const auto& vm = canvas->view();
-    auto lines = tui_document_source_lines(*vm.sourceDocument);
-    if (vm.sourceCheckLines) {
-        lines.clear();
-        for (const auto& line : *vm.sourceCheckLines) lines.push_back({line});
-    }
+static void tui_wrap_source_lines(std::vector<TuiSourceLine>& lines, size_t width) {
     std::vector<TuiSourceLine> wrapped;
-    const size_t width = (size_t)std::max(8, panel.width - 6);
     for (auto line : lines) {
         while (line.text.size() > width) {
             size_t split = line.text.rfind(' ', width);
@@ -71,6 +64,15 @@ static void tui_draw_document_source(TuiCanvas* canvas, const TuiRect& panel) {
         wrapped.push_back(line);
     }
     lines.swap(wrapped);
+}
+static void tui_draw_document_source(TuiCanvas* canvas, const TuiRect& panel) {
+    const auto& vm = canvas->view();
+    auto lines = tui_document_source_lines(*vm.sourceDocument);
+    if (vm.sourceCheckLines) {
+        lines.clear();
+        for (const auto& line : *vm.sourceCheckLines) lines.push_back({line});
+    }
+    tui_wrap_source_lines(lines, (size_t)std::max(8, panel.width - 6));
     const int rows = std::max(1, panel.height - 4);
     canvas->layout()->sourceVisibleRows = rows;
     canvas->layout()->sourceLineCount = (int)lines.size();

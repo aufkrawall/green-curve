@@ -39,7 +39,7 @@ Curve checks, profile transfer and capture improve tuning workflows.
 - **Profile transfer:** import/export up to five profiles offline, with assignment review.
 - **Legacy transfer:** preserve Windows/Linux units and tuning intent.
 - **TUI source profiles:** edit source points/offsets offline and preserve drafts across GPU switches.
-- **CLI hardware capture:** review P0/global clock controls, omissions and ranges without resetting.
+- **Hardware capture:** CLI/TUI snapshot review with explicit omissions and draft replacement, without resetting.
 - **Profile checks:** preview CLI/TUI mapping, ranges, controls and conversions; expire stale GPU reviews.
 
 ### Improved

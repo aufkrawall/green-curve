@@ -1,5 +1,36 @@
 # Config and Profiles
 
+## TUI capture into an unsaved source draft (2026-11-14)
+
+Source anchors: `source/linux_tui_capture_draft.h`,
+`source/linux_tui_capture_transport.h`, `source/profile_editor_capture.h`,
+`source/profile_editor_report.h`, `source/linux_tui_layout_fan_profiles.cpp`,
+`source/linux_tui_capture_input.h`, `source/linux_tui_render.cpp`,
+`tests/tui_capture_draft_tests.cpp`.
+
+Capture opens domain selection before any service request. Read freezes one
+target-bound passive observation using the same transport as destination
+Check. The shared CLI engine renders statuses, named controls and omissions
+through a bounded in-memory adapter; its virtual output never reaches a file.
+The modal wraps/scrolls its report, defaults focus to Cancel and cannot read
+or accept before its current layout has been presented. Other edits and file
+actions stay blocked while the modal is open.
+
+Use exact controls is an explicit representation decision. Omitted settings
+and replacing unsaved/invalid edits require independent opt-ins. Acceptance
+uses the frozen observation without a second hardware request, installs a
+canonical source draft, clears prior destination review and detaches Apply.
+A separate unsaved flag distinguishes new capture from a loaded saved record;
+successful Save updates the saved baseline and clears that flag. Cancel or
+failure preserves the previous source, slot and edit buffer.
+
+Exact source points, owned zero, memory API/Hz and rational power survive the
+factory. Read-only points retain observations without write authority. This
+workflow keeps exact controls; flatten/pin conversion and mapped Apply remain
+separate work. Cases 9295-9329 cover strict decisions, frozen acceptance,
+discard/cancel, empty reads, unsaved state, compact modal actions, keyboard/
+wheel isolation, Cancel focus and wrapping.
+
 ## Explicit scalar edits over precise intent (2026-11-14)
 
 Source anchors: `source/desired_scalar_editor.h`, `source/linux_tui_actions.cpp`,

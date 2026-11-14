@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "profile_editor_check.h"
-#include <unistd.h>
+#include "linux_tui_capture_transport.h"
 
 static void tui_check_source(TuiState* state) {
     if (!state->document.valid) return;
@@ -21,16 +21,7 @@ static void tui_check_source(TuiState* state) {
     state->sourceReview = std::make_unique<ProfileDestinationReview>();
     const int code = profile_editor_check(state->document.value, state->sourceGraphicsChoice, state->sourceMemoryChoice,
         [&](gc_u32 domains, HardwareCaptureObservation& out, ProfileCodecError& error) {
-            ServiceRequest request{}; auto response = std::make_unique<ServiceResponse>();
-            request.magic = SERVICE_PROTOCOL_MAGIC; request.version = SERVICE_PROTOCOL_VERSION;
-            request.command = SERVICE_CMD_CAPTURE_CURRENT; request.captureDomains = domains; request.callerPid = (gc_u32)getpid();
-            request.targetGpu = state->sourceReviewContext.gpu;
-            if (!linux_daemon_send(&request, response.get(), error.message, sizeof(error.message))) return false;
-            if (response->status != SERVICE_STATUS_OK || !response->capture.valid)
-                return profile_codec::fail(&error, 0, response->message[0] ? response->message : "capture is unavailable");
-            if (!linux_tui_review_capture_matches(state->sourceReviewContext, *response))
-                return profile_codec::fail(&error, 0, "GPU session or ownership changed during Check; Refresh and check again");
-            out = response->capture; return true;
+            return tui_read_capture(*state, domains, out, error, state->sourceReviewContext);
         }, state->sourceCheckLines, state->sourceReview.get(), state->document.revision);
     state->sourceCheckVisible = true; state->sourceScroll = 0;
     snprintf(state->status, sizeof(state->status), "Destination Check: %s; read-only; full operation review is required before Apply",

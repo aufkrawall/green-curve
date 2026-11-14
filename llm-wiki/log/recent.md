@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: TUI capture-to-draft workflow
+
+- Capture exposes domain selection and a bounded snapshot review through the
+  shared CLI engine. Explicit exact/partial/discard choices stage an unsaved
+  source without file writes, a second read or applied ownership.
+- Cases 9295-9329 cover modal visibility, keyboard/focus, strict omissions,
+  preserved precision, owned zero and responsive report layouts. See
+  [config-profiles.md](../config-profiles.md#tui-capture-into-an-unsaved-source-draft-2026-11-14).
+- Focused ASan/UBSan, full Windows regressions, native Linux UBSan and all-target
+  builds passed. Omitting unsaved state fails 9305; allowing an unseen read
+  fails 9301. Static analysis added no findings. Physical GPU writes were not
+  performed; flatten/pin conversion and mapped replay remain pending.
+
 ## 2026-11-14: TUI scalar edits replace precise intent
 
 - Explicit memory/power edits update precise authority as well as display

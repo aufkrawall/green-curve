@@ -354,6 +354,7 @@ void tui_answer_profile_load(TuiState* state, bool discard) {
 
 #include "linux_tui_refresh.cpp"
 #include "linux_tui_source_check.h"
+#include "linux_tui_capture_draft.h"
 
 void tui_begin_edit(TuiState* state, TuiField field, int index) {
     if (!state || field == TUI_FIELD_NONE) return;
@@ -429,6 +430,9 @@ void tui_handle_character(TuiState* state, char character) {
 
 void tui_apply_action(TuiState* state, const ClickAction& action) {
     if (!state) return;
+    const bool captureAction = action.type >= ACTION_CAPTURE_DOMAIN && action.type <= ACTION_CAPTURE_CANCEL;
+    if (state->capture.active && !captureAction) return;
+    if (!state->capture.active && captureAction) return;
     if (state->profileLoadPending) {
         if (action.type == ACTION_PROFILE_LOAD_DISCARD) tui_answer_profile_load(state, true);
         else if (action.type == ACTION_PROFILE_LOAD_KEEP) tui_answer_profile_load(state, false);
@@ -442,6 +446,26 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
         return;
     }
     switch (action.type) {
+        case ACTION_CAPTURE_SOURCE: tui_capture_begin(*state); break;
+        case ACTION_CAPTURE_CANCEL: tui_capture_cancel(*state); break;
+        case ACTION_CAPTURE_DOMAIN:
+            if (state->capturePresented && state->captureLines.empty() && action.index >= 0 && action.index < 9)
+                state->capture.domains ^= 1u << action.index;
+            break;
+        case ACTION_CAPTURE_PARTIAL:
+            if (state->capturePresented && state->capture.omissions) state->capture.allowPartial = !state->capture.allowPartial;
+            break;
+        case ACTION_CAPTURE_DISCARD:
+            if (state->capturePresented && state->capture.needsDiscard) state->capture.discardConfirmed = !state->capture.discardConfirmed;
+            break;
+        case ACTION_CAPTURE_READ:
+            tui_capture_read(*state, [&](gc_u32 domains, HardwareCaptureObservation& out, ProfileCodecError& error) {
+                return tui_read_capture(*state, domains, out, error, linux_tui_review_context(state->service));
+            });
+            break;
+        case ACTION_CAPTURE_ACCEPT:
+            (void)tui_capture_accept(*state, [](TuiState& draft) { bind_current_draft(&draft); tui_recompute_dirty(&draft); });
+            break;
         case ACTION_CHECK_SOURCE:
             tui_check_source(state);
             break;
@@ -553,6 +577,7 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
                     set_daemon_failure(state, "Source profile save failed", issue.message); break;
                 }
                 state->document.saved = state->document.value;
+                state->document.unsaved = false;
                 snprintf(state->status, sizeof(state->status), "Saved slot %d with all portable source intent; no GPU readings were substituted", state->currentSlot);
                 sync_startup_snapshot_after_profile_write(state, state->currentSlot, false);
                 break;
