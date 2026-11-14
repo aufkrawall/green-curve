@@ -1513,7 +1513,25 @@ def check_read_miss_is_not_a_disconnect(ctx, require_text, forbid_text):
                  "the status line says the shown values are the last live ones")
 
 
+def check_profile_draft_replacement(ctx, require_text):
+    actions = _p(ctx, "linux_tui_actions.cpp")
+    render = _p(ctx, "linux_tui_render.cpp")
+    helper = _p(ctx, "linux_tui_profile_load.h")
+    gui = _p(ctx, "config_profiles_gui_state.cpp")
+    require_text(actions, "tui_request_profile_load(*state,", "TUI Load uses the frozen candidate and dirty-draft guard")
+    ctx.require_order_in_operation(render, "void tui_handle_event(", "if (tui_profile_load_event(*state,",
+                                   "if (state->edit.active)", "modal replacement input precedes ordinary editing")
+    require_text(helper, "discard && !state.profileLoadPresented", "hidden pending loads cannot discard the draft")
+    require_text(render, "state->profileLoadPending && !state->layout.tooSmall && state->layout.actions.size() == 2",
+                 "confirmation becomes actionable only after the visible modal layout")
+    _require_in_operation(ctx, gui, "if (!capture_gui_config_settings(&current,", "return confirmUnreadable();",
+                          "invalid dirty GUI input still needs discard confirmation")
+    _require_in_operation(ctx, gui, "if (!load_profile_from_config(g_app.configPath, slot, &target,", "return confirmUnreadable();",
+                          "unavailable target comparison cannot discard dirty GUI values implicitly")
+
+
 def check_all(ctx, require_text, forbid_text):
+    check_profile_draft_replacement(ctx, require_text)
     check_visibility_neutral_projection(ctx, require_text, forbid_text)
     check_manual_refresh_preserves_presentation(ctx, require_text, forbid_text)
     check_manual_apply_origin(ctx, require_text)

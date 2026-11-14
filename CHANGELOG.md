@@ -29,7 +29,7 @@
 
 ## Unreleased
 
-Curve checks, low-voltage editing, profile transfer and read-only capture improve tuning workflows.
+Curve checks, profile transfer and capture improve tuning workflows.
 
 ### New
 
@@ -37,9 +37,9 @@ Curve checks, low-voltage editing, profile transfer and read-only capture improv
 - **Curve points below 700 mV:** writable points appear in the editor and graph.
 - **Prepare compatible curve:** review a draft with conflicting earlier points lowered before Apply.
 - **CLI profile transfer:** transfer one or five saved profiles offline, with assignment and replacement review.
-- **Legacy profile transfer:** review Windows/Linux source formats, units and selected records while preserving exact tuning intent.
-- **CLI hardware capture:** read P0 and global clock controls without resetting; review omissions and ranges before saving.
-- **CLI profile checks:** preview control choices, mapping, ranges, curve constraints and uncertainty without applying settings.
+- **Legacy profile transfer:** review Windows/Linux formats, units and selected profiles without losing tuning intent.
+- **CLI hardware capture:** review P0/global clock controls, omissions and ranges without resetting.
+- **CLI profile checks:** preview control choices, mapping, ranges, constraints and uncertainty without applying.
 
 ### Improved
 
@@ -52,6 +52,7 @@ Curve checks, low-voltage editing, profile transfer and read-only capture improv
 ### Fixed
 
 - **Unicode profile banks:** imports preserve existing text and encoding.
+- **Unsaved drafts:** profile loading asks before discarding edits, including invalid input.
 - **Graphics recovery:** retain exact clock controls across restarts; control switching protects handoffs and verifies both controls.
 - **Installer recovery:** shared readers of leftover temporary files no longer block replacement or rollback.
 - **Fixed clock-floor points:** Apply refuses fixed-point edits and locks; Capture retains observations.

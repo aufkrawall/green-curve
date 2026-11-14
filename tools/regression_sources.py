@@ -67,4 +67,5 @@ REGRESSION_SOURCES = (
     'clk_domain_dump_tests.cpp',
     'linux_clk_domain_dump_tests.cpp',
     'linux_tui_gpu_target_tests.cpp',
+    'tui_profile_load_tests.cpp',
 )

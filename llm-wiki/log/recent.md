@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Unsaved profile draft replacement
+
+- Linux Load freezes a candidate, renders explicit Keep/Discard confirmation
+  and blocks unrelated input until resolved. Cancellation preserves invalid
+  edit text and no confirmation can act before it is visible.
+- Windows asks before replacing dirty values when comparison fails rather
+  than treating missing comparison as permission to discard them. See
+  [config-profiles.md](../config-profiles.md#confirming-draft-replacement-2026-11-14).
+- Cases 9190-9205 exercise pending-load and layout behavior without a daemon.
+- Full native regressions, focused ASan/UBSan, native Linux UBSan and all-target
+  builds passed. Static analysis added no findings; omitting the dirty guard
+  fails 9190. Native Windows dialog interaction remains unverified.
+
 ## 2026-11-14: Windows named graphics handoff
 
 - Passive preflight and the actual release bind outgoing/incoming APIs, require

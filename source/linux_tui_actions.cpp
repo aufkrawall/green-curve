@@ -10,6 +10,7 @@
 #include "linux_auto_restore_policy.h"
 #include "auto_apply_failure_notice_policy.h"
 #include "profile_save_policy.h"
+#include "linux_tui_profile_load.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -330,6 +331,10 @@ void tui_recompute_dirty(TuiState* state) {
     state->dirty = !desired_settings_equal(
         &state->desired, &state->acceptedDesired);
 }
+void tui_answer_profile_load(TuiState* state, bool discard) {
+    if (state) tui_finish_profile_load(*state, discard,
+        [](TuiState& draft) { bind_current_draft(&draft); tui_recompute_dirty(&draft); });
+}
 
 #include "linux_tui_refresh.cpp"
 
@@ -400,6 +405,11 @@ void tui_handle_character(TuiState* state, char character) {
 
 void tui_apply_action(TuiState* state, const ClickAction& action) {
     if (!state) return;
+    if (state->profileLoadPending) {
+        if (action.type == ACTION_PROFILE_LOAD_DISCARD) tui_answer_profile_load(state, true);
+        else if (action.type == ACTION_PROFILE_LOAD_KEEP) tui_answer_profile_load(state, false);
+        return;
+    }
     switch (action.type) {
         case ACTION_QUIT:
             state->running = false;
@@ -481,33 +491,9 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
                      state->currentSlot);
             break;
         case ACTION_LOAD: {
-            DesiredSettings loaded = {};
-            char error[256] = {};
-            if (!load_profile_from_config_path(state->configPath,
-                    state->currentSlot, &loaded, error, sizeof(error))) {
-                set_daemon_failure(state, "Profile load failed", error);
-                break;
-            }
-            state->desired = loaded;
-            bind_current_draft(state);
-            tui_recompute_dirty(state);
-            if (state->draftAttached) {
-                snprintf(state->status, sizeof(state->status),
-                         "Loaded slot %d into the staged editor",
-                         state->currentSlot);
-            } else if (state->serviceOnline) {
-                gc_u32 requested = service_desired_mutation_domains(
-                    &state->desired);
-                gc_u32 missing = requested &
-                    ~state->service.snapshot.health.availableMutationDomains;
-                snprintf(state->status, sizeof(state->status),
-                    "Loaded slot %d, but its draft is detached (requested=0x%02x missing=0x%02x); unavailable/mixed Apply remains blocked",
-                    state->currentSlot, requested, missing);
-            } else {
-                snprintf(state->status, sizeof(state->status),
-                    "Loaded slot %d locally; daemon is offline, so Apply remains detached",
-                    state->currentSlot);
-            }
+            tui_request_profile_load(*state, [&](int slot, DesiredSettings& loaded, char* why, size_t size) {
+                return load_profile_from_config_path(state->configPath, slot, &loaded, why, size);
+            }, [](TuiState& draft) { bind_current_draft(&draft); tui_recompute_dirty(&draft); });
             break;
         }
         case ACTION_SAVE: {

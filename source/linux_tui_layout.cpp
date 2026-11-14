@@ -561,4 +561,15 @@ void build_tui_layout(const TuiViewModel& vm, int width, int height,
     else if (vm.tab == TUI_TAB_ADVANCED) tui_draw_advanced_tab(&canvas, content);
     else tui_draw_vf_tab(&canvas, content);
     draw_footer(&canvas);
+    if (vm.profileLoadPending) {
+        out->actions.clear();
+        const TuiRect dialog{(width - 64) / 2, (height - 9) / 2, 64, 9};
+        canvas.fill(dialog.x, dialog.y, dialog.width, dialog.height, TUI_STYLE_PANEL);
+        canvas.box(dialog, "Replace unsaved draft?");
+        char prompt[96]{}; snprintf(prompt, sizeof(prompt), "Load slot %d and discard unsaved edits?", vm.pendingProfileSlot);
+        canvas.text(dialog.x + 3, dialog.y + 2, 58, prompt, TUI_STYLE_TEXT);
+        canvas.text(dialog.x + 3, dialog.y + 3, 58, "Y: discard and load    N / Esc: keep draft", TUI_STYLE_MUTED);
+        canvas.button({dialog.x + 3, dialog.y + 5, 28, 3}, "Discard and load", ACTION_PROFILE_LOAD_DISCARD);
+        canvas.button({dialog.x + 34, dialog.y + 5, 26, 3}, "Keep draft", ACTION_PROFILE_LOAD_KEEP);
+    }
 }

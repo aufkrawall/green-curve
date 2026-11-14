@@ -1,5 +1,33 @@
 # Config and Profiles
 
+## Confirming draft replacement (2026-11-14)
+
+Source anchors: `source/linux_tui_profile_load.h`, `source/linux_tui_actions.cpp`,
+`source/linux_tui_render.cpp`, `source/linux_tui_layout.cpp`,
+`source/config_profiles_gui_state.cpp`, `tests/tui_profile_load_tests.cpp`.
+
+Linux Load freezes the selected record before presenting a dirty-draft
+confirmation. No later file read can replace the reviewed generation. Keep,
+Escape or N preserves draft values and uncommitted edit text; Discard and load
+stages the frozen record without daemon or hardware writes. Keyboard and mouse
+confirmation share the same gate, with Keep as the default. No discard is
+accepted until the dialog has been rendered; too-small terminals have no
+hidden actionable confirmation. Ordinary input cannot alter the pending draft
+or invoke other actions while this modal is open.
+
+Windows retains its existing comparison and Yes/No flow. If dirty input cannot
+be captured or the target cannot be compared, it asks before proceeding and
+defaults to keeping the draft. A failed actual load still leaves the draft
+unchanged. Cases 9190-9205 execute the Linux load helpers and layout without a
+daemon, including exact-value preservation, cancellation, frozen file
+generation, failed reads, uncommitted edits and terminal sizes. Windows' dialog
+branch uses the existing message-box implementation; native dialog interaction
+is a separate verification gap.
+
+Verified 2026-11-14: focused Windows ASan/UBSan, full native regressions,
+native Linux UBSan, all-target builds and source gates. Static analysis retained
+34 baseline findings and added none. Bypassing the dirty guard fails 9190.
+
 ## Config file
 
 - **Format:** Windows INI through strict UTF-8→UTF-16

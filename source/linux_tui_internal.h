@@ -34,6 +34,10 @@ struct TuiState {
     bool draftAttached;
     LinuxTuiDraftBinding draftBinding;
     bool dirty;
+    bool profileLoadPending;
+    bool profileLoadPresented;
+    int pendingProfileSlot;
+    DesiredSettings pendingProfile;
     int currentSlot;
     TuiTab tab;
     int selectedPoint;
@@ -136,6 +140,7 @@ void tui_recompute_dirty(TuiState* state);
 // where the answer can have changed.
 void tui_refresh_startup_snapshot(TuiState* state);
 void tui_apply_action(TuiState* state, const ClickAction& action);
+void tui_answer_profile_load(TuiState* state, bool discard);
 void tui_begin_edit(TuiState* state, TuiField field, int index);
 void tui_commit_edit(TuiState* state);
 void tui_cancel_edit(TuiState* state);

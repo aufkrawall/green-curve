@@ -95,6 +95,8 @@ enum ActionType {
     ACTION_FAN_ZERO_RPM_TOGGLE,
     ACTION_SLOT_DELTA,
     ACTION_LOAD,
+    ACTION_PROFILE_LOAD_DISCARD,
+    ACTION_PROFILE_LOAD_KEEP,
     ACTION_SAVE,
     ACTION_CLEAR_PROFILE,
     ACTION_RESET_DRAFT,
@@ -161,6 +163,8 @@ struct TuiViewModel {
     int fanScroll;
     int focusIndex;
     bool dirty;
+    bool profileLoadPending;
+    int pendingProfileSlot;
     bool serviceOnline;
     bool draftAttached;
     bool editing;

@@ -454,6 +454,14 @@ static bool maybe_confirm_profile_load_replace(int slot) {
     DesiredSettings current = {};
     DesiredSettings target = {};
     char err[256] = {};
+    const auto confirmUnreadable = [&]() {
+        if (!gui_state_dirty()) return true;
+        char message[256]{};
+        StringCchPrintfA(message, ARRAY_COUNT(message),
+            "Loading slot %d will replace unsaved edits. Keep the draft unless you want to discard those edits. Continue?", slot);
+        debug_log("profile-draft: comparison unavailable; discard confirmation slot=%d\n", slot);
+        return gc_message_box(g_app.hMainWnd, message, "Green Curve", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES;
+    };
     if (!gui_service_model_ready(&g_app.guiServiceModel)) {
         if (!gui_state_dirty()) return true;
         char reconnectMsg[256] = {};
@@ -465,15 +473,11 @@ static bool maybe_confirm_profile_load_replace(int slot) {
     }
     if (!capture_gui_config_settings(&current, err, sizeof(err))) {
         debug_log("profile load confirm: capture_gui_config_settings failed: %s\n", err);
-        // Cannot compare current GUI state to profile; skip confirmation and
-        // let the handler perform the actual load (which validates on its own).
-        return true;
+        return confirmUnreadable();
     }
     if (!load_profile_from_config(g_app.configPath, slot, &target, err, sizeof(err))) {
         debug_log("profile load confirm: load_profile_from_config failed: %s\n", err);
-        // Cannot read profile for comparison; skip confirmation and let the
-        // handler try the actual load (which reports its own errors).
-        return true;
+        return confirmUnreadable();
     }
 
     DesiredSettings targetFull = {};

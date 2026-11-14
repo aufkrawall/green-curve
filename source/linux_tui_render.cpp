@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "linux_tui_internal.h"
+#include "linux_tui_profile_load.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -107,6 +108,7 @@ void populate_view_model(const TuiState& state, TuiViewModel* vm,
     vm->fanScroll = state.fanScroll;
     vm->focusIndex = state.focusIndex;
     vm->dirty = state.dirty;
+    vm->profileLoadPending = state.profileLoadPending; vm->pendingProfileSlot = state.pendingProfileSlot;
     vm->serviceOnline = state.serviceOnline;
     vm->draftAttached = state.draftAttached;
     vm->editing = state.edit.active;
@@ -350,6 +352,7 @@ void tui_render(TuiState* state) {
         snprintf(state->status, sizeof(state->status),
                  "Internal layout collision detected; controls disabled safely");
     }
+    state->profileLoadPresented = state->profileLoadPending && !state->layout.tooSmall && state->layout.actions.size() == 2;
     int actionCount = (int)state->layout.actions.size();
     if (actionCount == 0) state->focusIndex = -1;
     else if (state->focusIndex < 0) state->focusIndex = 0;
@@ -471,6 +474,13 @@ static int tui_action_index_at(const TuiState& state, int x, int y) {
 
 void tui_handle_event(TuiState* state, const TuiInputEvent& event) {
     if (!state || event.type == TUI_INPUT_NONE) return;
+    ActionType clicked = ACTION_NONE;
+    if (state->profileLoadPending && event.type == TUI_INPUT_MOUSE && event.mousePress && event.mouseButton == 0) {
+        const int hit = tui_action_index_at(*state, event.mouseX, event.mouseY);
+        if (hit >= 0) clicked = state->layout.actions[hit].type;
+    }
+    if (tui_profile_load_event(*state, event, clicked,
+        [&](bool discard) { tui_answer_profile_load(state, discard); })) return;
     if (state->edit.active) {
         if (event.type == TUI_INPUT_ESCAPE) tui_cancel_edit(state);
         else if (event.type == TUI_INPUT_ENTER) tui_commit_edit(state);
