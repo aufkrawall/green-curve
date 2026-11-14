@@ -142,6 +142,10 @@ static bool confirm_unified_memory_write(const DesiredSettings* desired) {
 }
 
 static void apply_changes() {
+    if (g_app.guiSource.valid) {
+        set_profile_status_text("Review this source against the destination before Apply.");
+        return;
+    }
     if (!gui_service_model_ready(&g_app.guiServiceModel) ||
         !g_app.guiDraft.attached || g_app.guiDraft.detached) return;
     char gpuSelectionErr[256] = {};

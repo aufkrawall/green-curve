@@ -79,3 +79,9 @@ static inline bool profile_editor_source_set(ProfileDocument& d, ProfileEditorSo
     }
     return true;
 }
+template<class Editor> static inline bool profile_editor_document_type(Editor& source,
+    ProfileEditorSourceField field, int index, const char* text) {
+    if (!source.valid || !profile_editor_source_set(source.value, field, index, text)) return false;
+    source.revision = !source.revision || source.revision == ULLONG_MAX ? 0 : source.revision + 1;
+    return true;
+}

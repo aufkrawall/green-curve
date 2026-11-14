@@ -7,8 +7,9 @@
 #include "profile_file_read.h"
 #include "profile_capture_commands.h"
 #include "profile_check_commands.h"
+#include "profile_slot_io_windows.h"
 
-struct WindowsProfileCommands {
+struct WindowsProfileCommands : WindowsProfileSlotIO {
     bool capture(gc_u32 domains, HardwareCaptureObservation& output, ProfileCodecError& error) {
         ServiceRequest request{}; auto response = std::make_unique<ServiceResponse>();
         request.magic = SERVICE_PROTOCOL_MAGIC; request.version = SERVICE_PROTOCOL_VERSION;
@@ -30,29 +31,14 @@ struct WindowsProfileCommands {
             return profile_codec::fail(&error, 0, "profile file must have a distinct valid destination path");
         return true;
     }
-    bool read(const std::string& path, std::string& bytes, size_t maximum, bool missing, ProfileCodecError& error) {
-        return profile_file_read(path.c_str(), bytes, maximum, missing, error);
-    }
-    bool write(const std::string& path, const std::string& bytes, ProfileCodecError& error) {
-        return write_text_file_atomic(path.c_str(), bytes.data(), bytes.size(), error.message, sizeof(error.message));
-    }
     bool legacy(const std::string& input, int slot, ProfileDocument& document, bool& found, ProfileCodecError& error) {
         const bool ok = profile_legacy_native_slot_decode(input, PROFILE_LEGACY_WINDOWS_INI, slot, document, found, &error);
         debug_log("profile legacy export: platform=windows slot=%d decoded=%d found=%d\n", slot, ok ? 1 : 0, found ? 1 : 0);
         return ok;
     }
     bool commit(const std::string& path, const ProfileBankEdit& edit, ProfileCodecError& error) {
-        ConfigStorageLockGuard lock;
-        if (!lock.locked()) return profile_codec::fail(&error, 0, "could not acquire profile storage lock");
-        const bool ok = profile_bank_commit_edit(edit,
-            [&](std::string& bytes) { return read(path, bytes, profile_slot::MAX_CONFIG_BYTES, true, error); },
-            [&](const std::string& bytes) { return write(path, bytes, error); }, &error);
-        if (ok) {
-            (void)gc_WritePrivateProfileStringUtf8(nullptr, nullptr, nullptr, path.c_str());
-            invalidate_tray_profile_cache();
-        }
-        debug_log("profile import: committed=%d records=%d utf16=%d\n", ok ? 1 : 0, edit.count,
-            edit.replacement.compare(0, 2, "\xff\xfe") == 0 ? 1 : 0);
+        const bool ok = WindowsProfileSlotIO::commit(path, edit, error);
+        if (ok) invalidate_tray_profile_cache();
         return ok;
     }
     void message(const std::string& text) { gc_cli_console_write(text.c_str()); }

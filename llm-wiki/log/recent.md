@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-14: Windows source profile editing
+
+- Canonical personal slots open a separate source editor with shared precise
+  editing and atomic storage; offline legacy loads keep unresolved identities.
+  Source drafts remain independent of live selection, reconnect and Reset.
+- Cases 9330-9349 execute native hidden-window input, Save, DPI, scrolling,
+  read-only fields and discard lifetimes. Source Apply stays gated pending
+  destination acceptance. See [config-profiles.md](../config-profiles.md#windows-canonical-source-editor-2026-11-14).
+- Full Windows normal/sanitized regressions and all-target builds pass.
+  Bypassing unfinished-input validation fails case 9336. Static analysis reports
+  no new findings. Physical GPU writes were not performed.
+
 ## 2026-11-14: TUI capture-to-draft workflow
 
 - Capture exposes domain selection and a bounded snapshot review through the

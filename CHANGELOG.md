@@ -36,15 +36,15 @@ Curve checks, profile transfer and capture improve tuning workflows.
 - **Dialog text copying:** Ctrl+C copies confirmations, warnings and errors.
 - **Curve points below 700 mV:** writable points appear in the editor and graph.
 - **Prepare compatible curve:** review a draft with conflicting earlier points lowered before Apply.
-- **Profile transfer:** import/export up to five profiles offline, with assignment review.
+- **Profile transfer:** import/export five profiles offline, with assignment review.
 - **Legacy transfer:** preserve Windows/Linux units and tuning intent.
-- **TUI source profiles:** edit source points/offsets offline and preserve drafts across GPU switches.
-- **Hardware capture:** CLI/TUI snapshot review with explicit omissions and draft replacement, without resetting.
-- **Profile checks:** preview CLI/TUI mapping, ranges, controls and conversions; expire stale GPU reviews.
+- **Source profiles:** offline editing in Windows and the TUI survives GPU switches.
+- **Hardware capture:** CLI/TUI snapshot review identifies omissions without resetting.
+- **Profile checks:** CLI/TUI previews explain mapping, ranges and conversions; stale reviews expire.
 
 ### Improved
 
-- **Curve checks before Apply:** proven conflicts refuse tuning changes and identify exact frequency, voltage or range.
+- **Curve checks before Apply:** proven conflicts identify frequency, voltage or range.
 - **Saving over another tool's curve:** Save reports unowned curves omitted from a slot.
 - **Linux profile switching:** replaced points clear first; flatten and lock readback are verified.
 - **Linux memory clocks:** curve-only changes preserve memory; failed preparation restores prior curves.
@@ -52,8 +52,7 @@ Curve checks, profile transfer and capture improve tuning workflows.
 
 ### Fixed
 
-- **TUI numeric edits:** memory and power changes now replace retained precise values correctly.
-
+- **TUI numeric edits:** memory and power edits replace retained precise values.
 - **Unicode profile banks:** imports preserve existing text and encoding.
 - **Unsaved drafts:** profile loading asks before discarding edits, including invalid input.
 - **Graphics recovery:** retain exact controls across restarts and verify protected control handoffs.

@@ -74,4 +74,5 @@ REGRESSION_SOURCES = (
     'tui_review_session_tests.cpp',
     'scalar_editor_tests.cpp',
     'tui_capture_draft_tests.cpp',
+    'profile_source_window_tests.cpp',
 )

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "profile_document.h"
-#include "profile_editor_source_edit.h"
+#include "profile_editor_source_rows.h"
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -11,41 +11,10 @@
 struct TuiSourceLine { std::string text; TuiField field = TUI_FIELD_NONE; int index = 0; };
 static std::vector<TuiSourceLine> tui_document_source_lines(const ProfileDocument& d) {
     std::vector<TuiSourceLine> lines;
-    const auto addLine = [&](std::string text, TuiField field = TUI_FIELD_NONE, int index = 0) {
-        lines.push_back({std::move(text), field, index});
-    };
-    addLine(std::string("Name: ") + d.displayName);
-    const char* scopes[] = {"update included settings", "replace owned profile", "release owned settings"};
-    addLine(std::string("Scope: ") + scopes[d.applicationScope]);
-    addLine("Select a field to type MHz; destination review required before Apply");
-    if (d.graphicsOffset.present) addLine("Graphics offset: " + std::to_string(d.graphicsOffset.offsetHz) + " Hz",
-        profile_editor_source_editable(d, PROFILE_EDIT_GRAPHICS, 0) ? TUI_FIELD_SOURCE_GRAPHICS : TUI_FIELD_NONE);
-    if (d.hasMemoryOffset) addLine("Memory offset: " + std::to_string(d.memoryOffsetHz) + " physical Hz",
-        profile_editor_source_editable(d, PROFILE_EDIT_MEMORY, 0) ? TUI_FIELD_SOURCE_MEMORY : TUI_FIELD_NONE);
-    if (d.power.present) addLine("Power: " + std::to_string(d.power.ratio.numerator) + "/" +
-        std::to_string(d.power.ratio.denominator) + " of default");
-    if (d.lock.present) addLine(std::string(d.lock.mode == LOCK_MODE_HARD ? "Clock pin: " :
-        d.lock.mode == LOCK_MODE_FLATTEN ? "Flatten: " : "Lock release: ") +
-        std::to_string(d.lock.targetFrequencyHz) + " Hz");
-    if (d.fan.present) addLine(std::string("Fan intent: ") +
-        (d.fan.fanMode == FAN_MODE_CURVE ? "temperature curve" : d.fan.fanAuto ? "automatic" : "fixed duty"));
-    const auto add = [&](bool present, const char* label, long long value, const char* unit) {
-        if (present) addLine(std::string(label) + std::to_string(value) + unit);
-    };
-    add(d.hasXbarOffsetHz, "XBAR clock: ", d.xbarOffsetHz, " Hz");
-    add(d.hasXbarMsvddOffsetUv, "XBAR voltage: ", d.xbarMsvddOffsetUv, " uV");
-    add(d.hasSysClkOffsetHz, "System clock: ", d.sysClkOffsetHz, " Hz");
-    add(d.hasVideoClkOffsetHz, "Video clock: ", d.videoClkOffsetHz, " Hz");
-    for (int i = 0; i < d.topologyCount; ++i) {
-        const auto& p = d.points[i];
-        std::string line = d.topology[i].voltageUv > 0 ? std::to_string(d.topology[i].voltageUv) + " uV: " :
-            "Source index " + std::to_string(d.topology[i].sourceIndex) + " (voltage unresolved): ";
-        if (p.kind == PROFILE_POINT_ABSOLUTE_FREQUENCY) line += std::to_string(p.absoluteFrequencyHz) + " Hz absolute";
-        else if (p.kind == PROFILE_POINT_CAPTURED_OFFSET) line += std::to_string(p.capturedOffsetHz) + " Hz captured offset";
-        else if (p.kind == PROFILE_POINT_PROJECTION) line += "projected from graphics intent";
-        else line += "no point intent";
-        if (d.topology[i].sourceWritable == 2) line += " (source read-only)";
-        addLine(line, profile_editor_source_editable(d, PROFILE_EDIT_POINT, i) ? TUI_FIELD_SOURCE_POINT : TUI_FIELD_NONE, i);
+    for (const auto& row : profile_editor_source_rows(d)) {
+        const TuiField field = !row.editable ? TUI_FIELD_NONE : row.field == PROFILE_EDIT_GRAPHICS ? TUI_FIELD_SOURCE_GRAPHICS :
+            row.field == PROFILE_EDIT_MEMORY ? TUI_FIELD_SOURCE_MEMORY : TUI_FIELD_SOURCE_POINT;
+        lines.push_back({row.text, field, row.index});
     }
     return lines;
 }

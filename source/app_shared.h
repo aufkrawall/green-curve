@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "profile_editor_document.h"
 #include <windows.h>
 
 #include <commctrl.h>
@@ -63,6 +64,7 @@
 // VfBackendSpec, DesiredSettings + IPC validator, ServiceRequest/Response,
 // NvmlApi).  Shared verbatim with the Linux backend.
 #include "gpu_core.h"
+#include "profile_editor_document.h"
 #include "desired_settings_ui_policy.h"
 #include "gpu_capability_policy.h"
 #include "nvapi_module_policy.h"
@@ -762,6 +764,7 @@ struct AppData {
     // the window thread.
     GuiServiceModel guiServiceModel;
     GuiDraft guiDraft;
+    ProfileEditorDocument guiSource;
     bool backgroundServiceToggleInFlight;
     bool backgroundServiceToggleTargetEnabled;
     bool backgroundServicePendingRelaunch;

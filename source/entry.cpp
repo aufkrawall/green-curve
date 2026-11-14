@@ -872,6 +872,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     // Message loop
     MSG msg = {};
     while (GetMessageA(&msg, nullptr, 0, 0)) {
+        if (gui_profile_source_route_message(msg)) continue;
         TranslateMessage(&msg);
         DispatchMessageA(&msg);
     }

@@ -1675,7 +1675,7 @@ def run_regression_tests(extra_flags=None):
         if extra_flags:
             cmd.extend(extra_flags)
         if sys.platform == "win32":
-            cmd.extend(["-static", "-Wl,--stack,16777216", "-luser32", "-lgdi32", "-luuid", "-ladvapi32",
+            cmd.extend(["-static", "-Wl,--stack,16777216", "-luser32", "-lgdi32", "-lcomctl32", "-luuid", "-ladvapi32",
                         # bcrypt: real CNG update-verifier test.  ole32: the
                         # path-chain walker frees SHGetKnownFolderPath results.
                         "-lshell32", "-lbcrypt", "-lole32"])
@@ -2468,7 +2468,7 @@ def run_source_regression_checks():
     require_text(main_gpu_state_cpp, "current_green_curve_fan_intent_mode", "fan state has a Green Curve-owned intent helper")
     require_text(main_state_sync_cpp, "live fan policy reads manual while Green Curve intent is Auto", "service snapshots preserve Auto intent when external fan control is manual")
     require_text(main_state_sync_cpp, "state->fanMode is Green Curve intent", "control-state fan mode is not treated as live driver fan policy")
-    require_text(ui_main_window_cpp, "preserved visible GUI fan intent", "profile Save preserves the visible fan mode over live external policy")
+    require_text(os.path.join(SOURCE_DIR, "gui_profile_commands.cpp"), "preserved visible GUI fan intent", "profile Save preserves the visible fan mode over live external policy")
     require_text(main_fan_runtime_cpp, "live fan policy reads %s while Green Curve intent is Auto", "fan initialization logs external manual policy without adopting it")
     # GUI lock-checkbox rendering moved to tools/ui_gates.py
     # (check_lock_checkbox_render).  The remaining rules here cover the tri-state

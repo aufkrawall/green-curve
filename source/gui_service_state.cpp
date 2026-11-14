@@ -232,8 +232,9 @@ static void gui_set_editor_enabled(bool ready) {
     // phase-only render path deliberately forces it false.
     GuiServiceActionability actionable = gui_service_actionability_from_app();
     actionable.ready = ready;
-    bool allowDraft = gui_service_capability_enabled(
+    const bool allowLive = gui_service_capability_enabled(
         &actionable, GUI_SERVICE_CAP_EDITOR);
+    const bool allowDraft = allowLive && !g_app.guiSource.valid;
     for (int vi = 0; vi < g_app.numVisible; ++vi) {
         bool tailDisabled = g_app.lockedVi >= 0 && vi > g_app.lockedVi;
         if (g_app.hEditsMhz[vi])
@@ -247,11 +248,11 @@ static void gui_set_editor_enabled(bool ready) {
         g_app.hGpuOffsetEdit, g_app.hGpuOffsetExcludeLowEdit,
         g_app.hMemOffsetEdit, g_app.hPowerLimitEdit, g_app.hFanEdit,
         g_app.hFanModeCombo, g_app.hFanCurveBtn, g_app.hXbarAdvancedBtn,
-        g_app.hResetBtn,
     };
     for (HWND control : liveControls) {
         if (control) EnableWindow(control, allowDraft ? TRUE : FALSE);
     }
+    if (g_app.hResetBtn) EnableWindow(g_app.hResetBtn, allowLive ? TRUE : FALSE);
     // Apply additionally needs something to apply (F-PENDING).  Reset stays
     // ungated: returning the GPU to stock is meaningful with a clean editor.
     if (g_app.hApplyBtn)

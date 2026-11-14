@@ -65,6 +65,8 @@ static void apply_system_titlebar_theme(HWND hwnd) {
     FreeLibrary(d);
 }
 
+#include "gui_profile_source.cpp"
+
 // ============================================================================
 // GDI Graph Drawing
 // ============================================================================
@@ -523,5 +525,6 @@ static void create_lock_tooltips(HWND hParent) {
 #include "ui_main_controls.cpp"
 
 #include "ui_profile_save_notice.cpp"
+#include "gui_profile_commands.cpp"
 #include "ui_main_window.cpp"
 #include "gui_process_cleanup.cpp"

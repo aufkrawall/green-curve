@@ -1,5 +1,46 @@
 # Config and Profiles
 
+## Windows canonical source editor (2026-11-14)
+
+Source anchors: `source/gui_profile_source.cpp`,
+`source/profile_source_window.h`, `source/profile_editor_source_rows.h`,
+`source/profile_slot_io_windows.h`, `source/gui_profile_commands.cpp`,
+`source/config_profiles_gui_state.cpp`, `source/gui_service_state.cpp`,
+`tests/profile_source_window_tests.cpp`.
+
+Canonical personal slots open a separate native source editor. Offline legacy
+slots use the strict Windows legacy decoder without current-GPU substitution;
+online legacy slots retain their previous editor path. The decoded candidate
+is frozen before unsaved-draft confirmation. Refusal or cancellation preserves
+the previous model and unfinished text. Source documents live independently of
+the GPU-keyed live draft and survive reconnect, selection and Reset.
+
+The Windows window and TUI share exact source rows, decimal parsing, point-kind
+conversion and revision updates. Selecting or saving a captured point does not
+convert it. Explicit staging converts just the selected writable source point
+to absolute frequency. Invalid text remains open across selection, Save, close
+refusal and DPI changes; known read-only source points stay disabled. Unicode
+rows, native keyboard navigation and scrollable small-window layouts retain
+source identities without projecting them onto destination indices.
+
+Source Save works offline through the shared bounded, generation-checked,
+atomic Windows slot writer. It preserves source precision, omitted intent and
+other slots/configuration; successful Save alone advances the saved baseline.
+The source label never claims applied ownership. Both legacy Apply gates stay
+closed while a source is open; Reset keeps its existing ready-state gate.
+Closing a source requests a coherent live-editor resync. Closing an unsaved
+source or exiting with one requires explicit discard, defaulting to No.
+Destination review and mapped Apply remain separate integration work.
+
+Diagnostics use bounded `profile-source:` load/stage/save/close events and
+`profile-bank:` commit results, without paths or document bodies. Cases
+9330-9349 execute a hidden native window with fake storage callbacks and no GPU.
+They cover exact/Unicode presentation, captured-kind preservation, explicit
+staging, invalid-input refusal, failed Save, saved-baseline advancement, DPI,
+scroll reachability, read-only points and discard/teardown. The all-target
+build and existing slot/CLI tests cover the integration and shared writer;
+a production desktop interaction and physical GPU writes are not claimed.
+
 ## TUI capture into an unsaved source draft (2026-11-14)
 
 Source anchors: `source/linux_tui_capture_draft.h`,

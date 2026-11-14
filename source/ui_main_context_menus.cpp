@@ -261,6 +261,7 @@ static LRESULT CALLBACK share_all_users_subclass_proc(HWND hWnd, UINT uMsg, WPAR
 // loaded profile is not applied automatically; the user clicks Apply to apply it
 // via the service (the active session is permitted to apply).
 static void show_shared_profiles_menu(HWND hwnd, POINT screenPt) {
+    if (g_app.guiSource.valid) return;
     char machinePath[MAX_PATH] = {};
     if (!resolve_machine_config_path(machinePath, sizeof(machinePath))) {
         set_profile_status_text("Could not locate the shared profile store.");

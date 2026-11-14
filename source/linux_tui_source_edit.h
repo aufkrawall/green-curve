@@ -25,12 +25,11 @@ static inline bool tui_begin_source_edit(TuiState& state, TuiField field, int in
 static inline bool tui_commit_source_edit(TuiState& state) {
     if (!state.edit.active || !tui_source_field(state.edit.field)) return false;
     if (!state.document.valid || state.profileLoadPending ||
-        !profile_editor_source_set(state.document.value, tui_source_field_kind(state.edit.field), state.edit.index, state.edit.text)) {
+        !profile_editor_document_type(state.document, tui_source_field_kind(state.edit.field), state.edit.index, state.edit.text)) {
         std::snprintf(state.status, sizeof(state.status), "Invalid or unavailable source value; use exact MHz with up to 6 decimals");
         return false;
     }
     state.edit = {}; state.dirty = true; state.draftAttached = false; state.draftBinding = {};
-    state.document.revision = !state.document.revision || state.document.revision == ULLONG_MAX ? 0 : state.document.revision + 1;
     profile_editor_source_display(state.document.value, state.desired);
     state.sourceCheckVisible = false; state.sourceCheckLines.clear(); state.sourceReview.reset();
     std::snprintf(state.status, sizeof(state.status), "Source intent updated; Save preserves it; Check reviews the destination again");
