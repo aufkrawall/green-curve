@@ -6,6 +6,7 @@
 #include "gui_mutation_queue_policy.h"
 #include "service_request_deadline_policy.h"
 #include "gui_service_io_types.h"
+#include <cstdarg>
 
 namespace gui_profile_source_review_fixture {
 static AppData g_app{};
@@ -13,7 +14,9 @@ struct Window {
     int reports = 0, clears = 0;
     std::string status;
     std::vector<std::string> lines;
-    void clear_report() { ++clears; lines.clear(); }
+    bool mapped = false;
+    void mapped_ready(bool ready) { mapped = ready; }
+    void clear_report() { ++clears; lines.clear(); mapped = false; }
     void notice(const char* message) { status = message; }
     void report(const std::vector<std::string>& report) { ++reports; lines = report; }
 };
@@ -29,12 +32,49 @@ static LONG gui_service_presentation_epoch() { return epoch; }
 static bool validate_configured_gpu_selection_for_client(char*, size_t) { return selection; }
 static void gui_service_io_cancel_capture(gc_u64) {}
 static void gui_profile_capture_service_changed() {}
+static void gui_profile_source_refresh() {}
+static void set_message(char* out, size_t size, const char* format, ...) {
+    va_list args; va_start(args, format); vsnprintf(out, size, format, args); va_end(args);
+}
+#include "gui_mutation_request_binding.h"
 static bool gui_service_io_queue_capture(const GpuAdapterInfo& target, gc_u32 domains, gc_u64 token, char* error, size_t size) {
     ++sends; sentTarget = target; sentDomains = domains; sentToken = token;
     if (!queue) { snprintf(error, size, "fixture queue refusal"); return false; }
     return true;
 }
 #include "gui_profile_source_review.cpp"
+static int applies = 0, highConfirms = 0, memoryConfirms = 0, legacyCaptures = 0;
+static bool highAllowed = true, memoryAllowed = true, expireInConfirmation = false, mappedWarning = false;
+static ServiceRequest applied{};
+static bool gui_profile_capture_active() { return false; }
+static void set_profile_status_text(const char*, ...) {}
+static void set_pending_operation_source(const char*) {}
+static void record_ui_action(const char*, ...) {}
+static void write_error_report_log_for_user_failure(const char*, const char*) {}
+static int fixture_message_box(HWND, const char*, const char*, UINT) { return IDOK; }
+static bool capture_gui_apply_settings(DesiredSettings*, OcApplyBaseline*, char*, size_t) { ++legacyCaptures; return false; }
+static bool gui_curve_prepare_intercept_apply(DesiredSettings*) { return false; }
+static bool confirm_high_oc_apply(const DesiredSettings*, const OcApplyBaseline*, bool mappedSource) {
+    ++highConfirms; mappedWarning = mappedSource; return highAllowed;
+}
+static bool confirm_unified_memory_write(const DesiredSettings*) {
+    ++memoryConfirms;
+    if (expireInConfirmation) gui_profile_source_input_changed(nullptr);
+    return memoryAllowed;
+}
+static bool gui_mutation_queue_apply(const DesiredSettings* desired, bool interactive, ServiceApplyOrigin origin,
+    ServiceProfileSource source, int slot, GuiMutationUiContext, const char*, char* error, size_t size, gc_u64 controls) {
+    applied = {}; applied.magic = SERVICE_PROTOCOL_MAGIC; applied.version = SERVICE_PROTOCOL_VERSION;
+    applied.command = SERVICE_CMD_APPLY; applied.callerPid = 1; applied.operationId = 2;
+    applied.flags = interactive ? SERVICE_REQUEST_FLAG_INTERACTIVE : 0u; applied.applyOrigin = origin;
+    applied.desired = *desired; applied.targetGpu = g_app.selectedGpu; applied.profileSource = source; applied.profileSlot = slot;
+    applied.expectedControlFingerprint = controls; applied.expectedControlDomains = controls ? 511u : 0u;
+    if (!gui_mutation_stamp_request(&applied, error, size) || service_request_reject_reason(&applied)) return false;
+    ++applies; return true;
+}
+#define gc_message_box fixture_message_box
+#include "ui_main_apply_dispatch.h"
+#undef gc_message_box
 static GuiServiceIoCompletion* completion(const ServiceResponse& response, gc_u64 token = 0) {
     auto* out = (GuiServiceIoCompletion*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(GuiServiceIoCompletion));
     if (out) {
@@ -42,6 +82,42 @@ static GuiServiceIoCompletion* completion(const ServiceResponse& response, gc_u6
         out->captureToken = token ? token : sentToken; out->presentationEpoch = epoch;
     }
     return out;
+}
+static int mapped_dispatch_tests() {
+    auto live = std::make_unique<ServiceResponse>(); profile_review_fixture::live(*live);
+    g_app.guiServiceModel.serviceInstanceId = live->state.serviceInstanceId;
+    g_app.guiServiceModel.gpuGeneration = live->state.gpuGeneration;
+    g_app.guiServiceModel.topologySignature = live->state.topologySignature;
+    g_app.guiDraft.attached = false; g_app.guiDraft.detached = true; g_app.loadedSharedSlot = 3;
+    g_app.guiGpuOffsetFromProfileLoad = g_app.guiMemOffsetFromProfileLoad = true;
+    queue = selection = true;
+    const auto prepare = [&] {
+        gui_profile_source_observe_service(live.get()); gui_profile_source_check(nullptr, g_app.guiSource.value);
+        profile_review_fixture::capture(*live, g_app.guiSource.value);
+        gui_profile_source_handle_check(completion(*live)); gui_profile_source_accept_mapped(nullptr);
+    };
+    prepare();
+    if (!gui_profile_source_mapped_ready()) return 9660;
+    apply_changes();
+    if (applies != 1 || applied.desired.memOffsetHz != -123500000 || applied.desired.memOffsetSurface != CLOCK_OFFSET_SURFACE_P0 ||
+        applied.expectedControlFingerprint != live->capture.revision || applied.expectedControlDomains != 511u ||
+        applied.profileSource != SERVICE_PROFILE_SOURCE_AD_HOC || applied.profileSlot || !mappedWarning ||
+        legacyCaptures || highConfirms != 1 || memoryConfirms != 1 || g_app.serviceActiveDesiredValid ||
+        g_app.guiSource.value.memoryOffsetHz != -123500000) return 9661;
+    highAllowed = false; apply_changes();
+    if (applies != 1 || memoryConfirms != 1) return 9662;
+    highAllowed = true; memoryAllowed = false; apply_changes();
+    if (applies != 1) return 9663;
+    memoryAllowed = true; expireInConfirmation = true; apply_changes();
+    if (applies != 1 || gui_profile_source_mapped_ready()) return 9664;
+    expireInConfirmation = false; prepare(); selection = false; apply_changes();
+    if (applies != 1) return 9665;
+    selection = true; g_app.guiServiceModel.gpuGeneration = 0; apply_changes();
+    if (applies != 1) return 9666;
+    if (service_client_uses_loaded_shared_reference(SERVICE_PROFILE_SOURCE_AD_HOC, 3, false) ||
+        !service_client_uses_loaded_shared_reference(SERVICE_PROFILE_SOURCE_SHARED_SLOT, 3, false) ||
+        service_client_uses_loaded_shared_reference(SERVICE_PROFILE_SOURCE_SHARED_SLOT, 3, true)) return 9667;
+    return 0;
 }
 static int run() {
     g_profileSourceWindow = std::make_unique<Window>();
@@ -61,11 +137,19 @@ static int run() {
     gui_profile_source_handle_check(answer);
     if (g_profileReadPending || !g_profileReview || !g_profileReview->planned() || g_profileSourceWindow->reports != 1 ||
         g_app.guiSource.value.memoryOffsetHz != -123500000 || g_app.serviceActiveDesiredValid) return 9374;
+    DesiredSettings mapped{}; gc_u64 controlRevision = 0; OcApplyBaseline baseline{};
+    if (!g_profileSourceWindow->mapped || gui_profile_source_mapped_ready() ||
+        gui_profile_source_prepare_apply(mapped, controlRevision, baseline)) return 9650;
+    gui_profile_source_accept_mapped(nullptr);
+    if (!gui_profile_source_mapped_ready() || g_profileSourceWindow->mapped ||
+        !gui_profile_source_prepare_apply(mapped, controlRevision, baseline) || mapped.memOffsetHz != -123500000 ||
+        !controlRevision || controlRevision != live->capture.revision || g_app.serviceActiveDesiredValid || sends != 1) return 9651;
     ++live->state.stateRevision; gui_profile_source_observe_service(live.get());
     if (!g_profileReview || g_profileSourceWindow->lines.empty()) return 9375;
     start(); const auto obsolete = sentToken;
     gui_profile_source_input_changed(nullptr);
     if (g_profileReviewJob || g_profileReview || g_profileReadPending || !g_profileSourceWindow->lines.empty()) return 9376;
+    if (gui_profile_source_mapped_ready() || gui_profile_source_prepare_apply(mapped, controlRevision, baseline)) return 9652;
     answer = completion(*live, obsolete); if (!answer) return 9373;
     gui_profile_source_handle_check(answer);
     if (g_profileReviewJob || g_profileSourceWindow->reports != 1) return 9377;
@@ -104,6 +188,7 @@ static int run() {
         g_app.guiSource.value.memorySurface != CLOCK_OFFSET_SURFACE_P0) return 9389;
     gui_profile_source_preview_changed(nullptr);
     if (g_profileReviewJob || g_profileReadPending) return 9390;
+    if (const int failure = mapped_dispatch_tests()) return failure;
     g_profileSourceWindow.reset(); return 0;
 }
 }

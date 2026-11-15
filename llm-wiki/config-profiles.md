@@ -1,5 +1,44 @@
 # Config and Profiles
 
+## Reviewed source submission (2026-11-15)
+
+Source anchors: `source/profile_mapped_draft.h`,
+`source/gui_profile_source_review.cpp`, `source/ui_main_apply_dispatch.h`,
+`source/gui_mutation_request_binding.h`, `source/linux_tui_mapped_draft.h`,
+`source/linux_tui_mutation_actions.cpp`, `source/service_control_review.h`,
+`tests/profile_mapped_draft_tests.cpp`, `tests/gui_profile_source_review_tests.cpp`.
+
+Check passively reads all domains, including preserved and cleanup controls,
+so its opaque service revision can bind a complete scoped operation. Use mapped
+draft is a separate local choice. It retains the source document and exact runtime
+units, creates no ownership/save acknowledgment and performs no service write.
+Only representable/conditional reviews whose runtime adapters are activated
+can be staged. Exact graphics/curve replay remains gated pending transition
+integration; scalar-only sources can use the existing precise adapters.
+
+Windows and TUI Apply submit the frozen runtime value with that complete
+control token through their existing transport/coordinator. The service checks
+the token in its runtime lane before planning any mutation. Source revision,
+metadata, GPU session, ownership and unfinished input can invalidate staging.
+Windows rechecks after modal confirmations and retains manual high-clock and
+unified-memory confirmations. A reviewed source is ad hoc: an earlier loaded
+shared slot cannot replace its payload or grant shared-bank authority. The
+abandoned numeric draft neither authorizes nor blocks a separately bound source;
+service readiness and in-flight gates still apply. TUI acceptance is consumed
+by one submission, including an unknown outcome, to prevent accidental retries.
+
+Cases 9630-9677 execute shared acceptance, exact scalar payloads, stale controls,
+native window action guards, production Windows dispatch and mutation binding,
+confirmation cancellation/reentrancy and compact TUI layout. Removing focused
+button Enter handling fails native case 9673. Capture/transfer/load modals and
+incomplete READY envelopes cannot expose TUI Apply. Imported source
+intent stays inspectable/saveable after refusal or expired review. Physical GPU
+replay is not established by these scripted checks.
+Windows normal/ASan/UBSan suites, all-target builds and native Linux UBSan
+fixtures pass. Static analysis retains 34 baseline findings with no additions.
+The mapped-source pane was rendered offscreen and inspected; its helper exited
+without leaving a window or process behind.
+
 ## Windows reviewed profile transfer (2026-11-15)
 
 Source anchors: `source/gui_profile_transfer.cpp`,

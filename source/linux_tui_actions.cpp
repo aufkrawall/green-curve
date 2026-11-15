@@ -15,6 +15,7 @@
 #include "profile_slot_io_linux.h"
 #include "profile_document_slot.h"
 #include "linux_tui_source_edit.h"
+#include "linux_tui_mapped_draft.h"
 #include "desired_scalar_editor.h"
 
 #include <stdio.h>
@@ -472,6 +473,10 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
             break;
         case ACTION_CHECK_SOURCE:
             tui_check_source(state);
+            break;
+        case ACTION_USE_MAPPED:
+            if (tui_use_mapped_draft(*state)) linux_debug_logf("profile-check: mapped draft accepted revision=%llu controlRevision=%llu",
+                (unsigned long long)state->document.revision, (unsigned long long)state->sourceReview->capture.revision);
             break;
         case ACTION_SOURCE_GRAPHICS_CHOICE:
         case ACTION_SOURCE_MEMORY_CHOICE: {

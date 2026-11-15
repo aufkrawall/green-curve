@@ -1,5 +1,19 @@
 # Testing
 
+## Reviewed scalar source submission (2026-11-15)
+
+Cases 9630-9677 in `tests/profile_mapped_draft_tests.cpp`,
+`tests/gui_profile_source_review_tests.cpp` and
+`tests/profile_source_window_tests.cpp` execute exact source acceptance,
+complete control-token checks, source/session/ownership drift, native action
+guards and compact TUI reachability. The Windows fixture includes production
+Apply dispatch and mutation binding; it checks both confirmation cancellations
+and modal reentrancy before enqueue, without a real service or GPU setter.
+The fixtures preserve precise memory units and ad hoc submission despite an
+older loaded shared slot. A private pre-fix keyboard fixture fails at 9673;
+focused native buttons explicitly route Enter after the fix. Exact graphics
+replay remains gated.
+
 ## Modeled transition factory (2026-11-15)
 
 `tests/modeled_curve_factory_tests.cpp` (9600-9623) runs in the full native and

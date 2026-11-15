@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-15: Reviewed scalar source submission
+
+- Windows/TUI source checks retain complete control revisions. A separate Use
+  mapped draft decision stages exact supported scalar intent; Apply passes the
+  frozen value and token through existing transports. Graphics/curve replay
+  stays gated until transition integration is complete.
+- Windows dispatch rechecks after modal confirmations, preserves manual warning
+  gates and submits ad hoc intent without borrowing a previous shared-slot
+  reference. Executing fixtures cover stale controls, cancellation, exact
+  payloads, independent draft binding and native/compact action reachability.
+  See [config-profiles.md](../config-profiles.md#reviewed-source-submission-2026-11-15).
+
 ## 2026-11-15: Exact baseline-to-transition factory
 
 - The model factory binds complete physical topology and authoritative point

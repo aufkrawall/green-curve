@@ -35,22 +35,22 @@ static OcHighWarnThresholds gui_high_oc_warn_thresholds() {
 // Ask before a manual Apply raises a hand-typed clock past the danger line.
 // Returns false only when the user explicitly declines.
 static bool confirm_high_oc_apply(const DesiredSettings* desired,
-                                  const OcApplyBaseline* baseline) {
+                                  const OcApplyBaseline* baseline, bool mappedSource = false) {
     if (!desired || !baseline) return true;
     OcHighWarnInputs inputs = {};
     inputs.hasGpuOffset = desired->hasGpuOffset != 0;
-    inputs.gpuHandTyped = !g_app.guiGpuOffsetFromProfileLoad;
+    inputs.gpuHandTyped = mappedSource || !g_app.guiGpuOffsetFromProfileLoad;
     inputs.gpuOffsetMHz = desired->gpuOffsetMHz;
     inputs.currentGpuOffsetMHz = baseline->currentGpuOffsetMHz;
     inputs.hasMemOffset = desired->hasMemOffset != 0;
-    inputs.memHandTyped = !g_app.guiMemOffsetFromProfileLoad;
+    inputs.memHandTyped = mappedSource || !g_app.guiMemOffsetFromProfileLoad;
     inputs.memOffsetMHz = desired->memOffsetMHz;
     inputs.currentMemOffsetMHz = baseline->currentMemOffsetMHz;
     // F-05-001: the XBAR MSVDD rail offset. Microvolts on the wire and in state,
     // millivolts in the dialog the user typed into and in the message they read,
     // so the conversion happens once, here, on the way into the pure policy.
     inputs.hasMsvddOffset = desired->hasXbarMsvddOffsetUv != 0;
-    inputs.msvddHandTyped = !g_app.guiXbarMsvddOffsetFromProfileLoad;
+    inputs.msvddHandTyped = mappedSource || !g_app.guiXbarMsvddOffsetFromProfileLoad;
     inputs.msvddOffsetMv = desired->xbarMsvddOffsetUv / 1000;
     inputs.currentMsvddOffsetMv = baseline->currentXbarMsvddOffsetUv / 1000;
 
@@ -141,62 +141,7 @@ static bool confirm_unified_memory_write(const DesiredSettings* desired) {
     return false;
 }
 
-static void apply_changes() {
-    if (g_app.guiSource.valid || gui_profile_capture_active()) {
-        set_profile_status_text("Review this source against the destination before Apply.");
-        return;
-    }
-    if (!gui_service_model_ready(&g_app.guiServiceModel) ||
-        !g_app.guiDraft.attached || g_app.guiDraft.detached) return;
-    char gpuSelectionErr[256] = {};
-    if (!validate_configured_gpu_selection_for_client(
-            gpuSelectionErr, sizeof(gpuSelectionErr))) {
-        gc_message_box(g_app.hMainWnd,
-            gpuSelectionErr[0] ? gpuSelectionErr :
-                "Select the intended GPU again before applying settings.",
-            "Green Curve", MB_OK | MB_ICONWARNING);
-        return;
-    }
-    set_pending_operation_source("GUI apply");
-    record_ui_action("Apply clicked");
-    DesiredSettings desired = {};
-    OcApplyBaseline baseline = {};
-    char err[256] = {};
-    if (!capture_gui_apply_settings(&desired, &baseline, err, sizeof(err))) {
-        write_error_report_log_for_user_failure("GUI apply validation failed", err);
-        gc_message_box(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
-        return;
-    }
-    // A proven prefix conflict with the lock: offer to lower those points in
-    // the draft (only the draft changes) instead of sending a request the
-    // service would refuse.  Before the high-OC gate, which would otherwise
-    // ask about a request that never leaves the editor.
-    if (gui_curve_prepare_intercept_apply(&desired)) return;
-    // Gate AFTER capture: the captured request is the exact intent that would
-    // reach the hardware, and capture has already established that something
-    // actually changed, so an unchanged high clock never reaches the dialog.
-    if (!confirm_high_oc_apply(&desired, &baseline)) return;
-    // Same gate-after-capture rationale; inert unless the probe positively
-    // reported a unified memory pool.
-    if (!confirm_unified_memory_write(&desired)) return;
-    int requestedSlot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
-    if (requestedSlot < 0) requestedSlot = CONFIG_DEFAULT_SLOT - 1;
-    requestedSlot += 1;
-    ServiceProfileSource requestedSource = SERVICE_PROFILE_SOURCE_USER_SLOT;
-    if (g_app.loadedSharedSlot >= 1 && g_app.loadedSharedSlot <= CONFIG_NUM_SLOTS) {
-        requestedSource = SERVICE_PROFILE_SOURCE_SHARED_SLOT;
-        requestedSlot = g_app.loadedSharedSlot;
-    }
-    char queueStatus[512] = {};
-    if (!gui_mutation_queue_apply(&desired, true, SERVICE_APPLY_ORIGIN_GUI,
-            requestedSource, requestedSlot, GUI_MUTATION_CONTEXT_MANUAL_APPLY,
-            "GUI apply", queueStatus, sizeof(queueStatus))) {
-        gc_message_box(g_app.hMainWnd, queueStatus, "Green Curve",
-            MB_OK | MB_ICONWARNING);
-    } else {
-        set_profile_status_text("%s", queueStatus);
-    }
-}
+#include "ui_main_apply_dispatch.h"
 
 #include "ui_main_control_lifecycle.cpp"
 

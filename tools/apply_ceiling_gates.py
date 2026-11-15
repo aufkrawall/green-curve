@@ -609,11 +609,11 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "the GUI's prefix repair plans with the shared pre-write input builder")
     # Accepting a repair changes only the editor draft: the GUI decides before
     # queueing anything, and the prepare code never reaches a writer.
-    ui_apply_cpp = _p(ctx, "ui_main_apply.cpp")
+    ui_apply_cpp = _p(ctx, "ui_main_apply_dispatch.h")
     require_order_in_operation(
         ui_apply_cpp,
         "static void apply_changes()",
-        "if (gui_curve_prepare_intercept_apply(&desired)) return;",
+        "if (!mappedSource && gui_curve_prepare_intercept_apply(&desired)) return;",
         "if (!gui_mutation_queue_apply(&desired, true, SERVICE_APPLY_ORIGIN_GUI,",
         "the GUI's prefix repair offer precedes queueing the apply")
     for writer in ("gui_mutation_queue_", "apply_desired_settings", "nvapi_",

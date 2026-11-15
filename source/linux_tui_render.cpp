@@ -3,6 +3,7 @@
 
 #include "linux_tui_internal.h"
 #include "linux_tui_source_edit.h"
+#include "linux_tui_mapped_draft.h"
 #include "linux_tui_capture_input.h"
 #include "linux_tui_transfer.h"
 #include "linux_tui_profile_load.h"
@@ -114,12 +115,15 @@ void populate_view_model(const TuiState& state, TuiViewModel* vm,
     vm->profileLoadPending = state.profileLoadPending; vm->pendingProfileSlot = state.pendingProfileSlot;
     vm->sourceDocument = state.document.valid ? &state.document.value : nullptr; vm->sourceScroll = state.sourceScroll;
     vm->sourceCheckLines = state.sourceCheckVisible ? &state.sourceCheckLines : nullptr;
+    vm->sourceMappedReady = state.sourceCheckVisible && tui_mapped_draft_available(state, false);
+    vm->sourceMappedAccepted = tui_mapped_draft_available(state);
+    vm->dirty |= vm->sourceMappedAccepted;
     vm->sourceGraphicsChoice = state.sourceGraphicsChoice; vm->sourceMemoryChoice = state.sourceMemoryChoice;
     vm->capture = state.capture; vm->capture.report = &state.captureLines;
     vm->transfer = state.transfer; vm->transfer.path = tui_transfer_path_display(state.transferPath);
     vm->transfer.report = state.transferPreview ? &state.transferPreview->lines : nullptr;
     vm->serviceOnline = state.serviceOnline;
-    vm->draftAttached = state.draftAttached;
+    vm->draftAttached = state.draftAttached || vm->sourceMappedAccepted;
     vm->editing = state.edit.active;
     vm->editField = state.edit.field;
     vm->editIndex = state.edit.index;

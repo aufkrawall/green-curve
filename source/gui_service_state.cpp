@@ -258,7 +258,7 @@ static void gui_set_editor_enabled(bool ready) {
     // ungated: returning the GPU to stock is meaningful with a clean editor.
     if (g_app.hApplyBtn)
         EnableWindow(g_app.hApplyBtn,
-            gui_pending_apply_button_enabled(allowDraft, gui_pending_summary())
+            (gui_reviewed_source_apply_enabled(actionable, gui_profile_source_mapped_ready()) || gui_pending_apply_button_enabled(allowDraft, gui_pending_summary()))
                 ? TRUE : FALSE);
     // A detached draft must not make its recovery path unreachable.  Keep GPU
     // selection available for a coherent READY model so the user can reselect

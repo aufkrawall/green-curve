@@ -134,4 +134,12 @@ static inline bool gui_service_capability_enabled(
     }
 }
 
+// A reviewed source has its own binding; the abandoned numeric draft cannot
+// authorize or block it. All service, loaded-state and in-flight gates remain.
+static inline bool gui_reviewed_source_apply_enabled(GuiServiceActionability in, bool mappedReady) {
+    if (!mappedReady) return false;
+    in.draftAttached = true; in.draftDetached = false;
+    return gui_service_capability_enabled(&in, GUI_SERVICE_CAP_HARDWARE_MUTATION);
+}
+
 #endif // GREEN_CURVE_GUI_SERVICE_ACTIONABILITY_POLICY_H

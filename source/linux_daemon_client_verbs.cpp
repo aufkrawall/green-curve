@@ -72,7 +72,7 @@ bool linux_daemon_apply_checked(const GpuAdapterInfo* target,
                                 const DesiredSettings* desired, bool interactive,
                                 const ServiceStateEnvelope* expected,
                                 ServiceResponse* response,
-                                char* result, size_t resultSize) {
+                                char* result, size_t resultSize, gc_u64 reviewedControls) {
     gc_u32 domains = service_desired_mutation_domains(desired);
     if (!target || !target->valid || !desired || !expected ||
         !expected->serviceInstanceId || !expected->gpuGeneration ||
@@ -84,7 +84,7 @@ bool linux_daemon_apply_checked(const GpuAdapterInfo* target,
     }
     return send_simple(SERVICE_CMD_APPLY, desired, target, interactive,
                        SERVICE_APPLY_ORIGIN_GUI,
-                       expected, response, result, resultSize);
+                       expected, response, result, resultSize, reviewedControls);
 }
 
 bool linux_daemon_reset_checked(const GpuAdapterInfo* target,

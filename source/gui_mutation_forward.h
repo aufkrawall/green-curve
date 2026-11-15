@@ -18,7 +18,7 @@ static bool gui_mutation_queue_apply(const DesiredSettings* desired,
     bool interactive, ServiceApplyOrigin origin,
     ServiceProfileSource profileSource, int profileSlot,
     GuiMutationUiContext context, const char* source,
-    char* status, size_t statusSize);
+    char* status, size_t statusSize, gc_u64 reviewedControls = 0);
 static void gui_mutation_advance_gpu_epoch(const char* reason);
 // Re-asserts the Apply button's enable gate, which follows the in-flight state
 // (gui_service_actionability_policy.h).  Declared here because the queue that

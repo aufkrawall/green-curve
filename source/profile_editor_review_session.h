@@ -46,8 +46,8 @@ struct ProfileEditorReviewJob {
     ProfileEditorReviewContext context{};
     ProfileDocument source{};
 };
-static inline gc_u32 profile_editor_review_domains(const ProfileDocument& source) {
-    return (gc_u32)source.domains | PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_GRAPHICS_OFFSET | PROFILE_DOMAIN_LOCK;
+static inline gc_u32 profile_editor_review_domains(const ProfileDocument&) {
+    return 511u; // Whole-operation preconditions include preserved/cleanup controls.
 }
 static inline bool profile_editor_review_complete(const ProfileEditorReviewJob& job, gc_u64 token, gc_u64 revision,
     const ProfileEditorReviewContext& current, const ServiceResponse& response,

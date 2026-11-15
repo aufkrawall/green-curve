@@ -51,8 +51,10 @@ does not match). Offline CLI import/export and flat local-slot storage consume
 this type independently of the live wire `DesiredSettings` (`gpu_core.h`).
 The service keeps its separate resolved runtime representation. Windows and
 the TUI retain exact source drafts, editing, capture and reviewed offline
-transfer. Read-only destination checks exist; accepting mapped drafts and
-activating authoring replay remain pending. The shared transition model and
+transfer. Reviewed scalar drafts can be staged and submitted with complete
+service control preconditions; exact graphics/curve replay remains gated pending
+transition integration. See [config-profiles.md](config-profiles.md#reviewed-source-submission-2026-11-15).
+The shared transition model and
 backend guard consumers are documented in
 [clock-transition-audit.md](clock-transition-audit.md#modeled-lockless-transition-protection-2026-11-15).
 

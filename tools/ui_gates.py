@@ -134,9 +134,9 @@ def check_manual_apply_origin(ctx, require_text):
     router uses the origin plus the UI context to decide between a visible
     result and a silent one, so the manual path must keep declaring itself.
     """
-    require_text(_p(ctx, "ui_main_apply.cpp"), "SERVICE_APPLY_ORIGIN_GUI",
+    require_text(_p(ctx, "ui_main_apply_dispatch.h"), "SERVICE_APPLY_ORIGIN_GUI",
                  "GUI Apply uses its explicit origin")
-    require_text(_p(ctx, "ui_main_apply.cpp"),
+    require_text(_p(ctx, "ui_main_apply_dispatch.h"),
                  "GUI_MUTATION_CONTEXT_MANUAL_APPLY",
                 "GUI Apply queues under the manual UI context")
 
@@ -1537,8 +1537,14 @@ def check_canonical_tui_documents(ctx, require_text):
     ctx.require_order_in_operation(actions, "case ACTION_SAVE:", "profile_document_slot_save(io,",
                                    "save_profile_to_config_path(", "canonical sources save before the legacy display writer")
     ctx.require_order_in_operation(_p(ctx, "linux_tui_mutation_actions.cpp"), "void apply_to_gpu(",
-                                   "if (state->document.valid)", "if (!state->serviceOnline)",
+                                   "if (mappedSource && !tui_mapped_draft_available(*state))", "if (!state->serviceOnline)",
                                    "unreviewed source documents refuse before any Apply transport")
+    require_text(_p(ctx, "profile_mapped_draft.h"), "!review.accepted || !profile_mapped_draft_ready",
+                 "source submission requires an explicit current mapped-draft decision")
+    require_text(_p(ctx, "gui_mutation_worker.cpp"), "work.request.expectedControlFingerprint = reviewedControls;",
+                 "the GUI sends its complete source control revision")
+    require_text(_p(ctx, "linux_daemon_client.h"), "req.expectedControlFingerprint = reviewedControls;",
+                 "the TUI sends its complete source control revision")
     require_text(_p(ctx, "profile_commands_linux.h"), "struct LinuxProfileCommands : LinuxProfileSlotIO",
                  "CLI and TUI use the same synchronized slot writer")
     require_text(_p(ctx, "profile_slot_io_linux.h"), "LinuxConfigLock lock(path.c_str(),",

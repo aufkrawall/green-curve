@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 #include "profile_editor_review_session.h"
+#include "profile_mapped_draft.h"
 
 // Window-thread state only. The coordinator sees a fixed getter request and
 // token; it never accesses this document, report or native source window.
@@ -9,6 +10,39 @@ static std::unique_ptr<ProfileEditorReviewJob> g_profileReviewJob;
 static std::unique_ptr<ProfileDestinationReview> g_profileReview;
 static gc_u64 g_profileReadToken = 0;
 static bool g_profileReadPending = false;
+
+static bool gui_profile_source_mapped_ready() {
+    return g_app.guiSource.valid && g_profileReview && g_profileReviewJob && g_profileReview->accepted &&
+        !g_profileReadPending && !g_app.applyInFlight && !g_app.configuredGpuSelectionUnresolved &&
+        gui_service_model_ready(&g_app.guiServiceModel) &&
+        profile_editor_review_context_equal(g_profileReviewJob->context, g_profileShownContext) &&
+        profile_mapped_draft_ready(*g_profileReview, g_app.guiSource.value, g_app.guiSource.revision);
+}
+static void gui_profile_source_accept_mapped(void*) {
+    if (!g_profileReview || !g_profileReviewJob || !g_app.guiSource.valid || g_profileReadPending ||
+        g_app.applyInFlight || !gui_service_model_ready(&g_app.guiServiceModel) ||
+        !profile_editor_review_context_equal(g_profileReviewJob->context, g_profileShownContext) ||
+        !profile_mapped_draft_accept(*g_profileReview, g_app.guiSource.value, g_app.guiSource.revision)) {
+        g_profileSourceWindow->notice("Check the current source and destination before using a mapped draft"); return;
+    }
+    g_profileSourceWindow->mapped_ready(false);
+    g_profileSourceWindow->notice("Mapped draft staged. Apply submits these exact settings for fresh service validation.");
+    debug_log("profile-check: mapped draft accepted revision=%llu controlRevision=%llu\n",
+        (unsigned long long)g_app.guiSource.revision, (unsigned long long)g_profileReview->capture.revision);
+    gui_profile_source_refresh();
+}
+static bool gui_profile_source_prepare_apply(DesiredSettings& desired, gc_u64& controlRevision, OcApplyBaseline& baseline) {
+    if (!gui_profile_source_mapped_ready() ||
+        !profile_mapped_draft_prepare(*g_profileReview, g_app.guiSource.value, g_app.guiSource.revision, desired, controlRevision)) return false;
+    const auto& o = g_profileReview->capture;
+    const auto* graphics = hardware_capture_named_clock(o.graphics, o.graphicsAlternate, desired.authoring.graphicsSurface);
+    const auto* memory = hardware_capture_named_clock(o.memory, o.memoryAlternate, desired.memOffsetSurface);
+    baseline = {};
+    if (graphics && graphics->valid) baseline.currentGpuOffsetMHz = (int)(graphics->value / 1000000);
+    if (memory && memory->valid) baseline.currentMemOffsetMHz = (int)(memory->value / 1000000);
+    if (o.xbarVoltage.valid) baseline.currentXbarMsvddOffsetUv = (int)o.xbarVoltage.value;
+    return true;
+}
 
 static void gui_profile_source_invalidate_review(const char* reason) {
     const bool hadReview = g_profileReviewJob != nullptr;
@@ -73,7 +107,8 @@ static void gui_profile_source_handle_check(GuiServiceIoCompletion* completion) 
         (unsigned)g_profileReviewJob->graphics, (unsigned)g_profileReviewJob->memory,
         (int)review->stage, result, (unsigned)lines.size());
     g_profileReview = std::move(review); g_profileSourceWindow->report(lines);
-    g_profileSourceWindow->notice("Read-only destination report; no Apply authority is granted");
+    g_profileSourceWindow->mapped_ready(profile_mapped_draft_ready(*g_profileReview, g_app.guiSource.value, g_app.guiSource.revision));
+    g_profileSourceWindow->notice("Review mapping, scope and feasibility; Use mapped draft stages these settings without applying them");
 }
 static void gui_profile_source_input_changed(void*) {
     gui_profile_source_invalidate_review("Source input changed; stage the value and check again");

@@ -15,9 +15,12 @@ static void gui_profile_source_observe_service(const ServiceResponse* response);
 static void gui_profile_capture_service_changed();
 #ifdef GREEN_CURVE_SERVICE_BINARY
 static constexpr bool gui_profile_capture_active() { return false; }
+static constexpr bool gui_profile_source_mapped_ready() { return false; }
 #else
 static bool gui_profile_capture_active();
 static bool gui_profile_transfer_active();
+static bool gui_profile_source_mapped_ready();
+static bool gui_profile_source_prepare_apply(DesiredSettings&, gc_u64&, OcApplyBaseline&);
 #endif
 static void gui_profile_tools_append_menu(HMENU menu);
 static void migrate_legacy_config_if_needed(const char* path);

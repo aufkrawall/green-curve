@@ -59,7 +59,7 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
     const char* scopeNames[] = {"update included settings", "replace owned profile", "release owned settings"};
     io.message("Profile " + std::to_string(selected) + ": " + source.displayName + "\nIncluded: " +
         profile_command_domains(source.domains) + "; scope=" + scopeNames[source.applicationScope] + "\n");
-    const gc_u32 domains = (gc_u32)source.domains | PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_GRAPHICS_OFFSET | PROFILE_DOMAIN_LOCK;
+    const gc_u32 domains = 511u; // Bind later review to preserved and cleanup domains too.
     auto capture = std::make_unique<HardwareCaptureObservation>();
     if (!io.capture(domains, *capture, error)) return reject(PROFILE_COMMAND_IO);
     ProfileDestinationTopology destination;
@@ -147,6 +147,8 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
         plan.disposition == PROFILE_CONTROL_UNAVAILABLE ? "unavailable" : "conditional";
     io.message(std::string("Operation feasibility: ") + operation +
         "; fresh ownership, transition and recovery checks are still required before Apply.\n");
+    if (!desired_authoring_runtime_ready(runtime.get()))
+        io.message("Exact graphics source replay is unavailable in this build; this source remains inspectable and exportable.\n");
     exitCode = PROFILE_COMMAND_DECISION;
     return true;
 }

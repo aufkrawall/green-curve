@@ -265,6 +265,9 @@ Use Check in Profiles & Tools to inspect destination mapping and feasibility.
 The graphics and memory buttons change only this preview's control choices.
 Source drafts stay intact when choosing another GPU. Check names the shown
 GPU, and its cached result expires when the daemon/GPU session changes.
+Use mapped draft stages supported scalar settings for a separate Apply. The
+service rejects changed control reviews before writing. Exact graphics/curve
+source replay remains unavailable while transition integration is completed.
 Capture in Profiles & Tools lets you choose domains, read a snapshot, and
 review exact controls before replacing the draft. Omitted settings and
 discarding unsaved edits each require an explicit choice. Acceptance creates
@@ -272,10 +275,12 @@ an unsaved source draft; Save stores it, and Apply remains separate.
 
 On Windows, Load opens portable slots in a source editor with precise values
 and offline Save. Check previews the selected GPU with explicit graphics and
-memory control choices. Profiles & tools -> Capture current GPU settings opens
+memory control choices. Use mapped draft stages supported scalar sources for
+Apply; the existing manual confirmations still apply. Profiles & tools ->
+Capture current GPU settings opens
 domain selection and snapshot review. Omitted settings and replacing unfinished
 work require separate choices; Use exact creates an unsaved source, then Save
-stores it. Captured-source Apply is not enabled by this read-only workflow yet.
+stores it. Captured graphics/curve replay still requires transition integration.
 Profiles & tools -> Import / export saved profiles also works offline. Use the
 native file picker or type a path, choose one record or the bank, and Preview
 before confirmation. Loading the first imported profile and discarding unfinished

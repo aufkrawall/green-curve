@@ -80,6 +80,7 @@ REGRESSION_SOURCES = (
     'tui_transfer_tests.cpp',
     'profile_source_window_tests.cpp',
     'profile_review_session_tests.cpp',
+    'profile_mapped_draft_tests.cpp',
     'gui_profile_source_review_tests.cpp',
     'gui_profile_capture_tests.cpp',
     'gui_profile_transfer_tests.cpp',

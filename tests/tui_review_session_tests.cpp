@@ -31,7 +31,7 @@ static int run() {
     auto& capture = reply.capture; capture.valid = capture.binding.valid = 1;
     capture.schemaVersion = HARDWARE_CAPTURE_SCHEMA_CURRENT; capture.gpuGeneration = 7;
     capture.revision = capture.fingerprint = 11;
-    capture.requestedDomains = PROFILE_DOMAIN_MEMORY | PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_GRAPHICS_OFFSET | PROFILE_DOMAIN_LOCK;
+    capture.requestedDomains = 511u;
     for (int i = 0; i < 9; ++i) if (capture.requestedDomains & (1u << i))
         hardware_capture_domain(capture, 1 << i, CAPTURE_UNSUPPORTED, -100001);
     capture.memory.valid = capture.memory.writable = 1; capture.memory.grid = 500000; capture.memory.surface = CLOCK_OFFSET_SURFACE_P0;

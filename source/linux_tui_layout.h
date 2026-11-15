@@ -102,6 +102,7 @@ enum ActionType {
     ACTION_PROFILE_LOAD_DISCARD,
     ACTION_PROFILE_LOAD_KEEP,
     ACTION_CHECK_SOURCE,
+    ACTION_USE_MAPPED,
     ACTION_SOURCE_GRAPHICS_CHOICE,
     ACTION_SOURCE_MEMORY_CHOICE,
     ACTION_CAPTURE_SOURCE,
@@ -212,6 +213,7 @@ struct TuiViewModel {
     const ProfileDocument* sourceDocument;
     int sourceScroll;
     const std::vector<std::string>* sourceCheckLines;
+    bool sourceMappedReady = false, sourceMappedAccepted = false;
     gc_u32 sourceGraphicsChoice, sourceMemoryChoice;
     TuiCaptureView capture;
     TuiTransferView transfer;

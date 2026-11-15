@@ -214,7 +214,7 @@ static bool service_client_build_apply_request(const DesiredSettings* desired,
     request->profileSource = (gc_u32)profileSource;
     request->profileSlot = (profileSlot >= 1 && profileSlot <= CONFIG_NUM_SLOTS)
         ? (gc_u32)profileSlot : 0u;
-    if (g_app.loadedSharedSlot > 0 && !g_app.guiHasUserModifiedValues) {
+    if (service_client_uses_loaded_shared_reference(profileSource, g_app.loadedSharedSlot, g_app.guiHasUserModifiedValues)) {
         request->flags |= SERVICE_REQUEST_FLAG_SHARED_SLOT |
             (((DWORD)g_app.loadedSharedSlot & SERVICE_REQUEST_SHARED_SLOT_MASK)
                 << SERVICE_REQUEST_SHARED_SLOT_SHIFT);

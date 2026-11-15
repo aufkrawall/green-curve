@@ -7,7 +7,7 @@ namespace {
 struct Host {
     int saves = 0, changes = 0, closes = 0, confirms = 0, checks = 0, inputChanges = 0, previewChanges = 0;
     gc_u32 graphics = 0, memory = 0;
-    int captureReads = 0, captureAccepts = 0, captureCancels = 0, domainChanges = 0;
+    int captureReads = 0, captureAccepts = 0, captureCancels = 0, domainChanges = 0, mapped = 0;
     gc_u32 captureDomains = 0;
     bool partial = false, discardCapture = false;
     bool discard = false, failSave = false;
@@ -36,6 +36,7 @@ static bool capture_accept(void* context, bool partial, bool discard) {
 }
 static void capture_cancel(void* context) { ++((Host*)context)->captureCancels; }
 static void domains_changed(void* context) { ++((Host*)context)->domainChanges; }
+static void mapped(void* context) { ++((Host*)context)->mapped; }
 static void select(ProfileSourceWindow& window, int row) {
     SendMessageW(window.control(ProfileSourceWindow::LIST), LB_SETCURSEL, row, 0);
     SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::LIST, LBN_SELCHANGE), (LPARAM)window.control(ProfileSourceWindow::LIST));
@@ -60,11 +61,25 @@ int run_profile_source_window_tests() {
     ProfileSourceWindowCallbacks callbacks{host.get(), save, confirm, changed, closed, nullptr};
     callbacks.check = check; callbacks.inputChanged = input_changed;
     callbacks.previewChanged = preview_changed;
+    callbacks.acceptMapped = mapped;
     callbacks.captureRead = capture_read; callbacks.captureAccept = capture_accept;
     callbacks.captureCancel = capture_cancel; callbacks.captureDomainsChanged = domains_changed;
     ProfileSourceWindow window(*model, callbacks);
     host->window = &window;
     if (!window.create(nullptr, 96, false) || IsWindowVisible(window.handle())) return 9330;
+    SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::USE_MAPPED, 0);
+    if (host->mapped || IsWindowEnabled(window.control(ProfileSourceWindow::USE_MAPPED))) return 9653;
+    window.report({"Reviewed settings"}); window.mapped_ready(true);
+    SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::USE_MAPPED, BN_SETFOCUS), (LPARAM)window.control(ProfileSourceWindow::USE_MAPPED));
+    if (host->mapped || !IsWindowEnabled(window.control(ProfileSourceWindow::USE_MAPPED))) return 9654;
+    SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::USE_MAPPED, 0);
+    if (host->mapped != 1 || profile_editor_document_dirty(*model)) return 9655;
+    MSG key{}; key.hwnd = window.control(ProfileSourceWindow::USE_MAPPED); key.message = WM_KEYDOWN; key.wParam = VK_RETURN;
+    window.route(key);
+    if (host->mapped != 2) return 9673;
+    window.clear_report();
+    SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::USE_MAPPED, 0);
+    if (host->mapped != 2 || IsWindowEnabled(window.control(ProfileSourceWindow::USE_MAPPED))) return 9656;
     const LONG_PTR statusStyle = GetWindowLongPtrW(window.control(ProfileSourceWindow::STATUS), GWL_STYLE);
     if (!(statusStyle & ES_READONLY) || !(statusStyle & ES_MULTILINE) || !(statusStyle & WS_VSCROLL)) return 9348;
     const auto rows = profile_editor_source_rows(d); int point = -1, memory = -1, readOnly = -1;

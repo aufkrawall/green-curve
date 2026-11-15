@@ -6,6 +6,7 @@
 #include "profile_legacy_ini.h"
 
 static std::unique_ptr<ProfileSourceWindow> g_profileSourceWindow;
+static void gui_profile_source_refresh();
 #include "gui_profile_source_review.cpp"
 #include "gui_profile_capture.cpp"
 #include "gui_profile_transfer.cpp"
@@ -61,6 +62,7 @@ static bool gui_profile_source_open() {
         callbacks.check = gui_profile_source_check;
         callbacks.inputChanged = gui_profile_source_input_changed;
         callbacks.previewChanged = gui_profile_source_preview_changed;
+        callbacks.acceptMapped = gui_profile_source_accept_mapped;
         callbacks.captureRead = gui_profile_capture_read;
         callbacks.captureAccept = gui_profile_capture_accept;
         callbacks.captureCancel = gui_profile_capture_cancel;

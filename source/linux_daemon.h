@@ -74,7 +74,7 @@ bool linux_daemon_apply_checked(const GpuAdapterInfo* target,
                                 const DesiredSettings* desired, bool interactive,
                                 const ServiceStateEnvelope* expected,
                                 ServiceResponse* response,
-                                char* result, size_t resultSize);
+                                char* result, size_t resultSize, gc_u64 reviewedControls = 0);
 bool linux_daemon_reset_checked(const GpuAdapterInfo* target,
                                 const ServiceStateEnvelope* expected,
                                 ServiceResponse* response,

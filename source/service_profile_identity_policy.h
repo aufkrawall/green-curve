@@ -37,6 +37,11 @@
 
 #include "service_protocol.h"
 
+static inline bool service_client_uses_loaded_shared_reference(ServiceProfileSource source,
+    int loadedSlot, bool edited) {
+    return source != SERVICE_PROFILE_SOURCE_AD_HOC && loadedSlot > 0 && !edited;
+}
+
 enum ServiceProfileIdentityOutcome {
     // No slot was claimed, the claim was out of range, or neither record
     // comparison held: the apply owns the GPU without belonging to a slot.

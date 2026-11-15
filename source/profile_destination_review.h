@@ -15,6 +15,7 @@ enum ProfileDestinationReviewStage {
 // Keep on the heap; documents, topology and complete capture are intentionally
 // retained rather than narrowed to a summary or reconstructed from report text.
 struct ProfileDestinationReview {
+    bool accepted = false; // local draft choice; never serialized or applied proof
     ProfileDestinationReviewStage stage = PROFILE_REVIEW_EMPTY;
     gc_u64 sourceRevision = 0;
     ProfileDocument source{};

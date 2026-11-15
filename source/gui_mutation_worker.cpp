@@ -622,27 +622,13 @@ static bool gui_mutation_enqueue(const GuiMutationWork* work,
     return true;
 }
 
-static bool gui_mutation_stamp_request(ServiceRequest* request,
-    char* status, size_t statusSize) {
-    const GuiServiceModel& model = g_app.guiServiceModel;
-    if (!gui_service_model_ready(&model) || !model.serviceInstanceId ||
-        !model.gpuGeneration || !model.topologySignature ||
-        !g_app.guiDraft.attached || g_app.guiDraft.detached) {
-        set_message(status, statusSize,
-            "GPU state is reconnecting or the preserved draft no longer matches this GPU; refresh before applying");
-        return false;
-    }
-    request->expectedServiceInstanceId = model.serviceInstanceId;
-    request->expectedGpuGeneration = model.gpuGeneration;
-    request->expectedTopologySignature = model.topologySignature;
-    return true;
-}
+#include "gui_mutation_request_binding.h"
 
 static bool gui_mutation_queue_apply(const DesiredSettings* desired,
     bool interactive, ServiceApplyOrigin origin,
     ServiceProfileSource profileSource, int profileSlot,
     GuiMutationUiContext context, const char* source,
-    char* status, size_t statusSize) {
+    char* status, size_t statusSize, gc_u64 reviewedControls) {
     GuiMutationWork work = {};
     work.kind = GUI_MUTATION_APPLY;
     work.context = context;
@@ -656,9 +642,10 @@ static bool gui_mutation_queue_apply(const DesiredSettings* desired,
     work.queuedTickMs = GetTickCount64();
     work.notifyWindow = g_app.hMainWnd;
     if (!service_client_build_apply_request(desired, source, interactive,
-            origin, profileSource, profileSlot, &work.request,
-            status, statusSize) ||
-        !gui_mutation_stamp_request(&work.request, status, statusSize))
+            origin, profileSource, profileSlot, &work.request, status, statusSize)) return false;
+    work.request.expectedControlFingerprint = reviewedControls;
+    work.request.expectedControlDomains = reviewedControls ? 511u : 0u;
+    if (!gui_mutation_stamp_request(&work.request, status, statusSize))
         return false;
     return gui_mutation_enqueue(&work, status, statusSize);
 }

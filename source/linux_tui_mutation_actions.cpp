@@ -15,7 +15,8 @@
 // separately.
 
 void apply_to_gpu(TuiState* state) {
-    if (state->document.valid) {
+    const bool mappedSource = state->document.valid;
+    if (mappedSource && !tui_mapped_draft_available(*state)) {
         snprintf(state->status, sizeof(state->status), "Apply blocked: portable source requires destination review");
         return;
     }
@@ -25,16 +26,19 @@ void apply_to_gpu(TuiState* state) {
         return;
     }
     if (!tui_configured_gpu_allows_write(state, "Apply")) return;
-    if (!state->draftAttached ||
+    if (!mappedSource && (!state->draftAttached ||
         !linux_tui_draft_binding_matches(&state->draftBinding,
                                          &state->service,
-                                         &state->desired)) {
+                                         &state->desired))) {
         state->draftAttached = false;
         snprintf(state->status, sizeof(state->status),
                  "Apply blocked: this draft is detached from the current daemon/GPU generation; reload or restage it after review");
         return;
     }
     DesiredSettings normalized = state->desired;
+    gc_u64 controlRevision = 0;
+    if (mappedSource && !profile_mapped_draft_prepare(*state->sourceReview, state->document.value,
+        state->document.revision, normalized, controlRevision)) return;
     if (normalized.hasFan && normalized.fanMode == FAN_MODE_CURVE)
         fan_curve_normalize(&normalized.fanCurve);
     gc_u32 requestedDomains = service_desired_mutation_domains(&normalized);
@@ -63,7 +67,8 @@ void apply_to_gpu(TuiState* state) {
     bool ok = linux_daemon_apply_checked(
         state->targetGpu.valid ? &state->targetGpu : nullptr,
         &normalized, true, &state->service.state, &response,
-        result, sizeof(result));
+        result, sizeof(result), controlRevision);
+    if (mappedSource) state->sourceReview->accepted = false; // One explicit submission; never retry an unknown result.
     if (!ok) {
         // An unrecovered operation is NOT a failed one.  The write may have
         // committed; reporting it as "Apply failed" with the draft still dirty

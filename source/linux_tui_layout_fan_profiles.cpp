@@ -235,6 +235,8 @@ void draw_profile_panel(TuiCanvas* c, const TuiRect& panel) {
             c->button({x, y + 4, 30, 1}, graphics.c_str(), ACTION_SOURCE_GRAPHICS_CHOICE);
         if (vm.sourceDocument->hasMemoryOffset)
             c->button({x + 32, y + 4, 30, 1}, memory.c_str(), ACTION_SOURCE_MEMORY_CHOICE);
+        c->button({x, y + 5, 25, 1}, vm.sourceMappedAccepted ? "MAPPED DRAFT STAGED" : "USE MAPPED DRAFT",
+            ACTION_USE_MAPPED, 0, 0, vm.sourceMappedReady);
         return;
     }
     c->text(x, y + 4, panel.width - 6,

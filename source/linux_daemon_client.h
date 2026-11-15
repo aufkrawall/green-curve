@@ -38,7 +38,7 @@ static bool send_simple(unsigned int command, const DesiredSettings* desired,
                          ServiceApplyOrigin applyOrigin,
                          const ServiceStateEnvelope* expected,
                          ServiceResponse* response,
-                         char* result, size_t resultSize) {
+                         char* result, size_t resultSize, gc_u64 reviewedControls = 0) {
     ServiceRequest req;
     memset(&req, 0, sizeof(req));
     req.magic = SERVICE_PROTOCOL_MAGIC;
@@ -66,6 +66,11 @@ static bool send_simple(unsigned int command, const DesiredSettings* desired,
         req.expectedServiceInstanceId = expected->serviceInstanceId;
         req.expectedGpuGeneration = expected->gpuGeneration;
         req.expectedTopologySignature = expected->topologySignature;
+    }
+    req.expectedControlFingerprint = reviewedControls;
+    req.expectedControlDomains = reviewedControls ? 511u : 0u;
+    if (const char* reason = service_control_preconditions_reject_reason(req)) {
+        if (result) gc_strlcpy(result, resultSize, reason); return false;
     }
     ServiceResponse resp;
     memset(&resp, 0, sizeof(resp));
