@@ -1561,29 +1561,38 @@ answers with the 700 mV voltage rule its writer used. Fixtures 7390-7392
 verify the projection; 7380-7389 cover the voltage predicate. Real-window
 profile loading is not part of these pure units.
 
-## Save names what it leaves out (2026-11-12)
+## Save names what it leaves out (2026-11-15)
 
-Source anchors: `source/profile_save_policy.h`,
-`source/ui_profile_save_notice.cpp`, `source/ui_main_window.cpp`
-(PROFILE_SAVE), `source/linux_tui_actions.cpp` (ACTION_SAVE),
-`tests/curve_plan_tests.cpp` (7880-7884).
+Source anchors: `source/profile_save_policy.h`, `source/gpu_lock_ownership_policy.h`,
+`source/ui_profile_save_notice.cpp`, `source/gui_profile_commands.cpp`,
+`source/main_runtime_control.cpp`, `source/linux_tui_actions.cpp`,
+`tests/curve_plan_tests.cpp` (7880-7884, 7894-7899).
 
 - A Save with no curve or lock edit stays a partial live save of the scalar
-  domains (unchanged contract), but now counts populated graphics points whose
+  domains (unchanged contract), but counts populated graphics points whose
   programmed offset is neither zero nor the saved GPU-offset component
-  (`profile_save_count_unsaved_programmed_points()`) and says so: the Windows
-  GUI shows a warning naming the count and the first point
-  (OMITTED_EXTERNAL_CURVE), the TUI sets a status line. A curve another
-  writer programmed is never silently dropped from the user's view.
-- A lock Green Curve did not apply and the user did not edit (an
-  auto-detected flatten), saved together with inferred pre-anchor points, is
-  reported as an approximation (DETECTED_APPROXIMATION). Lock ownership is
-  "no background service" or "the service's active intent has this lock".
+  (`profile_save_count_unsaved_programmed_points()`) and never borrows unowned
+  live hardware offsets (`g_app.freqOffsets`) or external flat tails to expand
+  a draft:
+  - Windows GUI asks whether to open Capture (`MB_YESNO`, invoking
+    `gui_profile_capture_begin()` on `IDYES` after save completes) when
+    omitting external curves or approximated locks (`OMITTED_EXTERNAL_CURVE` /
+    `DETECTED_APPROXIMATION`), and TUI sets a status line pointing to Capture.
+  - Pre-tail preservation during Save (`gui_pre_tail_point_decision()`) only
+    retains Green Curve's own previously applied/active-service curve intent
+    (including `curvePointCaptured`), never synthesizing `preTailInferred`
+    entries from live `g_app.freqOffsets`.
+- Live lock detection (`detect_locked_tail_from_curve()`, gated by
+  `should_auto_detect_locked_tail_from_live_curve()` and
+  `gpu_live_lock_ownership_proven()`) refuses to adopt unowned external flat
+  tails into `g_app.locked*` or `g_app.appliedLock*` (`ownership=external`
+  log once), and preserves Green Curve's own service/client lock intent while
+  only refining `preferredCi = gpu_live_lock_preferred_ci()` when proven.
 - Diagnostics: one `profile-save: slot=... source=... notice=...
   omittedProgrammedPoints=... firstOmitted=ci... inferredPreAnchor=...` line
   per Save (Windows); the TUI logs `profile-save: slot=...
   source=staged-draft draftCurve=... omittedProgrammedPoints=...`.
-- With the detector fix (gpu-backend.md, "Curve feasibility planner"), a
-  plain external flatten is saved at its true anchor, below 700 mV if that is
-  where it starts; Save -> Reset -> Load -> Apply then plans as representable
-  (ROUND-01, 7885-7889).
+- With the detector fix (`gpu-backend.md`, "Curve feasibility planner"), an
+  explicit Capture flow -> Save -> Reset -> Load -> Apply plans as
+  representable at the true anchor (ROUND-01, 7885-7889; ownership exclusion
+  7894-7899).

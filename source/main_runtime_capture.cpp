@@ -182,7 +182,7 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
     }
 
     DesiredSettings full = {};
-    if (!capture_gui_desired_settings(&full, false, true, false, err, errSize)) return false;
+    if (!capture_gui_desired_settings(&full, false, true, err, errSize)) return false;
 
     DesiredSettings fanOnly = {};
     initialize_desired_settings_defaults(&fanOnly);
@@ -339,11 +339,11 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
 
     bool fullHasExplicitCurve = false;
     for (int i = 0; i < VF_NUM_POINTS && !fullHasExplicitCurve; i++) {
-        if (full.hasCurvePoint[i]) fullHasExplicitCurve = true;
+        if (full.hasCurvePoint[i] || full.curvePointCaptured[i]) fullHasExplicitCurve = true;
     }
 
     DesiredSettings resetFull = {};
-    if (!capture_gui_desired_settings(&resetFull, true, true, false, err, errSize)) return false;
+    if (!capture_gui_desired_settings(&resetFull, true, true, err, errSize)) return false;
 
     // Keep the VF curve request sparse. The reset-before-apply step zeros all
     // offsets and re-reads the stock curve; only user-explicit points and the
@@ -353,6 +353,8 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
             resetFull.hasCurvePoint[i] = false;
             resetFull.curvePointMHz[i] = 0;
             resetFull.curvePointFromGpuOffset[i] = 0;
+            resetFull.curvePointCaptured[i] = 0;
+            resetFull.curvePointCapturedOffsetHz[i] = 0;
         }
     }
     if (!fanChanged) {
@@ -376,7 +378,7 @@ static bool capture_gui_config_settings(DesiredSettings* desired, char* err, siz
     if (!desired) return false;
 
     DesiredSettings guiDesired = {};
-    if (!capture_gui_desired_settings(&guiDesired, true, true, false, err, errSize)) return false;
+    if (!capture_gui_desired_settings(&guiDesired, true, true, err, errSize)) return false;
 
     DesiredSettings full = {};
     build_full_live_desired_settings(&full);

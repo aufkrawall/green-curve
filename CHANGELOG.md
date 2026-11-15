@@ -45,7 +45,7 @@ Curve checks, profile transfer and capture improve.
 ### Improved
 
 - **Curve checks before Apply:** conflicts name frequency, voltage or range and guard transition peaks.
-- **Saving over another tool's curve:** Save reports unowned curves omitted from a slot.
+- **Saving over another tool's curve:** Save and lock state ignore unowned curves and offer Capture.
 - **Linux profile switching:** replaced points clear first; flatten and lock readback are verified.
 - **Linux memory clocks:** curve-only changes preserve memory; failed preparation restores prior curves.
 - **Profile matching:** exact offsets and power ratios remain matched as previews change.
@@ -60,11 +60,8 @@ Curve checks, profile transfer and capture improve.
 - **Fixed clock-floor points:** Apply refuses fixed-point edits and locks; Capture retains observations.
 - **Linux power limits:** out-of-range requests refuse before changes.
 - **Partial profiles:** point replacement requires included curves; scalar captures retain omitted curves.
-- **Linux memory recovery:** fractional offsets stay exact; rounding or unavailable verification reports mismatches.
-- **Clock offset readback:** missing ranges no longer hide readable Windows clock controls.
-- **Windows memory precision:** exact verification uses the written control; failures cannot switch controls.
-- **Memory changes:** preserve exact curves on both platforms or refuse before changes.
-- **Precise curve recovery:** Linux restores fractional offsets exactly; Reset verifies programmed zero offsets.
+- **Clock and memory recovery:** exact fractional offsets restore on both platforms; verification failures report mismatches without switching controls.
+- **Memory changes:** preserve exact curves on both platforms or refuse cleanly.
 - **Flatten editing:** retyping a selected target preserves typing and caret position.
 - **Flatten detection:** selects the true plateau start, including hidden low-voltage points.
 

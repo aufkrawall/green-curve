@@ -556,7 +556,7 @@ static void unlock_all() {
 #include "fan_curve_dialog.cpp"
 #include "xbar_dialog.cpp"
 
-static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeCurrentGlobals, bool expandLockedTail, bool captureAllCurvePoints, char* err, size_t errSize) {
+static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeCurrentGlobals, bool expandLockedTail, char* err, size_t errSize) {
     if (!desired) return false;
     initialize_desired_settings_defaults(desired);
 
@@ -600,7 +600,6 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
     }
     int lockCi = -1;
     int effectiveLockTargetMHz = 0;
-    unsigned int currentLockMHz = 0;
 #include "main_runtime_control.cpp"
 #include "main_tray_autostart.cpp"
 #include "main_startup_task_runtime.cpp"

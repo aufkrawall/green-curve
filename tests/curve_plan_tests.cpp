@@ -20,6 +20,7 @@
 #include "curve_feasibility_message.h"
 #include "curve_plan_fixtures.h"
 #include "curve_plan_precision_cases.h"
+#include "gpu_lock_ownership_policy.h"
 #include "gui_graph_axis_policy.h"
 #include "main_layout_policy.h"
 #include "profile_save_policy.h"
@@ -469,6 +470,83 @@ int run_ui_cases() {
     return 0;
 }
 
+int run_ownership_exclusion_cases() {
+    // 7894-7896 (§8.5 Step 8 / SAVE-01 / PLAN-11): live flat-tail ownership
+    // and pre-tail request inference must never silently adopt external state.
+    GpuLiveLockOwnershipContext svcUnowned{};
+    svcUnowned.isServiceProcess = true;
+    svcUnowned.serviceHasActiveDesired = false;
+    svcUnowned.serviceActiveHasLock = false;
+    svcUnowned.appliedLockMode = 1; // even stale applied field without service lock
+    svcUnowned.appliedLockCi = 40;
+    svcUnowned.appliedLockFreq = 1500;
+    if (gpu_live_lock_ownership_proven(svcUnowned) || gpu_live_lock_preferred_ci(svcUnowned) != -1)
+        return 7894;
+
+    GpuLiveLockOwnershipContext svcOwned = svcUnowned;
+    svcOwned.serviceHasActiveDesired = true;
+    svcOwned.serviceActiveHasLock = true;
+    svcOwned.serviceLockCi = 45;
+    svcOwned.serviceLockMHz = 1800;
+    if (!gpu_live_lock_ownership_proven(svcOwned) || gpu_live_lock_preferred_ci(svcOwned) != 45)
+        return 7894;
+
+    GpuLiveLockOwnershipContext client{};
+    client.isServiceProcess = false;
+    client.usingBackgroundService = true;
+    client.appliedLockMode = 1;
+    client.appliedLockCi = 45;
+    client.appliedLockFreq = 1800;
+    if (gpu_live_lock_ownership_proven(client) || gpu_live_lock_preferred_ci(client) != -1)
+        return 7895;
+
+    GpuLiveLockOwnershipContext standaloneUnowned{};
+    if (gpu_live_lock_ownership_proven(standaloneUnowned) ||
+        gpu_live_lock_preferred_ci(standaloneUnowned) != -1)
+        return 7895;
+
+    GpuLiveLockOwnershipContext standaloneOwned{};
+    standaloneOwned.appliedLockMode = 1;
+    standaloneOwned.appliedLockCi = 52;
+    standaloneOwned.appliedLockFreq = 1950;
+    if (!gpu_live_lock_ownership_proven(standaloneOwned) ||
+        gpu_live_lock_preferred_ci(standaloneOwned) != 52)
+        return 7895;
+
+    // PLAN-11: unowned external pre-tail offsets (no appliedMHz, no active point)
+    // must NOT be retained when re-locking; Green Curve's own applied pre-tail IS retained.
+    const GuiPreTailPointDecision externalPreTail = gui_pre_tail_point_decision(
+        true, false, 0, false, false, 0, false, false, 0);
+    if (externalPreTail.retain || externalPreTail.overrideMHz || externalPreTail.captured)
+        return 7896;
+
+    const GuiPreTailPointDecision ownAppliedProjected = gui_pre_tail_point_decision(
+        true, false, 1545, true, false, 0, false, false, 0);
+    if (!ownAppliedProjected.retain || !ownAppliedProjected.fromGpuOffset ||
+        ownAppliedProjected.captured || ownAppliedProjected.overrideMHz != 1545)
+        return 7897;
+
+    const GuiPreTailPointDecision ownAppliedAbsolute = gui_pre_tail_point_decision(
+        true, false, 1600, false, true, 1600, false, false, 0);
+    if (!ownAppliedAbsolute.retain || ownAppliedAbsolute.fromGpuOffset ||
+        ownAppliedAbsolute.captured || ownAppliedAbsolute.overrideMHz != 1600)
+        return 7898;
+
+    const GuiPreTailPointDecision ownCaptured = gui_pre_tail_point_decision(
+        true, false, 0, false, false, 0, false, true, -15000500LL);
+    if (!ownCaptured.retain || !ownCaptured.captured || ownCaptured.capturedOffsetHz != -15000500LL ||
+        ownCaptured.overrideMHz != 0)
+        return 7899;
+
+    const GuiPreTailPointDecision explicitSkip = gui_pre_tail_point_decision(
+        true, true, 1600, false, true, 1600, false, false, 0);
+    if (explicitSkip.retain) return 7899;
+
+    // SAVE-01 with unowned external curve: live tail recognition does NOT flip appliedCurveOrLock.
+    if (profile_save_uses_gui_capture(false, false, false)) return 7899;
+    return 0;
+}
+
 }  // namespace
 
 // Isolate platform SDK macros from the host-neutral cases above.
@@ -483,5 +561,6 @@ int run_curve_plan_tests() {
     if (int failure = run_detect_cases()) return failure;
     if (int failure = run_planner_cases()) return failure;
     if (int failure = run_save_and_round_trip_cases()) return failure;
+    if (int failure = run_ownership_exclusion_cases()) return failure;
     return run_ui_cases();
 }

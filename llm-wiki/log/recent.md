@@ -5,6 +5,26 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-15: Exclude unowned external state from Save and live lock detection
+
+- Isolated live lock adoption and Save pre-tail preservation from unowned
+  external GPU state (`source/gpu_lock_ownership_policy.h`, `source/gpu_backend.cpp`,
+  `source/main_gpu_state.cpp`, `source/main_state_sync.cpp`,
+  `source/main_runtime_control.cpp`, `source/main_runtime_capture.cpp`,
+  `source/main_shell.cpp`). Unowned live flat tails no longer populate
+  `g_app.locked*` / `g_app.appliedLock*` (`ownership=external` logged once),
+  removed dormant `captureAllCurvePoints`, and constrained `preTailInferred`
+  exclusively to Green Curve's own previously applied/active-service intent
+  (including `curvePointCaptured`).
+- Updated Windows GUI omission confirmation (`source/ui_profile_save_notice.cpp`,
+  `source/gui_profile_commands.cpp`) to offer opening Capture after Save on
+  `IDYES`, and updated Linux TUI Save omission status to count
+  `curvePointCaptured` and direct the user to Capture (`source/linux_tui_actions.cpp`).
+- Regressions (`tests/curve_plan_tests.cpp`, assertions `7894-7899`), source
+  gates (`tools/ui_gates.py`), `--gates`, `--test`, `--check --target all`, and
+  WSL Linux UBSan regressions pass. Hardware live-curve Save/capture runs remain
+  unverified. See [config-profiles.md](../config-profiles.md#save-names-what-it-leaves-out-2026-11-15).
+
 ## 2026-11-15: Backend modeled lockless transition integration
 
 - Connected shared modeled lockless transition preflight and post-reset review

@@ -3319,8 +3319,8 @@ def run_source_regression_checks():
                  "mutation completion rebases from the service's complete active intent, preserving VF state after fan-only apply")
     require_text(main_runtime_control_cpp, "curvePoints=%d (%s)", "GUI capture logs sparse curve point list")
     require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"), "point74=%d/%u point75=%d/%u point76=%d/%u", "profile save logs edited pre-tail VF points")
-    require_text(main_runtime_capture_cpp, "capture_gui_desired_settings(&resetFull, true, true, false", "apply capture keeps sparse VF curve intent")
-    require_text(main_runtime_capture_cpp, "capture_gui_desired_settings(&guiDesired, true, true, false", "profile save capture keeps sparse VF curve intent")
+    require_text(main_runtime_capture_cpp, "capture_gui_desired_settings(&resetFull, true, true, err", "apply capture keeps sparse VF curve intent")
+    require_text(main_runtime_capture_cpp, "capture_gui_desired_settings(&guiDesired, true, true, err", "profile save capture keeps sparse VF curve intent")
     require_text(config_profile_repair_cpp, "profile repair: removed non-tail readback artifact", "profile load repairs logged non-tail readback artifacts")
     require_text(main_gpu_state_cpp, "skippedLockedTail ? 4 : 3", "selective GPU offset detection rejects two-point high-edit false positives")
 
@@ -4303,8 +4303,7 @@ def run_source_regression_checks():
     require_text(gpu_backend_apply_cpp, "tail uniform floor offset=%d", "correction pass logs uniform tail floor offset write")
     require_text(gpu_backend_apply_targets_h, "tail && lockMode == LOCK_MODE_FLATTEN", "initial tail loop uses uniform floor for non-lock tail points")
 
-    # FP-02-002: Pre-tail point capture after restart (non-zero offset detection, guarded by profile load check)
-    require_text(os.path.join(SOURCE_DIR, "main_runtime_control.cpp"), "preTailInferred", "pre-tail user-modified points inferred from non-zero live offset (guarded by hasPreTailExplicit)")
+    require_text(os.path.join(SOURCE_DIR, "main_runtime_control.cpp"), "preTail.retain", "pre-tail retention uses proven Green Curve applied intent")
 
     # FP-02-003: Stale NVML memory VF offset cleared on fresh service start
     require_text(os.path.join(SOURCE_DIR, "main_state_sync.cpp"),

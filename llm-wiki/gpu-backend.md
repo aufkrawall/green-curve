@@ -768,12 +768,12 @@ Source anchors: `source/curve_feasibility_plan.h`,
   per issue.
 - **Live flatten detection** (`vf_recognize_flat_tail()` in
   `source/vf_flat_tail_recognition.h`, used by
-  `detect_locked_tail_from_curve()`): candidates in ascending index over
+  `detect_locked_tail_from_curve()`, gated together with `should_auto_detect_locked_tail_from_live_curve()` by `gpu_live_lock_ownership_proven()` in `source/gpu_lock_ownership_policy.h`): candidates in ascending index over
   listed non-floor points; the first whose whole populated tail is flat wins
   (exact kHz with at least 1 tail point, or within 1 MHz with at least 3,
   plateau = rounded mean). The former exact-first pass over >= 700 mV points
   anchored a Pascal external flatten at point 67 (1125 mV) instead of its
-  true start below 700 mV. Diagnostic: `lock detect: ...`.
+  true start below 700 mV. Only Green Curve-owned locks (`service` or `client`) refine `preferredCi`; unowned live flat tails log `ownership=external` once and are ignored (`locked*`/`appliedLock*`), while active owned locks keep `"live lock detection suppressed; preserving intent"`. Diagnostic: `lock detect: ...`.
 - **Passive pin/limit getters (inventory).** Both backends
   resolve the same read-only NVML clock/limit set:
   `nvmlDeviceGetClock` (only `NVML_CLOCK_ID_CURRENT` is used),

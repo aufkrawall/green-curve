@@ -487,6 +487,8 @@ static void set_gui_state_dirty(bool dirty) {
     g_app.guiStateDirty = dirty;
 }
 
+#include "gpu_lock_ownership_policy.h"
+
 static bool gui_state_dirty() {
     return g_app.guiStateDirty;
 }
@@ -497,17 +499,15 @@ static bool should_accept_service_curve_lock_detection() {
     return true;
 }
 static bool should_auto_detect_locked_tail_from_live_curve() {
-    if (app_is_service_process()
-        && g_serviceHasActiveDesired
-        && g_serviceActiveDesired.hasLock
-        && g_serviceActiveDesired.lockCi >= 0
-        && g_serviceActiveDesired.lockMHz > 0) {
+    if (!gpu_live_lock_ownership_proven({
+            app_is_service_process(), g_serviceHasActiveDesired,
+            g_serviceHasActiveDesired && g_serviceActiveDesired.hasLock,
+            g_serviceHasActiveDesired ? g_serviceActiveDesired.lockCi : -1,
+            g_serviceHasActiveDesired ? g_serviceActiveDesired.lockMHz : 0u,
+            g_app.usingBackgroundService, g_app.appliedLockCi,
+            g_app.appliedLockFreq, (int)g_app.appliedLockMode}))
         return false;
-    }
-    if (g_app.usingBackgroundService) {
-        return should_accept_service_curve_lock_detection();
-    }
-    return true;
+    return g_app.lockedCi < 0 || g_app.lockedCi >= VF_NUM_POINTS || g_app.lockedFreq == 0;
 }
 static void persist_runtime_selective_gpu_offset_request(int gpuOffsetMHz, int excludeLowCount) {
     if (!g_app.configPath[0]) return;

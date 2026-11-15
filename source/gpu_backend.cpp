@@ -746,57 +746,46 @@ static void sync_applied_lock_state_from_curve() {
 }
 
 static void detect_locked_tail_from_curve() {
-    int preferredCi = (g_app.lockedFreq > 0 && g_app.lockedCi >= 0 && g_app.lockedCi < VF_NUM_POINTS)
-        ? g_app.lockedCi
-        : -1;
-    if (!should_auto_detect_locked_tail_from_live_curve()) {
-        if (preferredCi >= 0) debug_log("detect_locked_tail_from_curve: live lock detection suppressed; preserving intent ci=%d mhz=%u\n", g_app.lockedCi, g_app.lockedFreq);
+    const GpuLiveLockOwnershipContext ownershipCtx{
+        app_is_service_process(), g_serviceHasActiveDesired,
+        g_serviceHasActiveDesired && g_serviceActiveDesired.hasLock,
+        g_serviceHasActiveDesired ? g_serviceActiveDesired.lockCi : -1,
+        g_serviceHasActiveDesired ? g_serviceActiveDesired.lockMHz : 0u,
+        g_app.usingBackgroundService, g_app.appliedLockCi,
+        g_app.appliedLockFreq, (int)g_app.appliedLockMode};
+    if (!gpu_live_lock_ownership_proven(ownershipCtx)) {
+        // Never adopt an unowned live flat tail as appliedLock* or locked* (§5.3 / §8.5).
+        // Log read-only recognition for diagnostics; external curves enter intent only via Capture.
+        const VfFlatTailRecognition rec = (g_app.numVisible >= 2)
+            ? vf_recognize_flat_tail(g_app.curve, g_app.vfFloorBinding.floor, 1, 3)
+            : VfFlatTailRecognition{};
+        debug_log_on_change("lock detect: ownership=external found=%d anchor=ci%d mv=%u plateau=%u MHz (ignored for applied lock state)\n",
+            rec.found ? 1 : 0, rec.found ? rec.anchorCi : -1,
+            (rec.found && rec.anchorCi >= 0) ? g_app.curve[rec.anchorCi].volt_uV / 1000u : 0u,
+            rec.found ? rec.plateauMHz : 0u);
         return;
     }
+    int preferredCi = gpu_live_lock_preferred_ci(ownershipCtx);
+    if (!should_auto_detect_locked_tail_from_live_curve()) {
+        if (g_app.lockedCi >= 0) debug_log("detect_locked_tail_from_curve: live lock detection suppressed; preserving intent ci=%d mhz=%u\n", g_app.lockedCi, g_app.lockedFreq);
+        return;
+    }
+    if (g_app.numVisible < 2 || preferredCi < 0) return;
     g_app.lockedVi = -1;
     g_app.lockedCi = -1;
     g_app.lockedFreq = 0;
     g_app.lockMode = LOCK_MODE_NONE;
     g_app.guiLockTracksAnchor = true;
     sync_applied_lock_state_from_curve();
-    if (g_app.numVisible < 2) return;
-    if (preferredCi >= 0) {
-        if (restore_locked_tail_from_curve_index_exact(preferredCi)) {
-            sync_applied_lock_state_from_curve();
-            return;
-        }
-        if (restore_locked_tail_from_curve_index_tolerant(preferredCi, 1)) {
-            sync_applied_lock_state_from_curve();
-            return;
-        }
-    }
-    // Candidates in ascending voltage over every writable listed point, each
-    // judged by the exact rule (>= 1 tail point) or the 1 MHz tolerant rule
-    // (>= 3 tail points).  An exact-kHz run at the top of the curve must not
-    // preempt an earlier plateau that carries sub-MHz bin jitter
-    // (vf_flat_tail_recognition.h).
-    const VfFlatTailRecognition rec = vf_recognize_flat_tail(
-        g_app.curve, g_app.vfFloorBinding.floor, 1, 3);
-    int recVi = -1;
-    for (int vi = 0; rec.found && vi < g_app.numVisible; vi++) {
-        if (g_app.visibleMap[vi] == rec.anchorCi) { recVi = vi; break; }
-    }
-    debug_log_on_change("lock detect: found=%d anchor=ci%d vi=%d mv=%u plateau=%u MHz"
-        " tail=%d exact=%d tolerance=%d MHz maxDeviation=%d kHz candidates=%d\n",
-        rec.found ? 1 : 0, rec.anchorCi, recVi,
-        rec.anchorCi >= 0 ? g_app.curve[rec.anchorCi].volt_uV / 1000u : 0u,
-        rec.plateauMHz, rec.tailCount, rec.exact ? 1 : 0, rec.toleranceMHz,
-        rec.maxDeviationKHz, rec.candidatesTried);
-    if (rec.found && recVi >= 0 && recVi < g_app.numVisible - 1) {
-        g_app.lockedVi = recVi;
-        g_app.lockedCi = rec.anchorCi;
-        g_app.lockedFreq = rec.plateauMHz;
-        g_app.lockMode = LOCK_MODE_FLATTEN;
-        g_app.guiLockTracksAnchor = true;
+    if (restore_locked_tail_from_curve_index_exact(preferredCi)) {
         sync_applied_lock_state_from_curve();
         return;
     }
-    // No lock detected - appliedLock already synced at function entry.
+    if (restore_locked_tail_from_curve_index_tolerant(preferredCi, 1)) {
+        sync_applied_lock_state_from_curve();
+        return;
+    }
+    debug_log_on_change("lock detect: ownership=proven preferred=ci%d restore failed\n", preferredCi);
 }
 
 #include "gpu_backend_snapshot.h"

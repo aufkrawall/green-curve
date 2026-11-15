@@ -611,7 +611,9 @@ tables for the 2400 MHz anchor and 1425 MHz tail cases; the RTX 5070 floor.
   missing points refused; evidence classes; issue capacity (8 plus omitted
   count).
 - 7880-7884 SAVE-01: unsaved programmed points counted (58, first 22), the
-  notice choice, the inferred pre-anchor count.
+  notice choice, the inferred pre-anchor count; 7894-7899 isolate unowned
+  external flat tails and external `freqOffsets` from `locked*` / `preTailInferred`
+  while preserving Green Curve's own applied/captured pre-tail intent.
 - 7885-7889 ROUND-01: detected anchor -> slot -> stock -> plan is
   representable before and after the reset; the old anchor is refused at
   point 22.

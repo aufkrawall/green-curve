@@ -1530,7 +1530,7 @@ def check_profile_draft_replacement(ctx, require_text):
                           "unavailable target comparison cannot discard dirty GUI values implicitly")
 
 
-def check_canonical_tui_documents(ctx, require_text):
+def check_canonical_tui_documents(ctx, require_text, forbid_text):
     actions = _p(ctx, "linux_tui_actions.cpp")
     require_text(actions, "profile_editor_source_candidate(*source, loaded)",
                  "TUI source loading retains the canonical document separately from display values")
@@ -1582,10 +1582,18 @@ def check_canonical_tui_documents(ctx, require_text):
     require_text(actions, "state->document.unsaved = false;", "successful source Save clears the unsaved-capture marker")
     ctx.require_order_in_operation(_p(ctx, "linux_tui_render.cpp"), "void tui_handle_event(", "tui_capture_modal_event(*state, event,",
                                    "tui_profile_load_event(", "capture modals isolate input before draft edits and file actions")
+    forbid_text(_p(ctx, "main_runtime_control.cpp"), "captureAllCurvePoints",
+                "dormant full-curve live adoption parameter is removed")
+    forbid_text(_p(ctx, "main_runtime_control.cpp"), "g_app.freqOffsets",
+                "request builder never adopts external live freqOffsets as intent")
+    require_text(_p(ctx, "main_runtime_control.cpp"), "gui_pre_tail_point_decision(",
+                 "pre-tail inference only retains proven Green Curve applied intent")
+    require_text(_p(ctx, "gpu_backend.cpp"), "gpu_live_lock_ownership_proven(",
+                 "live flat-tail lock detection never fabricates applied lock state from unowned curves")
 
 
 def check_all(ctx, require_text, forbid_text):
-    check_canonical_tui_documents(ctx, require_text)
+    check_canonical_tui_documents(ctx, require_text, forbid_text)
     check_profile_draft_replacement(ctx, require_text)
     check_visibility_neutral_projection(ctx, require_text, forbid_text)
     check_manual_refresh_preserves_presentation(ctx, require_text, forbid_text)

@@ -1,7 +1,6 @@
     bool lockTracksAnchor = g_app.guiLockTracksAnchor;
     if (hasLock) {
         lockCi = g_app.visibleMap[g_app.lockedVi];
-        currentLockMHz = displayed_curve_mhz(g_app.curve[lockCi].freq_kHz);
         effectiveLockTargetMHz = (int)g_app.lockedFreq;
         {
             if (g_app.guiDraft.attached) {
@@ -11,8 +10,6 @@
                 }
                 effectiveLockTargetMHz =
                     (int)g_app.guiDraft.curveMHz[lockCi];
-            } else if (effectiveLockTargetMHz <= 0 && captureAllCurvePoints) {
-                effectiveLockTargetMHz = (int)currentLockMHz;
             }
             if (effectiveLockTargetMHz <= 0) {
                 set_message(err, errSize, "Invalid or missing MHz value for point %d", lockCi);
@@ -40,7 +37,6 @@
 
     for (int vi = 0; vi < g_app.numVisible; vi++) {
         int ci = g_app.visibleMap[vi];
-        unsigned int currentMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
         int mhz = 0;
         if (hasLock && expandLockedTail && vi >= g_app.lockedVi) {
             mhz = effectiveLockTargetMHz;
@@ -48,9 +44,7 @@
             continue;
         } else {
             const char* pointText = g_app.guiDraft.curveText[ci];
-            if (!pointText[0] && captureAllCurvePoints) {
-                mhz = (int)currentMHz;
-            } else if (!g_app.guiDraft.curveValueValid[ci] ||
+            if (!g_app.guiDraft.curveValueValid[ci] ||
                 !parse_int_strict(pointText, &mhz) || mhz <= 0) {
                 set_message(err, errSize, "Invalid MHz value for point %d", ci);
                 return false;
@@ -58,21 +52,19 @@
         }
         parsedCurveMHz[ci] = mhz;
         parsedCurveHave[ci] = true;
-        bool userExplicit = g_app.guiCurvePointExplicit[ci];
-        (void)userExplicit;
     }
 
     int previousRequestedCurveMHz = 0;
     int previousRequestedCurveCi = -1;
 
     // If any pre-tail point was explicitly set from a profile load, don't
-    // infer pre-tail points from live GPU offsets (would leak previous profile).
-    bool inferPreTailFromGpu = hasLock;
+    // infer pre-tail points from previous applied state (would merge old profile).
+    bool inferPreTailFromApplied = hasLock;
     if (hasLock) {
-        inferPreTailFromGpu = true;
-        for (int pi = 0; pi < g_app.lockedVi && inferPreTailFromGpu; pi++) {
+        inferPreTailFromApplied = true;
+        for (int pi = 0; pi < g_app.lockedVi && inferPreTailFromApplied; pi++) {
             int pci = g_app.visibleMap[pi];
-            if (g_app.guiCurvePointExplicit[pci]) inferPreTailFromGpu = false;
+            if (g_app.guiCurvePointExplicit[pci]) inferPreTailFromApplied = false;
         }
     }
     for (int vi = 0; vi < g_app.numVisible; vi++) {
@@ -80,12 +72,28 @@
         if (!parsedCurveHave[ci]) continue;
         bool lockTailPoint = hasLock && expandLockedTail && vi >= g_app.lockedVi;
         int mhz = lockTailPoint ? effectiveLockTargetMHz : parsedCurveMHz[ci];
-        unsigned int currentMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
         int effectiveMHz = mhz;
-        bool preTailInferred = inferPreTailFromGpu && !lockTailPoint && vi < g_app.lockedVi
-            && g_app.freqOffsets[ci] != 0;
-        bool explicitPoint = captureAllCurvePoints || g_app.guiCurvePointExplicit[ci]
-            || (hasLock && ci == lockCi && !lockTracksAnchor) || preTailInferred;
+        const bool serviceHasActive = g_app.serviceActiveDesiredValid;
+        const GuiPreTailPointDecision preTail = gui_pre_tail_point_decision(
+            inferPreTailFromApplied && !lockTailPoint && vi < g_app.lockedVi,
+            g_app.guiCurvePointExplicit[ci],
+            g_app.appliedCurveMHz[ci],
+            g_app.appliedCurveFromGpuOffset[ci],
+            serviceHasActive && g_app.serviceActiveDesired.hasCurvePoint[ci] != 0,
+            serviceHasActive ? g_app.serviceActiveDesired.curvePointMHz[ci] : 0u,
+            serviceHasActive && g_app.serviceActiveDesired.curvePointFromGpuOffset[ci] != 0,
+            serviceHasActive && g_app.serviceActiveDesired.curvePointCaptured[ci] != 0,
+            serviceHasActive ? g_app.serviceActiveDesired.curvePointCapturedOffsetHz[ci] : 0LL);
+        if (preTail.retain && preTail.captured) {
+            desired->curvePointCaptured[ci] = 1;
+            desired->curvePointCapturedOffsetHz[ci] = preTail.capturedOffsetHz;
+            continue;
+        }
+        if (preTail.retain && preTail.overrideMHz > 0) {
+            effectiveMHz = (int)preTail.overrideMHz;
+        }
+        bool explicitPoint = g_app.guiCurvePointExplicit[ci]
+            || (hasLock && ci == lockCi && !lockTracksAnchor) || preTail.retain;
         if (previousRequestedCurveCi >= 0 && effectiveMHz < previousRequestedCurveMHz) {
             if (lockTailPoint) {
                 effectiveMHz = previousRequestedCurveMHz;
@@ -99,20 +107,17 @@
         }
         previousRequestedCurveMHz = effectiveMHz;
         previousRequestedCurveCi = ci;
-        if (lockTailPoint || explicitPoint || (captureAllCurvePoints && (unsigned int)effectiveMHz != currentMHz)) {
+        if (lockTailPoint || explicitPoint) {
             desired->hasCurvePoint[ci] = true;
             desired->curvePointMHz[ci] = (unsigned int)effectiveMHz;
             // The number above is only an absolute TARGET when it came from the
-            // user.  Two ways it did not: the editor is showing a value carried
+            // user. Two ways it did not: the editor is showing a value carried
             // in from a base_plus_gpu_offset profile (or from an applied intent
-            // that was), and preTailInferred, which literally means "this point
-            // exists in the request because the GPU offset put it there".  Both
-            // are projections over a stock base the driver re-reports differently
-            // under load, so they are sent as offset intent.  A locked tail point
-            // is neither: the lock target is its own absolute.
+            // that was), and preTail retention of Green Curve's own projected
+            // pre-anchor intent. Neither reads external live offsets.
             desired->curvePointFromGpuOffset[ci] = gc_bool8_from_bool(
                 !lockTailPoint &&
-                (preTailInferred || g_app.guiCurvePointFromGpuOffset[ci]));
+                ((preTail.retain && preTail.fromGpuOffset) || g_app.guiCurvePointFromGpuOffset[ci]));
         }
     }
 

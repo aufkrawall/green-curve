@@ -110,8 +110,9 @@ static void gui_profile_save_command() {
             gc_message_box(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
             break;
         }
+        bool captureRequested = false;
         const ProfileSaveNotice saveNotice = report_profile_save_omissions(
-            slot, &desired, usedGuiCapture, lockFromUserEdit);
+            slot, &desired, usedGuiCapture, lockFromUserEdit, &captureRequested);
         populate_desired_into_gui(&desired);
         sync_applied_profile_from_service_metadata();
         refresh_profile_controls_from_config();
@@ -122,5 +123,8 @@ static void gui_profile_save_command() {
         else
             set_profile_status_text("Saved the current GUI values to slot %d.", slot);
         invalidate_main_window();
+        if (captureRequested) {
+            gui_profile_capture_begin();
+        }
     } while (false);
 }

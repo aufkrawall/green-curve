@@ -606,7 +606,8 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
             const DesiredSettings& saved = state->desired;
             bool draftHasCurve = saved.hasLock && saved.lockMHz > 0;
             for (int ci = 0; ci < VF_NUM_POINTS && !draftHasCurve; ++ci)
-                draftHasCurve = saved.hasCurvePoint[ci] && saved.curvePointMHz[ci] > 0;
+                draftHasCurve = (saved.hasCurvePoint[ci] && saved.curvePointMHz[ci] > 0) ||
+                    saved.curvePointCaptured[ci] != 0;
             int omitted = 0;
             int firstOmitted = -1;
             if (!draftHasCurve && state->serviceOnline) {
@@ -629,7 +630,7 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
             if (omitted > 0) {
                 snprintf(state->status, sizeof(state->status),
                     "Saved slot %d without the GPU's current VF curve: it was not set by"
-                    " Green Curve (%d programmed points) and is not included",
+                    " Green Curve (%d programmed points); use Capture current GPU settings",
                     state->currentSlot, omitted);
             } else {
                 snprintf(state->status, sizeof(state->status),

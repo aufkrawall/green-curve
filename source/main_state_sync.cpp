@@ -516,15 +516,9 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot,
             debug_log("apply_service_snapshot_to_app: adopted service lock ci=%d mhz=%u mode=%s visible=%d\n",
                 g_app.lockedCi, g_app.lockedFreq, lock_mode_name(g_app.lockMode), g_app.lockedVi);
         } else {
-            // RC7 fix: when the snapshot reports hasLock=false (e.g. after
-            // a GPU device reconnect where the reapply hasn't completed, or
-            // after a RESET), clear the GUI-side lock FIRST so that
-            // detect_locked_tail_from_curve() can properly re-detect from
-            // the live curve.  Without this, should_accept_service_curve_
-            // lock_detection() would return false (lockedCi >= 0 from old
-            // snapshot) and detect_locked_tail_from_curve would see
-            // should_auto_detect_locked_tail_from_live_curve() return false,
-            // preserving the stale lock indefinitely.
+            // When the service authoritatively reports no lock, clear any stale
+            // adopted lock state without adopting an unowned live flat tail
+            // from g_app.curve (§5.3 / §8.5).
             g_app.lockedCi = -1;
             g_app.lockedFreq = 0;
             g_app.lockMode = LOCK_MODE_NONE;
@@ -534,7 +528,6 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot,
             g_app.appliedLockFreq = 0;
             g_app.appliedLockVi = -1;
             g_app.appliedLockMode = LOCK_MODE_NONE;
-            detect_locked_tail_from_curve();
         }
     }
 

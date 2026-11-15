@@ -14,7 +14,9 @@
 #include "profile_save_policy.h"
 
 static ProfileSaveNotice report_profile_save_omissions(int slot,
-    const DesiredSettings* saved, bool usedGuiCapture, bool lockFromUserEdit) {
+    const DesiredSettings* saved, bool usedGuiCapture, bool lockFromUserEdit,
+    bool* captureRequestedOut = nullptr) {
+    if (captureRequestedOut) *captureRequestedOut = false;
     int componentKHz[VF_NUM_POINTS] = {};
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         componentKHz[ci] = saved->hasGpuOffset
@@ -39,7 +41,7 @@ static ProfileSaveNotice report_profile_save_omissions(int slot,
         profile_save_notice_name(notice), omitted, firstOmittedCi, inferred,
         saved->hasLock ? saved->lockCi : -1, saved->hasLock ? saved->lockMHz : 0u,
         lockOwned ? 1 : 0, lockFromUserEdit ? 1 : 0);
-    char text[512] = {};
+    char text[640] = {};
     if (notice == PROFILE_SAVE_NOTICE_OMITTED_EXTERNAL_CURVE) {
         const unsigned int mv = firstOmittedCi >= 0
             ? g_app.curve[firstOmittedCi].volt_uV / 1000u : 0u;
@@ -47,9 +49,12 @@ static ProfileSaveNotice report_profile_save_omissions(int slot,
             "Saved slot %d, but without the GPU's current VF curve.\n\n"
             "That curve was not set by Green Curve (%d programmed point%s, the first"
             " at %u mV), so the slot holds the GPU and memory offsets, power limit"
-            " and fan settings only. Loading it later will not restore that curve.",
+            " and fan settings only. Loading it later will not restore that curve.\n\n"
+            "Open Capture current GPU settings now?",
             slot, omitted, omitted == 1 ? "" : "s", mv);
-        gc_message_box(g_app.hMainWnd, text, "Green Curve", MB_OK | MB_ICONWARNING);
+        if (gc_message_box(g_app.hMainWnd, text, "Green Curve", MB_YESNO | MB_ICONWARNING) == IDYES) {
+            if (captureRequestedOut) *captureRequestedOut = true;
+        }
     } else if (notice == PROFILE_SAVE_NOTICE_DETECTED_APPROXIMATION) {
         const unsigned int mv = (saved->lockCi >= 0 && saved->lockCi < VF_NUM_POINTS)
             ? g_app.curve[saved->lockCi].volt_uV / 1000u : 0u;
