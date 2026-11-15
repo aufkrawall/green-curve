@@ -307,6 +307,7 @@ static bool linux_power_request_is_inert(const DesiredSettings* d,
 #include "linux_apply_graphics_submission.h"
 // Read-only feasibility of the built targets, before the first setter.
 #include "linux_backend_curve_plan.h"
+#include "linux_apply_modeled_review.h"
 
 static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
     LinuxApplyTransactionContext* context = (LinuxApplyTransactionContext*)opaque;
@@ -316,7 +317,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
         case LINUX_MUTATION_LOCK_CEILING:
             return linux_apply_arm_transition_ceiling(g, d, context->previousIntent, context->scalarReview.installedGuardRequired, &context->scalarReview.modeledCeiling);
         case LINUX_MUTATION_RESET_BASELINE:
-            return linux_apply_graphics_baseline(context);
+            return linux_apply_graphics_baseline(context) && linux_apply_post_reset_modeled_review(context);
         case LINUX_MUTATION_GPU_OFFSET:
             return linux_apply_graphics_submission(context);
         case LINUX_MUTATION_MEM_OFFSET: {
@@ -349,7 +350,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             for (int i = 0; i < VF_NUM_POINTS; ++i) {
                 const auto& built = context->plannedBuild;
                 exactMask[i] = built.pointExactOffset[i] || built.pointCapturedIntent[i];
-                authoringReplay |= built.pointExactOffset[i];
+                authoringReplay |= built.pointExactOffset[i] || built.pointCapturedIntent[i];
                 targetsHz[i] = built.pointExactOffset[i] ? built.pointExactOffsetHz[i] : built.pointCapturedOffsetHz[i];
             }
             const auto policy = authoringReplay && !g_linuxCeilingArmed
@@ -448,10 +449,13 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         if (result) gc_strlcpy(result, resultSize, preflight);
         return mutation;
     }
+    g_linuxOutgoingCeilingMHz = linux_outgoing_ceiling_mhz(g, previousIntent);
+    AuthoringModeledPrecheckContext modeledCtx = linux_apply_build_modeled_context(
+        g, d, snapshot, g_linuxOutgoingCeilingMHz, g_linuxScopedCurveCeilingTransition);
     ScalarCurveSubmissionReview scalarReview{};
     const gc_u32 graphicsDomains = SERVICE_MUTATION_DOMAIN_GPU_OFFSET | SERVICE_MUTATION_DOMAIN_VF_CURVE |
         SERVICE_MUTATION_DOMAIN_LOCK | SERVICE_MUTATION_DOMAIN_RESET_BASELINE;
-    if (!linux_authoring_scalar_transition_precheck(g, d, snapshot, scalarReview, preflight, sizeof(preflight)) ||
+    if (!linux_authoring_scalar_transition_precheck(g, d, snapshot, scalarReview, preflight, sizeof(preflight), &modeledCtx) ||
         !linux_graphics_apply_precheck(g, d, (service_desired_mutation_domains(d) & graphicsDomains) != 0,
             preflight, sizeof(preflight), scalarReview.outgoingSurface != 0)) {
         LinuxMutationResult mutation{};
@@ -464,10 +468,10 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         return mutation;
     }
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
-    g_linuxOutgoingCeilingMHz = linux_outgoing_ceiling_mhz(g, previousIntent);
     LinuxApplyTransactionContext context = {g, d, &snapshot, committedIntent,
-        previousIntent, {}, {}, d->fanPercent, false, false, false, false, graphicsRouteOverride, {}};
+        previousIntent, {}, {}, d->fanPercent, false, false, false, false, graphicsRouteOverride, {}, {}, {}};
     context.scalarReview = scalarReview;
+    context.modeledContext = modeledCtx;
     gc_u32 requestedDomains = service_desired_mutation_domains(d);
     int cleanupPointCount = 0;
     context.transitionBuild =
@@ -586,7 +590,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         requested |= LINUX_MUTATION_POWER;
     if (curveBuild.pointCount > 0)
         requested |= LINUX_MUTATION_CURVE;
-    if (d->hasLock || (requested & LINUX_MUTATION_LOCK_CEILING) || scalarReview.outgoingSurface)
+    if (d->hasLock || (requested & LINUX_MUTATION_LOCK_CEILING) || scalarReview.outgoingSurface || scalarReview.deferredModeledCheck)
         requested |= LINUX_MUTATION_LOCK;
     if (d->hasFan) requested |= LINUX_MUTATION_FAN;
     if (d->hasXbarOffsetKhz || d->hasXbarMsvddOffsetUv)

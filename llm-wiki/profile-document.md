@@ -52,11 +52,11 @@ this type independently of the live wire `DesiredSettings` (`gpu_core.h`).
 The service keeps its separate resolved runtime representation. Windows and
 the TUI retain exact source drafts, editing, capture and reviewed offline
 transfer. Reviewed scalar drafts can be staged and submitted with complete
-service control preconditions; exact graphics/curve replay remains gated pending
-transition integration. See [config-profiles.md](config-profiles.md#reviewed-source-submission-2026-11-15).
-The shared transition model and
-backend guard consumers are documented in
-[clock-transition-audit.md](clock-transition-audit.md#modeled-lockless-transition-protection-2026-11-15).
+service control preconditions; Windows and Linux modeled transition preflight and
+post-reset arming are integrated, while exact graphics/curve replay remains
+gated pending transition/scope integration. See
+[config-profiles.md](config-profiles.md#reviewed-source-submission-2026-11-15)
+and [clock-transition-audit.md](clock-transition-audit.md#modeled-lockless-transition-protection-2026-11-15).
 
 - `ProfilePointIntent` (`profile_point_intent.h`): one VF point's authoritative
   meaning. Four mutually exclusive kinds -- `PROFILE_POINT_ABSENT`,
@@ -927,8 +927,9 @@ FLATTEN protection no longer grants permission to continue unprotected. Legacy
 strategies retain their existing exception. Lockless splits remain unavailable
 without a proven composition/transition model and pin evidence; sampled curve
 MHz never supplies a guessed clamp over an unreadable external pin. Full
-lockless modeled-peak protection remains an activation prerequisite. Durable
-named-route recovery is now implemented on both platforms.
+locks; full backend modeled transition protection is integrated on both platforms
+(`authoring_modeled_transition_review.h`), while document/editor features and
+runtime replay activation remain gated.
 
 The selected scalar is checked again at submission against the reviewed value.
 A changed current refuses before that setter. Windows preserves VF controls
@@ -949,6 +950,7 @@ Windows named-control recovery now persists conservative surface coverage before
 submission and retains owned zero; see
 [persistence-schema.md](persistence-schema.md#windows-graphics-control-recovery-marker-2026-11-13).
 This closes process-local recovery evidence loss for those controls. Linux
-durability and guarded handoff are also implemented. Both platforms now retain
-outgoing controls through final handover verification; lockless modeled-peak
-protection and document/editor integration still gate replay activation.
+durability and guarded handoff are also implemented. Both platforms retain
+outgoing controls through final handover verification and enforce modeled
+lockless transition review before and after reset; remaining scope/replay and
+editor work still gate authoring activation.

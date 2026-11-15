@@ -292,8 +292,10 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     forbid_text(_p(ctx, "linux_apply_baseline.h"), "NVML_CLOCK_MEM",
                 "Apply baseline preparation never resets unrelated memory")
     submission_h = _p(ctx, "linux_apply_graphics_submission.h")
-    require_text(linux_mutation_cpp, "return linux_apply_graphics_baseline(context);",
+    require_text(linux_mutation_cpp, "linux_apply_graphics_baseline(context)",
                  "the real Apply baseline uses the tested named-control handoff")
+    require_text(linux_mutation_cpp, "linux_apply_post_reset_modeled_review(context)",
+                 "the real Apply baseline reviews modeled transition protection right after reset")
     require_text(submission_h, "linux_apply_reset_baseline(g, &baseline)",
                  "named handoff still executes the graphics-only baseline")
     require_text(submission_h, "linux_release_graphics_handoff(g, d, review, g_linuxCeilingArmed)",
@@ -345,7 +347,8 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "Linux plans protection from the actual previous intent")
     require_text(linux_mutation_cpp, "linux_apply_arm_transition_ceiling(g, d, context->previousIntent, context->scalarReview.installedGuardRequired, &context->scalarReview.modeledCeiling)",
                  "Linux arming receives the previous intent too")
-    require_text(linux_mutation_cpp, "if (d->hasLock || (requested & LINUX_MUTATION_LOCK_CEILING) || scalarReview.outgoingSurface)",
+    require_text(linux_mutation_cpp,
+                 "if (d->hasLock || (requested & LINUX_MUTATION_LOCK_CEILING) || scalarReview.outgoingSurface || scalarReview.deferredModeledCheck)",
                  "temporary protection and named handoffs always receive final verification")
     forbid_text(linux_rollback_h, "g->nvml.resetGpuLockedClocks(g->nvmlDevice);",
                 "uncertain Linux rollback cannot erase clock protection")

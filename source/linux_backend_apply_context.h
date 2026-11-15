@@ -8,6 +8,7 @@
 #define GREEN_CURVE_LINUX_BACKEND_APPLY_CONTEXT_H
 #include "curve_feasibility_message.h"
 #include "scalar_curve_submission_policy.h"
+#include "authoring_modeled_transition_review.h"
 
 struct LinuxApplyTransactionContext {
     LinuxGpuState* gpu;
@@ -34,6 +35,7 @@ struct LinuxApplyTransactionContext {
     // The build the phase plan was made from; a rebuild must keep its shape.
     LinuxCurveTargetBuildResult plannedBuild;
     ScalarCurveSubmissionReview scalarReview{};
+    AuthoringModeledPrecheckContext modeledContext{};
 };
 
 // The curve targets for this transaction: the replacement-aware build when

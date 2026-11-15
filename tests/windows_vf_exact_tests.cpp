@@ -196,6 +196,87 @@ static int windows_scalar_curve_submission_cases() {
     guard.armed = false;
     if (apply_authoring_scalar_review_refusal(guard, why, sizeof(why), &attempted) || !attempted ||
         guard.retained != 1 || driver.sets || driver.scalarWrites || driver.capWrites) return 8985;
+
+    // APPLY-11: modeled scalar-before-curve transition preflight and post-reset arming/refusals.
+    {
+        initialize(); driver.modelFrequency = true;
+        for (int i = 0; i < 8; ++i) { driver.baseHz[i] = 1000000000LL + i * 100000000LL; driver.raw[i] = 0; }
+        nvapi_read_curve(); nvapi_read_offsets();
+        g_nvml_api.getClockOffsets = scalar_get; g_nvml_api.setClockOffsets = scalar_set;
+        g_nvml_api.setGpuLockedClocks = cap_set; g_nvml_api.resetGpuLockedClocks = cap_reset;
+        DesiredSettings m{}; m.applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+        m.authoring.topologyBound = 1; m.authoring.topologyCount = 8;
+        for (int i = 0; i < 8; ++i) {
+            m.authoring.voltageUv[i] = g_app.curve[i].volt_uV;
+            m.curvePointCaptured[i] = 1;
+            m.curvePointCapturedOffsetHz[i] = -(200000000LL + i * 50000000LL);
+        }
+        m.hasGpuOffset = 1; m.gpuOffsetMHz = 100;
+        m.authoring.graphicsPrecise = 1; m.authoring.graphicsSurface = DESIRED_GRAPHICS_P0;
+        m.authoring.graphicsOffsetHz = 100000000LL;
+        AuthoringModeledPrecheckContext mCtx{};
+        mCtx.composition = CAPTURE_COMPOSITION_INDEPENDENT;
+        mCtx.clampAvailable = true; mCtx.clampAvailabilityExplicit = true;
+        mCtx.pinMutationAuthorized = true; mCtx.pinAuthorityExplicit = true;
+        ScalarCurveSubmissionReview mReview{};
+        if (!apply_authoring_precheck_before_writes(&m, false, why, sizeof(why), &mReview, &mCtx) ||
+            !mReview.installedGuardRequired || !mReview.modeledCeiling.arm ||
+            mReview.modeledCeiling.ceilingMHz != 1250 ||
+            driver.sets || driver.scalarWrites || driver.capWrites) return 8986;
+
+        mCtx.composition = CAPTURE_COMPOSITION_UNKNOWN;
+        if (apply_authoring_precheck_before_writes(&m, false, why, sizeof(why), &mReview, &mCtx) ||
+            driver.sets || driver.scalarWrites || driver.capWrites) return 8987;
+
+        mCtx.composition = CAPTURE_COMPOSITION_INDEPENDENT;
+        mCtx.pinAuthorityExplicit = false; m.applicationScope = DESIRED_SCOPE_UPDATE_INCLUDED;
+        if (apply_authoring_precheck_before_writes(&m, false, why, sizeof(why), &mReview, &mCtx) ||
+            driver.sets || driver.scalarWrites || driver.capWrites) return 8988;
+
+        m.applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+        mCtx.clampAvailable = false;
+        if (apply_authoring_precheck_before_writes(&m, false, why, sizeof(why), &mReview, &mCtx) ||
+            driver.sets || driver.scalarWrites || driver.capWrites) return 8989;
+
+        // Shaped live curve with resetOcBeforeApply defers modeled ceiling until verified baseline.
+        driver.raw[0] = 20000; nvapi_read_offsets();
+        m.resetOcBeforeApply = 1; mCtx.clampAvailable = true; mCtx.pinAuthorityExplicit = true;
+        if (!apply_authoring_precheck_before_writes(&m, false, why, sizeof(why), &mReview, &mCtx) ||
+            !mReview.deferredModeledCheck || mReview.modeledCeiling.arm ||
+            driver.sets || driver.scalarWrites || driver.capWrites) return 8990;
+
+        struct PostResetGuard {
+            unsigned int outgoingCeilingMHz = 0, capMHz = 0;
+            bool armed = false, failArm = false;
+            bool apply_modeled_plan(const ApplyClockCeilingPlan& p, const DesiredSettings*, char* msg, size_t msgSize) {
+                if (failArm || !p.arm) {
+                    if (msg && msgSize) set_message(msg, msgSize, "cap refused");
+                    return false;
+                }
+                armed = true; capMHz = p.ceilingMHz; return true;
+            }
+        } postGuard;
+        driver.raw[0] = 0; driver.scalarMHz = 0; nvapi_read_curve(); nvapi_read_offsets();
+        if (!apply_authoring_post_reset_modeled_review(&m, false, mReview, postGuard, &mCtx, why, sizeof(why)) ||
+            !postGuard.armed || postGuard.capMHz != 1250 || mReview.deferredModeledCheck) return 8991;
+
+        postGuard = {}; mReview.deferredModeledCheck = true;
+        g_app.vfFrequenciesHzValid = false;
+        if (apply_authoring_post_reset_modeled_review(&m, false, mReview, postGuard, &mCtx, why, sizeof(why)) ||
+            postGuard.armed) return 8992;
+        g_app.vfFrequenciesHzValid = true; driver.raw[0] = 20000; nvapi_read_offsets();
+        if (apply_authoring_post_reset_modeled_review(&m, false, mReview, postGuard, &mCtx, why, sizeof(why)) ||
+            postGuard.armed) return 8993;
+        driver.raw[0] = 0; nvapi_read_offsets(); driver.scalarMHz = 10;
+        if (apply_authoring_post_reset_modeled_review(&m, false, mReview, postGuard, &mCtx, why, sizeof(why)) ||
+            postGuard.armed) return 8994;
+        driver.scalarMHz = 0; ++g_app.curve[2].volt_uV;
+        if (apply_authoring_post_reset_modeled_review(&m, false, mReview, postGuard, &mCtx, why, sizeof(why)) ||
+            postGuard.armed) return 8995;
+        --g_app.curve[2].volt_uV; postGuard.failArm = true;
+        if (apply_authoring_post_reset_modeled_review(&m, false, mReview, postGuard, &mCtx, why, sizeof(why)) ||
+            postGuard.armed) return 8996;
+    }
     return 0;
 }
 static int windows_authoring_cases() {

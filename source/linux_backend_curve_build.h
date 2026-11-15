@@ -11,7 +11,7 @@ static CurvePlanInput linux_backend_curve_plan_input(LinuxGpuState*, const Desir
 // kHz builder. Both use the established uniform-floor flatten strategy.
 static LinuxCurveTargetBuildResult build_curve_targets(LinuxGpuState* g,
     const DesiredSettings* d, int* targetOffsets, bool* pointMask, int graphicsRouteOverride = 0,
-    bool rebuilding = false) {
+    bool rebuilding = false, CurveAuthoringTargets* preciseOut = nullptr) {
     if (curve_authoring_needs_exact_targets(d)) {
         int componentKHz[VF_NUM_POINTS]{};
         gc_i64 componentHz[VF_NUM_POINTS]{};
@@ -24,7 +24,7 @@ static LinuxCurveTargetBuildResult build_curve_targets(LinuxGpuState* g,
             : graphicsRouteOverride == 2 || (graphicsRouteOverride == 0 && desired_gpu_offset_uses_curve(d));
         CurveAuthoringTargetIssue issue;
         auto built = linux_build_authoring_curve_targets(in, g->backend, g->vfMask, composed,
-            targetOffsets, pointMask, issue, d->resetOcBeforeApply && !rebuilding);
+            targetOffsets, pointMask, issue, d->resetOcBeforeApply && !rebuilding, preciseOut);
         if (built.failed) lb_log("curve-authoring: target compile refused status=%d ci=%d requestedHz=%lld\n",
             (int)issue.status, issue.ci, issue.requestedHz);
         return built;

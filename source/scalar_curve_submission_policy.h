@@ -19,6 +19,7 @@ struct ScalarCurveSubmissionReview {
     gc_u32 outgoingSurface = 0;
     long long outgoingBeforeHz = 0;
     bool outgoingReleased = false, writeAttempted = false;
+    bool deferredModeledCheck = false;
     ApplyClockCeilingPlan modeledCeiling{};
 };
 static inline void scalar_curve_note_write(ScalarCurveSubmissionReview* review, bool attempted) {

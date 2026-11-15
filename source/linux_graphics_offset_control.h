@@ -3,6 +3,7 @@
 #pragma once
 #include "graphics_offset_control.h"
 #include "scalar_curve_submission_policy.h"
+#include "authoring_modeled_transition_review.h"
 
 static inline bool linux_capture_named_graphics(LinuxGpuState* g, LinuxHardwareSnapshot* snapshot, gc_u32 mask) {
     return graphics_scalar_capture(g->graphicsRecovery, snapshot->graphicsPreimage, mask,
@@ -102,14 +103,68 @@ static inline bool linux_reset_named_graphics(LinuxGpuState* g, bool retireCover
     return ok && verified;
 }
 
+static inline CurvePlanInput linux_authoring_modeled_plan_input(const LinuxGpuState* g,
+    const DesiredSettings* d, const VfFloorTopology& floor, bool scalarKnownZero,
+    int* componentKHz, gc_i64* componentHz) {
+    for (int i = 0; i < VF_NUM_POINTS; ++i) { componentKHz[i] = 0; componentHz[i] = 0; }
+    const bool independentScalar = d->authoring.graphicsPrecise &&
+        (d->authoring.graphicsSurface == DESIRED_GRAPHICS_P0 || d->authoring.graphicsSurface == DESIRED_GRAPHICS_GLOBAL);
+    int exclude = d->gpuOffsetExcludeLowCount < 0 ? 0 : d->gpuOffsetExcludeLowCount;
+    int ordinal = 0;
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        if (!g->curve[ci].freq_kHz) continue;
+        if (d->hasGpuOffset && ordinal >= exclude && !independentScalar)
+            componentKHz[ci] = d->gpuOffsetMHz * 1000;
+        const bool excluded = d->authoring.identityExclusions
+            ? d->authoring.graphicsExcluded[ci] != 0 : ordinal < exclude;
+        if (d->hasGpuOffset && !excluded && !independentScalar)
+            componentHz[ci] = desired_graphics_hz(*d);
+        ++ordinal;
+    }
+    int mn = -VF_OFFSET_RANGE_FALLBACK_LIMIT_KHZ, mx = VF_OFFSET_RANGE_FALLBACK_LIMIT_KHZ;
+    bool rangeKnown = false;
+    if (g->curveOffsetRangeKnown && g->curveOffsetMinKHz <= g->curveOffsetMaxKHz) {
+        mn = g->curveOffsetMinKHz; mx = g->curveOffsetMaxKHz; rangeKnown = true;
+    } else if (g->gpuOffsetMinMHz <= g->gpuOffsetMaxMHz && (g->gpuOffsetMinMHz || g->gpuOffsetMaxMHz)) {
+        mn = g->gpuOffsetMinMHz * 1000; mx = g->gpuOffsetMaxMHz * 1000; rangeKnown = true;
+    }
+    CurvePlanInput in{};
+    in.curve = g->curve;
+    in.programmedOffsetsKHz = g->freqOffsets;
+    in.floor = floor;
+    in.evidence = curve_plan_classify_pre_write_evidence(g->curve, g->freqOffsets,
+        in.floor, scalarKnownZero, g->vfOffsetsHzValid ? g->freqOffsetsHz : nullptr);
+    in.range.minKHz = mn;
+    in.range.maxKHz = mx;
+    in.range.source = rangeKnown ? CURVE_PLAN_RANGE_NVML_GRAPHICS : CURVE_PLAN_RANGE_POLICY_FALLBACK;
+    in.tailStrategy = d->lockMode == LOCK_MODE_HARD
+        ? CURVE_PLAN_TAIL_ABSOLUTE_TARGET : CURVE_PLAN_TAIL_UNIFORM_MIN_OFFSET;
+    in.provenanceMode = apply_lock_pretail_provenance_mode(!independentScalar,
+        in.evidence == CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE);
+    in.desired = d;
+    in.lockMode = d->hasLock ? d->lockMode : LOCK_MODE_NONE;
+    in.gpuComponentKHz = componentKHz;
+    in.gpuComponentHz = componentHz;
+    if (g->vfFrequenciesHzValid && g->vfOffsetsHzValid) {
+        in.frequencyHz = g->curveFrequencyHz;
+        in.programmedOffsetsHz = g->freqOffsetsHz;
+    }
+    in.lockGridHz = 1000000;
+    in.offsetGridHz = vf_graphics_offset_grid_hz(g->backend);
+    return in;
+}
+
 static inline bool linux_authoring_scalar_transition_precheck(const LinuxGpuState* g, const DesiredSettings* d,
-    const LinuxHardwareSnapshot& snapshot, ScalarCurveSubmissionReview& review, char* why, size_t size) {
+    const LinuxHardwareSnapshot& snapshot, ScalarCurveSubmissionReview& review, char* why, size_t size,
+    const AuthoringModeledPrecheckContext* modeled = nullptr) {
     review = {};
     if (!d) return false;
+    const bool clampCap = modeled && modeled->clampAvailabilityExplicit
+        ? modeled->clampAvailable
+        : (g && g->nvml.setGpuLockedClocks && g->nvml.resetGpuLockedClocks);
     auto p = scalar_curve_submission_plan(*d, snapshot.gpuOffsetValid && snapshot.gpuOffsetExact &&
         snapshot.gpuOffsetSurface == desired_named_graphics_surface(*d),
-        (long long)snapshot.gpuOffsetMHz * 1000000, g->freqOffsetsHz, g->vfOffsetsHzValid,
-        g->nvml.setGpuLockedClocks && g->nvml.resetGpuLockedClocks);
+        (long long)snapshot.gpuOffsetMHz * 1000000, g->freqOffsetsHz, g->vfOffsetsHzValid, clampCap);
     const gc_u32 owned = g->graphicsRecovery.ownedSurface;
     const gc_u32 incoming = desired_named_graphics_surface(*d);
     if (owned && ((d->hasGpuOffset && incoming != owned) || d->resetOcBeforeApply)) {
@@ -119,25 +174,117 @@ static inline bool linux_authoring_scalar_transition_precheck(const LinuxGpuStat
         const bool valid = graphics_offset_control_ready(release) &&
             (before.validMask & graphics_scalar_recovery_bit(owned)) && release.before.value == value &&
             (g->graphicsRecovery.prepared & graphics_scalar_recovery_bit(owned));
-        const auto handoff = scalar_curve_handoff_plan(*d, valid, (long long)value * 1000000,
-            g->nvml.setGpuLockedClocks && g->nvml.resetGpuLockedClocks);
+        const auto handoff = scalar_curve_handoff_plan(*d, valid, (long long)value * 1000000, clampCap);
         if (!scalar_curve_submission_allowed(handoff) ||
             (scalar_curve_submission_allowed(p) && handoff.status == SCALAR_CURVE_INSTALL_GUARD)) p = handoff;
-        if (scalar_curve_submission_allowed(p)) {
+        if (scalar_curve_submission_allowed(p) || (modeled && valid)) {
             review.outgoingSurface = owned; review.outgoingBeforeHz = (long long)value * 1000000;
         }
     }
+    const bool exactModeledEligible = curve_authoring_needs_exact_targets(d) && g && g->backend &&
+        g->backend->writeSupported && d->authoring.topologyBound &&
+        g->vfFrequenciesHzValid && g->vfOffsetsHzValid;
+    const bool pinAuthorized = modeled && modeled->pinAuthorityExplicit
+        ? modeled->pinMutationAuthorized
+        : authoring_pin_mutation_authorized(*d);
+    const bool hasLock = d->hasLock && d->lockMode != LOCK_MODE_NONE;
+    const bool deferToModeled = exactModeledEligible && incoming && pinAuthorized &&
+        (p.status == SCALAR_CURVE_PIN_EVIDENCE_REQUIRED ||
+         (!hasLock && p.status == SCALAR_CURVE_GUARD_UNAVAILABLE));
     if (p.status != SCALAR_CURVE_NO_SPLIT)
         lb_log("scalar-curve: preflight status=%d loweredCaptured=%d baselineDependent=%d\n",
             (int)p.status, p.loweredCaptured, p.baselineDependent ? 1 : 0);
-    if (!scalar_curve_submission_allowed(p)) {
+    if (!scalar_curve_submission_allowed(p) && !deferToModeled) {
         if (why && size) snprintf(why, size, "Curve transition: %s. Nothing was changed.", scalar_curve_submission_reason(p.status));
         return false;
     }
     review.installedGuardRequired = p.status == SCALAR_CURVE_INSTALL_GUARD;
-    review.beforeValid = (p.status != SCALAR_CURVE_NO_SPLIT || review.outgoingSurface) && incoming &&
+    review.beforeValid = (p.status != SCALAR_CURVE_NO_SPLIT || review.outgoingSurface || deferToModeled) && incoming &&
         snapshot.gpuOffsetValid && snapshot.gpuOffsetExact && snapshot.gpuOffsetSurface == incoming;
     review.beforeHz = (long long)snapshot.gpuOffsetMHz * 1000000;
+    if (modeled && curve_authoring_needs_exact_targets(d) && (!g->vfFrequenciesHzValid || !g->vfOffsetsHzValid)) {
+        if (why && size) snprintf(why, size, "Fresh exact curve samples are unavailable. Nothing was changed.");
+        return false;
+    }
+    if (!exactModeledEligible) return true;
+
+    const HardwareCaptureComposition composition = modeled ? modeled->composition : snapshot.composition;
+    auto nvml_present_scalars_zero = [&]() {
+        if (review.outgoingSurface && review.outgoingBeforeHz != 0) return false;
+        if (incoming && (!snapshot.gpuOffsetValid || !snapshot.gpuOffsetExact ||
+                snapshot.gpuOffsetSurface != incoming || snapshot.gpuOffsetMHz != 0))
+            return false;
+        if (g->nvml.getClockOffsets && incoming != CLOCK_OFFSET_SURFACE_P0) {
+            DesiredSettings q{}; q.hasGpuOffset = 1; q.authoring.graphicsPrecise = 1;
+            q.authoring.graphicsSurface = DESIRED_GRAPHICS_P0;
+            const auto p0 = graphics_offset_control_plan(q, g->nvml, g->nvmlDevice);
+            if (!graphics_offset_control_ready(p0) || p0.before.value != 0) return false;
+        }
+        if (g->nvml.getGpcClkVfOffset && incoming != CLOCK_OFFSET_SURFACE_GLOBAL) {
+            DesiredSettings q{}; q.hasGpuOffset = 1; q.authoring.graphicsPrecise = 1;
+            q.authoring.graphicsSurface = DESIRED_GRAPHICS_GLOBAL;
+            const auto gl = graphics_offset_control_plan(q, g->nvml, g->nvmlDevice);
+            if (!graphics_offset_control_ready(gl) || gl.before.value != 0) return false;
+        }
+        return true;
+    };
+    const bool scalarKnownZero = composition == CAPTURE_COMPOSITION_INDEPENDENT && nvml_present_scalars_zero();
+    VfFloorBinding boundFloor = g->vfFloor;
+    vf_floor_binding_update(&boundFloor, g->curve, g->freqOffsets, VF_NUM_POINTS, 0);
+    int componentKHz[VF_NUM_POINTS]{};
+    gc_i64 componentHz[VF_NUM_POINTS]{};
+    CurvePlanInput in = linux_authoring_modeled_plan_input(g, d, boundFloor.floor,
+        scalarKnownZero, componentKHz, componentHz);
+    const CurvePlanResult plan = curve_plan_evaluate(in);
+    if (plan.disposition == CURVE_PLAN_REFUSED || plan.disposition == CURVE_PLAN_UNAVAILABLE) {
+        const auto* lead = curve_plan_lead_issue(plan);
+        if (why && size)
+            snprintf(why, size, "Curve transition: %s. Nothing was changed.",
+                lead ? curve_plan_reason_name(lead->reason) : curve_plan_disposition_name(plan.disposition));
+        return false;
+    }
+    const bool composed = !d->authoring.graphicsPrecise ||
+        d->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT;
+    CurveAuthoringTargets preview;
+    CurveAuthoringTargetIssue issue;
+    if (!curve_authoring_build_targets(in, g->backend, g->vfMask, composed,
+            preview, issue, d->resetOcBeforeApply != 0)) {
+        if (why && size)
+            snprintf(why, size, "Exact curve preflight could not resolve point %d. Nothing was changed.", issue.ci);
+        return false;
+    }
+    const gc_i64 beforeHz = review.beforeHz;
+    const gc_i64 afterHz = incoming ? desired_graphics_hz(*d) : 0;
+    const bool resetsToStock = d->resetOcBeforeApply != 0;
+    const bool hasHandoff = review.outgoingSurface && review.outgoingBeforeHz != 0;
+    const bool multiStep = modeled ? modeled->multiStepCurve : false;
+    const bool scalarRaisesBeforeCurve = incoming && preview.pointCount > 0 &&
+        (resetsToStock ? afterHz > 0 : (!snapshot.gpuOffsetValid || !snapshot.gpuOffsetExact ||
+            snapshot.gpuOffsetSurface != incoming || afterHz > beforeHz));
+    if (scalarRaisesBeforeCurve || multiStep) {
+        AuthoringModeledTransitionInput mIn{};
+        mIn.baseline = &in;
+        mIn.targets = &preview;
+        mIn.composition = composition;
+        mIn.pinMutationAuthorized = pinAuthorized;
+        mIn.clampAvailable = clampCap;
+        mIn.scalarBeforeCurve = scalarRaisesBeforeCurve;
+        mIn.multiStepCurve = multiStep;
+        mIn.scalarBeforeHz = beforeHz;
+        mIn.scalarAfterHz = afterHz;
+        mIn.outgoingCeilingHz = modeled ? modeled->outgoingCeilingHz : 0;
+        mIn.resetsToStock = resetsToStock;
+        mIn.pureNonLoweringCapturedDelta = authoring_targets_pure_non_lowering_captured_delta(
+            *d, preview, in.programmedOffsetsHz, hasLock, hasHandoff, multiStep,
+            resetsToStock, beforeHz, afterHz);
+        mIn.hasOutgoingSurfaceHandoff = hasHandoff;
+        AuthoringModeledTransitionOutcome mOutcome{};
+        char mWhy[256]{};
+        if (!authoring_modeled_transition_preflight(mIn, review, mOutcome, mWhy, sizeof(mWhy))) {
+            if (why && size) snprintf(why, size, "Curve transition: %s. Nothing was changed.", mWhy);
+            return false;
+        }
+    }
     return true;
 }
 

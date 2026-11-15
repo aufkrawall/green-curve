@@ -63,12 +63,20 @@ static bool linux_outgoing_state_holds_clocks_down(const LinuxGpuState* g,
 
 static bool g_linuxScopedCurveCeilingTransition = false;
 
+template <class D>
+static inline auto linux_apply_ceiling_scope_is_replace_profile(const D* d, int)
+    -> decltype((void)d->applicationScope, bool()) {
+    return desired_application_scope_kind(d->applicationScope) == DESIRED_SCOPE_REPLACE_PROFILE;
+}
+template <class D>
+static inline bool linux_apply_ceiling_scope_is_replace_profile(const D*, long) { return false; }
+
 static ApplyClockCeilingPlan linux_apply_clock_ceiling_plan(
     LinuxGpuState* g, const DesiredSettings* d,
     const DesiredSettings* committed = nullptr) {
     if (!g || !d) return ApplyClockCeilingPlan{};
     return apply_clock_ceiling_plan(
-        service_request_replaces_lock_domain(d), d->hasLock != 0,
+        service_request_replaces_lock_domain(d) || g_linuxScopedCurveCeilingTransition || ((d->resetOcBeforeApply != 0 || g_linuxScopedCurveCeilingTransition) && linux_apply_ceiling_scope_is_replace_profile(d, 0)), d->hasLock != 0,
         (int)d->lockMode, d->lockMHz,
         g->nvml.setGpuLockedClocks != nullptr &&
             g->nvml.resetGpuLockedClocks != nullptr,
@@ -240,6 +248,80 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
                                       " -- PROCEEDING UNPROTECTED, the final"
                                       " state needs no NVML hard pin"));
     return !refuse;
+}
+
+// Install or tighten a post-reset modeled transition ceiling before scalar/VF
+// writes. Never loosen an already-armed tighter ceiling; on failure while
+// armed, preserve existing ceiling state so rollback stays protected.
+static bool linux_apply_arm_modeled_post_reset(LinuxGpuState* g, const DesiredSettings* d,
+    const ApplyClockCeilingPlan& modeled, char* why, size_t size) {
+    if (!modeled.required && !modeled.arm) return true;
+    if (!g || !d) {
+        if (why && size) snprintf(why, size, "%s", "modeled transition ceiling requires GPU and desired settings");
+        return false;
+    }
+    const bool cap = g->nvml.setGpuLockedClocks != nullptr &&
+        g->nvml.resetGpuLockedClocks != nullptr;
+    const ApplyClockCeilingPlan merged = apply_clock_ceiling_merge_modeled(
+        g_linuxCeilingPlan, modeled, cap);
+    if (!merged.arm) {
+        if (!g_linuxCeilingArmed) {
+            g_linuxCeilingPlan = merged;
+            g_linuxCeilingArmResult = merged.clampControlAbsent
+                ? APPLY_CEILING_ARM_UNSUPPORTED
+                : APPLY_CEILING_ARM_UNAVAILABLE;
+        }
+        if (why && size)
+            snprintf(why, size, "Post-reset modeled transition clock ceiling is unavailable (%s)",
+                apply_clock_ceiling_arm_result_name(g_linuxCeilingArmResult));
+        lb_log("apply: post-reset modeled ceiling unavailable (armResult=%s)\n",
+            apply_clock_ceiling_arm_result_name(g_linuxCeilingArmResult));
+        return false;
+    }
+    if (g_linuxCeilingArmed && g_linuxCeilingPlan.ceilingMHz > 0 &&
+        g_linuxCeilingPlan.ceilingMHz <= merged.ceilingMHz) {
+        g_linuxCeilingPlan.required = merged.required;
+        g_linuxCeilingPlan.finalPinIsCeiling = merged.finalPinIsCeiling;
+        lb_log("apply: post-reset modeled cap (%u MHz) covered by armed %u MHz\n",
+            merged.ceilingMHz, g_linuxCeilingPlan.ceilingMHz);
+        return true;
+    }
+    g_linuxCeilingWriteAttempted = true;
+    bool openNotSupported = false, symmetricNotSupported = false;
+    int armRc = g->nvml.setGpuLockedClocks(g->nvmlDevice, 0, merged.ceilingMHz);
+    if (armRc == NVML_SUCCESS) {
+        g_linuxCeilingPlan = merged;
+        g_linuxCeilingArmed = true;
+        g->retainedTransitionCeilingMHz = merged.ceilingMHz;
+        g_linuxCeilingArmResult = APPLY_CEILING_ARM_INSTALLED;
+        lb_log("apply: post-reset modeled transition ceiling armed 0..%u MHz\n", merged.ceilingMHz);
+        return true;
+    }
+    openNotSupported = (armRc == NVML_ERROR_NOT_SUPPORTED);
+    if (merged.symmetricFallbackAllowed) {
+        armRc = g->nvml.setGpuLockedClocks(g->nvmlDevice, merged.ceilingMHz, merged.ceilingMHz);
+        if (armRc == NVML_SUCCESS) {
+            g_linuxCeilingPlan = merged;
+            g_linuxCeilingArmed = true;
+            g->retainedTransitionCeilingMHz = merged.ceilingMHz;
+            g_linuxCeilingArmResult = APPLY_CEILING_ARM_INSTALLED;
+            lb_log("apply: post-reset modeled transition ceiling armed %u..%u MHz\n",
+                merged.ceilingMHz, merged.ceilingMHz);
+            return true;
+        }
+        symmetricNotSupported = (armRc == NVML_ERROR_NOT_SUPPORTED);
+    }
+    const bool unsupported = openNotSupported &&
+        (!merged.symmetricFallbackAllowed || symmetricNotSupported);
+    if (!g_linuxCeilingArmed) g_linuxCeilingPlan = merged;
+    g_linuxCeilingArmResult = unsupported ? APPLY_CEILING_ARM_UNSUPPORTED : APPLY_CEILING_ARM_REFUSED;
+    if (why && size)
+        snprintf(why, size, "Post-reset modeled transition clock ceiling at %u MHz could not be armed (%s)",
+            merged.ceilingMHz, apply_clock_ceiling_arm_result_name(g_linuxCeilingArmResult));
+    lb_log("apply: post-reset modeled ceiling at %u MHz failed (armResult=%s, retainedArmed=%d)\n",
+        merged.ceilingMHz, apply_clock_ceiling_arm_result_name(g_linuxCeilingArmResult),
+        g_linuxCeilingArmed ? 1 : 0);
+    return false;
 }
 
 // The Linux counterpart of the Windows apply-clock witness: one line recording

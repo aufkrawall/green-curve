@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 #include "gpu_core.h"
+#include <initializer_list>
+#include <limits>
 #include "modeled_curve_transition.h"
 #include "scalar_curve_modeled_review.h"
 

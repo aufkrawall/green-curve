@@ -8,6 +8,7 @@
 #include "scalar_curve_submission_policy.h"
 #include "graphics_offset_control.h"
 #include "windows_graphics_handoff_review.h"
+#include "authoring_modeled_transition_review.h"
 
 static bool apply_handoff_curve_snapshot(const ScalarCurveSubmissionReview& review) {
     if (!review.outgoingReleased || !review.writeAttempted) return true;
@@ -71,7 +72,8 @@ static bool apply_verify_authoring_curve_targets(const CurveAuthoringTargets& ta
 }
 
 static bool apply_authoring_precheck_before_writes(const DesiredSettings* d, bool composeGraphics,
-    char* why, size_t whySize, ScalarCurveSubmissionReview* review = nullptr) {
+    char* why, size_t whySize, ScalarCurveSubmissionReview* review = nullptr,
+    const AuthoringModeledPrecheckContext* modeled = nullptr) {
     ScalarCurveSubmissionReview local{};
     if (!review) review = &local;
     *review = {};
@@ -82,16 +84,38 @@ static bool apply_authoring_precheck_before_writes(const DesiredSettings* d, boo
         !g_app.vfFrequenciesHzValid || !g_app.vfOffsetsHzValid) {
         set_message(why, whySize, "Fresh exact curve samples are unavailable. Nothing was changed."); return false;
     }
+    const gc_u32 incomingSurface = desired_named_graphics_surface(*d);
+    const auto scalar = incomingSurface
+        ? graphics_offset_control_plan(*d, g_nvml_api, g_app.nvmlDevice)
+        : GraphicsOffsetControlPlan{};
+    const HardwareCaptureComposition composition = modeled ? modeled->composition : CAPTURE_COMPOSITION_UNKNOWN;
+    auto nvml_present_scalars_zero = [&]() {
+        if (review->outgoingSurface && review->outgoingBeforeHz != 0) return false;
+        if (incomingSurface && (!graphics_offset_control_ready(scalar) || scalar.before.value != 0))
+            return false;
+        if (g_nvml_api.getClockOffsets && incomingSurface != CLOCK_OFFSET_SURFACE_P0) {
+            DesiredSettings q{}; q.hasGpuOffset = 1; q.authoring.graphicsPrecise = 1;
+            q.authoring.graphicsSurface = DESIRED_GRAPHICS_P0;
+            const auto p0 = graphics_offset_control_plan(q, g_nvml_api, g_app.nvmlDevice);
+            if (!graphics_offset_control_ready(p0) || p0.before.value != 0) return false;
+        }
+        if (g_nvml_api.getGpcClkVfOffset && incomingSurface != CLOCK_OFFSET_SURFACE_GLOBAL) {
+            DesiredSettings q{}; q.hasGpuOffset = 1; q.authoring.graphicsPrecise = 1;
+            q.authoring.graphicsSurface = DESIRED_GRAPHICS_GLOBAL;
+            const auto gl = graphics_offset_control_plan(q, g_nvml_api, g_app.nvmlDevice);
+            if (!graphics_offset_control_ready(gl) || gl.before.value != 0) return false;
+        }
+        return true;
+    };
+    const bool scalarKnownZero = composition == CAPTURE_COMPOSITION_INDEPENDENT && nvml_present_scalars_zero();
     int componentKHz[VF_NUM_POINTS]{}; gc_i64 componentHz[VF_NUM_POINTS]{};
     auto in = apply_curve_plan_input(d, d->hasLock ? d->lockMode : LOCK_MODE_NONE,
         g_app.curve, g_app.freqOffsets, CURVE_PLAN_EVIDENCE_LIVE_SHAPED_ESTIMATE,
         apply_lock_pretail_provenance_mode(composeGraphics, false), d->resetOcBeforeApply != 0,
         d->gpuOffsetExcludeLowCount, componentKHz, componentHz);
     in.frequencyHz = g_app.curveFrequencyHz; in.programmedOffsetsHz = g_app.freqOffsetsHz;
-    // This read does not establish the absence of a separate scalar. Keep
-    // baseline-derived failures conditional until authorized preparation.
     in.evidence = curve_plan_classify_pre_write_evidence(in.curve, in.programmedOffsetsKHz,
-        in.floor, false, in.programmedOffsetsHz);
+        in.floor, scalarKnownZero, in.programmedOffsetsHz);
     const auto plan = curve_plan_evaluate(in);
     curve_plan_log(plan, "windows-authoring-pre-write", apply_curve_plan_log_line);
     if (plan.disposition == CURVE_PLAN_REFUSED || plan.disposition == CURVE_PLAN_UNAVAILABLE) {
@@ -106,28 +130,139 @@ static bool apply_authoring_precheck_before_writes(const DesiredSettings* d, boo
         debug_log("curve-authoring: pre-write target refusal status=%d ci=%d targetHz=%lld\n",
             (int)issue.status, issue.ci, issue.requestedHz); return false;
     }
-    if (desired_named_graphics_surface(*d)) {
-        const auto scalar = graphics_offset_control_plan(*d, g_nvml_api, g_app.nvmlDevice);
+    const bool clampCap = modeled && modeled->clampAvailabilityExplicit
+        ? modeled->clampAvailable
+        : (g_nvml_api.setGpuLockedClocks && g_nvml_api.resetGpuLockedClocks);
+    const bool pinAuthorized = modeled && modeled->pinAuthorityExplicit
+        ? modeled->pinMutationAuthorized
+        : authoring_pin_mutation_authorized(*d);
+    const bool hasLock = d->hasLock && d->lockMode != LOCK_MODE_NONE;
+    const gc_i64 beforeHz = incomingSurface ? (long long)scalar.before.value * 1000000 : 0;
+    const gc_i64 afterHz = incomingSurface ? desired_graphics_hz(*d) : 0;
+    const bool hasHandoff = review->outgoingSurface && review->outgoingBeforeHz != 0;
+    const bool multiStep = modeled ? modeled->multiStepCurve : false;
+    const bool resetsToStock = d->resetOcBeforeApply != 0;
+    const bool scalarRaisesBeforeCurve = incomingSurface && preview.pointCount > 0 &&
+        (resetsToStock ? afterHz > 0 : (!graphics_offset_control_ready(scalar) || afterHz > beforeHz));
+    if (incomingSurface) {
         const auto transition = scalar_curve_submission_plan(*d, graphics_offset_control_ready(scalar),
-            (long long)scalar.before.value * 1000000, in.programmedOffsetsHz, true,
-            g_nvml_api.setGpuLockedClocks && g_nvml_api.resetGpuLockedClocks,
-            review->outgoingSurface && review->outgoingBeforeHz != 0);
+            beforeHz, in.programmedOffsetsHz, true, clampCap, hasHandoff);
         debug_log("scalar-curve: preflight status=%d loweredCaptured=%d baselineDependent=%d\n",
             (int)transition.status, transition.loweredCaptured, transition.baselineDependent ? 1 : 0);
-        if (!scalar_curve_submission_allowed(transition)) {
+        const bool deferToModeled = pinAuthorized &&
+            (transition.status == SCALAR_CURVE_PIN_EVIDENCE_REQUIRED ||
+             (!hasLock && transition.status == SCALAR_CURVE_GUARD_UNAVAILABLE));
+        if (!scalar_curve_submission_allowed(transition) && !deferToModeled) {
             set_message(why, whySize, "Curve transition: %s. Nothing was changed.", scalar_curve_submission_reason(transition.status));
             return false;
         }
-        if (review) {
-            if (review->beforeValid && (long long)scalar.before.value * 1000000 != review->beforeHz) {
-                set_message(why, whySize, "The incoming graphics control changed during review. Nothing was changed.");
-                return false;
-            }
-            review->installedGuardRequired |= transition.status == SCALAR_CURVE_INSTALL_GUARD;
-            review->beforeValid = graphics_offset_control_ready(scalar);
-            review->beforeHz = (long long)scalar.before.value * 1000000;
+        if (review->beforeValid && beforeHz != review->beforeHz) {
+            set_message(why, whySize, "The incoming graphics control changed during review. Nothing was changed.");
+            return false;
+        }
+        review->installedGuardRequired |= transition.status == SCALAR_CURVE_INSTALL_GUARD;
+        review->beforeValid = graphics_offset_control_ready(scalar);
+        review->beforeHz = beforeHz;
+    }
+    if (scalarRaisesBeforeCurve || multiStep) {
+        AuthoringModeledTransitionInput mIn{};
+        mIn.baseline = &in;
+        mIn.targets = &preview;
+        mIn.composition = composition;
+        mIn.pinMutationAuthorized = pinAuthorized;
+        mIn.clampAvailable = clampCap;
+        mIn.scalarBeforeCurve = scalarRaisesBeforeCurve;
+        mIn.multiStepCurve = multiStep;
+        mIn.scalarBeforeHz = (!incomingSurface && !resetsToStock && hasHandoff) ? review->outgoingBeforeHz : beforeHz;
+        mIn.scalarAfterHz = incomingSurface ? afterHz : 0;
+        mIn.outgoingCeilingHz = modeled ? modeled->outgoingCeilingHz : 0;
+        mIn.resetsToStock = resetsToStock;
+        mIn.pureNonLoweringCapturedDelta = authoring_targets_pure_non_lowering_captured_delta(
+            *d, preview, in.programmedOffsetsHz, hasLock, hasHandoff, multiStep,
+            resetsToStock, mIn.scalarBeforeHz, mIn.scalarAfterHz);
+        mIn.hasOutgoingSurfaceHandoff = hasHandoff;
+        AuthoringModeledTransitionOutcome mOutcome{};
+        char mWhy[256]{};
+        if (!authoring_modeled_transition_preflight(mIn, *review, mOutcome, mWhy, sizeof(mWhy))) {
+            set_message(why, whySize, "Curve transition: %s. Nothing was changed.", mWhy);
+            return false;
         }
     }
+    return true;
+}
+
+template <class Guard>
+static bool apply_authoring_post_reset_modeled_review(const DesiredSettings* d, bool composeGraphics,
+    ScalarCurveSubmissionReview& review, Guard& clockCeiling,
+    const AuthoringModeledPrecheckContext* modeled, char* why, size_t whySize) {
+    if (!d || !curve_authoring_needs_exact_targets(d)) return true;
+    const gc_u32 incomingSurface = desired_named_graphics_surface(*d);
+    const bool multiStep = modeled && modeled->multiStepCurve;
+    if (!review.deferredModeledCheck && !incomingSurface && !multiStep) return true;
+    if (!g_app.vfFrequenciesHzValid || !g_app.vfOffsetsHzValid) {
+        set_message(why, whySize, "Post-reset exact curve samples are unavailable.");
+        return false;
+    }
+    int componentKHz[VF_NUM_POINTS]{}; gc_i64 componentHz[VF_NUM_POINTS]{};
+    auto in = apply_curve_plan_input(d, d->hasLock ? d->lockMode : LOCK_MODE_NONE,
+        g_app.curve, g_app.freqOffsets, CURVE_PLAN_EVIDENCE_TRANSACTION_BASELINE,
+        apply_lock_pretail_provenance_mode(composeGraphics, false), true,
+        d->gpuOffsetExcludeLowCount, componentKHz, componentHz);
+    in.frequencyHz = g_app.curveFrequencyHz; in.programmedOffsetsHz = g_app.freqOffsetsHz;
+    in.evidence = CURVE_PLAN_EVIDENCE_TRANSACTION_BASELINE;
+    const auto plan = curve_plan_evaluate(in);
+    curve_plan_log(plan, "windows-authoring-post-reset", apply_curve_plan_log_line);
+    if (plan.disposition != CURVE_PLAN_REPRESENTABLE) {
+        curve_plan_format_message(plan, false, why, whySize);
+        return false;
+    }
+    CurveAuthoringTargets postTargets; CurveAuthoringTargetIssue issue;
+    if (!windows_build_authoring_curve_targets(in, g_app.vfBackend, g_app.vfMask, composeGraphics,
+            false, nullptr, postTargets, issue, false)) {
+        set_message(why, whySize, "Post-reset curve targets could not resolve point %d (status=%d).",
+            issue.ci, (int)issue.status);
+        return false;
+    }
+    gc_i64 scalarBeforeHz = 0;
+    if (incomingSurface) {
+        const auto scalar = graphics_offset_control_plan(*d, g_nvml_api, g_app.nvmlDevice);
+        if (!graphics_offset_control_ready(scalar) || scalar.before.value != 0) {
+            set_message(why, whySize, "Post-reset graphics scalar baseline is nonzero or unreadable.");
+            return false;
+        }
+        scalarBeforeHz = (long long)scalar.before.value * 1000000;
+        review.beforeValid = true;
+        review.beforeHz = scalarBeforeHz;
+    }
+    const gc_i64 afterHz = incomingSurface ? desired_graphics_hz(*d) : 0;
+    const bool scalarRaisesBeforeCurve = incomingSurface && postTargets.pointCount > 0 && afterHz > 0;
+    const bool pinAuthorized = modeled && modeled->pinAuthorityExplicit
+        ? modeled->pinMutationAuthorized
+        : authoring_pin_mutation_authorized(*d);
+    const bool clampCap = modeled && modeled->clampAvailabilityExplicit
+        ? modeled->clampAvailable
+        : (g_nvml_api.setGpuLockedClocks && g_nvml_api.resetGpuLockedClocks);
+    AuthoringModeledTransitionInput mIn{};
+    mIn.baseline = &in;
+    mIn.targets = &postTargets;
+    mIn.composition = modeled ? modeled->composition : CAPTURE_COMPOSITION_UNKNOWN;
+    mIn.pinMutationAuthorized = pinAuthorized;
+    mIn.clampAvailable = clampCap;
+    mIn.scalarBeforeCurve = scalarRaisesBeforeCurve;
+    mIn.multiStepCurve = multiStep;
+    mIn.scalarBeforeHz = scalarBeforeHz;
+    mIn.scalarAfterHz = afterHz;
+    mIn.outgoingCeilingHz = (gc_i64)clockCeiling.outgoingCeilingMHz * 1000000LL;
+    mIn.resetsToStock = true;
+    AuthoringModeledTransitionOutcome outcome{};
+    char mWhy[256]{};
+    if (!authoring_modeled_transition_post_reset(mIn, review, outcome, mWhy, sizeof(mWhy))) {
+        set_message(why, whySize, "Post-reset curve transition: %s.", mWhy);
+        return false;
+    }
+    if (outcome.adopted && !clockCeiling.apply_modeled_plan(review.modeledCeiling, d, why, whySize))
+        return false;
+    review.deferredModeledCheck = false;
     return true;
 }
 

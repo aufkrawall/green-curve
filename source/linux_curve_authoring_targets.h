@@ -6,13 +6,15 @@
 
 static inline LinuxCurveTargetBuildResult linux_build_authoring_curve_targets(const CurvePlanInput& in,
     const VfBackendSpec* backend, const unsigned char* membership, bool composeGraphics,
-    int* offsetsKHz, bool* mask, CurveAuthoringTargetIssue& issue, bool allowDeferredBaseline = false) {
+    int* offsetsKHz, bool* mask, CurveAuthoringTargetIssue& issue, bool allowDeferredBaseline = false,
+    CurveAuthoringTargets* preciseOut = nullptr) {
     LinuxCurveTargetBuildResult result{};
     CurveAuthoringTargets precise;
     if (!offsetsKHz || !mask || !curve_authoring_build_targets(in, backend, membership, composeGraphics,
             precise, issue, allowDeferredBaseline)) {
         result.failed = true; return result;
     }
+    if (preciseOut) *preciseOut = precise;
     result.pointCount = precise.pointCount;
     result.deferred = precise.requiresFreshBaseline;
     result.composedGpuOffset = composeGraphics && in.desired->hasGpuOffset;

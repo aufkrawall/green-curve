@@ -111,10 +111,21 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         set_last_apply_phase("apply: refused (curve plan)");
         return false;
     }
+    (void)nvml_ensure_ready();
+    AuthoringModeledPrecheckContext modeledCtx{};
+    modeledCtx.composition = CAPTURE_COMPOSITION_UNKNOWN;
+    modeledCtx.pinMutationAuthorized = authoring_pin_mutation_authorized(*desired, releasesCurveCeiling);
+    modeledCtx.pinAuthorityExplicit = true;
+    modeledCtx.clampAvailable = g_nvml_api.setGpuLockedClocks != nullptr &&
+        g_nvml_api.resetGpuLockedClocks != nullptr;
+    modeledCtx.clampAvailabilityExplicit = true;
+    modeledCtx.outgoingCeilingHz = (gc_i64)apply_outgoing_ceiling_mhz() * 1000000LL;
+    const bool authoringComposeGraphics = desired->authoring.graphicsPrecise
+        ? desired->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT
+        : apply_curve_plan_pre_write_route(desired).offsetInVfTable;
     ScalarCurveSubmissionReview scalarReview{};
-    if (!apply_authoring_precheck_before_writes(desired, desired->authoring.graphicsPrecise
-            ? desired->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT
-            : apply_curve_plan_pre_write_route(desired).offsetInVfTable, result, resultSize, &scalarReview)) return false;
+    if (!apply_authoring_precheck_before_writes(desired, authoringComposeGraphics,
+            result, resultSize, &scalarReview, &modeledCtx)) return false;
 #ifdef GREEN_CURVE_SERVICE_BINARY
     bool proofInvalidatedForWrite = false;
 #endif
@@ -170,7 +181,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         if (!apply_release_graphics_handoff(*desired, scalarReview, clockCeiling, result, resultSize, hardwareWriteAttemptedOut)) return false;
         if (!reset_oc_before_gui_apply(desired, result, resultSize,
                                        &powerTargetWrittenByReset, scalarReview.outgoingSurface) ||
-            !nvapi_graphics_baseline_review(*desired, scalarReview))
+            !nvapi_graphics_baseline_review(*desired, scalarReview) ||
+            !apply_authoring_post_reset_modeled_review(desired, authoringComposeGraphics,
+                scalarReview, clockCeiling, &modeledCtx, result, resultSize))
             return apply_recover_clock_failure(clockCeiling, result, result, resultSize);
         // TDR settle after reset-to-stock: let VRM/memory controllers stabilize
         // before the new aggressive clocks (commit 4b225e1). The 1s default is
@@ -1241,7 +1254,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     // resetOcBeforeApply, while direct curve/GPU/lock requests own the domain.
     bool replacesLockDomain =
         service_request_replaces_lock_domain(desired);
-    if (lockMode != LOCK_MODE_HARD && replacesLockDomain &&
+    const bool releasesTransitionCeiling =
+        replacesLockDomain || clockCeiling.armed || g_app.transitionClockCapActive;
+    if (lockMode != LOCK_MODE_HARD && releasesTransitionCeiling &&
         apply_clock_control_proven_absent(
             g_app.gpuFamily == GPU_FAMILY_PASCAL,
             clockCeiling.armed || g_app.transitionClockCapActive,
@@ -1249,7 +1264,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 g_app.appliedLockMode == LOCK_MODE_HARD)) {
         debug_log("apply: no NVML locked-clock reset on Pascal; no hard pin or"
                   " retained transition cap exists\n");
-    } else if (lockMode != LOCK_MODE_HARD && replacesLockDomain &&
+    } else if (lockMode != LOCK_MODE_HARD && releasesTransitionCeiling &&
                g_nvml_api.resetGpuLockedClocks) {
         // CT-02.  The release used to be unconditional on anything except the
         // lock mode.  Its justifying comment -- "by now the flatten tail is the

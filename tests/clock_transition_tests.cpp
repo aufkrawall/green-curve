@@ -970,6 +970,80 @@ static int run(){
    CHECK(vf_offset_range_hard_limit_khz(range)>0);
  }
  CHECK(!vf_offset_range_permits_khz(vf_offset_range_from_probe(true,-400000,250000),400000));
+ {
+   // APPLY-11 guard lifecycle: lockless VF-only ignoring NVML_ERROR_INVALID_ARGUMENT on min=0,
+   // lockless replace-profile reset dropping outgoing cap + post-reset modeled tightening + fail-safe retention.
+   g_app = {}; g_app.gpuFamily = GPU_FAMILY_UNKNOWN;
+   g = {}; g.family = GPU_FAMILY_UNKNOWN; g.nvml.setGpuLockedClocks = setCap; g.nvml.resetGpuLockedClocks = resetCap;
+   g_nvml_api = g.nvml; cap = 0; refuseArm = true; armRefusalCode = 2; /* NVML_ERROR_INVALID_ARGUMENT */
+   DesiredSettings vfOnly{}; vfOnly.hasCurvePoint[2] = 1; vfOnly.curvePointMHz[2] = 1500;
+   const int callsBefore = armCalls;
+   {
+     ApplyClockCeilingGuard guard(&vfOnly);
+     guard.arm();
+     CHECK(!guard.must_refuse_transition() && !guard.armed);
+   }
+   linux_apply_ceiling_reset_state();
+   CHECK(linux_apply_arm_transition_ceiling(&g, &vfOnly, nullptr) && !g_linuxCeilingArmed);
+   CHECK(armCalls == callsBefore && cap == 0);
+
+   refuseArm = false; armRefusalCode = NVML_ERROR_NOT_SUPPORTED;
+   DesiredSettings prevLock{}; prevLock.hasLock = 1; prevLock.lockMode = LOCK_MODE_FLATTEN; prevLock.lockMHz = 1800;
+   DesiredSettings rep{}; rep.resetOcBeforeApply = 1; rep.hasGpuOffset = 1; rep.gpuOffsetMHz = 100;
+   g_app.lockMode = LOCK_MODE_FLATTEN; g_app.lockedFreq = 1800;
+   g_app.curve[0].freq_kHz = 1800000; g_app.freqOffsets[0] = -100000;
+   g.curve[0].freq_kHz = 1800000; g.freqOffsets[0] = -100000;
+   ApplyClockCeilingPlan tightened{};
+   tightened.arm = tightened.required = true; tightened.ceilingMHz = 1400;
+   tightened.reason = APPLY_CEILING_REASON_MODELED_CURVE_TRANSITION;
+   {
+     ApplyClockCeilingGuard guard(&rep, true, false);
+     CHECK(guard.plan.arm && guard.plan.required &&
+           guard.plan.reason == APPLY_CEILING_REASON_RESET_DROPS_CAP && guard.plan.ceilingMHz == 1800);
+     CHECK(guard.arm() == APPLY_CEILING_ARM_INSTALLED && cap == 1800);
+     char why[160]{};
+     CHECK(guard.apply_modeled_plan(tightened, &rep, why, sizeof(why)) && cap == 1400);
+     refuseArm = true;
+     ApplyClockCeilingPlan narrower = tightened; narrower.ceilingMHz = 1100;
+     CHECK(!guard.apply_modeled_plan(narrower, &rep, why, sizeof(why)));
+     CHECK(guard.armed && guard.plan.ceilingMHz == 1400 && cap == 1400);
+     refuseArm = false;
+     resetCap(0); guard.adopt("clean release");
+   }
+   CHECK(cap == 0);
+   linux_apply_ceiling_reset_state();
+   linux_apply_ceiling_note_outgoing(&prevLock);
+   g_linuxOutgoingCeilingMHz = 1800;
+   g_linuxScopedCurveCeilingTransition = true;
+   CHECK(linux_apply_arm_transition_ceiling(&g, &rep, &prevLock) && g_linuxCeilingArmed && cap == 1800);
+   char lWhy[160]{};
+   CHECK(linux_apply_arm_modeled_post_reset(&g, &rep, tightened, lWhy, sizeof(lWhy)) && cap == 1400);
+   refuseArm = true;
+   ApplyClockCeilingPlan narrower = tightened; narrower.ceilingMHz = 1100;
+   CHECK(!linux_apply_arm_modeled_post_reset(&g, &rep, narrower, lWhy, sizeof(lWhy)));
+   CHECK(g_linuxCeilingArmed && g_linuxCeilingPlan.ceilingMHz == 1400 && cap == 1400);
+   refuseArm = false; resetCap(0); linux_apply_ceiling_reset_state(); g_linuxScopedCurveCeilingTransition = false;
+
+   // Lockless reset with no outgoing cap arms post-reset and clears on clean finish, refuses cleanly on clamp rejection.
+   g_app.lockMode = LOCK_MODE_NONE; g_app.lockedFreq = 0; g_app.curve[0].freq_kHz = 0; g_app.freqOffsets[0] = 0;
+   g_app.transitionClockCapActive = false; g_app.transitionClockCapMHz = 0;
+   {
+     ApplyClockCeilingGuard guard(&rep);
+     CHECK(!guard.plan.arm);
+     char why[160]{};
+     CHECK(guard.apply_modeled_plan(tightened, &rep, why, sizeof(why)) && guard.armed && cap == 1400 &&
+           g_app.transitionClockCapActive && g_app.transitionClockCapMHz == 1400);
+     resetCap(0); guard.adopt("clean release");
+   }
+   CHECK(cap == 0);
+   refuseArm = true;
+   {
+     ApplyClockCeilingGuard guard(&rep);
+     char why[160]{};
+     CHECK(!guard.apply_modeled_plan(tightened, &rep, why, sizeof(why)) && !guard.armed && cap == 0);
+   }
+   refuseArm = false;
+ }
  if(int modeled=modeled_transition_backend_cases())return modeled;
  return 0;
 }

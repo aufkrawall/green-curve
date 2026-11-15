@@ -5,6 +5,26 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-15: Backend modeled lockless transition integration
+
+- Connected shared modeled lockless transition preflight and post-reset review
+  (`source/authoring_modeled_transition_review.h`) to both Windows
+  (`gpu_backend_apply_authoring.h`, `gpu_backend_apply.cpp`,
+  `ApplyClockCeilingGuard::apply_modeled_plan`) and Linux
+  (`linux_graphics_offset_control.h`, `linux_apply_modeled_review.h`,
+  `linux_apply_arm_modeled_post_reset`, `linux_backend_mutation.cpp`) apply paths.
+- Bound `scalarBeforeCurve` to nonzero incoming named graphics surface across
+  preflight and post-reset review; deferred modeled planning across shaped
+  `resetOcBeforeApply` transitions until fresh stock readback while preserving
+  outgoing ceiling entitlement (`outgoingCeilingMHz`, `g_linuxOutgoingCeilingMHz`)
+  and `UPDATE_INCLUDED` pin authority. Updated `tools/apply_ceiling_gates.py`.
+- Fake-driver regressions (`8986-8996` Windows, `8997-9002` Linux, plus
+  `tests/clock_transition_tests.cpp`), `--gates`, `--test`, `--test --asan`,
+  `--check --target all`, `--tidy` (34 baselined, 0 new), and WSL Linux UBSan
+  regressions pass. `desired_authoring_runtime_ready()` and live graphics replay
+  remain gated; hardware composition/replay remain unverified. See
+  [clock-transition-audit.md](../clock-transition-audit.md#modeled-lockless-transition-protection-2026-11-15).
+
 ## 2026-11-15: Native capture representation choices
 
 - Windows and the TUI select frozen exact/flatten/pin proposals with separate

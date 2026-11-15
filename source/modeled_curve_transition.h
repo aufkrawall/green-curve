@@ -5,8 +5,7 @@
 #include "curve_feasibility_plan.h"
 #include "hardware_capture_types.h"
 #include "apply_clock_ceiling_policy.h"
-#include <algorithm>
-#include <limits>
+#include <limits.h>
 
 struct ModeledCurveTransitionPoint {
     int ci = -1;
@@ -57,7 +56,7 @@ static inline const char* modeled_curve_transition_status_name(ModeledCurveTrans
     return "invalid modeled transition";
 }
 static inline bool modeled_curve_add(gc_i64 left, gc_i64 right, gc_i64& result) {
-    constexpr gc_i64 maximum = std::numeric_limits<gc_i64>::max(), minimum = std::numeric_limits<gc_i64>::min();
+    constexpr gc_i64 maximum = LLONG_MAX, minimum = LLONG_MIN;
     if ((right > 0 && left > maximum - right) || (right < 0 && left < minimum - right)) return false;
     result = left + right; return true;
 }
@@ -88,7 +87,9 @@ static inline ModeledCurveTransitionPlan modeled_curve_transition_plan(const Mod
     gc_i64 finalPrefix = 0, intermediatePrefix = 0;
     for (int i = 0; i < in.count; ++i) {
         const auto& p = in.points[i]; gc_i64 scalarBase = 0, finalHz = 0, intermediateHz = 0;
-        const gc_i64 intermediateOffset = in.multiStepCurve ? std::max(p.beforeOffsetHz, p.afterOffsetHz) : p.beforeOffsetHz;
+        const gc_i64 intermediateOffset = in.multiStepCurve
+            ? (p.beforeOffsetHz > p.afterOffsetHz ? p.beforeOffsetHz : p.afterOffsetHz)
+            : p.beforeOffsetHz;
         if (!modeled_curve_add(p.stockHz, in.scalarAfterHz, scalarBase) ||
             !modeled_curve_add(scalarBase, p.afterOffsetHz, finalHz) ||
             !modeled_curve_add(scalarBase, intermediateOffset, intermediateHz) || finalHz <= 0 || intermediateHz <= 0)
@@ -101,7 +102,7 @@ static inline ModeledCurveTransitionPlan modeled_curve_transition_plan(const Mod
     }
     out.finalPeakHz = finalPrefix; out.intermediatePeakHz = intermediatePrefix;
     if (ordered || intermediatePrefix <= finalPrefix) return out;
-    const gc_i64 bound = in.outgoingCeilingHz ? std::min(in.outgoingCeilingHz, finalPrefix) : finalPrefix;
+    const gc_i64 bound = (in.outgoingCeilingHz && in.outgoingCeilingHz < finalPrefix) ? in.outgoingCeilingHz : finalPrefix;
     const gc_i64 mhz = bound / 1000000;
     if (mhz <= 0 || (unsigned long long)mhz > UINT_MAX) return fail(MODELED_TRANSITION_ARITHMETIC);
     out.ceiling.required = true; out.ceiling.ceilingMHz = (unsigned int)mhz;

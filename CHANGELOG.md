@@ -44,7 +44,7 @@ Curve checks, profile transfer and capture improve.
 
 ### Improved
 
-- **Curve checks before Apply:** proven conflicts identify frequency, voltage or range.
+- **Curve checks before Apply:** conflicts name frequency, voltage or range and guard transition peaks.
 - **Saving over another tool's curve:** Save reports unowned curves omitted from a slot.
 - **Linux profile switching:** replaced points clear first; flatten and lock readback are verified.
 - **Linux memory clocks:** curve-only changes preserve memory; failed preparation restores prior curves.

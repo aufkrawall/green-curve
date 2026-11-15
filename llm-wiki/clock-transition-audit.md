@@ -5,10 +5,17 @@
 Source anchors: `source/modeled_curve_transition.h`,
 `source/modeled_curve_transition_factory.h`, `tests/modeled_curve_factory_tests.cpp`,
 `source/scalar_curve_submission_policy.h`, `source/scalar_curve_modeled_review.h`,
+`source/authoring_modeled_transition_review.h`,
 `source/apply_clock_ceiling_policy.h`,
-`source/gpu_backend_apply_ceiling.h`, `source/linux_apply_ceiling.h`,
+`source/gpu_backend_apply_ceiling.h`, `source/gpu_backend_apply_authoring.h`,
+`source/gpu_backend_apply.cpp`, `source/linux_apply_ceiling.h`,
+`source/linux_graphics_offset_control.h`, `source/linux_backend_apply_context.h`,
+`source/linux_apply_modeled_review.h`, `source/linux_backend_mutation.cpp`,
+`tools/apply_ceiling_gates.py`,
 `tests/modeled_curve_transition_tests.cpp`,
-`tests/modeled_transition_backend_cases.h`, `tests/clock_transition_tests.cpp`.
+`tests/modeled_transition_backend_cases.h`, `tests/clock_transition_tests.cpp`,
+`tests/windows_vf_exact_tests.cpp` (8986-8996),
+`tests/linux_clock_offset_tests.cpp` (8997-9002).
 
 `source/modeled_curve_transition_factory.h` binds compiled targets to an exact,
 complete zero-control/reset baseline. It checks every physical voltage,
@@ -37,28 +44,56 @@ whole-MHz ceiling. Source and final target precision remain unchanged.
 Omitted/unknown pins require explicit mutation authority; this model cannot
 invent a missing pin preimage or permission to release one.
 
+`source/authoring_modeled_transition_review.h` connects both apply backends to
+the shared model at preflight and after baseline reset.
+`authoring_modeled_transition_preflight()` and
+`authoring_modeled_transition_post_reset()` bind
+`controls.scalarBeforeCurve` to whether the incoming named graphics surface is
+nonzero so zero/negative named scalars paired with multi-step curves do not raise
+false binding-mismatch refusals. Shaped transitions that reset OC before Apply
+defer modeled peak planning (`scalarReview.deferredModeledCheck`) across the
+reset phase instead of refusing from stale pre-reset readings, then rebuild and
+enforce the post-reset modeled review before mutating the VF curve
+(`gpu_backend_apply_authoring.h`, `linux_apply_modeled_review.h`,
+`linux_backend_mutation.cpp`). Incoming `Replace` scope vs partial update scope
+and known outgoing clock caps (`outgoingCeilingMHz` / `g_linuxOutgoingCeilingMHz`)
+govern whether omitted/unknown caps may release or tighten across reset.
+
 The modeled reason is strict when a clamp is unavailable or rejected and never
 permits the symmetric fallback's clock floor. Merging a model cannot raise an
 existing cap or erase a required but unresolved bound. Windows and Linux guard
-consumers use the review's modeled descriptor and recheck current setter/reset
-availability before any clamp call. Typed adoption rejects malformed results;
-ordinary legacy and single-batch behavior remains unchanged by an empty model.
+consumers (`ApplyClockCeilingGuard::apply_modeled_plan`,
+`linux_apply_arm_modeled_post_reset`) use the review's modeled descriptor and
+recheck current setter/reset availability before any clamp call.
+`linux_apply_arm_modeled_post_reset` verifies lockless VF-only transitions,
+re-evaluates dropped or tightened outgoing caps after baseline reset and retains
+fail-safe protection when tightening fails. Typed adoption rejects malformed
+results; ordinary legacy and single-batch behavior remains unchanged by an empty
+model.
 
-Cases 9550-9596 cover exact peaks, monotonic collapse, arithmetic overflow,
-missing evidence, pin authority, unsupported controls, cap merging and actual
-production guard helpers with scripted drivers. Removing monotonic collapse
-fails 9550. Diagnostics retain bounded peaks, indices, collapse count, typed
-reasons and the existing ceiling outcome logs, without complete control dumps.
+Cases 9550-9596, 8986-8996 (Windows fake driver), 8997-9002 (Linux fake
+driver) and the executing transition guard cases in
+`tests/clock_transition_tests.cpp` exercise exact peaks, monotonic collapse,
+overflow, missing/unknown composition, `UPDATE_INCLUDED` pin authority,
+unsupported controls, shaped reset deferral, post-reset baseline/topology/clamp
+refusals and lockless ceiling transitions. Removing monotonic collapse fails
+9550. `tools/apply_ceiling_gates.py` pins the post-reset modeled review and
+final protection verification in the Linux mutation flow. Diagnostics retain
+bounded peaks, indices, collapse count, typed reasons and the existing ceiling
+outcome logs, without complete control dumps.
+
 The lightweight submission review carries only the guard descriptor; model
 adoption has its own header so isolated production-helper fixtures do not import
-standard-library definitions into their fake namespaces. Windows normal and
-ASan/UBSan suites, native Linux UBSan fixtures and all-target checks pass;
-static analysis adds no findings. Missing backend/request inputs issue no setter.
+standard-library definitions into their fake namespaces (`modeled_curve_transition.h`
+and `modeled_curve_transition_factory.h` avoid `<algorithm>` / `<limits>`
+accordingly). Windows normal and ASan/UBSan suites, source gates, native Linux
+UBSan fixtures and all-target checks pass (2026-11-15); static analysis retains
+34 baseline findings and adds none. Missing backend/request inputs issue no
+setter.
 
-Fresh backend callers and their baseline/context lifetime still need
-integration. The authoring runtime gate remains closed; these calculations do
-not enable replay or grant Apply authority. Physical composition/calibration
-and driver replay remain unverified.
+The authoring runtime gate (`desired_authoring_runtime_ready()`) remains closed;
+backend transition wiring alone does not enable replay or grant Apply authority.
+Physical composition/calibration and live driver replay remain unverified.
 
 ## Windows named-control handoff (2026-11-14)
 

@@ -66,6 +66,14 @@ static inline bool apply_outgoing_state_holds_clocks_down() {
     return false;
 }
 
+template <class D>
+static inline auto apply_ceiling_scope_is_replace_profile(const D* d, int)
+    -> decltype((void)d->applicationScope, bool()) {
+    return desired_application_scope_kind(d->applicationScope) == DESIRED_SCOPE_REPLACE_PROFILE;
+}
+template <class D>
+static inline bool apply_ceiling_scope_is_replace_profile(const D*, long) { return false; }
+
 struct ApplyClockCeilingGuard {
     ApplyClockCeilingPlan plan = {};
     bool armed = false;
@@ -77,6 +85,7 @@ struct ApplyClockCeilingGuard {
     bool writeAttempted = false;
     ApplyClockCeilingArmResult armResult = APPLY_CEILING_ARM_NOT_NEEDED;
     bool installedGuardRequired = false;
+    unsigned int outgoingCeilingMHz = 0;
 
     explicit ApplyClockCeilingGuard(const DesiredSettings* desired, bool releasesCurveCeiling = false,
         bool strictScalarGuard = false, const ApplyClockCeilingPlan* modeled = nullptr)
@@ -91,8 +100,11 @@ struct ApplyClockCeilingGuard {
         const bool resetsToStock = desired->resetOcBeforeApply != 0 || releasesCurveCeiling;
         const bool outgoingHoldsDown = apply_outgoing_state_holds_clocks_down();
         const unsigned int outgoingCeiling = apply_outgoing_ceiling_mhz();
+        outgoingCeilingMHz = outgoingCeiling;
+        const bool ownsClockDomain = service_request_replaces_lock_domain(desired) ||
+            releasesCurveCeiling || (resetsToStock && apply_ceiling_scope_is_replace_profile(desired, 0));
         plan = apply_clock_ceiling_plan(
-            service_request_replaces_lock_domain(desired),
+            ownsClockDomain,
             desired->hasLock != 0, (int)desired->lockMode, desired->lockMHz,
             g_nvml_api.setGpuLockedClocks != nullptr &&
                 g_nvml_api.resetGpuLockedClocks != nullptr,
@@ -277,6 +289,80 @@ struct ApplyClockCeilingGuard {
         apply_clock_witness_finish_transition();
         debug_log("apply ceiling: clamp adopted by the final lock step (%s)\n",
             how ? how : "");
+    }
+
+    // Install or tighten a post-reset modeled transition ceiling before scalar/VF
+    // writes. Never loosen an already-armed tighter ceiling; on failure while
+    // armed, keep the existing plan intact so recovery retains protection.
+    bool apply_modeled_plan(const ApplyClockCeilingPlan& modeled, const DesiredSettings* desired,
+        char* out, size_t outSize) {
+        (void)desired;
+        if (!modeled.required && !modeled.arm) return true;
+        installedGuardRequired = true;
+        const bool cap = g_nvml_api.setGpuLockedClocks != nullptr &&
+            g_nvml_api.resetGpuLockedClocks != nullptr;
+        const ApplyClockCeilingPlan merged = apply_clock_ceiling_merge_modeled(plan, modeled, cap);
+        if (!merged.arm) {
+            if (!armed) {
+                plan = merged;
+                armResult = plan.clampControlAbsent ? APPLY_CEILING_ARM_UNSUPPORTED
+                                                    : APPLY_CEILING_ARM_UNAVAILABLE;
+                refusal_message(out, outSize);
+            } else {
+                set_message(out, outSize,
+                    "Post-reset modeled clock ceiling could not be derived safely; recovering under protection.");
+            }
+            return false;
+        }
+        if (armed && plan.ceilingMHz > 0 && plan.ceilingMHz <= merged.ceilingMHz) {
+            plan.required = merged.required;
+            plan.finalPinIsCeiling = merged.finalPinIsCeiling;
+            debug_log("apply ceiling: post-reset modeled cap (%u MHz) covered by armed %u MHz\n",
+                merged.ceilingMHz, plan.ceilingMHz);
+            return true;
+        }
+        set_last_apply_phase("apply: arm post-reset modeled clock ceiling");
+        char detail[128] = {};
+        writeAttempted = true;
+        bool openNotSupported = false, symmetricNotSupported = false;
+        if (nvml_set_gpu_locked_clocks(0, merged.ceilingMHz, detail, sizeof(detail), &openNotSupported)) {
+            plan = merged;
+            armed = true;
+            g_app.transitionClockCapActive = true;
+            g_app.transitionClockCapMHz = plan.ceilingMHz;
+            armResult = APPLY_CEILING_ARM_INSTALLED;
+            apply_clock_witness_set_clamp(plan.ceilingMHz, true);
+            debug_log("apply ceiling: post-reset modeled clamp 0..%u MHz active\n", plan.ceilingMHz);
+            apply_clock_witness_record_at_arming("ceiling modeled");
+            return true;
+        }
+        if (merged.symmetricFallbackAllowed) {
+            detail[0] = 0;
+            if (nvml_set_gpu_locked_clocks(merged.ceilingMHz, merged.ceilingMHz, detail,
+                    sizeof(detail), &symmetricNotSupported)) {
+                plan = merged;
+                armed = true;
+                g_app.transitionClockCapActive = true;
+                g_app.transitionClockCapMHz = plan.ceilingMHz;
+                armResult = APPLY_CEILING_ARM_INSTALLED;
+                apply_clock_witness_set_clamp(plan.ceilingMHz, true);
+                debug_log("apply ceiling: post-reset modeled clamp %u..%u MHz active\n",
+                    plan.ceilingMHz, plan.ceilingMHz);
+                apply_clock_witness_record_at_arming("ceiling modeled");
+                return true;
+            }
+        }
+        const bool unsupported = openNotSupported && (!merged.symmetricFallbackAllowed || symmetricNotSupported);
+        armResult = unsupported ? APPLY_CEILING_ARM_UNSUPPORTED : APPLY_CEILING_ARM_REFUSED;
+        if (!armed) {
+            plan = merged;
+            refusal_message(out, outSize);
+        } else {
+            set_message(out, outSize,
+                "Could not tighten transition clock cap to modeled %u MHz (%s); recovering under %u MHz cap.",
+                merged.ceilingMHz, detail[0] ? detail : "refused", plan.ceilingMHz);
+        }
+        return false;
     }
 
     // The final lock step FAILED after the curve was already raised.  Releasing

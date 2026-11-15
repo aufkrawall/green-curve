@@ -3,6 +3,7 @@
 // Exercise the production NVML offset setters with independently scripted
 // P0 and global controls. No driver library or GPU is loaded.
 #include "linux_backend.h"
+#include "vf_backends.h"
 
 static void lb_log(const char*, ...) {}
 #include "linux_backend_clock_offsets.h"
@@ -415,5 +416,61 @@ int run_linux_clock_offset_tests() {
     read = nvml_clock_observe(g.nvml, g.nvmlDevice, NVML_CLOCK_MEM);
     if (!read.control.valid || read.control.rangeValid || read.control.value != 247 ||
         read.control.rangeStatus != NVML_ERROR_UNKNOWN || read.control.status != NVML_SUCCESS) return 8271;
+
+    // APPLY-11: full-topology Linux precheck with modeled transition ceiling and refusals.
+    {
+        Driver sd{}; LinuxGpuState lg{}; initialize(&sd, &lg);
+        lg.backend = &g_vfBackendLovelace; lg.family = GPU_FAMILY_LOVELACE;
+        lg.vfMask[0] = 0xff; lg.vfFrequenciesHzValid = lg.vfOffsetsHzValid = true;
+        DesiredSettings req{}; req.applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+        req.authoring.topologyBound = 1; req.authoring.topologyCount = 8;
+        for (int i = 0; i < 8; ++i) {
+            lg.curve[i] = {(unsigned int)(1000000 + i * 100000), (unsigned int)(650000 + i * 12500)};
+            lg.curveFrequencyHz[i] = (gc_i64)lg.curve[i].freq_kHz * 1000LL;
+            req.authoring.voltageUv[i] = lg.curve[i].volt_uV;
+            req.curvePointCaptured[i] = 1;
+            req.curvePointCapturedOffsetHz[i] = -(200000000LL + i * 50000000LL);
+        }
+        vf_floor_binding_update(&lg.vfFloor, lg.curve, lg.freqOffsets, VF_NUM_POINTS, 0);
+        req.hasGpuOffset = 1; req.gpuOffsetMHz = 100;
+        req.authoring.graphicsPrecise = 1; req.authoring.graphicsSurface = DESIRED_GRAPHICS_P0;
+        req.authoring.graphicsOffsetHz = 100000000LL;
+        lg.nvml.setGpuLockedClocks = scalar_guard_set; lg.nvml.resetGpuLockedClocks = scalar_guard_reset;
+        LinuxHardwareSnapshot snap{};
+        snap.composition = CAPTURE_COMPOSITION_INDEPENDENT;
+        snap.gpuOffsetValid = snap.gpuOffsetExact = true;
+        snap.gpuOffsetSurface = CLOCK_OFFSET_SURFACE_P0;
+        ScalarCurveSubmissionReview rev{}; char msg[256]{};
+        if (!linux_authoring_scalar_transition_precheck(&lg, &req, snap, rev, msg, sizeof(msg)) ||
+            !rev.installedGuardRequired || !rev.modeledCeiling.arm ||
+            rev.modeledCeiling.ceilingMHz != 1250 || sd.p0Writes || sd.globalWrites || sd.capWrites)
+            return 8997;
+
+        snap.composition = CAPTURE_COMPOSITION_UNKNOWN;
+        if (linux_authoring_scalar_transition_precheck(&lg, &req, snap, rev, msg, sizeof(msg)) ||
+            sd.p0Writes || sd.globalWrites || sd.capWrites) return 8998;
+
+        snap.composition = CAPTURE_COMPOSITION_INDEPENDENT;
+        req.applicationScope = DESIRED_SCOPE_UPDATE_INCLUDED;
+        if (linux_authoring_scalar_transition_precheck(&lg, &req, snap, rev, msg, sizeof(msg)) ||
+            sd.p0Writes || sd.globalWrites || sd.capWrites) return 8999;
+
+        req.applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+        lg.nvml.setGpuLockedClocks = nullptr; lg.nvml.resetGpuLockedClocks = nullptr;
+        if (linux_authoring_scalar_transition_precheck(&lg, &req, snap, rev, msg, sizeof(msg)) ||
+            sd.p0Writes || sd.globalWrites || sd.capWrites) return 9000;
+
+        // Shaped live curve with resetOcBeforeApply defers cleanly when clamp exists, refuses on no-clamp Pascal.
+        lg.freqOffsets[0] = 10000; lg.freqOffsetsHz[0] = 10000000; req.resetOcBeforeApply = 1;
+        lg.backend = &g_vfBackendPascal; lg.family = GPU_FAMILY_PASCAL;
+        if (linux_authoring_scalar_transition_precheck(&lg, &req, snap, rev, msg, sizeof(msg)) ||
+            sd.p0Writes || sd.globalWrites || sd.capWrites) return 9001;
+
+        lg.backend = &g_vfBackendLovelace; lg.family = GPU_FAMILY_LOVELACE;
+        lg.nvml.setGpuLockedClocks = scalar_guard_set; lg.nvml.resetGpuLockedClocks = scalar_guard_reset;
+        if (!linux_authoring_scalar_transition_precheck(&lg, &req, snap, rev, msg, sizeof(msg)) ||
+            !rev.deferredModeledCheck || rev.modeledCeiling.arm ||
+            sd.p0Writes || sd.globalWrites || sd.capWrites) return 9002;
+    }
     return 0;
 }

@@ -121,8 +121,15 @@ modeled_curve_transition_from_baseline(const CurvePlanInput &baseline, const Cur
     if (!input.count || (gc_u32)input.count != baseline.desired->authoring.topologyCount ||
         writes != targets.pointCount)
         return fail(MODELED_TRANSITION_BINDING_CHANGED);
-    std::sort(input.points, input.points + input.count,
-              [](const auto &a, const auto &b) { return a.voltageUv < b.voltageUv; });
+    for (int i = 1; i < input.count; ++i) {
+        const ModeledCurveTransitionPoint key = input.points[i];
+        int j = i - 1;
+        while (j >= 0 && input.points[j].voltageUv > key.voltageUv) {
+            input.points[j + 1] = input.points[j];
+            --j;
+        }
+        input.points[j + 1] = key;
+    }
     const auto plan = modeled_curve_transition_plan(input, true);
     if (plan.status == MODELED_TRANSITION_INVALID || plan.status == MODELED_TRANSITION_ARITHMETIC)
         return plan;
