@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-15: Exact baseline-to-transition factory
+
+- The model factory binds complete physical topology and authoritative point
+  intent to fresh zero-control/reset evidence, checking writable membership,
+  range and exact grid before calculating prospective offsets. Absolute
+  targets account for the future scalar without modifying source intent.
+- Cases 9600-9623 execute target rebasing, binding drift, missing evidence,
+  authority and exact-grid failures, plus safe-order adoption with real peaks.
+  The Windows ASan/UBSan suite passes. Runtime callers remain pending; no
+  authoring replay or physical composition claim is activated.
+
 ## 2026-11-15: Modeled lockless transition guard foundation
 
 - Shared exact-Hz planning computes monotonic final and intermediate peaks,

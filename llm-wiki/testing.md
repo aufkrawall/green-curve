@@ -1,5 +1,15 @@
 # Testing
 
+## Modeled transition factory (2026-11-15)
+
+`tests/modeled_curve_factory_tests.cpp` (9600-9623) runs in the full native and
+cross-linked regression matrix. It binds exact zero-control baseline evidence
+to all physical voltage identities, source point kinds and prospective target
+grids. Cases cover future-scalar absolute rebasing, retained captured offsets,
+floor refusal, missing composition/authority and safe-order peak adoption.
+The full native Windows ASan/UBSan suite passes. This is software evidence;
+backend caller lifetime and physical composition remain unverified.
+
 Validation of the 2026-10-29 Pascal VF units and explicit Refresh corrections:
 full native Windows regressions, Linux cross-links, source/Python gates and
 `--tidy` pass (no new findings). The focused request fixture fails at 7710

@@ -1048,6 +1048,7 @@ int run_service_control_review_tests();
 int run_profile_control_feasibility_tests();
 int run_scalar_curve_submission_tests();
 int run_modeled_curve_transition_tests();
+int run_modeled_curve_factory_tests();
 int run_windows_vf_exact_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
@@ -2770,6 +2771,9 @@ static int run_all_tests(int argc, char** argv) {
     }
     if (int modeledTransitionFailure = run_modeled_curve_transition_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", modeledTransitionFailure); return modeledTransitionFailure;
+    }
+    if (int modeledFactoryFailure = run_modeled_curve_factory_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", modeledFactoryFailure); return modeledFactoryFailure;
     }
     if (int contractFailure = run_profile_document_contract_tests()) {
         fprintf(stderr, "profile document contract regression failed: %d\n", contractFailure);

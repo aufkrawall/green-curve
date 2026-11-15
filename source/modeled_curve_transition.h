@@ -29,12 +29,15 @@ enum ModeledCurveTransitionStatus {
     MODELED_TRANSITION_NO_GUARD, MODELED_TRANSITION_INVALID, MODELED_TRANSITION_BASELINE_REQUIRED,
     MODELED_TRANSITION_COMPOSITION_REQUIRED, MODELED_TRANSITION_TOPOLOGY_REQUIRED,
     MODELED_TRANSITION_ARITHMETIC, MODELED_TRANSITION_PIN_AUTHORITY_REQUIRED,
-    MODELED_TRANSITION_GUARD_UNAVAILABLE, MODELED_TRANSITION_GUARD_READY
+    MODELED_TRANSITION_GUARD_UNAVAILABLE, MODELED_TRANSITION_GUARD_READY,
+    MODELED_TRANSITION_BINDING_CHANGED, MODELED_TRANSITION_TARGET_UNREPRESENTABLE
 };
 struct ModeledCurveTransitionPlan {
     ModeledCurveTransitionStatus status = MODELED_TRANSITION_NO_GUARD;
     gc_i64 finalPeakHz = 0, intermediatePeakHz = 0;
     int finalPeakCi = -1, intermediatePeakCi = -1, collapsedPoints = 0;
+    int issueCi = -1;
+    gc_i64 issueHz = 0;
     ApplyClockCeilingPlan ceiling{};
 };
 static inline const char* modeled_curve_transition_status_name(ModeledCurveTransitionStatus status) {
@@ -48,6 +51,8 @@ static inline const char* modeled_curve_transition_status_name(ModeledCurveTrans
         case MODELED_TRANSITION_PIN_AUTHORITY_REQUIRED: return "temporary pin changes require explicit authority";
         case MODELED_TRANSITION_GUARD_UNAVAILABLE: return "the modeled transition requires an available ceiling";
         case MODELED_TRANSITION_GUARD_READY: return "install the modeled ceiling before the raising submission";
+        case MODELED_TRANSITION_BINDING_CHANGED: return "the resolved curve no longer matches the baseline topology";
+        case MODELED_TRANSITION_TARGET_UNREPRESENTABLE: return "a modeled offset exceeds the destination grid or range";
     }
     return "invalid modeled transition";
 }
@@ -58,7 +63,7 @@ static inline bool modeled_curve_add(gc_i64 left, gc_i64 right, gc_i64& result) 
 }
 // This plans transition protection only. NO_GUARD never validates a profile,
 // grants ownership or replaces the ordinary feasibility/readback checks.
-static inline ModeledCurveTransitionPlan modeled_curve_transition_plan(const ModeledCurveTransitionInput& in) {
+static inline ModeledCurveTransitionPlan modeled_curve_transition_plan(const ModeledCurveTransitionInput& in, bool computeSafePeaks = false) {
     ModeledCurveTransitionPlan out;
     const auto fail = [&](ModeledCurveTransitionStatus status) { out.status = status; return out; };
     if (!in.scalarBeforeCurve && !in.multiStepCurve) return out; // Atomic VF-only replay stays uncapped.
@@ -74,10 +79,12 @@ static inline ModeledCurveTransitionPlan modeled_curve_transition_plan(const Mod
         lower |= p.afterOffsetHz < p.beforeOffsetHz;
         raise |= in.multiStepCurve && p.afterOffsetHz > p.beforeOffsetHz;
     }
-    if (!raise || !lower) return out;
+    const bool ordered = !raise || !lower;
+    if (ordered && !computeSafePeaks) return out;
     if (!in.completeTopology) return fail(MODELED_TRANSITION_TOPOLOGY_REQUIRED);
     if (!curve_plan_baseline_proves(in.baseline)) return fail(MODELED_TRANSITION_BASELINE_REQUIRED);
-    if (in.composition != CAPTURE_COMPOSITION_INDEPENDENT) return fail(MODELED_TRANSITION_COMPOSITION_REQUIRED);
+    if ((in.scalarBeforeHz || in.scalarAfterHz) && in.composition != CAPTURE_COMPOSITION_INDEPENDENT)
+        return fail(MODELED_TRANSITION_COMPOSITION_REQUIRED);
     gc_i64 finalPrefix = 0, intermediatePrefix = 0;
     for (int i = 0; i < in.count; ++i) {
         const auto& p = in.points[i]; gc_i64 scalarBase = 0, finalHz = 0, intermediateHz = 0;
@@ -93,7 +100,7 @@ static inline ModeledCurveTransitionPlan modeled_curve_transition_plan(const Mod
         if (intermediateHz > intermediatePrefix) { intermediatePrefix = intermediateHz; out.intermediatePeakCi = p.ci; }
     }
     out.finalPeakHz = finalPrefix; out.intermediatePeakHz = intermediatePrefix;
-    if (intermediatePrefix <= finalPrefix) return out;
+    if (ordered || intermediatePrefix <= finalPrefix) return out;
     const gc_i64 bound = in.outgoingCeilingHz ? std::min(in.outgoingCeilingHz, finalPrefix) : finalPrefix;
     const gc_i64 mhz = bound / 1000000;
     if (mhz <= 0 || (unsigned long long)mhz > UINT_MAX) return fail(MODELED_TRANSITION_ARITHMETIC);

@@ -3,11 +3,23 @@
 ## Modeled lockless transition protection (2026-11-15)
 
 Source anchors: `source/modeled_curve_transition.h`,
+`source/modeled_curve_transition_factory.h`, `tests/modeled_curve_factory_tests.cpp`,
 `source/scalar_curve_submission_policy.h`, `source/scalar_curve_modeled_review.h`,
 `source/apply_clock_ceiling_policy.h`,
 `source/gpu_backend_apply_ceiling.h`, `source/linux_apply_ceiling.h`,
 `tests/modeled_curve_transition_tests.cpp`,
 `tests/modeled_transition_backend_cases.h`, `tests/clock_transition_tests.cpp`.
+
+`source/modeled_curve_transition_factory.h` binds compiled targets to an exact,
+complete zero-control/reset baseline. It checks every physical voltage,
+point-kind payload, writable floor, count, range and driver grid before
+producing prospective offsets. Absolute points rebase against the future
+scalar; captured offsets retain their authoritative values. Neither source
+intent nor the input target array changes. A safe-order result carries actual
+peaks when used for review adoption, so an empty no-op result cannot stand in
+for a proven transition. Cases 9600-9623 cover these contracts, including exact
+sub-kHz rejection and unchanged output on refusal. Scalar composition is needed
+only when a nonzero separate scalar participates.
 
 The shared model distinguishes scalar-before-VF and multi-step VF writes from
 an atomic VF-only replay. The latter acquires no additional lockless clamp.
@@ -43,7 +55,7 @@ standard-library definitions into their fake namespaces. Windows normal and
 ASan/UBSan suites, native Linux UBSan fixtures and all-target checks pass;
 static analysis adds no findings. Missing backend/request inputs issue no setter.
 
-Fresh backend model factories and their baseline/context lifetime still need
+Fresh backend callers and their baseline/context lifetime still need
 integration. The authoring runtime gate remains closed; these calculations do
 not enable replay or grant Apply authority. Physical composition/calibration
 and driver replay remain unverified.
