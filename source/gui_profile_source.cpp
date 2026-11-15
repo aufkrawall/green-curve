@@ -8,6 +8,7 @@
 static std::unique_ptr<ProfileSourceWindow> g_profileSourceWindow;
 #include "gui_profile_source_review.cpp"
 #include "gui_profile_capture.cpp"
+#include "gui_profile_transfer.cpp"
 
 static bool gui_profile_source_confirm_discard(void*) {
     return gc_message_box(g_app.hMainWnd,
@@ -121,9 +122,15 @@ static bool gui_profile_source_save() {
     return true;
 }
 static bool gui_profile_source_route_message(MSG& message) {
+    gui_profile_transfer_drain();
+    if (g_profileTransferWindow && g_profileTransferWindow->route(message)) return true;
     return g_profileSourceWindow && g_profileSourceWindow->route(message);
 }
 static bool gui_profile_source_can_exit() {
+    if (gui_profile_transfer_active()) {
+        if (g_profileTransferWindow->committing()) return false;
+        SendMessageW(g_profileTransferWindow->handle(), WM_CLOSE, 0, 0);
+    }
     return !g_app.guiSource.valid ||
         ((!profile_editor_document_dirty(g_app.guiSource) && (!g_profileSourceWindow || !g_profileSourceWindow->pending())) ||
          gui_profile_source_confirm_discard(nullptr));

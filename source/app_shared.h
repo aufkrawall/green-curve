@@ -242,6 +242,7 @@ void init_dpi();
 // in gui_update_command_worker.cpp.  Addressed to the MAIN window rather than
 // the dialog so it can never land on a destroyed or recycled dialog HWND.
 #define APP_WM_UPDATE_COMMAND_COMPLETE (WM_APP + 10)
+#define APP_WM_PROFILE_TRANSFER_COMPLETE (WM_APP + 11)
 #define APP_SINGLE_INSTANCE_READY_NAME "Local\\GreenCurveMainWindowReady"
 #define APPLY_BTN_ID        2000
 #define REFRESH_BTN_ID      2001
@@ -263,6 +264,7 @@ void init_dpi();
 #define MACHINE_LOGON_MENU_CLEAR_MACHINE_SLOT_ID 2043
 #define SHARED_PROFILES_BTN_ID 2044
 #define PROFILE_CAPTURE_ID 2048
+#define PROFILE_TRANSFER_ID 2049
 #define MACHINE_LOGON_MENU_RESTRICT_ID 2045
 // Base for the per-slot items in the "Shared profiles" popup menu (BASE+slot).
 #define SHARED_PROFILE_MENU_BASE 2400

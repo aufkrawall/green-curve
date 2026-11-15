@@ -287,7 +287,7 @@ static int selected_profile_slot_from_combo() {
 
 // Profile-row enablement (F-ACTIONABLE).  Everything whose purpose needs the
 // service is greyed while it is unreachable; the only controls left live are the
-// escape hatches (Refresh, the service checkbox, License) and any assignment that
+// escape hatches (Refresh, the service checkbox, License), local file tools and any assignment that
 // is already set, so it can still be cleared.  See
 // gui_service_actionability_policy.h for why that exemption is load-bearing.
 static void update_profile_action_buttons() {
@@ -297,8 +297,6 @@ static void update_profile_action_buttons() {
     GuiServiceActionability actionable = gui_service_actionability_from_app();
     bool profileEdit = gui_service_capability_enabled(
         &actionable, GUI_SERVICE_CAP_PROFILE_EDIT);
-    bool automation = gui_service_capability_enabled(
-        &actionable, GUI_SERVICE_CAP_AUTOMATION);
 
     const bool captureOpen = gui_profile_capture_active();
     const bool localEdit = !g_app.applyInFlight && !captureOpen;
@@ -308,7 +306,7 @@ static void update_profile_action_buttons() {
         saved && profileEdit && !captureOpen);
     gui_set_window_enabled_if_changed(g_app.hProfileSaveBtn, localEdit && (profileEdit || g_app.guiSource.valid));
     gui_set_window_enabled_if_changed(g_app.hProfileCombo, localEdit);
-    gui_set_window_enabled_if_changed(g_app.hAutoProfilesBtn, automation);
+    gui_set_window_enabled_if_changed(g_app.hAutoProfilesBtn, localEdit);
     // Re-asserted from the cached count with the SAME expression its owner
     // (update_share_all_users_check_state) uses.  That function runs after this
     // one inside refresh_profile_controls_from_config(), and standalone from the

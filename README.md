@@ -276,6 +276,10 @@ memory control choices. Profiles & tools -> Capture current GPU settings opens
 domain selection and snapshot review. Omitted settings and replacing unfinished
 work require separate choices; Use exact creates an unsaved source, then Save
 stores it. Captured-source Apply is not enabled by this read-only workflow yet.
+Profiles & tools -> Import / export saved profiles also works offline. Use the
+native file picker or type a path, choose one record or the bank, and Preview
+before confirmation. Loading the first imported profile and discarding unfinished
+work are separate choices; cancelling keeps the previous editor input.
 
 To import an older Green Curve INI, select `--legacy-format windows-ini` or
 `--legacy-format linux-ini`. Select source slots with `--source-profiles 2,4`

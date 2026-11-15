@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-15: Windows offline transfer pane
+
+- Profiles & tools provides native file selection, exact preview and confirmed
+  atomic import/export without a connected GPU. Existing source input survives
+  cancel, errors, exports and import-only confirmation; loading imported intent
+  requires a separate discard decision.
+- Immutable file jobs use the existing coordinator and a retained completion
+  slot; failed wake notifications cannot lose a result. Cases 9510-9541 execute
+  the production controller with scripted
+  files and native controls, including stale replies, conflicts, DPI and caret
+  preservation. See [config-profiles.md](../config-profiles.md#windows-reviewed-profile-transfer-2026-11-15).
+- Windows normal/ASan/UBSan, all-target checks and gates pass; static analysis
+  adds no findings. Discard/keyboard/focus bypasses fail 9523/9538/9540, and the
+  native options/review panes were rendered and inspected offscreen.
+
 ## 2026-11-15: Reviewed TUI profile transfer
 
 - Transfer previews frozen file bytes and an atomic bank edit before any

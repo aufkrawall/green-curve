@@ -17,6 +17,7 @@ static void gui_profile_capture_service_changed();
 static constexpr bool gui_profile_capture_active() { return false; }
 #else
 static bool gui_profile_capture_active();
+static bool gui_profile_transfer_active();
 #endif
 static void gui_profile_tools_append_menu(HMENU menu);
 static void migrate_legacy_config_if_needed(const char* path);

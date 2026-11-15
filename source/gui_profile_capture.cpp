@@ -38,6 +38,7 @@ static void gui_profile_capture_service_changed() {
         gui_profile_capture_invalidate("GPU session or ownership changed; Read a new capture before accepting");
 }
 static void gui_profile_capture_begin() {
+    if (gui_profile_transfer_active()) return;
     if (gui_profile_capture_active()) { g_profileSourceWindow->show(); return; }
     if (!gui_profile_source_open()) {
         gc_message_box(g_app.hMainWnd, "Could not open capture review. The previous draft is preserved.", "Green Curve", MB_OK | MB_ICONERROR); return;
@@ -139,4 +140,6 @@ static void gui_profile_tools_append_menu(HMENU menu) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | (gui_service_model_ready(&g_app.guiServiceModel) && !g_app.applyInFlight ? 0 : MF_GRAYED),
         PROFILE_CAPTURE_ID, L"Capture current GPU settings...");
+    AppendMenuW(menu, MF_STRING | (g_app.applyInFlight || gui_profile_capture_active() ? MF_GRAYED : 0),
+        PROFILE_TRANSFER_ID, L"Import / export saved profiles...");
 }

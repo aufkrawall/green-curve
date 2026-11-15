@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 // One serialized GUI service-I/O coordinator.  The worker owns SCM/pipe work
-// and immutable request/response copies only.  All AppData, config, HWND and
-// tray mutations happen after completions are posted to the window thread.
+// and immutable request/response copies, plus owned profile-file jobs. AppData,
+// HWND and tray mutations happen after completions reach the window thread;
+// file jobs use the synchronized storage adapter without GUI state access.
 
 #include "gui_mutation_queue_policy.h"
 #include "gui_service_io_queue_policy.h"
@@ -15,6 +16,8 @@
 #include "gui_service_io_types.h"
 #include "gui_passive_capture.h"
 #include "gui_service_io_log.h"
+#include "gui_profile_transfer_work.h"
+#include "profile_slot_io_windows.h"
 
 static CRITICAL_SECTION g_guiMutationLock;
 static bool g_guiMutationLockReady = false;
@@ -28,6 +31,9 @@ static bool g_guiFullSyncPending = false;
 static bool g_guiTelemetryPending = false;
 static bool g_guiCapturePending = false;
 static GuiPassiveCaptureWork g_guiCaptureWork{};
+static std::unique_ptr<GuiProfileTransferWork> g_guiProfileTransferPending;
+static std::unique_ptr<GuiProfileTransferWork> g_guiProfileTransferCompleted;
+static bool g_guiProfileTransferActive = false;
 static bool g_guiAdminTogglePending = false;
 static bool g_guiAdminToggleEnable = false;
 static bool g_guiAdminToggleRepair = false;
@@ -66,7 +72,7 @@ static bool gui_worker_dispatchable_locked() {
     if (g_guiMutationShuttingDown || g_guiWorkerBusy) return false;
     if (g_guiMutationActive) return !g_guiMutationDispatched;
     return g_guiAdminTogglePending || g_guiFullSyncPending ||
-        g_guiCapturePending || g_guiTelemetryPending;
+        g_guiCapturePending || g_guiProfileTransferPending || g_guiTelemetryPending;
 }
 
 static void gui_worker_signal_if_dispatchable_locked() {
@@ -199,6 +205,7 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
 
         GuiMutationWork mutation = {};
         GuiPassiveCaptureWork capture{};
+        std::unique_ptr<GuiProfileTransferWork> transfer;
         GuiServiceIoKind ioKind = GUI_SERVICE_IO_FULL_SYNC;
         bool executeMutation = false;
         bool executeRead = false;
@@ -248,6 +255,9 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
             g_guiWorkerBusy = true; ioKind = GUI_SERVICE_IO_CAPTURE;
             executeRead = true; presentationEpoch = gui_service_presentation_epoch();
             StringCchCopyA(reason, ARRAY_COUNT(reason), "passive profile read");
+        } else if (!g_guiWorkerBusy && !g_guiMutationActive && g_guiProfileTransferPending) {
+            transfer = std::move(g_guiProfileTransferPending);
+            g_guiProfileTransferActive = g_guiWorkerBusy = true;
         } else if (!g_guiWorkerBusy && !g_guiMutationActive &&
                    g_guiTelemetryPending) {
             g_guiTelemetryPending = false;
@@ -260,6 +270,21 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
             presentationEpoch = gui_service_presentation_epoch();
         }
         LeaveCriticalSection(&g_guiMutationLock);
+        if (transfer) {
+            WindowsProfileSlotIO storage; gui_profile_transfer_execute(*transfer, storage);
+            debug_log("profile-import: completed token=%llu commit=%d code=%d\n", (unsigned long long)transfer->token,
+                transfer->committing ? 1 : 0, transfer->preview->result);
+            EnterCriticalSection(&g_guiMutationLock);
+            g_guiProfileTransferActive = g_guiWorkerBusy = false;
+            HWND target = g_guiServiceNotifyWindow;
+            if (!g_guiMutationShuttingDown) g_guiProfileTransferCompleted = std::move(transfer);
+            gui_worker_signal_if_dispatchable_locked(); LeaveCriticalSection(&g_guiMutationLock);
+            // The notification owns no object. A failed wake cannot lose the
+            // completed job; the normal GUI message route drains the same slot.
+            if (target && !PostMessageW(target, APP_WM_PROFILE_TRANSFER_COMPLETE, 0, 0))
+                debug_log("profile-import: completion wake failed; result retained\n");
+            continue;
+        }
         if (!executeMutation && !executeRead) continue;
 
         if (executeMutation) {
@@ -415,6 +440,7 @@ static bool gui_mutation_initialize(char* err, size_t errSize) {
 }
 
 #include "gui_passive_capture_queue.cpp"
+#include "gui_profile_transfer_queue.cpp"
 
 static bool gui_service_io_queue_full_sync(const char* reason) {
     char err[192] = {};
@@ -706,8 +732,11 @@ static void gui_mutation_drain_undelivered_completions() {
             ++drained;
         }
     }
+    while (PeekMessageW(&message, nullptr, APP_WM_PROFILE_TRANSFER_COMPLETE, APP_WM_PROFILE_TRANSFER_COMPLETE, PM_REMOVE)) {
+        ++drained;
+    }
     if (drained) {
-        debug_log("GUI service I/O: freed %u completion(s) that were posted but "
+        debug_log("GUI service I/O: drained %u completion notification(s) that were posted but "
                   "never dispatched before the window was destroyed\n", drained);
     }
 }
@@ -717,6 +746,8 @@ static bool gui_mutation_shutdown() {
     EnterCriticalSection(&g_guiMutationLock);
     g_guiMutationShuttingDown = true;
     g_guiCapturePending = false;
+    g_guiProfileTransferPending.reset();
+    g_guiProfileTransferCompleted.reset();
     g_guiServiceNotifyWindow = nullptr;
     g_guiMutationPending = false;
     g_guiAdminTogglePending = false;

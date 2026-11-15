@@ -1,5 +1,58 @@
 # Config and Profiles
 
+## Windows reviewed profile transfer (2026-11-15)
+
+Source anchors: `source/gui_profile_transfer.cpp`,
+`source/profile_transfer_window.h`, `source/profile_transfer_picker.h`,
+`source/gui_profile_transfer_work.h`, `source/gui_profile_transfer_queue.cpp`,
+`source/gui_mutation_worker.cpp`, `source/ui_main_window.cpp`,
+`tests/gui_profile_transfer_tests.cpp`.
+
+Profiles & tools remains available offline. Its transfer pane offers native
+file selection or exact UTF-8 path entry, record/bank selection, explicit
+destination slots and legacy interpretation. Single-record import initially
+requires a destination choice. Preparation uses the same frozen preview engine
+as the TUI. The review names the file, replaced slots, domains, scope and
+affected assignments before confirmation.
+
+The existing coordinator owns one pending file job and serializes it after
+mutations, administration, full sync and passive capture, before telemetry.
+Only immutable options, paths and owned preview data cross the thread boundary.
+File preparation/commit never runs on the window thread and never performs a
+service operation. A job has exactly one owner: frontend, queue, worker or a
+locked completed-result slot. Wake messages own no object. The normal GUI
+message route also drains that slot, so a failed wake cannot lose the result
+or strand a confirmed commit. Shutdown clears retained jobs under the same lock;
+stale results are freed on adoption. Matching cancellation
+removes queued preparation only; an explicitly confirmed commit cannot be
+cancelled or closed halfway through. Existing atomic storage remains decisive.
+
+Main and source windows remain disabled while this pane is open. Their source
+model, raw unfinished input and selection survive cancel, failure, export and
+import-only confirmation. Refreshing slot labels restores the previous selector
+unless the user separately chose to load the first imported document. Loading
+requires an independent discard decision when dirty, rechecked before enqueue;
+it creates a saved source draft and grants no Apply authority. Ordinary hardware
+menu actions stay unavailable offline while file tools remain usable.
+
+The pane supports DPI changes, virtual scrolling, focus reveal, exact Unicode
+paths and caret preservation. Each review defaults focus to Cancel. Cases
+9510-9541 execute the production controller and native controls with scripted
+file jobs: late replies, one/five-profile imports, frozen export, conflicts,
+independent decisions, Unicode paths and DPI/focus behavior. Native file-picker
+COM lifetime is balanced; production builds verify its existing system links.
+Failure to open the source editor after a successful bank commit keeps the old
+draft and unfinished input. The options and review panes were rendered offscreen
+and inspected; no test application remains running after these bounded checks.
+Enter explicitly activates focused custom action buttons; ordinary path input
+cannot confirm a transfer. Default Enter cancels a newly opened pane.
+Focus notifications cannot cancel an active preparation. A scripted missing
+wake retains a finished commit until the GUI drains it, without retry delays.
+Full Windows normal/ASan/UBSan, all-target builds and source gates pass. Static
+analysis retains 34 baseline findings with no additions. Removing discard,
+keyboard or focus guards fails cases 9523, 9538 or 9540 respectively.
+Interactive picker use and physical GPU replay are separate verification gaps.
+
 ## TUI reviewed profile transfer (2026-11-15)
 
 Source anchors: `source/profile_editor_transfer.h`, `source/profile_commands.h`,
@@ -43,7 +96,8 @@ The production adapters remain shared with the existing CLI file fixtures.
 Focused ASan/UBSan tests and full Windows normal/ASan/UBSan regressions pass;
 removing the discard guard fails case 9465. Native Linux UBSan execution and
 all-target checks pass. Static analysis reports no additional findings.
-Windows transfer UI and destination acceptance remain separate pending work.
+Windows uses the reviewed transfer pane above. Destination acceptance remains
+separate pending work.
 
 ## Windows capture into an unsaved source draft (2026-11-14)
 

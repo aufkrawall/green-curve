@@ -38,6 +38,7 @@ static void set_profile_status_text(const char*, ...) {}
 static int fixture_message_box(HWND, const char*, const char*, UINT) { return IDOK; }
 static LONG gui_service_presentation_epoch() { return epoch; }
 static bool gui_profile_source_open() { return open; }
+static bool gui_profile_transfer_active() { return false; }
 static void gui_profile_source_refresh() { ++refreshes; }
 static void gui_profile_source_invalidate_review(const char*) {}
 static bool validate_configured_gpu_selection_for_client(char*, size_t) { return selection; }
@@ -140,8 +141,15 @@ static int run() {
     if (g_app.guiSource.valid || !g_app.guiStateDirty || strcmp(g_app.guiDraft.memOffsetText, "invalid legacy input") || discards != 1) return 9429;
     HMENU menu = CreatePopupMenu(); if (!menu) return 9430;
     gui_profile_tools_append_menu(menu);
-    const bool menuValid = GetMenuItemCount(menu) == 2 && !(GetMenuState(menu, PROFILE_CAPTURE_ID, MF_BYCOMMAND) & MF_GRAYED);
+    const bool menuValid = GetMenuItemCount(menu) == 3 && !(GetMenuState(menu, PROFILE_CAPTURE_ID, MF_BYCOMMAND) & MF_GRAYED) &&
+        !(GetMenuState(menu, PROFILE_TRANSFER_ID, MF_BYCOMMAND) & MF_GRAYED);
     DestroyMenu(menu); if (!menuValid) return 9431;
+    g_app.guiServiceModel.phase = GUI_SERVICE_DISCONNECTED;
+    menu = CreatePopupMenu(); if (!menu) return 9430;
+    gui_profile_tools_append_menu(menu);
+    const bool offlineMenu = (GetMenuState(menu, PROFILE_CAPTURE_ID, MF_BYCOMMAND) & MF_GRAYED) &&
+        !(GetMenuState(menu, PROFILE_TRANSFER_ID, MF_BYCOMMAND) & MF_GRAYED);
+    DestroyMenu(menu); if (!offlineMenu) return 9536;
     g_profileSourceWindow.reset(); return 0;
 }
 }

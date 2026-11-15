@@ -72,7 +72,10 @@ Communication uses a local named pipe with a binary struct protocol.
 The visible GUI enqueues temperature/fan telemetry at its existing cadence, but
 the window thread never opens a pipe or waits for SCM. The sole GUI service-I/O
 coordinator owns runtime reads, mutations, service verification, and admin
-operations. Telemetry is a cached service read rather than an adapter-readiness
+operations. It also serializes immutable offline profile-transfer file jobs;
+their independent ownership and cancellation rules are documented in
+[config-profiles.md](config-profiles.md#windows-reviewed-profile-transfer-2026-11-15).
+Telemetry is a cached service read rather than an adapter-readiness
 probe; the service fan worker owns hardware polling. A full sync performs the
 serialized authoritative refresh needed to enter `READY`.
 

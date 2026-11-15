@@ -80,4 +80,5 @@ REGRESSION_SOURCES = (
     'profile_review_session_tests.cpp',
     'gui_profile_source_review_tests.cpp',
     'gui_profile_capture_tests.cpp',
+    'gui_profile_transfer_tests.cpp',
 )

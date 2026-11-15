@@ -126,6 +126,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             handle_gui_mutation_completion((GuiMutationCompletion*)lParam);
             return 0;
 
+        case APP_WM_PROFILE_TRANSFER_COMPLETE:
+            gui_profile_transfer_drain();
+            return 0;
+
         case APP_WM_SERVICE_IO_COMPLETE:
             if (!lParam && wParam) {
                 if (!gui_profile_capture_allocation_failed((gc_u64)wParam)) gui_profile_source_check_allocation_failed((gc_u64)wParam);
@@ -852,6 +856,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 show_profiles_popup(hwnd);
             } else if (LOWORD(wParam) == PROFILE_CAPTURE_ID) {
                 gui_profile_capture_begin();
+            } else if (LOWORD(wParam) == PROFILE_TRANSFER_ID) {
+                gui_profile_transfer_begin();
             } else if (LOWORD(wParam) == AUTO_PROFILE_MENU_TOGGLE_ID) {
                 auto_profile_toggle_enabled(hwnd);
             } else if (LOWORD(wParam) == AUTO_PROFILE_MENU_CONFIGURE_ID) {

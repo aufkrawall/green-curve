@@ -36,7 +36,7 @@ Curve checks, profile transfer and capture improve tuning workflows.
 - **Dialog text copying:** Ctrl+C copies confirmations, warnings and errors.
 - **Curve points below 700 mV:** writable points appear in the editor and graph.
 - **Prepare compatible curve:** review a draft with conflicting earlier points lowered before Apply.
-- **Profile transfer:** CLI/TUI import/export five profiles offline, with assignment review.
+- **Profile transfer:** Windows/CLI/TUI import/export five profiles offline, with assignment review.
 - **Legacy transfer:** preserve Windows/Linux units and tuning intent.
 - **Source profiles:** offline Windows/TUI editing survives GPU switches.
 - **Hardware capture:** Windows/CLI/TUI snapshot review identifies omissions before accepting an unapplied draft.
