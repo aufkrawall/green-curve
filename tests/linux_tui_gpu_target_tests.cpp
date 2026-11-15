@@ -13,6 +13,7 @@
 // another GPU (linux_gpu_switch_preserves_active_intent).
 
 #include "linux_tui_internal.h"
+#include "profile_capture_proposal_fixture.h"
 
 #include "linux_debug_log.h"
 #include "linux_auto_restore_policy.h"

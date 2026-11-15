@@ -5,17 +5,18 @@
 Source anchors: `source/profile_capture_proposals.h`,
 `source/profile_capture_commands.h`, `source/vf_flat_tail_recognition.h`,
 `source/profile_commands_windows.h`, `source/profile_commands_linux.h`,
-`tests/profile_capture_proposals_tests.cpp`.
+`source/linux_tui_capture_binding.h`, `source/profile_source_window.h`,
+`tests/profile_capture_proposals_tests.cpp`, `tests/tui_capture_proposals_tests.cpp`.
 
-The CLI offers explicit exact/flatten/pin representations after its passive
+Windows, the Linux TUI and CLI offer exact/flatten/pin representations after a passive
 snapshot report. Recognition uses the existing ascending-voltage tolerant
 helper over complete graphics topology, retaining hidden writable anchors and
 the bound read-only floor. It never reconstructs stock from a shaped curve.
 Every proposal runs through runtime mapping and the complete shared control/
 curve planner. Proven refusal and unavailable constraints keep exact controls;
 conditional proposals retain their need for fresh operation checks. Only a
-representable flatten without competing pin evidence is suggested for future
-frontend selection. No representation is implicitly accepted by the CLI.
+representable flatten without competing pin evidence is preselected in native
+frontends. No representation is implicitly accepted by the CLI.
 
 Flatten/pin conversion removes authoritative tail values while retaining exact
 observed offsets and frequencies in the portable document. Pre-anchor intent,
@@ -37,8 +38,15 @@ targets require an explicit choice. A clock pin does not guarantee voltage.
 Cases 9680-9715 cover hidden anchors, raw/converted round trips, evidence tiers,
 unknown pins, source preservation, conflict/availability/grid/range failures,
 128 graphics points, fallback family support and CLI confirmation/refusal.
-Bounded load-based user observations and native alternative-choice controls
-remain pending. Existing GUI/TUI exact capture still uses the same report.
+Native controls use frozen proposal documents, with independent omission and
+unfinished-draft confirmations. Unavailable choices cannot be accepted, including
+forged button events. The TUI expires the capture on service instance,
+generation, topology, ownership, target or readiness drift while preserving the
+previous source and unfinished input. Telemetry-only updates keep it usable.
+Acceptance checks newly dirty input again before replacement. Both frontends
+clear cached proposals on cancellation or a new read. Cases 9720-9763 cover
+production controllers, transport context, DPI, keyboard and compact layouts.
+Bounded load-based user observations remain pending.
 Physical replay and optional pin getters remain unverified.
 The Windows ASan/UBSan suite, native Linux UBSan fixtures, all-target builds and
 source gates pass; static analysis adds no findings to its 34-entry baseline.
@@ -337,7 +345,7 @@ The modal wraps/scrolls its report, defaults focus to Cancel and cannot read
 or accept before its current layout has been presented. Other edits and file
 actions stay blocked while the modal is open.
 
-Use exact controls is an explicit representation decision. Omitted settings
+Exact/flatten/pin acceptance is an explicit representation decision. Omitted settings
 and replacing unsaved/invalid edits require independent opt-ins. Acceptance
 uses the frozen observation without a second hardware request, installs a
 canonical source draft, clears prior destination review and detaches Apply.
@@ -347,8 +355,9 @@ failure preserves the previous source, slot and edit buffer.
 
 Exact source points, owned zero, memory API/Hz and rational power survive the
 factory. Read-only points retain observations without write authority. This
-workflow keeps exact controls; flatten/pin conversion and mapped Apply remain
-separate work. Cases 9295-9329 cover strict decisions, frozen acceptance,
+workflow preserves exact controls, with reviewed alternatives described under
+[capture lock proposals](#capture-lock-proposals-2026-11-15). Reviewed scalar
+Apply is available separately; graphics replay remains gated. Cases 9295-9329 cover strict decisions, frozen acceptance,
 discard/cancel, empty reads, unsaved state, compact modal actions, keyboard/
 wheel isolation, Cancel focus and wrapping.
 

@@ -39,7 +39,7 @@ Curve checks, profile transfer and capture improve.
 - **Profile transfer:** Windows/CLI/TUI import/export five profiles offline, with assignment review.
 - **Legacy transfer:** preserve Windows/Linux units and tuning intent.
 - **Source profiles:** offline Windows/TUI editing survives GPU switches.
-- **Hardware capture:** review omissions and exact controls; CLI offers flatten and pin proposals with labeled evidence.
+- **Hardware capture:** Windows/TUI/CLI offer exact, flatten and pin drafts with labeled evidence and omission review.
 - **Profile checks:** stage reviewed scalar sources for Apply; preview mapping, controls and conversions.
 
 ### Improved

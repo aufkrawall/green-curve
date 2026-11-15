@@ -5,6 +5,22 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-15: Native capture representation choices
+
+- Windows and the TUI select frozen exact/flatten/pin proposals with separate
+  omission and unfinished-draft decisions. Session/ownership/target drift
+  expires TUI capture without changing previous source or input; telemetry
+  refresh keeps the snapshot. Fresh discard review prevents late dirty input
+  from being replaced silently.
+- Cases 9720-9763 cover production controller/transport/lifetime helpers,
+  unavailable choices, keyboard/DPI behavior and compact layouts. An offscreen
+  native render confirms representation/report geometry. See
+  [config-profiles.md](../config-profiles.md#capture-lock-proposals-2026-11-15).
+- Windows normal/ASan/UBSan, all-target checks, source gates and native Linux
+  fixtures pass; static analysis adds no findings. A plain build freshly
+  produced all 12 packages, with all 20 packaged application/service images
+  independently compared to the outputs. Physical replay remains unverified.
+
 ## 2026-11-15: Reviewed CLI capture lock proposals
 
 - The shared capture proposal layer reuses tolerant physical-voltage recognition
@@ -14,8 +30,8 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   unknown state. Matching generation/ownership revisions bind retained intent;
   absent passive snapshot capability stays unknown. Cases 9680-9715 cover exact
   preservation, hidden anchors, evidence/constraint failures and bounded topology.
-  Native choice controls and user observation remain pending; physical replay
-  is unverified. See [config-profiles.md](../config-profiles.md#capture-lock-proposals-2026-11-15).
+  Native choice controls now consume these proposals; user observation and
+  physical replay remain unverified. See [config-profiles.md](../config-profiles.md#capture-lock-proposals-2026-11-15).
 
 ## 2026-11-15: Reviewed scalar source submission
 

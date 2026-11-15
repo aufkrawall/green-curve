@@ -465,8 +465,11 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
             break;
         case ACTION_CAPTURE_READ:
             tui_capture_read(*state, [&](gc_u32 domains, HardwareCaptureObservation& out, ProfileCodecError& error) {
-                return tui_read_capture(*state, domains, out, error, linux_tui_review_context(state->service));
+                return tui_read_capture(*state, domains, out, error, state->captureReviewContext, &state->captureProposalContext);
             });
+            break;
+        case ACTION_CAPTURE_REPRESENTATION:
+            (void)tui_capture_cycle_representation(*state);
             break;
         case ACTION_CAPTURE_ACCEPT:
             (void)tui_capture_accept(*state, [](TuiState& draft) { bind_current_draft(&draft); tui_recompute_dirty(&draft); });

@@ -253,7 +253,10 @@ Capture offers `--representation exact|flatten|pin` as an explicit choice.
 Flatten proposals report their anchor and shared feasibility checks; pin
 proposals label getter evidence or retained applied intent. Unknown pins stay
 unknown. Converted tails retain original offsets as observations, while exact
-controls remain a separate choice. These choices save source intent and do not Apply it.
+controls remain a separate choice. Windows and the Linux TUI offer the same
+choices, with omission and unfinished-draft decisions kept separate. A changed
+GPU session or ownership expires the snapshot. Acceptance saves source intent
+and does not Apply it.
 
 The Linux TUI can Load portable slots as source documents. Profiles & Tools
 shows exact units and source point intent; Save preserves the complete document

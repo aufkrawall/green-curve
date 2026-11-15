@@ -556,12 +556,19 @@ void tui_draw_capture_dialog(TuiCanvas* canvas) {
     for (int row = 0; row < rows && first + row < (int)lines.size(); ++row)
         canvas->text(x, panel.y + 3 + row, width, lines[first + row].text.c_str(), TUI_STYLE_TEXT);
     const int choices = panel.y + panel.height - 5, buttons = panel.y + panel.height - 3;
+    const bool representationAvailable = (view.representations & profile_capture_representation_bit(view.representation)) != 0;
+    if (view.hasObservation) {
+        const std::string label = std::string("Representation: ") + profile_capture_representation_name(view.representation);
+        canvas->button({x, choices - 1, 32, 1}, label.c_str(), ACTION_CAPTURE_REPRESENTATION);
+        canvas->text(x + 34, choices - 1, width - 34, representationAvailable ? "Review evidence above" : "Unavailable choice", TUI_STYLE_MUTED);
+    }
     if (view.omissions) canvas->button({x, choices, 29, 1}, view.allowPartial ? "[x] Allow omitted settings" : "[ ] Allow omitted settings",
         ACTION_CAPTURE_PARTIAL, 0, 0, view.allowPartial);
     if (view.needsDiscard) canvas->button({x + 32, choices, 29, 1}, view.discardConfirmed ? "[x] Discard unsaved draft" : "[ ] Discard unsaved draft",
         ACTION_CAPTURE_DISCARD, 0, 0, view.discardConfirmed);
-    if (view.hasObservation && (!view.omissions || view.allowPartial) && (!view.needsDiscard || view.discardConfirmed))
-        canvas->button({x, buttons, 24, 1}, "USE EXACT CONTROLS", ACTION_CAPTURE_ACCEPT);
+    if (view.hasObservation && representationAvailable && (!view.omissions || view.allowPartial) && (!view.needsDiscard || view.discardConfirmed))
+        canvas->button({x, buttons, 24, 1}, view.representation == PROFILE_CAPTURE_FLATTEN ? "USE FLATTEN" :
+            view.representation == PROFILE_CAPTURE_PIN ? "USE PIN" : "USE EXACT CONTROLS", ACTION_CAPTURE_ACCEPT);
     else canvas->text(x, buttons, 24, view.hasObservation ? "Review choices required" : "Capture unavailable", TUI_STYLE_MUTED);
     canvas->button({x + 27, buttons, 16, 1}, "READ AGAIN", ACTION_CAPTURE_READ);
     canvas->button({panel.x + panel.width - 16, buttons, 14, 1}, "CANCEL", ACTION_CAPTURE_CANCEL);

@@ -46,7 +46,7 @@ static int run() {
     if (report.find("explicitly allow omitted settings") == std::string::npos || report.find("--allow-partial") != std::string::npos) return 9297;
     if (profile_editor_capture(*sample, true, false, *output, lines) != PROFILE_COMMAND_DECISION || encode(*output) != empty) return 9298;
     report.clear(); for (const auto& line : lines) report += line + '\n';
-    if (report.find("No flatten or hard pin is inferred") == std::string::npos || report.find("--representation") != std::string::npos) return 9299;
+    if (report.find("Choose a representation") == std::string::npos || report.find("--representation") != std::string::npos) return 9299;
 
     auto state = std::make_unique<TuiState>(); state->currentSlot = 3;
     state->document.valid = true; state->document.value = state->document.saved = *output;
@@ -126,6 +126,7 @@ static int run() {
         if (!tui_layout_actions_valid(layout) || !layout.captureVisible || domains != 9 || !cancel || !readButton) return 9312;
         lines.assign(20, "Snapshot detail"); lines.emplace_back("Long capture constraint with requested=123456789 and a trailing maximum=987654321");
         vm.capture.report = &lines; vm.capture.hasObservation = true; vm.capture.omissions = PROFILE_DOMAIN_LOCK;
+        vm.capture.representations = profile_capture_representation_bit(PROFILE_CAPTURE_EXACT);
         vm.capture.needsDiscard = true;
         for (int choices = 0; choices < 3; ++choices) {
             vm.capture.allowPartial = choices > 0; vm.capture.discardConfirmed = choices > 1;

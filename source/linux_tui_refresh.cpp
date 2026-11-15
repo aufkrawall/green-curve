@@ -233,6 +233,7 @@ bool tui_select_gpu_step(TuiState* state, int delta) {
     state->configuredGpu.target = chosen;
     if (state->sourceReview && !linux_gpu_identity_matches(&state->sourceReviewContext.gpu, &chosen))
         tui_expire_source_review(*state, "selected GPU changed");
+    tui_reconcile_capture(*state, "selected GPU changed");
     state->configuredGpu.status = LINUX_CONFIGURED_GPU_EXPLICIT;
     state->configuredGpu.role = linux_gpu_location_role_for_selection(
         &chosen, state->service.snapshot.adapters, count);
@@ -286,6 +287,7 @@ static bool tui_refresh_from_daemon(TuiState* state, bool userRequested,
             return false;
         }
         state->serviceOnline = false;
+        tui_reconcile_capture(*state, "daemon disconnected");
         tui_expire_source_review(*state, "daemon disconnected");
         state->draftAttached = false;
         // A reconnect says again why writes are blocked.
@@ -413,6 +415,7 @@ static bool tui_refresh_from_daemon(TuiState* state, bool userRequested,
     state->nextTelemetryMs = tui_monotonic_ms() + 1000;
     if (!requestedTarget) tui_adopt_configured_gpu(state, userRequested);
     tui_reconcile_source_review(*state);
+    tui_reconcile_capture(*state, "GPU session or ownership changed");
     return true;
 }
 

@@ -10,6 +10,7 @@ struct Host {
     int captureReads = 0, captureAccepts = 0, captureCancels = 0, domainChanges = 0, mapped = 0;
     gc_u32 captureDomains = 0;
     bool partial = false, discardCapture = false;
+    ProfileCaptureRepresentation representation = PROFILE_CAPTURE_UNDECIDED;
     bool discard = false, failSave = false;
     ProfileDocument saved{};
     ProfileSourceWindow* window = nullptr;
@@ -31,8 +32,8 @@ static void input_changed(void* context) {
 }
 static void preview_changed(void* context) { ++((Host*)context)->previewChanges; input_changed(context); }
 static void capture_read(void* context, gc_u32 domains) { auto& h = *(Host*)context; ++h.captureReads; h.captureDomains = domains; }
-static bool capture_accept(void* context, bool partial, bool discard) {
-    auto& h = *(Host*)context; ++h.captureAccepts; h.partial = partial; h.discardCapture = discard; return false;
+static bool capture_accept(void* context, bool partial, bool discard, ProfileCaptureRepresentation representation) {
+    auto& h = *(Host*)context; ++h.captureAccepts; h.partial = partial; h.discardCapture = discard; h.representation = representation; return false;
 }
 static void capture_cancel(void* context) { ++((Host*)context)->captureCancels; }
 static void domains_changed(void* context) { ++((Host*)context)->domainChanges; }
@@ -238,9 +239,36 @@ int run_profile_source_window_tests() {
     SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::CAPTURE_ACCEPT, 0);
     if (host->captureAccepts != 1 || !host->partial || !host->discardCapture ||
         d.memoryOffsetHz != -123500000 || !window.pending() || profile_editor_document_dirty(*model)) return 9406;
+    if (host->representation != PROFILE_CAPTURE_EXACT) return 9720;
+    window.capture_report({"Conditional flatten; pin unknown"}, true, PROFILE_DOMAIN_LOCK,
+        profile_capture_representation_bit(PROFILE_CAPTURE_EXACT) | profile_capture_representation_bit(PROFILE_CAPTURE_FLATTEN));
+    const auto chooseRepresentation = [&](int choice) {
+        SendMessageW(window.control(ProfileSourceWindow::CAPTURE_REPRESENTATION), CB_SETCURSEL, choice, 0);
+        SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::CAPTURE_REPRESENTATION, CBN_SELCHANGE),
+            (LPARAM)window.control(ProfileSourceWindow::CAPTURE_REPRESENTATION));
+    };
+    chooseRepresentation(2);
+    SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::CAPTURE_ACCEPT, 0);
+    if (IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_ACCEPT)) || host->captureAccepts != 1 ||
+        text(window.control(ProfileSourceWindow::INPUT)) != L"unfinished") return 9721;
+    chooseRepresentation(1);
+    if (!IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_ACCEPT)) || text(window.control(ProfileSourceWindow::CAPTURE_ACCEPT)) != L"Use flatten") return 9722;
+    MSG captureKey{}; captureKey.hwnd = window.control(ProfileSourceWindow::CAPTURE_ACCEPT); captureKey.message = WM_KEYDOWN; captureKey.wParam = VK_RETURN;
+    window.route(captureKey);
+    if (host->captureAccepts != 2 || host->representation != PROFILE_CAPTURE_FLATTEN ||
+        profile_editor_document_dirty(*model) || !window.pending()) return 9723;
+    window.capture_report({"Representable flatten"}, true, PROFILE_DOMAIN_LOCK,
+        profile_capture_representation_bit(PROFILE_CAPTURE_EXACT) | profile_capture_representation_bit(PROFILE_CAPTURE_FLATTEN), PROFILE_CAPTURE_FLATTEN);
+    if (SendMessageW(window.control(ProfileSourceWindow::CAPTURE_REPRESENTATION), CB_GETCURSEL, 0, 0) != 1) return 9724;
+    RECT representationPlacement{0, 0, 320, 250};
+    SendMessageW(window.handle(), WM_DPICHANGED, MAKEWPARAM(192, 192), (LPARAM)&representationPlacement);
+    if (SendMessageW(window.control(ProfileSourceWindow::CAPTURE_REPRESENTATION), CB_GETCURSEL, 0, 0) != 1 ||
+        text(window.control(ProfileSourceWindow::INPUT)) != L"unfinished" || !window.pending()) return 9733;
     mark(ProfileSourceWindow::CAPTURE_DOMAIN_FIRST + 1, false);
     if (host->domainChanges != 1 || IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_ACCEPT)) ||
         SendMessageW(window.control(ProfileSourceWindow::CAPTURE_ALLOW_OMISSIONS), BM_GETCHECK, 0, 0) != BST_UNCHECKED) return 9407;
+    if (SendMessageW(window.control(ProfileSourceWindow::CAPTURE_REPRESENTATION), CB_GETCURSEL, 0, 0) != 0 ||
+        text(window.control(ProfileSourceWindow::CAPTURE_ACCEPT)) != L"Use exact") return 9734;
     SendMessageW(window.handle(), WM_CLOSE, 0, 0);
     if (!window.handle() || window.capture_active() || !window.pending() || host->captureCancels != 1 ||
         host->closes != 2 || host->confirms != 2 || !visible(window.control(ProfileSourceWindow::INPUT)) ||
@@ -255,6 +283,14 @@ int run_profile_source_window_tests() {
     model->valid = false; window.reload(); window.begin_capture(false);
     SendMessageW(window.handle(), WM_CLOSE, 0, 0);
     if (window.handle() || host->captureCancels != 3 || host->closes != 2 || host->confirms != 2) return 9410;
+    model->valid = true;
+    if (!window.create(nullptr, 96, false)) return 9735;
+    window.begin_capture(false);
+    window.capture_report({"Representable flatten"}, true, 0,
+        profile_capture_representation_bit(PROFILE_CAPTURE_EXACT) | profile_capture_representation_bit(PROFILE_CAPTURE_FLATTEN), PROFILE_CAPTURE_FLATTEN);
+    MSG cancelKey{}; cancelKey.hwnd = window.control(ProfileSourceWindow::CLOSE); cancelKey.message = WM_KEYDOWN; cancelKey.wParam = VK_RETURN;
+    window.route(cancelKey);
+    if (window.capture_active() || host->captureAccepts != 2 || host->captureCancels != 4) return 9736;
     return 0;
 }
 #else

@@ -14,6 +14,7 @@
 #include "profile_editor_document.h"
 #include "profile_editor_transfer.h"
 #include "profile_destination_review.h"
+#include "profile_capture_proposals.h"
 #include "linux_tui_review_context.h"
 
 #include <string>
@@ -52,6 +53,9 @@ struct TuiState {
     TuiCaptureView capture;
     bool capturePresented;
     std::unique_ptr<HardwareCaptureObservation> captureObservation;
+    std::unique_ptr<ProfileCaptureProposals> captureProposals;
+    ProfileCaptureProposalContext captureProposalContext{};
+    LinuxTuiReviewContext captureReviewContext{};
     std::vector<std::string> captureLines;
     TuiTransferView transfer;
     bool transferPresented = false;

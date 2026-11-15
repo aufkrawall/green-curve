@@ -12,6 +12,7 @@ struct GuiProfileCaptureJob {
 };
 static std::unique_ptr<GuiProfileCaptureJob> g_profileCaptureJob;
 static std::unique_ptr<HardwareCaptureObservation> g_profileCaptureObservation;
+static std::unique_ptr<ProfileCaptureProposals> g_profileCaptureProposals;
 static bool g_profileCapturePending = false;
 
 static bool gui_profile_capture_active() {
@@ -24,7 +25,7 @@ static bool gui_profile_capture_needs_discard() {
 static void gui_profile_capture_invalidate(const char* reason) {
     const bool hadJob = g_profileCaptureJob != nullptr;
     if (g_profileCaptureJob && g_profileCapturePending) gui_service_io_cancel_capture(g_profileCaptureJob->token);
-    g_profileCaptureJob.reset(); g_profileCaptureObservation.reset(); g_profileCapturePending = false;
+    g_profileCaptureJob.reset(); g_profileCaptureObservation.reset(); g_profileCaptureProposals.reset(); g_profileCapturePending = false;
     if (gui_profile_capture_active()) { g_profileSourceWindow->capture_reset(); g_profileSourceWindow->notice(reason); }
     if (hadJob) debug_log("profile-capture: expired reason=%s\n", reason);
 }
@@ -86,11 +87,20 @@ static bool gui_profile_capture_handle_completion(GuiServiceIoCompletion* comple
         gui_profile_capture_invalidate(response.message[0] ? response.message : "Capture was invalid or the GPU controls changed; Read again"); return true;
     }
     auto ignored = std::make_unique<ProfileDocument>(); std::vector<std::string> lines;
-    const int result = profile_editor_capture(response.capture, false, false, *ignored, lines);
+    auto proposals = std::make_unique<ProfileCaptureProposals>();
+    auto context = profile_capture_proposal_context(response);
+    if (!context.pinAvailabilityKnown) {
+        context.pinAvailabilityKnown = true;
+        context.pinAvailable = (g_profileCaptureJob->context.domains & SERVICE_MUTATION_DOMAIN_LOCK) != 0;
+    }
+    const int result = profile_editor_capture_review(response.capture, false, PROFILE_CAPTURE_UNDECIDED, *ignored, lines,
+        context, proposals.get());
     const bool ready = result == PROFILE_COMMAND_DECISION && response.capture.capturedDomains;
     g_profileCaptureObservation = std::make_unique<HardwareCaptureObservation>(response.capture);
-    g_profileSourceWindow->capture_report(lines, ready, response.capture.omittedDomains);
-    g_profileSourceWindow->notice("Review captured settings and omissions; Use exact changes only the draft");
+    g_profileSourceWindow->capture_report(lines, ready, response.capture.omittedDomains,
+        ready ? profile_capture_available_representations(*proposals) : 0u, proposals->suggested);
+    g_profileCaptureProposals = ready ? std::move(proposals) : nullptr;
+    g_profileSourceWindow->notice("Review settings, evidence and omissions; choose a representation to change only the draft");
     debug_log("profile-capture: reviewed token=%llu domains=0x%03X omitted=0x%03X ready=%d\n",
         (unsigned long long)completion->captureToken, (unsigned)g_profileCaptureJob->domains,
         (unsigned)response.capture.omittedDomains, ready ? 1 : 0);
@@ -100,8 +110,9 @@ static bool gui_profile_capture_allocation_failed(gc_u64 token) {
     if (!g_profileCaptureJob || g_profileCaptureJob->token != token) return false;
     gui_profile_capture_invalidate("Could not allocate capture results; try again"); return true;
 }
-static bool gui_profile_capture_accept(void*, bool allowPartial, bool discard) {
-    if (!gui_profile_capture_active() || !g_profileCaptureObservation || !g_profileCaptureObservation->capturedDomains ||
+static bool gui_profile_capture_accept(void*, bool allowPartial, bool discard,
+    ProfileCaptureRepresentation representation = PROFILE_CAPTURE_EXACT) {
+    if (!gui_profile_capture_active() || !g_profileCaptureObservation || !g_profileCaptureProposals || !g_profileCaptureObservation->capturedDomains ||
         !gui_profile_capture_context_current()) {
         gui_profile_capture_invalidate("Read and review a current snapshot before accepting"); return false;
     }
@@ -112,10 +123,10 @@ static bool gui_profile_capture_accept(void*, bool allowPartial, bool discard) {
         g_profileSourceWindow->capture_require_discard();
         g_profileSourceWindow->notice("Explicitly confirm replacing the unsaved or unfinished draft"); return false;
     }
-    auto source = std::make_unique<ProfileDocument>(); std::vector<std::string> lines;
-    if (profile_editor_capture(*g_profileCaptureObservation, allowPartial, true, *source, lines) != PROFILE_COMMAND_OK) {
-        g_profileSourceWindow->capture_report(lines, false, g_profileCaptureObservation->omittedDomains);
-        g_profileSourceWindow->notice("The capture could not be accepted; the previous draft is preserved"); return false;
+    auto source = std::make_unique<ProfileDocument>(); char why[192]{};
+    if (!profile_capture_select_proposal(*g_profileCaptureProposals, representation, *source, why, sizeof(why))) {
+        g_profileSourceWindow->notice(why[0] ? why : "This representation is unavailable; the previous draft is preserved");
+        debug_log("profile-capture: proposal refused representation=%d reason=%s\n", (int)representation, why); return false;
     }
     auto candidate = std::make_unique<ProfileEditorCandidate>(); profile_editor_source_candidate(*source, *candidate);
     candidate->source.unsaved = true;
@@ -123,9 +134,10 @@ static bool gui_profile_capture_accept(void*, bool allowPartial, bool discard) {
     g_app.guiSource = candidate->source;
     g_profileSourceWindow->reload(); gui_profile_capture_invalidate("Capture accepted");
     gui_profile_source_refresh();
-    g_profileSourceWindow->notice("Captured exact source draft; Save stores it; GPU settings were not applied");
-    set_profile_status_text("Captured exact source draft. Save stores it; GPU settings were not applied.");
-    debug_log("profile-capture: accepted source=unsaved domains=0x%03X\n", (unsigned)source->domains);
+    g_profileSourceWindow->notice("Captured source draft; Save stores it; GPU settings were not applied");
+    set_profile_status_text("Captured source draft. Save stores it; GPU settings were not applied.");
+    debug_log("profile-capture: accepted source=unsaved representation=%s domains=0x%03X\n",
+        profile_capture_representation_name(representation), (unsigned)source->domains);
     return true;
 }
 static void gui_profile_capture_cancel(void*) {

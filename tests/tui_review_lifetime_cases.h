@@ -12,6 +12,19 @@ static int review_lifetime_tests() {
         state.sourceReview->stage = PROFILE_REVIEW_PLANNED;
         state.sourceReviewContext = linux_tui_review_context(state.service);
         state.sourceCheckVisible = true; state.sourceCheckLines = {"old review"};
+        state.capture.active = state.capture.hasObservation = state.capturePresented = true;
+        state.captureObservation = std::make_unique<HardwareCaptureObservation>(profile_capture_proposal_fixture::curve());
+        auto& observation = *state.captureObservation;
+        observation.osFamily = PROFILE_SOURCE_OS_LINUX; observation.gpuGeneration = state.service.state.gpuGeneration;
+        observation.binding = hardware_capture_binding(*linux_tui_authoritative_gpu(&state.service));
+        observation.fingerprint = hardware_capture_fingerprint(observation);
+        observation.revision = service_control_review_revision(observation.fingerprint,
+            state.service.state.activeDesiredValid ? &state.service.desired : nullptr);
+        state.captureReviewContext = linux_tui_review_context(state.service);
+        state.captureProposals = std::make_unique<ProfileCaptureProposals>(); char why[192]{};
+        (void)profile_capture_prepare_proposals(observation, {}, *state.captureProposals, why, sizeof(why));
+        state.capture.representations = profile_capture_available_representations(*state.captureProposals);
+        state.captureLines = {"old capture"};
     };
     for (int changed = 0; changed < 8; ++changed) {
         daemon_reset(false); TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_NONE, 0);
@@ -29,18 +42,24 @@ static int review_lifetime_tests() {
         if (!tui_refresh_service(state, false) || state->sourceReview || state->sourceCheckVisible ||
             !state->sourceCheckLines.empty() || !state->document.valid || state->document.value.memoryOffsetHz != -123500000)
             return 9280;
+        if (changed < 7 && (state->capture.hasObservation || state->captureProposals || state->captureObservation ||
+            state->capturePresented || state->capture.representations || state->captureLines.empty())) return 9752;
+        if (changed == 7 && (!state->capture.hasObservation || !state->captureProposals)) return 9753;
     }
     daemon_reset(false); TuiState* state = fresh_state(LINUX_CONFIGURED_GPU_NONE, 0);
     state->configuredGpu.target = {}; if (!tui_refresh_service(state, false)) return 9281;
     stage(*state); ++g_daemon.published.state.stateRevision;
     g_daemon.published.snapshot.gpuTemperatureC = 70;
     if (!tui_refresh_service(state, false) || !state->sourceReview || !state->sourceCheckVisible) return 9282;
+    if (!state->capture.hasObservation || !state->captureProposals) return 9754;
     g_daemon.offline = true;
     if (tui_refresh_service(state, false) || state->sourceReview || state->sourceCheckVisible || !state->document.valid) return 9283;
+    if (state->capture.hasObservation || state->captureProposals || state->captureObservation || state->capturePresented) return 9755;
     daemon_reset(false); state = fresh_state(LINUX_CONFIGURED_GPU_NONE, 0);
     state->configuredGpu.target = {}; if (!tui_refresh_service(state, false)) return 9284;
     stage(*state);
     if (!tui_select_gpu_step(state, 1) || shown_bus(state) != 7 || state->sourceReview ||
         state->sourceCheckVisible || state->document.value.memoryOffsetHz != -123500000) return 9285;
+    if (state->capture.hasObservation || state->captureProposals || state->captureObservation) return 9756;
     return 0;
 }

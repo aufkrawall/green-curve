@@ -84,7 +84,7 @@ static inline bool profile_capture_parse(const std::vector<std::string>& args, c
 
 template <class IO>
 static inline bool profile_capture_commands_run(const std::vector<std::string>& args,
-    const char* defaultConfig, IO& io, int& exitCode) {
+    const char* defaultConfig, IO& io, int& exitCode, ProfileCaptureProposals* reviewed = nullptr) {
     bool handled = false;
     for (const auto& arg : args) handled |= arg == "--capture-current";
     if (!handled) return false;
@@ -117,6 +117,7 @@ static inline bool profile_capture_commands_run(const std::vector<std::string>& 
     auto proposals = std::make_unique<ProfileCaptureProposals>();
     if (!profile_capture_prepare_proposals(*capture, profile_capture_context_from_io(io, 0), *proposals,
         error.message, sizeof(error.message))) return reject(PROFILE_COMMAND_INVALID);
+    if (reviewed) *reviewed = *proposals;
     profile_capture_report_proposals(io, *proposals);
     if (capture->omittedDomains && !command.allowPartial) {
         io.message("Capture is incomplete. Select --allow-partial or choose --domains explicitly before saving.\n");
@@ -129,7 +130,6 @@ static inline bool profile_capture_commands_run(const std::vector<std::string>& 
     auto bank = std::make_unique<ProfileBank>(); bank->count = 1;
     if (!profile_capture_select_proposal(*proposals, command.representation, bank->documents[0], error.message, sizeof(error.message)))
         return reject(PROFILE_COMMAND_DECISION);
-    snprintf(bank->documents[0].displayName, sizeof(bank->documents[0].displayName), "%s", "Captured GPU settings");
     std::string encoded;
     if (!profile_bank_encode(*bank, encoded, &error)) return reject(PROFILE_COMMAND_INVALID);
     if (!io.write(command.file, encoded, error)) return reject(PROFILE_COMMAND_IO);

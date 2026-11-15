@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "gpu_core.h"
+#include "profile_capture_representation.h"
 #include "intent_readback_status.h"
 #include "startup_snapshot_policy.h"
 struct ProfileDocument;
@@ -108,6 +109,7 @@ enum ActionType {
     ACTION_CAPTURE_SOURCE,
     ACTION_CAPTURE_DOMAIN,
     ACTION_CAPTURE_READ,
+    ACTION_CAPTURE_REPRESENTATION,
     ACTION_CAPTURE_PARTIAL,
     ACTION_CAPTURE_DISCARD,
     ACTION_CAPTURE_ACCEPT,
@@ -186,6 +188,8 @@ struct TuiPointValues {
 struct TuiCaptureView {
     bool active = false, hasObservation = false, allowPartial = false, discardConfirmed = false, needsDiscard = false;
     gc_u32 domains = 31, omissions = 0;
+    unsigned int representations = 0;
+    ProfileCaptureRepresentation representation = PROFILE_CAPTURE_EXACT;
     int scroll = 0;
     const std::vector<std::string>* report = nullptr;
 };

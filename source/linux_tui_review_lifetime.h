@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "linux_tui_capture_binding.h"
 
 static inline void tui_expire_source_review(TuiState& state, const char* reason) {
     if (!state.sourceReview && !state.sourceCheckVisible) return;

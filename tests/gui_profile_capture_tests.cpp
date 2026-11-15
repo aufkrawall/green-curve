@@ -7,6 +7,7 @@
 #include "service_request_deadline_policy.h"
 #include "gui_service_io_types.h"
 #include "gui_passive_capture.h"
+#include "profile_capture_proposal_fixture.h"
 
 namespace gui_profile_capture_fixture {
 static AppData g_app{};
@@ -16,11 +17,16 @@ struct Window {
     std::string input = "unfinished", status;
     std::vector<std::string> lines;
     gc_u32 omissions = 0;
+    unsigned int representations = 0;
+    ProfileCaptureRepresentation choice = PROFILE_CAPTURE_EXACT;
     bool capture_active() const { return active; }
     bool pending() const { return inputPending; }
     void begin_capture(bool discard) { active = true; needsDiscard = discard; }
-    void capture_reset() { ready = false; lines.clear(); }
-    void capture_report(const std::vector<std::string>& text, bool valid, gc_u32 omitted) { lines = text; ready = valid; omissions = omitted; }
+    void capture_reset() { ready = false; representations = 0; lines.clear(); }
+    void capture_report(const std::vector<std::string>& text, bool valid, gc_u32 omitted,
+        unsigned int available = profile_capture_representation_bit(PROFILE_CAPTURE_EXACT), ProfileCaptureRepresentation suggested = PROFILE_CAPTURE_EXACT) {
+        lines = text; ready = valid; omissions = omitted; representations = available; choice = suggested;
+    }
     void capture_require_discard() { needsDiscard = true; }
     void notice(const char* text) { status = text; }
     void show() {}
@@ -64,6 +70,66 @@ static GuiServiceIoCompletion* completion(const ServiceResponse& response, gc_u6
 static bool deliver(GuiServiceIoCompletion* answer) {
     if (gui_profile_capture_handle_completion(answer)) return true;
     HeapFree(GetProcessHeap(), 0, answer); return false;
+}
+static int proposal_cases() {
+    auto live = std::make_unique<ServiceResponse>(); profile_review_fixture::live(*live);
+    g_app.guiServiceModel.phase = GUI_SERVICE_READY; g_app.guiServiceModel.hasAcceptedEnvelope = true;
+    g_app.selectedGpu = live->snapshot.adapters[0]; g_app.guiStateDirty = false;
+    g_app.guiSource = {}; g_app.guiSource.valid = true;
+    g_app.guiSource.value = g_app.guiSource.saved = profile_review_fixture::source();
+    g_app.serviceActiveDesired = {}; g_app.serviceActiveDesiredValid = false;
+    g_profileSourceWindow->active = false; g_profileSourceWindow->inputPending = true;
+    g_profileSourceWindow->input = "previous unfinished value";
+    queue = selection = open = true;
+    auto bank = std::make_unique<ProfileBank>(); bank->count = 1;
+    const auto encoded = [&] { std::string text; bank->documents[0] = g_app.guiSource.value; (void)profile_bank_encode(*bank, text); return text; };
+    const auto original = encoded(); const int readsBefore = sends, discardsBefore = discards;
+    const auto read = [&] {
+        g_profileShownContext = profile_editor_review_context(*live);
+        live->capture = profile_capture_proposal_fixture::curve();
+        live->capture.binding = hardware_capture_binding(live->snapshot.adapters[0]);
+        live->capture.fingerprint = hardware_capture_fingerprint(live->capture);
+        live->capture.revision = service_control_review_revision(live->capture.fingerprint,
+            live->state.activeDesiredValid ? &live->desired : nullptr);
+        gui_profile_capture_begin(); gui_profile_capture_read(nullptr, live->capture.requestedDomains);
+        auto* answer = completion(*live); return answer && deliver(answer);
+    };
+    if (!read() || !g_profileCaptureProposals || !g_profileCaptureProposals->flatten.selectable() ||
+        !(g_profileSourceWindow->representations & profile_capture_representation_bit(PROFILE_CAPTURE_FLATTEN)) ||
+        (g_profileSourceWindow->representations & profile_capture_representation_bit(PROFILE_CAPTURE_PIN)) ||
+        g_profileSourceWindow->choice != PROFILE_CAPTURE_EXACT) return 9725;
+    if (gui_profile_capture_accept(nullptr, true, true, PROFILE_CAPTURE_PIN) || encoded() != original ||
+        discards != discardsBefore || !g_profileCaptureProposals || g_profileSourceWindow->input != "previous unfinished value") return 9726;
+    if (gui_profile_capture_accept(nullptr, false, true, PROFILE_CAPTURE_FLATTEN) ||
+        gui_profile_capture_accept(nullptr, true, false, PROFILE_CAPTURE_FLATTEN) || encoded() != original) return 9727;
+    if (!gui_profile_capture_accept(nullptr, true, true, PROFILE_CAPTURE_FLATTEN) ||
+        g_app.guiSource.value.lock.mode != LOCK_MODE_FLATTEN || g_app.guiSource.value.lock.anchorTopologyId != 22 ||
+        g_app.guiSource.value.points[1].kind != PROFILE_POINT_ABSENT || g_app.guiSource.value.points[1].observedOffsetHz != -100000500 ||
+        g_profileCaptureProposals || g_profileCaptureObservation || sends != readsBefore + 1 || discards != discardsBefore + 1 ||
+        g_app.serviceActiveDesiredValid) return 9728;
+    live->state.activeDesiredValid = 1; live->desired.hasLock = 1; live->desired.lockMode = LOCK_MODE_HARD;
+    live->desired.lockCi = 22; live->desired.lockMHz = 1000;
+    g_app.serviceActiveDesiredValid = true; g_app.serviceActiveDesired = live->desired;
+    const auto owned = service_control_review_revision(0, &g_app.serviceActiveDesired);
+    if (!read() || !g_profileCaptureProposals->pin.selectable() ||
+        !(g_profileSourceWindow->representations & profile_capture_representation_bit(PROFILE_CAPTURE_PIN)) ||
+        g_profileSourceWindow->choice != PROFILE_CAPTURE_EXACT) return 9729;
+    live->capture.points[1].offsetHz = -777; // The completed envelope is no longer the frontend's frozen proposal.
+    if (!gui_profile_capture_accept(nullptr, true, true, PROFILE_CAPTURE_PIN) ||
+        g_app.guiSource.value.lock.mode != LOCK_MODE_HARD || g_app.guiSource.value.lock.targetFrequencyHz != 1000000000 ||
+        g_app.guiSource.value.lock.provenance != PROFILE_LOCK_PROVENANCE_APPLIED_INTENT ||
+        g_app.guiSource.value.source.pinKnowledge != PROFILE_PIN_UNKNOWN ||
+        g_app.guiSource.value.points[1].observedOffsetHz != -100000500 || sends != readsBefore + 2 ||
+        discards != discardsBefore + 2 || service_control_review_revision(0, &g_app.serviceActiveDesired) != owned) return 9730;
+    const auto accepted = encoded();
+    live->snapshot.health.availableMutationDomains &= ~SERVICE_MUTATION_DOMAIN_LOCK;
+    if (!read() || !g_profileCaptureProposals || g_profileCaptureProposals->pin.selectable() ||
+        (g_profileSourceWindow->representations & profile_capture_representation_bit(PROFILE_CAPTURE_PIN)) ||
+        gui_profile_capture_accept(nullptr, true, true, PROFILE_CAPTURE_PIN) || encoded() != accepted) return 9731;
+    g_profileSourceWindow->active = false; gui_profile_capture_cancel(nullptr);
+    if (g_profileCaptureProposals || g_profileCaptureObservation || g_profileCaptureJob || encoded() != accepted ||
+        discards != discardsBefore + 2 || service_control_review_revision(0, &g_app.serviceActiveDesired) != owned) return 9732;
+    return 0;
 }
 static int run() {
     g_profileSourceWindow = std::make_unique<Window>();
@@ -150,6 +216,7 @@ static int run() {
     const bool offlineMenu = (GetMenuState(menu, PROFILE_CAPTURE_ID, MF_BYCOMMAND) & MF_GRAYED) &&
         !(GetMenuState(menu, PROFILE_TRANSFER_ID, MF_BYCOMMAND) & MF_GRAYED);
     DestroyMenu(menu); if (!offlineMenu) return 9536;
+    if (const int failure = proposal_cases()) return failure;
     g_profileSourceWindow.reset(); return 0;
 }
 }

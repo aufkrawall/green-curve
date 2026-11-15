@@ -3,6 +3,7 @@
 #pragma once
 #include "profile_editor_document.h"
 #include "profile_editor_source_rows.h"
+#include "profile_capture_representation.h"
 #include <algorithm>
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -31,7 +32,7 @@ struct ProfileSourceWindowCallbacks {
     void (*previewChanged)(void*) = nullptr;
     void (*acceptMapped)(void*) = nullptr;
     void (*captureRead)(void*, gc_u32) = nullptr;
-    bool (*captureAccept)(void*, bool, bool) = nullptr;
+    bool (*captureAccept)(void*, bool, bool, ProfileCaptureRepresentation) = nullptr;
     void (*captureCancel)(void*) = nullptr;
     void (*captureDomainsChanged)(void*) = nullptr;
 };
@@ -42,7 +43,7 @@ public:
     enum { LIST = 9101, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CHECK, REPORT, VIEW,
         GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, USE_MAPPED,
         CAPTURE_READ = 9140, CAPTURE_ACCEPT, CAPTURE_ALLOW_OMISSIONS, CAPTURE_DISCARD, CAPTURE_DOMAIN_FIRST,
-        CAPTURE_DOMAIN_LAST = CAPTURE_DOMAIN_FIRST + 8, CLOSE = IDCANCEL };
+        CAPTURE_DOMAIN_LAST = CAPTURE_DOMAIN_FIRST + 8, CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE, CLOSE = IDCANCEL };
     ProfileSourceWindow(ProfileEditorDocument& model, ProfileSourceWindowCallbacks callbacks)
         : model_(model), callbacks_(callbacks) {}
     ProfileSourceWindow(const ProfileSourceWindow&) = delete;
@@ -69,12 +70,21 @@ public:
     }
     void capture_reset() {
         captureReady_ = capturePartial_ = captureDiscard_ = false; captureOmissions_ = 0;
+        captureRepresentation_ = PROFILE_CAPTURE_EXACT; captureRepresentations_ = 0;
+        SendMessageW(control(CAPTURE_REPRESENTATION), CB_SETCURSEL, 0, 0);
+        SetWindowTextW(control(CAPTURE_ACCEPT), L"Use exact");
         SendMessageW(control(CAPTURE_ALLOW_OMISSIONS), BM_SETCHECK, BST_UNCHECKED, 0);
         SendMessageW(control(CAPTURE_DISCARD), BM_SETCHECK, BST_UNCHECKED, 0);
         clear_report();
     }
-    void capture_report(const std::vector<std::string>& lines, bool ready, gc_u32 omissions) {
+    void capture_report(const std::vector<std::string>& lines, bool ready, gc_u32 omissions,
+        unsigned int representations = profile_capture_representation_bit(PROFILE_CAPTURE_EXACT),
+        ProfileCaptureRepresentation suggested = PROFILE_CAPTURE_EXACT) {
         captureReady_ = ready; captureOmissions_ = omissions;
+        captureRepresentations_ = ready ? representations : 0u;
+        captureRepresentation_ = (representations & profile_capture_representation_bit(suggested)) ? suggested : PROFILE_CAPTURE_EXACT;
+        SendMessageW(control(CAPTURE_REPRESENTATION), CB_SETCURSEL, (int)captureRepresentation_ - 1, 0);
+        capture_accept_label();
         report(lines); project_view();
     }
     bool route(MSG& message) const {
@@ -164,6 +174,8 @@ private:
     gc_u32 graphics_ = 0, memory_ = 0;
     bool capture_ = false, captureReady_ = false, capturePartial_ = false, captureDiscard_ = false, captureNeedsDiscard_ = false;
     gc_u32 captureDomains_ = 31, captureOmissions_ = 0;
+    unsigned int captureRepresentations_ = 0;
+    ProfileCaptureRepresentation captureRepresentation_ = PROFILE_CAPTURE_EXACT;
     unsigned long long generation_ = 0;
     std::vector<ProfileEditorSourceRow> rows_;
     int px(int value) const { return MulDiv(value, dpi_, 96); }
@@ -185,7 +197,7 @@ private:
         HFONT old = font_; font_ = fresh;
         for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE, CHECK, REPORT, VIEW,
             GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, USE_MAPPED,
-            CAPTURE_READ, CAPTURE_ACCEPT, CAPTURE_ALLOW_OMISSIONS, CAPTURE_DISCARD})
+            CAPTURE_READ, CAPTURE_ACCEPT, CAPTURE_ALLOW_OMISSIONS, CAPTURE_DISCARD, CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE})
             SendMessageW(control(id), WM_SETFONT, (WPARAM)font_, FALSE);
         for (int id = CAPTURE_DOMAIN_FIRST; id <= CAPTURE_DOMAIN_LAST; ++id) SendMessageW(control(id), WM_SETFONT, (WPARAM)font_, FALSE);
         if (old) DeleteObject(old);
@@ -224,6 +236,11 @@ private:
         const wchar_t* domains[] = {L"VF points", L"Graphics", L"Memory", L"Power", L"Pin", L"Fan", L"XBAR", L"System", L"Video"};
         for (int i = 0; i < 9; ++i) child(L"BUTTON", domains[i], BS_AUTOCHECKBOX | BS_NOTIFY | WS_TABSTOP, CAPTURE_DOMAIN_FIRST + i);
         for (int id = CAPTURE_READ; id <= CAPTURE_DOMAIN_LAST; ++id) if (!control(id)) return false;
+        child(L"STATIC", L"Representation", 0, CAPTURE_REPRESENTATION_TITLE);
+        HWND representation = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, CAPTURE_REPRESENTATION);
+        for (const auto* label : {L"Exact programmed offsets", L"Recognized flatten", L"Pin from labeled evidence"})
+            SendMessageW(representation, CB_ADDSTRING, 0, (LPARAM)label);
+        if (!control(CAPTURE_REPRESENTATION_TITLE) || !representation) return false;
         SendMessageW(control(REPORT), EM_SETLIMITTEXT, 128 * 1024, 0);
         SendMessageW(input_, EM_SETLIMITTEXT, 31, 0);
         if (!SetWindowSubclass(input_, input_proc, 1, (DWORD_PTR)this)) return false;
@@ -286,8 +303,11 @@ private:
         for (int id : {HELP, INPUT, STAGE, SAVE, CHECK, GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, USE_MAPPED})
             ShowWindow(control(id), capture_ ? SW_HIDE : SW_SHOW);
         for (int id = CAPTURE_READ; id <= CAPTURE_DOMAIN_LAST; ++id) ShowWindow(control(id), capture_ ? SW_SHOW : SW_HIDE);
+        for (int id : {CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE}) ShowWindow(control(id), capture_ ? SW_SHOW : SW_HIDE);
+        EnableWindow(control(CAPTURE_REPRESENTATION), capture_ && captureReady_);
         EnableWindow(control(CAPTURE_READ), capture_ && captureDomains_ && callbacks_.captureRead);
-        EnableWindow(control(CAPTURE_ACCEPT), capture_ && captureReady_ && (!captureOmissions_ || capturePartial_) &&
+        EnableWindow(control(CAPTURE_ACCEPT), capture_ && captureReady_ &&
+            (captureRepresentations_ & profile_capture_representation_bit(captureRepresentation_)) && (!captureOmissions_ || capturePartial_) &&
             (!captureNeedsDiscard_ || captureDiscard_) && callbacks_.captureAccept);
         EnableWindow(control(CAPTURE_DISCARD), capture_ && captureNeedsDiscard_);
         EnableWindow(control(CAPTURE_ALLOW_OMISSIONS), capture_ && captureReady_ && captureOmissions_);
@@ -318,14 +338,14 @@ private:
         layingOut_ = true; RECT client{};
         for (int pass = 0; pass < 2; ++pass) {
             GetClientRect(window_, &client);
-            const int width = std::max((int)client.right, px(360)), height = std::max((int)client.bottom, px(capture_ ? 420 : 392));
+            const int width = std::max((int)client.right, px(360)), height = std::max((int)client.bottom, px(capture_ ? 456 : 392));
             SCROLLINFO x{sizeof(x), SIF_RANGE | SIF_PAGE | SIF_POS, 0, width - 1, (UINT)client.right, scrollX_, 0};
             SCROLLINFO y{sizeof(y), SIF_RANGE | SIF_PAGE | SIF_POS, 0, height - 1, (UINT)client.bottom, scrollY_, 0};
             SetScrollInfo(window_, SB_HORZ, &x, TRUE); SetScrollInfo(window_, SB_VERT, &y, TRUE);
         }
         SCROLLINFO info{}; info.cbSize = sizeof(info); info.fMask = SIF_POS;
         GetScrollInfo(window_, SB_HORZ, &info); scrollX_ = info.nPos; GetScrollInfo(window_, SB_VERT, &info); scrollY_ = info.nPos;
-        GetClientRect(window_, &client); const int w = std::max((int)client.right, px(360)), h = std::max((int)client.bottom, px(capture_ ? 420 : 392));
+        GetClientRect(window_, &client); const int w = std::max((int)client.right, px(360)), h = std::max((int)client.bottom, px(capture_ ? 456 : 392));
         const int m = px(12), row = px(28), gap = px(8);
         const auto place = [&](int id, int x, int y, int width, int height) { MoveWindow(control(id), x - scrollX_, y - scrollY_, width, height, TRUE); };
         place(TITLE, m, m, w - 2*m - px(104), px(22)); place(VIEW, w - m - px(96), m, px(96), px(24));
@@ -343,7 +363,9 @@ private:
         if (capture_) {
             const int column = (w - 2*m) / 3;
             for (int i = 0; i < 9; ++i) place(CAPTURE_DOMAIN_FIRST + i, m + (i%3)*column, px(42) + (i/3)*px(28), column, px(24));
-            place(REPORT, m, px(134), w - 2*m, h - px(314));
+            place(REPORT, m, px(134), w - 2*m, h - px(350));
+            place(CAPTURE_REPRESENTATION_TITLE, m, h - px(210), px(108), px(24));
+            place(CAPTURE_REPRESENTATION, m + px(112), h - px(214), w - 2*m - px(112), px(180));
             place(CAPTURE_ALLOW_OMISSIONS, m, h - px(168), w - 2*m, px(24));
             place(CAPTURE_DISCARD, m, h - px(140), w - 2*m, px(24));
             place(CAPTURE_READ, m, h - px(104), px(80), row);
@@ -389,7 +411,7 @@ private:
         switch (id) {
             case LIST: return notification == LBN_SETFOCUS;
             case INPUT: case REPORT: case STATUS: return notification == EN_SETFOCUS;
-            case GRAPHICS_ROUTE: case MEMORY_ROUTE: return notification == CBN_SETFOCUS;
+            case GRAPHICS_ROUTE: case MEMORY_ROUTE: case CAPTURE_REPRESENTATION: return notification == CBN_SETFOCUS;
             case STAGE: case SAVE: case CLOSE: case CHECK: case VIEW: case USE_MAPPED: return notification == BN_SETFOCUS;
             case CAPTURE_READ: case CAPTURE_ACCEPT: case CAPTURE_ALLOW_OMISSIONS: case CAPTURE_DISCARD: return notification == BN_SETFOCUS;
             default: return id >= CAPTURE_DOMAIN_FIRST && id <= CAPTURE_DOMAIN_LAST && notification == BN_SETFOCUS;
@@ -412,10 +434,24 @@ private:
                 capture_reset(); callbacks_.captureRead(callbacks_.context, captureDomains_);
             }
         } else if (id == CAPTURE_ACCEPT) {
-            if (captureReady_ && (!captureOmissions_ || capturePartial_) && (!captureNeedsDiscard_ || captureDiscard_) && callbacks_.captureAccept)
-                (void)callbacks_.captureAccept(callbacks_.context, capturePartial_, captureDiscard_);
+            if (captureReady_ && (captureRepresentations_ & profile_capture_representation_bit(captureRepresentation_)) &&
+                (!captureOmissions_ || capturePartial_) && (!captureNeedsDiscard_ || captureDiscard_) && callbacks_.captureAccept)
+                (void)callbacks_.captureAccept(callbacks_.context, capturePartial_, captureDiscard_, captureRepresentation_);
         } else return false;
         return true;
+    }
+    void capture_accept_label() {
+        SetWindowTextW(control(CAPTURE_ACCEPT), captureRepresentation_ == PROFILE_CAPTURE_FLATTEN ? L"Use flatten" :
+            captureRepresentation_ == PROFILE_CAPTURE_PIN ? L"Use pin" : L"Use exact");
+    }
+    void capture_choice() {
+        const int choice = (int)SendMessageW(control(CAPTURE_REPRESENTATION), CB_GETCURSEL, 0, 0);
+        if (!capture_ || choice < 0 || choice > 2) return;
+        captureRepresentation_ = (ProfileCaptureRepresentation)(choice + 1);
+        capture_accept_label(); project_view();
+        notice(captureRepresentations_ & profile_capture_representation_bit(captureRepresentation_) ?
+            "Representation selected; acceptance changes only the draft" :
+            "This representation is unavailable in the reviewed snapshot; choose another or Read again");
     }
     void cancel_capture() {
         capture_ = false; captureReady_ = false; clear_report();
@@ -459,6 +495,7 @@ private:
             }
             case WM_COMMAND:
                 if (l && focus_notification(LOWORD(w), HIWORD(w))) self->reveal((HWND)l);
+                if (self->capture_ && LOWORD(w) == CAPTURE_REPRESENTATION && HIWORD(w) == CBN_SELCHANGE) { self->capture_choice(); return 0; }
                 if (self->capture_command(LOWORD(w), HIWORD(w))) return 0;
                 if (self->capture_ && (LOWORD(w) == STAGE || LOWORD(w) == CHECK || LOWORD(w) == SAVE || LOWORD(w) == VIEW || LOWORD(w) == LIST || LOWORD(w) == USE_MAPPED)) return 0;
                 if (LOWORD(w) == LIST && HIWORD(w) == LBN_SELCHANGE) self->select(true);

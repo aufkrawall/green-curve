@@ -12,6 +12,18 @@ Service intent context tests reject generation/ownership drift and retain the
 passive Linux envelope's distinction between unknown capability and known intent.
 A negative fixture that substitutes a pin for missing evidence fails 9680.
 
+Cases 9720-9763 in `profile_source_window_tests.cpp`,
+`gui_profile_capture_tests.cpp`, `tui_capture_proposals_tests.cpp`,
+`tui_review_lifetime_cases.h` and `tui_review_session_tests.cpp` exercise native
+representation choices, immutable accepted values, independent omission/discard
+gates and actual TUI refresh expiration. They cover target/session/ownership
+drift, passive Linux capability fallback, unavailable choices, invalid enums,
+DPI/input preservation, default Cancel, 72x24 layouts and newly dirty drafts.
+An offscreen native render verifies the selected representation and report
+geometry; its helper exits after rendering. No GPU setter is involved.
+Removing the native command's representation guard fails case 9721 even though
+the unavailable button remains disabled.
+
 ## Reviewed scalar source submission (2026-11-15)
 
 Cases 9630-9677 in `tests/profile_mapped_draft_tests.cpp`,

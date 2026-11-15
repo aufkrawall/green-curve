@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "profile_runtime_resolution.h"
+#include "hardware_capture_runtime.h"
+#include "profile_capture_representation.h"
 #include "profile_control_feasibility.h"
 #include "vf_flat_tail_recognition.h"
 #include "service_protocol.h"
@@ -9,12 +11,6 @@
 #include <algorithm>
 #include <limits>
 
-enum ProfileCaptureRepresentation {
-    PROFILE_CAPTURE_UNDECIDED,
-    PROFILE_CAPTURE_EXACT,
-    PROFILE_CAPTURE_FLATTEN,
-    PROFILE_CAPTURE_PIN
-};
 struct ProfileCaptureProposalContext {
     gc_i64 ownedPinHz = 0; // Service-owned intent, never a hardware getter.
     bool pinAvailabilityKnown = false, pinAvailable = false;
@@ -251,20 +247,25 @@ static inline bool profile_capture_prepare_proposals(const HardwareCaptureObserv
 static inline bool profile_capture_select_proposal(const ProfileCaptureProposals &proposals,
                                                    ProfileCaptureRepresentation representation, ProfileDocument &output,
                                                    char *why, size_t whySize) {
-    if (representation == PROFILE_CAPTURE_EXACT) {
-        output = proposals.exact;
-        return true;
-    }
+    const ProfileDocument* document = representation == PROFILE_CAPTURE_EXACT ? &proposals.exact : nullptr;
     const auto *proposal = representation == PROFILE_CAPTURE_FLATTEN ? &proposals.flatten
                            : representation == PROFILE_CAPTURE_PIN   ? &proposals.pin
                                                                      : nullptr;
-    if (!proposal || !proposal->selectable()) {
+    if (!document && (!proposal || !proposal->selectable())) {
         if (why && whySize)
             snprintf(why, whySize, "%s", proposal ? proposal->reason : "choose a capture representation explicitly");
         return false;
     }
-    output = proposal->document;
+    if (!document) document = &proposal->document;
+    if (!profile_document_structurally_valid(*document, why, whySize)) return false;
+    output = *document;
+    snprintf(output.displayName, sizeof(output.displayName), "%s", "Captured GPU settings");
     return true;
+}
+static inline unsigned int profile_capture_available_representations(const ProfileCaptureProposals& proposals) {
+    return profile_capture_representation_bit(PROFILE_CAPTURE_EXACT) |
+        (proposals.flatten.selectable() ? profile_capture_representation_bit(PROFILE_CAPTURE_FLATTEN) : 0u) |
+        (proposals.pin.selectable() ? profile_capture_representation_bit(PROFILE_CAPTURE_PIN) : 0u);
 }
 template <class IO>
 static inline void profile_capture_report_proposals(IO &io, const ProfileCaptureProposals &proposals) {

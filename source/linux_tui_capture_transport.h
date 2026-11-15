@@ -4,7 +4,8 @@
 #include <unistd.h>
 
 static bool tui_read_capture(TuiState& state, gc_u32 domains, HardwareCaptureObservation& out,
-    ProfileCodecError& error, const LinuxTuiReviewContext& context) {
+    ProfileCodecError& error, const LinuxTuiReviewContext& context, ProfileCaptureProposalContext* proposalContext = nullptr) {
+    if (proposalContext) *proposalContext = {};
     if (!state.serviceOnline || !context.serviceInstanceId ||
         linux_tui_shown_gpu_write(&state.configuredGpu, linux_tui_authoritative_gpu(&state.service)) != LINUX_TUI_SHOWN_GPU_WRITE_ALLOWED)
         return profile_codec::fail(&error, 0, "the selected GPU must be shown by the daemon");
@@ -17,5 +18,12 @@ static bool tui_read_capture(TuiState& state, gc_u32 domains, HardwareCaptureObs
         return profile_codec::fail(&error, 0, response->message[0] ? response->message : "capture is unavailable");
     if (!linux_tui_review_capture_matches(context, *response))
         return profile_codec::fail(&error, 0, "GPU session or ownership changed during the read; Refresh and try again");
+    if (proposalContext) {
+        *proposalContext = profile_capture_proposal_context(*response);
+        if (!proposalContext->pinAvailabilityKnown && context.gpuPhase == SERVICE_GPU_PHASE_READY) {
+            proposalContext->pinAvailabilityKnown = true;
+            proposalContext->pinAvailable = (context.mutationDomains & SERVICE_MUTATION_DOMAIN_LOCK) != 0;
+        }
+    }
     out = response->capture; return true;
 }
