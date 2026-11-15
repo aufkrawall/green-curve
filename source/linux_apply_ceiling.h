@@ -142,9 +142,15 @@ static bool linux_snapshot_curve_needs_a_pin(const LinuxHardwareSnapshot* s) {
 // and curve phases run.
 static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
                                                const DesiredSettings* d,
-                                               const DesiredSettings* committed, bool installedGuardRequired = false) {
+                                               const DesiredSettings* committed, bool installedGuardRequired = false,
+                                               const ApplyClockCeilingPlan* modeled = nullptr) {
+    if (modeled && modeled->required && (!g || !d)) {
+        lb_log("apply: modeled clock ceiling refused without a GPU and desired settings\n"); return false;
+    }
     // Transaction entry already initialized state and recorded outgoing ownership.
     ApplyClockCeilingPlan plan = linux_apply_clock_ceiling_plan(g, d, committed);
+    if (modeled) plan = apply_clock_ceiling_merge_modeled(plan, *modeled,
+        g && g->nvml.setGpuLockedClocks && g->nvml.resetGpuLockedClocks);
     g_linuxCeilingPlan = plan;
     if (!plan.arm) {
         if (!plan.required && !installedGuardRequired) return true;

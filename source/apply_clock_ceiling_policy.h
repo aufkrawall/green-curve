@@ -50,7 +50,7 @@
 // This header is pure so both platform backends and the regression suite share
 // one decision; the hardware calls live in the backends.
 
-// Why a transition needs a temporary clamp.  Kept explicit because the two
+// Why a transition needs a temporary clamp. Kept explicit because these
 // reasons have different ceiling values and different release rules, and
 // because a log that only says "armed" cannot be used to tell an intentional
 // no-clamp apply from one whose protection was never required in the first
@@ -73,6 +73,10 @@ enum ApplyClockCeilingReason {
     // unpinned undervolt switching to another unpinned undervolt got no clamp
     // at all, because neither profile named a lock.
     APPLY_CEILING_REASON_RESET_DROPS_CAP,
+    // A separate scalar or multi-step VF submission can exceed the verified
+    // final curve peak before all negative offsets land. This is strict even
+    // on devices where ordinary single-batch VF writes need no clamp.
+    APPLY_CEILING_REASON_MODELED_CURVE_TRANSITION,
 };
 
 static inline const char* apply_clock_ceiling_reason_name(
@@ -82,6 +86,8 @@ static inline const char* apply_clock_ceiling_reason_name(
         case APPLY_CEILING_REASON_REQUESTED_FLATTEN: return "requested VF flatten target";
         case APPLY_CEILING_REASON_RESET_DROPS_CAP:
             return "reset-to-stock removes the outgoing cap";
+        case APPLY_CEILING_REASON_MODELED_CURVE_TRANSITION:
+            return "intermediate controls exceed the modeled final curve";
         default: return "none";
     }
 }
@@ -186,6 +192,31 @@ static inline ApplyClockCeilingPlan apply_clock_ceiling_plan(
     plan.symmetricFallbackAllowed = incomingLock;
     plan.arm = nvmlLockedClocksAvailable;
     return plan;
+}
+
+// Combine independently required protection without relaxing the outgoing
+// entitlement. Invalid/missing modeled bounds refuse; they never erase an
+// existing guard. A modeled lockless transition cannot acquire a clock floor.
+static inline ApplyClockCeilingPlan apply_clock_ceiling_merge_modeled(
+    const ApplyClockCeilingPlan& existing, const ApplyClockCeilingPlan& modeled, bool clampAvailable) {
+    if (!modeled.required) return existing;
+    ApplyClockCeilingPlan out = modeled;
+    out.reason = APPLY_CEILING_REASON_MODELED_CURVE_TRANSITION;
+    out.symmetricFallbackAllowed = out.finalPinIsCeiling = false;
+    out.arm = out.arm && clampAvailable;
+    out.clampControlAbsent |= !clampAvailable;
+    if (modeled.reason != APPLY_CEILING_REASON_MODELED_CURVE_TRANSITION || !modeled.ceilingMHz ||
+        modeled.symmetricFallbackAllowed || modeled.finalPinIsCeiling || (modeled.arm && modeled.clampControlAbsent)) {
+        out.arm = false; out.ceilingMHz = 0; return out;
+    }
+    if (existing.required) {
+        if (!existing.ceilingMHz) { out.arm = false; out.ceilingMHz = 0; return out; }
+        if (existing.ceilingMHz < out.ceilingMHz) out.ceilingMHz = existing.ceilingMHz;
+        out.arm = out.arm && existing.arm;
+        out.clampControlAbsent |= existing.clampControlAbsent;
+        out.finalPinIsCeiling = existing.finalPinIsCeiling && out.ceilingMHz == existing.ceilingMHz;
+    }
+    return out;
 }
 
 // What actually happened at the arming call site.  `arm()` used to return

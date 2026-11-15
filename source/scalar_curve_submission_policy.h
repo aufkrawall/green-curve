@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "desired_graphics_surface.h"
+#include "apply_clock_ceiling_policy.h"
 
 enum ScalarCurveSubmissionStatus {
     SCALAR_CURVE_NO_SPLIT, SCALAR_CURVE_ORDER_SAFE, SCALAR_CURVE_INSTALL_GUARD,
@@ -18,6 +19,7 @@ struct ScalarCurveSubmissionReview {
     gc_u32 outgoingSurface = 0;
     long long outgoingBeforeHz = 0;
     bool outgoingReleased = false, writeAttempted = false;
+    ApplyClockCeilingPlan modeledCeiling{};
 };
 static inline void scalar_curve_note_write(ScalarCurveSubmissionReview* review, bool attempted) {
     if (!review) return;

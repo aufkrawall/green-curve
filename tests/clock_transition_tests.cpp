@@ -257,6 +257,7 @@ static void refresh_global_state(char*,size_t){}
 #include "gpu_backend_apply_failure.h"
 #undef ARRAY_COUNT
 #define CHECK(condition) do { if(!(condition)){std::fprintf(stderr,"clock transition check failed at %d: %s\n",__LINE__,#condition);return __LINE__;} } while(0)
+#include "modeled_transition_backend_cases.h"
 
 static int run(){
  CHECK(apply_clock_requires_unavailable_scalar_guard(true,true,true,150,0,true,150000));
@@ -969,6 +970,7 @@ static int run(){
    CHECK(vf_offset_range_hard_limit_khz(range)>0);
  }
  CHECK(!vf_offset_range_permits_khz(vf_offset_range_from_probe(true,-400000,250000),400000));
+ if(int modeled=modeled_transition_backend_cases())return modeled;
  return 0;
 }
 #undef CHECK

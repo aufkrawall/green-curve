@@ -79,7 +79,8 @@ struct ApplyClockCeilingGuard {
     bool installedGuardRequired = false;
 
     explicit ApplyClockCeilingGuard(const DesiredSettings* desired, bool releasesCurveCeiling = false,
-        bool strictScalarGuard = false) : installedGuardRequired(strictScalarGuard) {
+        bool strictScalarGuard = false, const ApplyClockCeilingPlan* modeled = nullptr)
+        : installedGuardRequired(strictScalarGuard || (modeled && modeled->required)) {
         if (!desired) return;
         // Resolve lazy NVML initialisation BEFORE reading the entry points.
         // A null pointer that only means "NVML has not been loaded yet" used
@@ -96,6 +97,8 @@ struct ApplyClockCeilingGuard {
             g_nvml_api.setGpuLockedClocks != nullptr &&
                 g_nvml_api.resetGpuLockedClocks != nullptr,
             resetsToStock, outgoingHoldsDown, outgoingCeiling);
+        if (modeled) plan = apply_clock_ceiling_merge_modeled(plan, *modeled,
+            g_nvml_api.setGpuLockedClocks && g_nvml_api.resetGpuLockedClocks);
         debug_log("apply ceiling: plan arm=%d required=%d reason=%s ceiling=%u MHz"
                   " finalPin=%d symFallback=%d (hasLock=%d mode=%s lockMHz=%u"
                   " resetToStock=%d outgoingHoldsDown=%d outgoingCeiling=%u"

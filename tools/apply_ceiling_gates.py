@@ -118,7 +118,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # hardware write, and must be adopted by the final lock step in both modes.
     require_text(guard_h, "struct ApplyClockCeilingGuard",
                  "the Windows apply owns a scope-bound transition clamp")
-    require_text(apply_cpp, "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired);",
+    require_text(apply_cpp, "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired, &scalarReview.modeledCeiling);",
                  "the Windows apply declares the clamp before its first write")
     require_order_in_operation(
         apply_cpp,
@@ -180,7 +180,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         apply_cpp,
         "static bool apply_desired_settings_service(const DesiredSettings* desired",
         "if (!apply_curve_plan_anchor_is_writable(desired, result, resultSize)) return false;",
-        "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired);",
+        "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired, &scalarReview.modeledCeiling);",
         "the writable-anchor refusal precedes the transition clamp")
     # The Linux daemon refuses a proven curve-plan failure before its
     # transaction can run any phase.
@@ -314,7 +314,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # request on `.arm` alone meant a GPU with no locked-clock control simply
     # omitted the phase, so the refusal inside it could never run.
     require_text(linux_mutation_cpp,
-                 "if (ceilingPlan.arm || ceilingPlan.required || scalarReview.installedGuardRequired)",
+                 "if (ceilingPlan.arm || ceilingPlan.required || scalarReview.installedGuardRequired || scalarReview.modeledCeiling.required)",
                  "the Linux ceiling phase is scheduled for required protection and named handoffs")
     # CT-07: the witness used to pass the PLAN's arm flag as evidence that the
     # clamp was installed, so a refused clamp still printed HELD.
@@ -343,7 +343,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "baseline failure reaches guarded recovery")
     require_text(linux_mutation_cpp, "linux_apply_clock_ceiling_plan(g, d, previousIntent)",
                  "Linux plans protection from the actual previous intent")
-    require_text(linux_mutation_cpp, "linux_apply_arm_transition_ceiling(g, d, context->previousIntent, context->scalarReview.installedGuardRequired)",
+    require_text(linux_mutation_cpp, "linux_apply_arm_transition_ceiling(g, d, context->previousIntent, context->scalarReview.installedGuardRequired, &context->scalarReview.modeledCeiling)",
                  "Linux arming receives the previous intent too")
     require_text(linux_mutation_cpp, "if (d->hasLock || (requested & LINUX_MUTATION_LOCK_CEILING) || scalarReview.outgoingSurface)",
                  "temporary protection and named handoffs always receive final verification")
@@ -1098,7 +1098,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         apply_cpp,
         "static bool apply_desired_settings_service(const DesiredSettings* desired,",
         "if (!apply_curve_plan_precheck_before_writes(desired, result, resultSize)) {",
-        "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired);",
+        "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired, &scalarReview.modeledCeiling);",
         "the curve-plan refusal runs before the first clock write")
     require_order_in_operation(
         apply_cpp,

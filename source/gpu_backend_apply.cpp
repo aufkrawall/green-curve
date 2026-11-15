@@ -126,7 +126,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         set_message(result, resultSize, "This driver's VF offset range cannot flatten the curve");
         return false;
     }
-    ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired);
+    ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired, &scalarReview.modeledCeiling);
     // Records the measured clock and the live load across the whole apply, and
     // ends with the one line the next under-load test needs: did the clamp hold.
     // Destroyed after the guard is declared, so the verdict is emitted before

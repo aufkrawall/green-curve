@@ -49,9 +49,12 @@ inspectable document even when it currently conflicts with hardware (an
 unreachable target, a point outside the live range, a GPU that is absent or
 does not match). Offline CLI import/export and flat local-slot storage consume
 this type independently of the live wire `DesiredSettings` (`gpu_core.h`).
-The service keeps its separate resolved runtime representation. The TUI now
-retains and displays canonical source documents; mapped editing, GUI document
-drafts and capture integration remain pending below.
+The service keeps its separate resolved runtime representation. Windows and
+the TUI retain exact source drafts, editing, capture and reviewed offline
+transfer. Read-only destination checks exist; accepting mapped drafts and
+activating authoring replay remain pending. The shared transition model and
+backend guard consumers are documented in
+[clock-transition-audit.md](clock-transition-audit.md#modeled-lockless-transition-protection-2026-11-15).
 
 - `ProfilePointIntent` (`profile_point_intent.h`): one VF point's authoritative
   meaning. Four mutually exclusive kinds -- `PROFILE_POINT_ABSENT`,

@@ -314,7 +314,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
     const DesiredSettings* d = context->desired;
     switch (phase) {
         case LINUX_MUTATION_LOCK_CEILING:
-            return linux_apply_arm_transition_ceiling(g, d, context->previousIntent, context->scalarReview.installedGuardRequired);
+            return linux_apply_arm_transition_ceiling(g, d, context->previousIntent, context->scalarReview.installedGuardRequired, &context->scalarReview.modeledCeiling);
         case LINUX_MUTATION_RESET_BASELINE:
             return linux_apply_graphics_baseline(context);
         case LINUX_MUTATION_GPU_OFFSET:
@@ -573,7 +573,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     {
         ApplyClockCeilingPlan ceilingPlan =
             linux_apply_clock_ceiling_plan(g, d, previousIntent);
-        if (ceilingPlan.arm || ceilingPlan.required || scalarReview.installedGuardRequired)
+        if (ceilingPlan.arm || ceilingPlan.required || scalarReview.installedGuardRequired || scalarReview.modeledCeiling.required)
             requested |= LINUX_MUTATION_LOCK_CEILING;
     }
     if (d->resetOcBeforeApply) requested |= LINUX_MUTATION_RESET_BASELINE;

@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-15: Modeled lockless transition guard foundation
+
+- Shared exact-Hz planning computes monotonic final and intermediate peaks,
+  separates baseline/composition/authority requirements and preserves the
+  lockless single-batch path. Modeled protection cannot relax an outgoing cap
+  or use a symmetric clock-floor fallback.
+- Windows/Linux guard consumers accept the typed review descriptor and recheck
+  current control availability. Cases 9550-9596 exercise pure planning and both
+  production guard helpers with scripted drivers; omitting collapse fails 9550.
+  Fresh model factories and replay activation remain pending. See
+  [clock-transition-audit.md](../clock-transition-audit.md#modeled-lockless-transition-protection-2026-11-15).
+- Windows normal/ASan/UBSan and native Linux UBSan pass; all-target checks and
+  static analysis pass with no new findings. Model adoption stays separate from
+  the lightweight review types used by isolated helper fixtures.
+
 ## 2026-11-15: Windows offline transfer pane
 
 - Profiles & tools provides native file selection, exact preview and confirmed

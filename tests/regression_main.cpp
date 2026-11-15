@@ -1047,6 +1047,7 @@ int run_hardware_capture_service_tests();
 int run_service_control_review_tests();
 int run_profile_control_feasibility_tests();
 int run_scalar_curve_submission_tests();
+int run_modeled_curve_transition_tests();
 int run_windows_vf_exact_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
@@ -2766,6 +2767,9 @@ static int run_all_tests(int argc, char** argv) {
     if (int scalarTransitionFailure = run_scalar_curve_submission_tests()) {
         fprintf(stderr, "scalar curve submission regression failed: %d\n", scalarTransitionFailure);
         return scalarTransitionFailure;
+    }
+    if (int modeledTransitionFailure = run_modeled_curve_transition_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", modeledTransitionFailure); return modeledTransitionFailure;
     }
     if (int contractFailure = run_profile_document_contract_tests()) {
         fprintf(stderr, "profile document contract regression failed: %d\n", contractFailure);
