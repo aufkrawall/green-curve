@@ -23,27 +23,6 @@ struct LinuxProfileCommands : LinuxProfileSlotIO {
             return profile_codec::fail(&error, 0, response->message[0] ? response->message : "capture is unavailable");
         output = response->capture; return true;
     }
-    bool distinct(const std::string& config, const std::string& file, ProfileCodecError& error) {
-        const auto resolved = [](const std::string& path) {
-            char* full = realpath(path.c_str(), nullptr);
-            if (full) { std::string value(full); free(full); return value; }
-            const size_t slash = path.find_last_of('/');
-            const std::string parent = slash == std::string::npos ? "." : path.substr(0, slash + 1);
-            full = realpath(parent.c_str(), nullptr);
-            if (!full) return std::string{};
-            std::string value(full); free(full);
-            return value + "/" + path.substr(slash == std::string::npos ? 0 : slash + 1);
-        };
-        const std::string a = resolved(config), b = resolved(file);
-        if ((!a.empty() && a == b) || (a.empty() && b.empty()))
-            return profile_codec::fail(&error, 0, "profile file must have a distinct valid destination path");
-        return true;
-    }
-    bool legacy(const std::string& input, int slot, ProfileDocument& document, bool& found, ProfileCodecError& error) {
-        const bool ok = profile_legacy_native_slot_decode(input, PROFILE_LEGACY_LINUX_INI, slot, document, found, &error);
-        linux_debug_logf("profile legacy export: platform=linux slot=%d decoded=%d found=%d", slot, ok ? 1 : 0, found ? 1 : 0);
-        return ok;
-    }
     void message(const std::string& text) { fputs(text.c_str(), stdout); fflush(stdout); }
     bool confirm() {
         message("Type IMPORT to commit, or anything else to cancel: ");

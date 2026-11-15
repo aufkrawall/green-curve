@@ -1,5 +1,50 @@
 # Config and Profiles
 
+## TUI reviewed profile transfer (2026-11-15)
+
+Source anchors: `source/profile_editor_transfer.h`, `source/profile_commands.h`,
+`source/profile_slot_io_linux.h`, `source/profile_slot_io_windows.h`,
+`source/linux_tui_transfer.h`, `source/linux_tui_layout_transfer.h`,
+`source/linux_tui_actions.cpp`, `source/linux_tui_render.cpp`,
+`tests/profile_editor_transfer_tests.cpp`, `tests/tui_transfer_tests.cpp`.
+
+Transfer is available beside Capture with both legacy and canonical drafts,
+including the minimum terminal size. File selection accepts exact UTF-8 paths;
+incomplete sequences and terminal controls are escaped for presentation only.
+The editor's numeric input buffer is separate and survives opening/cancelling
+the modal, failed previews, conflicts, exports and import-only confirmation.
+
+The shared preview engine reuses CLI parsing and bank preparation through
+virtual output sinks. Preparation performs no storage write or commit and
+reads imported file bytes once. Single-profile imports select a file ordinal
+and destination slot. Bank imports map records to slots 1..N in one prepared
+edit, preserving other slots, preferences and assignment references. Legacy
+format, memory units and curve semantics remain explicit choices.
+Import initially chooses the first unused section; a full or unreadable bank
+requires a destination choice before single-record preparation.
+
+Confirmation consumes exactly the frozen edit or export bytes. Import uses
+the existing platform lock, exact configuration-generation comparison and
+atomic replacement. Conflict/write failure consumes the preview; retry needs
+a new review. No GPU or daemon operation participates. Existing daemon startup
+snapshots remain unchanged, and their cached comparison becomes unknown.
+
+Loading the first imported document is a separate choice. Replacing a dirty
+or unfinished draft requires an independent discard decision, rechecked at
+commit. Imported source precision and metadata stay intact; loading does not
+grant Apply authority. Changing preparation choices invalidates the preview.
+An unseen or undersized modal accepts only cancellation, and each newly
+presented phase initially focuses Cancel.
+
+Cases 9440-9491 execute the shared engine and TUI controller with in-memory
+storage, exact units, five-slot imports, frozen bytes, stale generations,
+Unicode input, dirty-draft decisions, safe path display and bounded layouts.
+The production adapters remain shared with the existing CLI file fixtures.
+Focused ASan/UBSan tests and full Windows normal/ASan/UBSan regressions pass;
+removing the discard guard fails case 9465. Native Linux UBSan execution and
+all-target checks pass. Static analysis reports no additional findings.
+Windows transfer UI and destination acceptance remain separate pending work.
+
 ## Windows capture into an unsaved source draft (2026-11-14)
 
 Source anchors: `source/gui_profile_capture.cpp`,
@@ -470,8 +515,9 @@ with native legacy slots. Destination replacement still uses the existing
 review, confirmation, generation check and single atomic write. Native export
 logs one bounded `profile legacy export:` result per inspected slot.
 
-GUI/TUI document mapping remains pending. Historical Apply readers deliberately
-refuse these new records until destination review exists; they cannot silently
+GUI/TUI destination checks exist; accepting their mapped drafts remains pending.
+Historical Apply readers deliberately refuse these new records until reviewed
+destination acceptance exists; they cannot silently
 read a new document as an empty/default legacy profile. Shared publication and
 the updater's richer-intent handoff still require their document integration.
 
@@ -500,8 +546,8 @@ protected against accidental overwrite; capture neither reads nor changes slots.
 Saved portable documents retain exact offsets including owned zero, microvolt
 identities, named memory control, power ratios and separate observations. Import
 can subsequently place the document into a local slot. Capture establishes no
-service ownership and performs no Apply. Flatten/pin proposals and GUI/TUI
-review remain pending; exact capture does not infer a missing pin or scalar
+service ownership and performs no Apply. GUI/TUI exact-capture review is
+implemented above; flatten/pin proposals remain pending. Exact capture does not infer a missing pin or scalar
 composition. Native fixtures execute review/refusal/save and local restart
 decoding; production builds run invalid-command tests without contacting a GPU.
 

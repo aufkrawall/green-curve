@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-15: Reviewed TUI profile transfer
+
+- Transfer previews frozen file bytes and an atomic bank edit before any
+  storage mutation. Import-only confirmation preserves unfinished editor input;
+  loading an imported source has a separate discard decision. No GPU writes
+  or daemon startup-snapshot changes occur.
+- Shared preparation and TUI controller cases 9440-9491 cover exact units,
+  one/five-profile transfer, conflicts, Unicode paths, independent decisions
+  and minimum-size controls. Full Windows normal/ASan/UBSan, native Linux UBSan
+  and all-target checks pass. Discard bypass fails 9465; static analysis adds no
+  findings. See [config-profiles.md](../config-profiles.md#tui-reviewed-profile-transfer-2026-11-15).
+
 ## 2026-11-14: Windows capture into a source draft
 
 - Profiles & tools exposes a temporary capture pane with independent omission

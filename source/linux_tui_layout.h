@@ -111,6 +111,21 @@ enum ActionType {
     ACTION_CAPTURE_DISCARD,
     ACTION_CAPTURE_ACCEPT,
     ACTION_CAPTURE_CANCEL,
+    ACTION_TRANSFER_BEGIN,
+    ACTION_TRANSFER_PATH,
+    ACTION_TRANSFER_MODE,
+    ACTION_TRANSFER_KIND,
+    ACTION_TRANSFER_RECORD,
+    ACTION_TRANSFER_SLOT,
+    ACTION_TRANSFER_FORMAT,
+    ACTION_TRANSFER_MEMORY,
+    ACTION_TRANSFER_CURVE,
+    ACTION_TRANSFER_PREVIEW,
+    ACTION_TRANSFER_BACK,
+    ACTION_TRANSFER_LOAD,
+    ACTION_TRANSFER_DISCARD,
+    ACTION_TRANSFER_COMMIT,
+    ACTION_TRANSFER_CANCEL,
     ACTION_SAVE,
     ACTION_CLEAR_PROFILE,
     ACTION_RESET_DRAFT,
@@ -174,6 +189,14 @@ struct TuiCaptureView {
     const std::vector<std::string>* report = nullptr;
 };
 
+struct TuiTransferView {
+    bool active = false, importing = false, all = false, reviewing = false, ready = false;
+    bool pathEditing = false, selectAll = false, loadAfterImport = false, needsDiscard = false, discardConfirmed = false;
+    int slot = 1, sourceRecord = 1, format = 0, memory = 0, curve = 0, scroll = 0;
+    std::string path;
+    const std::vector<std::string>* report = nullptr;
+};
+
 struct TuiViewModel {
     const DesiredSettings* desired;
     const ServiceResponse* service;
@@ -191,6 +214,7 @@ struct TuiViewModel {
     const std::vector<std::string>* sourceCheckLines;
     gc_u32 sourceGraphicsChoice, sourceMemoryChoice;
     TuiCaptureView capture;
+    TuiTransferView transfer;
     bool serviceOnline;
     bool draftAttached;
     bool editing;
@@ -236,6 +260,8 @@ struct TuiLayout {
     int sourceLineCount;
     bool captureVisible = false;
     int captureVisibleRows = 0, captureLineCount = 0;
+    bool transferVisible = false;
+    int transferVisibleRows = 0, transferLineCount = 0;
     // Rows the fan-point table can draw; zero when the fan tab is not laid out.
     // Used to stop wheel/page scrolling at the end of that list too.
     int fanVisibleRows;

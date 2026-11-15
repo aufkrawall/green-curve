@@ -11,6 +11,7 @@
 #include "auto_apply_failure_notice_policy.h"
 #include "profile_save_policy.h"
 #include "linux_tui_profile_load.h"
+#include "linux_tui_transfer.h"
 #include "profile_slot_io_linux.h"
 #include "profile_document_slot.h"
 #include "linux_tui_source_edit.h"
@@ -430,6 +431,9 @@ void tui_handle_character(TuiState* state, char character) {
 
 void tui_apply_action(TuiState* state, const ClickAction& action) {
     if (!state) return;
+    LinuxProfileSlotIO transferStorage;
+    if (tui_transfer_action(*state, action, transferStorage,
+        [](TuiState& draft) { bind_current_draft(&draft); tui_recompute_dirty(&draft); })) return;
     const bool captureAction = action.type >= ACTION_CAPTURE_DOMAIN && action.type <= ACTION_CAPTURE_CANCEL;
     if (state->capture.active && !captureAction) return;
     if (!state->capture.active && captureAction) return;

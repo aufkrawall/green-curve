@@ -218,7 +218,8 @@ void draw_profile_panel(TuiCanvas* c, const TuiRect& panel) {
     c->fill(x + 20, y, 12, 1, TUI_STYLE_FIELD);
     c->text(x + 20, y, 12, slot, TUI_STYLE_FIELD);
     c->button(TuiRect{x + 33, y, 4, 1}, ">", ACTION_SLOT_DELTA, 0, 1);
-    c->button({x + 40, y, 21, 1}, "CAPTURE...", ACTION_CAPTURE_SOURCE);
+    c->button({x + 40, y, 10, 1}, "CAPTURE", ACTION_CAPTURE_SOURCE);
+    c->button({x + 51, y, 10, 1}, "TRANSFER", ACTION_TRANSFER_BEGIN);
     c->button(TuiRect{x, y + 2, 11, 1}, "LOAD", ACTION_LOAD);
     c->button(TuiRect{x + 12, y + 2, 11, 1}, "SAVE", ACTION_SAVE);
     c->button(TuiRect{x + 24, y + 2, 11, 1}, "CLEAR", ACTION_CLEAR_PROFILE);
@@ -257,7 +258,7 @@ void draw_tools_panel(TuiCanvas* c, const TuiRect& panel) {
     // Not "all 128 points": the exports cover every populated point of the
     // graphics clock domain, which is 127 on an RTX 5070. The read window is
     // VF_NUM_POINTS, but the domain length comes from the driver's table.
-    c->box(panel, "TOOLS", "read-only exports include every populated point");
+    c->box(panel, "TOOLS", "saved profiles and live diagnostics");
     int x = panel.x + 3;
     int y = panel.y + 2;
     c->button(TuiRect{x, y, 12, 1}, "REFRESH", ACTION_REFRESH);

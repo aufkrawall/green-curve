@@ -1067,6 +1067,8 @@ int run_tui_source_edit_tests();
 int run_tui_review_session_tests();
 int run_scalar_editor_tests();
 int run_tui_capture_draft_tests();
+int run_profile_editor_transfer_tests();
+int run_tui_transfer_tests();
 int run_profile_source_window_tests();
 int run_profile_review_session_tests();
 int run_gui_profile_source_review_tests();
@@ -2824,6 +2826,12 @@ static int run_all_tests(int argc, char** argv) {
     }
     if (int captureDraftFailure = run_tui_capture_draft_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", captureDraftFailure); return captureDraftFailure;
+    }
+    if (int transferFailure = run_profile_editor_transfer_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", transferFailure); return transferFailure;
+    }
+    if (int tuiTransferFailure = run_tui_transfer_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", tuiTransferFailure); return tuiTransferFailure;
     }
     if (int sourceWindowFailure = run_profile_source_window_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", sourceWindowFailure); return sourceWindowFailure;

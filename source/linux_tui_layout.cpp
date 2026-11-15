@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "linux_tui_layout_internal.h"
+#include "linux_tui_layout_transfer.h"
 #include "linux_tui_authority.h"
 #include "vf_writable_point_policy.h"
 
@@ -577,4 +578,5 @@ void build_tui_layout(const TuiViewModel& vm, int width, int height,
         canvas.button({dialog.x + 34, dialog.y + 5, 26, 3}, "Keep draft", ACTION_PROFILE_LOAD_KEEP);
     }
     if (vm.capture.active) tui_draw_capture_dialog(&canvas);
+    if (vm.transfer.active) tui_draw_transfer_dialog(&canvas);
 }

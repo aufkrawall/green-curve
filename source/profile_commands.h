@@ -132,15 +132,48 @@ static inline std::string profile_command_domains(int mask) {
     return text.empty() ? "none" : text;
 }
 
+static inline bool profile_command_decode_import(const std::string& input, const ProfileLegacyOptions& legacy,
+    const ProfileSourceSelection& selection, ProfileBank& output, ProfileCodecError& error) {
+    if (selection.count < 1 || selection.count > PROFILE_BANK_CAPACITY)
+        return profile_codec::fail(&error, 0, "invalid source selection count");
+    bool seen[PROFILE_BANK_CAPACITY]{};
+    for (int i = 0; i < selection.count; ++i) {
+        const int slot = selection.slots[i];
+        if (slot < 1 || slot > PROFILE_BANK_CAPACITY || seen[slot - 1] || (selection.all && slot != i + 1))
+            return profile_codec::fail(&error, 0, "invalid or duplicate source selection");
+        seen[slot - 1] = true;
+    }
+    if (selection.all && selection.count != PROFILE_BANK_CAPACITY)
+        return profile_codec::fail(&error, 0, "incomplete all-record source selection");
+    auto bank = std::make_unique<ProfileBank>();
+    if (legacy.format != PROFILE_LEGACY_NONE) {
+        if (!profile_legacy_ini_decode(input, legacy, selection, *bank, &error)) return false;
+    } else {
+        if (!profile_bank_decode(input, *bank, &error)) return false;
+        if (!selection.all) {
+            auto selected = std::make_unique<ProfileBank>();
+            for (int i = 0; i < selection.count; ++i) {
+                const int record = selection.slots[i] - 1;
+                if (record >= bank->count) return profile_codec::fail(&error, 0, "selected source profile is absent");
+                selected->documents[selected->count++] = bank->documents[record];
+            }
+            bank.swap(selected);
+        }
+    }
+    output = *bank; return true;
+}
+
 // IO supplies bounded file reads, atomic writes, legacy decoding, synchronized
 // commit, terminal output and explicit confirmation. There is no GPU interface.
 template <class IO>
 static inline bool profile_commands_run(const std::vector<std::string>& args,
-    const char* defaultConfig, IO& io, int& exitCode) {
+    const char* defaultConfig, IO& io, int& exitCode, ProfileCodecError* commandError = nullptr) {
+    if (commandError) *commandError = {};
     ProfileCommand command;
     ProfileCodecError error;
     bool handled = false;
     const auto reject = [&](int code) {
+        if (commandError) *commandError = error;
         io.message(std::string("Profile transfer: ") + error.message + "\n"); exitCode = code; return true;
     };
     if (!profile_command_parse(args, defaultConfig, command, handled, &error)) return reject(PROFILE_COMMAND_INVALID);
@@ -180,22 +213,7 @@ static inline bool profile_commands_run(const std::vector<std::string>& args,
     std::string input;
     if (!io.read(command.file, input, command.legacy.format == PROFILE_LEGACY_NONE ?
         PROFILE_FILE_MAX_BYTES : profile_slot::MAX_CONFIG_BYTES, false, error)) return reject(PROFILE_COMMAND_IO);
-    if (command.legacy.format != PROFILE_LEGACY_NONE) {
-        if (!profile_legacy_ini_decode(input, command.legacy, command.source, *bank, &error)) return reject(PROFILE_COMMAND_INVALID);
-    } else {
-        if (!profile_bank_decode(input, *bank, &error)) return reject(PROFILE_COMMAND_INVALID);
-        if (!command.source.all) {
-            auto selected = std::make_unique<ProfileBank>();
-            for (int n = 0; n < command.source.count; ++n) {
-                const int record = command.source.slots[n] - 1;
-                if (record >= bank->count) {
-                    profile_codec::fail(&error, 0, "selected source profile is absent"); return reject(PROFILE_COMMAND_INVALID);
-                }
-                selected->documents[selected->count++] = bank->documents[record];
-            }
-            bank.swap(selected);
-        }
-    }
+    if (!profile_command_decode_import(input, command.legacy, command.source, *bank, error)) return reject(PROFILE_COMMAND_INVALID);
     if (bank->count != command.count) {
         profile_codec::fail(&error, 0, "destination slot count must match imported profile count"); return reject(PROFILE_COMMAND_INVALID);
     }

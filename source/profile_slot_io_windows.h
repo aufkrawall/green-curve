@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "profile_bank_edit.h"
+#include "profile_legacy_ini.h"
 #include "profile_file_read.h"
 
 // ConfigStorageLockGuard and the bounded atomic writer belong to the client
@@ -22,6 +23,21 @@ struct WindowsProfileSlotIO {
         if (ok) (void)gc_WritePrivateProfileStringUtf8(nullptr, nullptr, nullptr, path.c_str());
         debug_log("profile-bank: committed=%d records=%d utf16=%d\n", ok ? 1 : 0, edit.count,
             edit.replacement.compare(0, 2, "\xff\xfe") == 0 ? 1 : 0);
+        return ok;
+    }
+    bool distinct(const std::string& config, const std::string& file, ProfileCodecError& error) {
+        char a[MAX_PATH]{}, b[MAX_PATH]{};
+        const DWORD na = gc_GetFullPathNameUtf8(config.c_str(), sizeof(a), a, nullptr);
+        const DWORD nb = gc_GetFullPathNameUtf8(file.c_str(), sizeof(b), b, nullptr);
+        GcWideUtf8Arg wa(a), wb(b);
+        if (!na || na >= sizeof(a) || !nb || nb >= sizeof(b) || !wa.valid_for(a) || !wb.valid_for(b) ||
+            CompareStringOrdinal(wa.value, -1, wb.value, -1, TRUE) == CSTR_EQUAL)
+            return profile_codec::fail(&error, 0, "profile file must have a distinct valid destination path");
+        return true;
+    }
+    bool legacy(const std::string& input, int slot, ProfileDocument& document, bool& found, ProfileCodecError& error) {
+        const bool ok = profile_legacy_native_slot_decode(input, PROFILE_LEGACY_WINDOWS_INI, slot, document, found, &error);
+        debug_log("profile legacy export: platform=windows slot=%d decoded=%d found=%d\n", slot, ok ? 1 : 0, found ? 1 : 0);
         return ok;
     }
 };

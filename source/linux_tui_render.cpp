@@ -4,6 +4,7 @@
 #include "linux_tui_internal.h"
 #include "linux_tui_source_edit.h"
 #include "linux_tui_capture_input.h"
+#include "linux_tui_transfer.h"
 #include "linux_tui_profile_load.h"
 
 #include <errno.h>
@@ -115,6 +116,8 @@ void populate_view_model(const TuiState& state, TuiViewModel* vm,
     vm->sourceCheckLines = state.sourceCheckVisible ? &state.sourceCheckLines : nullptr;
     vm->sourceGraphicsChoice = state.sourceGraphicsChoice; vm->sourceMemoryChoice = state.sourceMemoryChoice;
     vm->capture = state.capture; vm->capture.report = &state.captureLines;
+    vm->transfer = state.transfer; vm->transfer.path = tui_transfer_path_display(state.transferPath);
+    vm->transfer.report = state.transferPreview ? &state.transferPreview->lines : nullptr;
     vm->serviceOnline = state.serviceOnline;
     vm->draftAttached = state.draftAttached;
     vm->editing = state.edit.active;
@@ -367,6 +370,7 @@ void tui_render(TuiState* state) {
     }
     state->profileLoadPresented = state->profileLoadPending && !state->layout.tooSmall && state->layout.actions.size() == 2;
     tui_capture_present_layout(*state);
+    tui_transfer_present_layout(*state);
     int actionCount = (int)state->layout.actions.size();
     if (actionCount == 0) state->focusIndex = -1;
     else if (state->focusIndex < 0) state->focusIndex = 0;
@@ -488,6 +492,18 @@ static int tui_action_index_at(const TuiState& state, int x, int y) {
 
 void tui_handle_event(TuiState* state, const TuiInputEvent& event) {
     if (!state || event.type == TUI_INPUT_NONE) return;
+    if (tui_transfer_modal_event(*state, event,
+        [&](const ClickAction& action) { tui_apply_action(state, action); },
+        [&](int direction) { focus_linear(state, direction); },
+        [&] { activate_focused(state); },
+        [&](int x, int y) { return tui_action_index_at(*state, x, y); })) return;
+    // Opening file tools must not commit or reject an unfinished numeric edit.
+    if (event.type == TUI_INPUT_MOUSE && event.mousePress && event.mouseButton == 0) {
+        const int hit = tui_action_index_at(*state, event.mouseX, event.mouseY);
+        if (hit >= 0 && state->layout.actions[hit].type == ACTION_TRANSFER_BEGIN) {
+            tui_apply_action(state, state->layout.actions[hit]); return;
+        }
+    }
     if (tui_capture_modal_event(*state, event,
         [&](const ClickAction& action) { tui_apply_action(state, action); },
         [&](int direction) { focus_linear(state, direction); },

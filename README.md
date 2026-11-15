@@ -255,6 +255,12 @@ without a GPU. Select a source point to type absolute MHz, or an offset field
 to type physical MHz, with up to six decimal places. Untouched points retain
 their captured or projected intent. Destination mapping and control review
 are required before applying these sources.
+Transfer in Profiles & Tools imports or exports one saved profile or the bank
+without a GPU. Choose the file, source record, destination slot and any legacy
+format choices, then Preview before confirming. Import can keep the open draft,
+including unfinished edits; loading the first imported profile is a separate
+choice, with explicit discard when needed. A changed destination bank requires
+a fresh preview.
 Use Check in Profiles & Tools to inspect destination mapping and feasibility.
 The graphics and memory buttons change only this preview's control choices.
 Source drafts stay intact when choosing another GPU. Check names the shown
