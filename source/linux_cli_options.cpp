@@ -14,7 +14,7 @@ void print_linux_help() {
     puts("  greencurve --tui                 Launch terminal UI");
     puts("  greencurve --dump | --json       Dump selected profile (text / JSON)");
     puts("  greencurve --export-profiles file [--slots all|1,2] [--config path]  Export saved intent without a GPU");
-    puts("  greencurve --capture-current file [--domains vf,graphics,memory,power,pin] [--allow-partial] [--representation exact]  Review passive capture before saving");
+    puts("  greencurve --capture-current file [--domains vf,graphics,memory,power,pin] [--allow-partial] [--representation exact|flatten|pin]  Review capture and lock proposals before saving");
     puts("  greencurve --check-profile file [--profile N]  Check mapping and control feasibility without applying settings");
     puts("    --graphics-control p0|global|vf --memory-control p0|global  Choose controls for this preview");
     puts("  greencurve --import-profiles file --slots 1,2 [--confirm-import] [--config path]  Review and import saved intent");

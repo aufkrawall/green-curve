@@ -24,7 +24,7 @@ static void cli_print_help(FILE* out) {
     HELP_LOG("  greencurve.exe --dump       Write VF curve to greencurve_vf_dump.txt\n");
     HELP_LOG("  greencurve.exe --json       Write VF curve to greencurve_curve.json\n");
     HELP_LOG("  greencurve.exe --export-profiles <file> [--slots all|1,2] [--config <path>]  Export saved intent without a GPU\n");
-    HELP_LOG("  greencurve.exe --capture-current <file> [--domains vf,graphics,memory,power,pin] [--allow-partial] [--representation exact]  Review passive capture before saving\n");
+    HELP_LOG("  greencurve.exe --capture-current <file> [--domains vf,graphics,memory,power,pin] [--allow-partial] [--representation exact|flatten|pin]  Review capture and lock proposals before saving\n");
     HELP_LOG("  greencurve.exe --check-profile <file> [--profile N]  Check mapping and control feasibility without applying settings\n");
     HELP_LOG("    --graphics-control p0|global|vf --memory-control p0|global  Choose controls for this preview\n");
     HELP_LOG("  greencurve.exe --import-profiles <file> --slots 1,2 [--confirm-import] [--config <path>]  Review and import saved intent\n");

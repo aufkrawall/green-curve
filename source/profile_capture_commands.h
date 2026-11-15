@@ -4,6 +4,7 @@
 #define GREEN_CURVE_PROFILE_CAPTURE_COMMANDS_H
 #include "profile_commands.h"
 #include "hardware_capture_runtime.h"
+#include "profile_capture_proposals.h"
 
 template<class IO>
 static inline void profile_capture_report_clocks(IO& io, const char* domain,
@@ -28,7 +29,8 @@ struct ProfileCaptureCommand {
     std::string file, config;
     gc_u32 domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_GRAPHICS_OFFSET | PROFILE_DOMAIN_MEMORY |
         PROFILE_DOMAIN_POWER | PROFILE_DOMAIN_LOCK;
-    bool allowPartial = false, exact = false;
+    bool allowPartial = false;
+    ProfileCaptureRepresentation representation = PROFILE_CAPTURE_UNDECIDED;
 };
 static inline bool profile_capture_domains(std::string_view value, gc_u32& output) {
     const std::string_view names[] = {"vf", "graphics", "memory", "power", "pin", "fan", "xbar", "system", "video"};
@@ -69,8 +71,11 @@ static inline bool profile_capture_parse(const std::vector<std::string>& args, c
             if (config) return profile_codec::fail(&error, 0, "duplicate configuration path");
             config = true; c.config = value;
         } else {
-            if (c.exact || value != "exact") return profile_codec::fail(&error, 0, "select exact programmed controls for capture");
-            c.exact = true;
+            const auto representation = value == "exact" ? PROFILE_CAPTURE_EXACT : value == "flatten" ? PROFILE_CAPTURE_FLATTEN :
+                value == "pin" ? PROFILE_CAPTURE_PIN : PROFILE_CAPTURE_UNDECIDED;
+            if (c.representation != PROFILE_CAPTURE_UNDECIDED || representation == PROFILE_CAPTURE_UNDECIDED)
+                return profile_codec::fail(&error, 0, "select one capture representation: exact, flatten or pin");
+            c.representation = representation;
         }
     }
     if (c.file.empty() || c.file == c.config) return profile_codec::fail(&error, 0, "capture requires a separate output file");
@@ -109,16 +114,21 @@ static inline bool profile_capture_commands_run(const std::vector<std::string>& 
     if (!capture->capturedDomains) {
         profile_codec::fail(&error, 0, "no requested controls were captured; output was not written"); return reject(PROFILE_COMMAND_IO);
     }
+    auto proposals = std::make_unique<ProfileCaptureProposals>();
+    if (!profile_capture_prepare_proposals(*capture, profile_capture_context_from_io(io, 0), *proposals,
+        error.message, sizeof(error.message))) return reject(PROFILE_COMMAND_INVALID);
+    profile_capture_report_proposals(io, *proposals);
     if (capture->omittedDomains && !command.allowPartial) {
         io.message("Capture is incomplete. Select --allow-partial or choose --domains explicitly before saving.\n");
         exitCode = PROFILE_COMMAND_DECISION; return true;
     }
-    if (!command.exact) {
-        io.message("Review the report, then select --representation exact to save programmed offsets; no flatten or pin is inferred.\n");
+    if (command.representation == PROFILE_CAPTURE_UNDECIDED) {
+        io.message("Review the report, then select --representation exact, flatten or pin explicitly. Exact preserves programmed offsets; lock alternatives keep former tail controls as observations.\n");
         exitCode = PROFILE_COMMAND_DECISION; return true;
     }
     auto bank = std::make_unique<ProfileBank>(); bank->count = 1;
-    if (!hardware_capture_to_document(*capture, bank->documents[0], error.message, sizeof(error.message))) return reject(PROFILE_COMMAND_INVALID);
+    if (!profile_capture_select_proposal(*proposals, command.representation, bank->documents[0], error.message, sizeof(error.message)))
+        return reject(PROFILE_COMMAND_DECISION);
     snprintf(bank->documents[0].displayName, sizeof(bank->documents[0].displayName), "%s", "Captured GPU settings");
     std::string encoded;
     if (!profile_bank_encode(*bank, encoded, &error)) return reject(PROFILE_COMMAND_INVALID);

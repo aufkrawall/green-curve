@@ -249,6 +249,12 @@ saved source; a second nonzero control requires relationship review.
 Ownership, transition and recovery checks still require service review;
 the command returns exit code 3 even when controls are representable.
 
+Capture offers `--representation exact|flatten|pin` as an explicit choice.
+Flatten proposals report their anchor and shared feasibility checks; pin
+proposals label getter evidence or retained applied intent. Unknown pins stay
+unknown. Converted tails retain original offsets as observations, while exact
+controls remain a separate choice. These choices save source intent and do not Apply it.
+
 The Linux TUI can Load portable slots as source documents. Profiles & Tools
 shows exact units and source point intent; Save preserves the complete document
 without a GPU. Select a source point to type absolute MHz, or an offset field

@@ -10,7 +10,10 @@
 #include "profile_slot_io_windows.h"
 
 struct WindowsProfileCommands : WindowsProfileSlotIO {
+    ProfileCaptureProposalContext captureContext{};
+    ProfileCaptureProposalContext capture_proposal_context() const { return captureContext; }
     bool capture(gc_u32 domains, HardwareCaptureObservation& output, ProfileCodecError& error) {
+        captureContext = {};
         ServiceRequest request{}; auto response = std::make_unique<ServiceResponse>();
         request.magic = SERVICE_PROTOCOL_MAGIC; request.version = SERVICE_PROTOCOL_VERSION;
         request.command = SERVICE_CMD_CAPTURE_CURRENT; request.captureDomains = domains;
@@ -19,6 +22,7 @@ struct WindowsProfileCommands : WindowsProfileSlotIO {
         if (!service_send_request(&request, response.get(), (DWORD)service_state_read_response_timeout_ms(true), error.message, sizeof(error.message))) return false;
         if (response->status != SERVICE_STATUS_OK || !response->capture.valid)
             return profile_codec::fail(&error, 0, response->message[0] ? response->message : "capture is unavailable");
+        captureContext = profile_capture_proposal_context(*response);
         output = response->capture; return true;
     }
     bool commit(const std::string& path, const ProfileBankEdit& edit, ProfileCodecError& error) {

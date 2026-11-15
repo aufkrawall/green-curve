@@ -1,5 +1,49 @@
 # Config and Profiles
 
+## Capture lock proposals (2026-11-15)
+
+Source anchors: `source/profile_capture_proposals.h`,
+`source/profile_capture_commands.h`, `source/vf_flat_tail_recognition.h`,
+`source/profile_commands_windows.h`, `source/profile_commands_linux.h`,
+`tests/profile_capture_proposals_tests.cpp`.
+
+The CLI offers explicit exact/flatten/pin representations after its passive
+snapshot report. Recognition uses the existing ascending-voltage tolerant
+helper over complete graphics topology, retaining hidden writable anchors and
+the bound read-only floor. It never reconstructs stock from a shaped curve.
+Every proposal runs through runtime mapping and the complete shared control/
+curve planner. Proven refusal and unavailable constraints keep exact controls;
+conditional proposals retain their need for fresh operation checks. Only a
+representable flatten without competing pin evidence is suggested for future
+frontend selection. No representation is implicitly accepted by the CLI.
+
+Flatten/pin conversion removes authoritative tail values while retaining exact
+observed offsets and frequencies in the portable document. Pre-anchor intent,
+owned zero, microvolt identities and raw exact replay stay intact. Serialization
+therefore retains the data needed for a later return to exact controls.
+
+Pin evidence prefers a validated fixed-range getter, then service-owned applied
+intent explicitly labeled as not read from the driver. A getter reporting no
+pin or a non-fixed range cannot borrow an older applied value. Current clocks
+and a flat table never supply a pin. The retained intent is accepted only from
+the same generation and opaque ownership-stamped capture revision; missing
+snapshot capability is unknown, while known absent hard-pin control keeps the
+pin proposal unresolved. Linux passive replies deliberately omit ordinary
+snapshot assembly and may publish DEGRADED; a successful coherent capture can
+still retain labeled applied intent. This grants no write authority or readback
+proof. Equal pin/flatten targets describe combined hard-pin intent; different
+targets require an explicit choice. A clock pin does not guarantee voltage.
+
+Cases 9680-9715 cover hidden anchors, raw/converted round trips, evidence tiers,
+unknown pins, source preservation, conflict/availability/grid/range failures,
+128 graphics points, fallback family support and CLI confirmation/refusal.
+Bounded load-based user observations and native alternative-choice controls
+remain pending. Existing GUI/TUI exact capture still uses the same report.
+Physical replay and optional pin getters remain unverified.
+The Windows ASan/UBSan suite, native Linux UBSan fixtures, all-target builds and
+source gates pass; static analysis adds no findings to its 34-entry baseline.
+Replacing missing pin evidence with a guessed value fails case 9680.
+
 ## Reviewed source submission (2026-11-15)
 
 Source anchors: `source/profile_mapped_draft.h`,
@@ -640,7 +684,8 @@ Saved portable documents retain exact offsets including owned zero, microvolt
 identities, named memory control, power ratios and separate observations. Import
 can subsequently place the document into a local slot. Capture establishes no
 service ownership and performs no Apply. GUI/TUI exact-capture review is
-implemented above; flatten/pin proposals remain pending. Exact capture does not infer a missing pin or scalar
+implemented above; CLI lock proposals are described in
+[Capture lock proposals](#capture-lock-proposals-2026-11-15). Exact capture does not infer a missing pin or scalar
 composition. Native fixtures execute review/refusal/save and local restart
 decoding; production builds run invalid-command tests without contacting a GPU.
 

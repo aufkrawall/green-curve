@@ -1,5 +1,17 @@
 # Testing
 
+## Capture lock proposals (2026-11-15)
+
+`tests/profile_capture_proposals_tests.cpp` (9680-9715) executes hidden/physical
+anchor selection, immutable exact replay, observed-tail preservation through
+portable serialization, pin evidence precedence, missing/absent control and
+grid/range failures, shaped-baseline uncertainty, the 128-point bound and
+unknown-family fallback. CLI tests require explicit representation and omission
+decisions and preserve the previous output when a proposal is unavailable.
+Service intent context tests reject generation/ownership drift and retain the
+passive Linux envelope's distinction between unknown capability and known intent.
+A negative fixture that substitutes a pin for missing evidence fails 9680.
+
 ## Reviewed scalar source submission (2026-11-15)
 
 Cases 9630-9677 in `tests/profile_mapped_draft_tests.cpp`,

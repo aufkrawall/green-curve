@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-15: Reviewed CLI capture lock proposals
+
+- The shared capture proposal layer reuses tolerant physical-voltage recognition
+  and the complete planner. Explicit CLI representation choices retain original
+  tail controls as observations and never imply Apply or ownership.
+- Pin sources distinguish validated fixed getters, retained applied intent and
+  unknown state. Matching generation/ownership revisions bind retained intent;
+  absent passive snapshot capability stays unknown. Cases 9680-9715 cover exact
+  preservation, hidden anchors, evidence/constraint failures and bounded topology.
+  Native choice controls and user observation remain pending; physical replay
+  is unverified. See [config-profiles.md](../config-profiles.md#capture-lock-proposals-2026-11-15).
+
 ## 2026-11-15: Reviewed scalar source submission
 
 - Windows/TUI source checks retain complete control revisions. A separate Use

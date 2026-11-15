@@ -29,7 +29,7 @@
 
 ## Unreleased
 
-Curve checks, profile transfer and capture improve tuning workflows.
+Curve checks, profile transfer and capture improve.
 
 ### New
 
@@ -39,8 +39,8 @@ Curve checks, profile transfer and capture improve tuning workflows.
 - **Profile transfer:** Windows/CLI/TUI import/export five profiles offline, with assignment review.
 - **Legacy transfer:** preserve Windows/Linux units and tuning intent.
 - **Source profiles:** offline Windows/TUI editing survives GPU switches.
-- **Hardware capture:** Windows/CLI/TUI snapshot review identifies omissions before accepting an unapplied draft.
-- **Profile checks:** Windows/TUI can stage reviewed scalar sources for Apply; previews cover mapping, controls and conversions.
+- **Hardware capture:** review omissions and exact controls; CLI offers flatten and pin proposals with labeled evidence.
+- **Profile checks:** stage reviewed scalar sources for Apply; preview mapping, controls and conversions.
 
 ### Improved
 
@@ -65,7 +65,7 @@ Curve checks, profile transfer and capture improve tuning workflows.
 - **Windows memory precision:** exact verification uses the written control; failures cannot switch controls.
 - **Memory changes:** preserve exact curves on both platforms or refuse before changes.
 - **Precise curve recovery:** Linux restores fractional offsets exactly; Reset verifies programmed zero offsets.
-- **VF curve flatten editing:** retyping a ticked flatten target preserves normal typing and caret position.
+- **Flatten editing:** retyping a selected target preserves typing and caret position.
 - **Flatten detection:** selects the true plateau start, including hidden low-voltage points.
 
 ### Compatibility notes

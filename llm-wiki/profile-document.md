@@ -392,8 +392,10 @@ or uncertain Linux session refuses without discovery or handback. See
 `source/linux_daemon_capture.h`, `tests/hardware_capture_service_tests.cpp`
 (8520-8526). Both CLI clients now report completeness and explicitly review
 partial/exact saving; see [config-profiles.md](config-profiles.md#passive-capture-cli-2026-11-13).
-GUI/TUI and flatten/pin proposal review remain pending. Fixtures load no driver
-and perform no hardware mutation.
+GUI/TUI exact capture and CLI flatten/pin proposals are connected; see
+[config-profiles.md](config-profiles.md#capture-lock-proposals-2026-11-15).
+Native alternative choices and bounded user observation remain pending.
+Fixtures load no driver and perform no hardware mutation.
 
 ## Invariants
 
