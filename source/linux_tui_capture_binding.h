@@ -29,12 +29,15 @@ static inline void tui_reconcile_capture(TuiState &state, const char *reason) {
     if (!state.capture.active || !state.capture.hasObservation || tui_capture_binding_current(state))
         return;
     state.capture.hasObservation = state.capture.allowPartial = state.capture.discardConfirmed = false;
+    state.capture.pinObservable = state.capture.pinSuspected = false;
+    state.capture.pinConfirmedHz = 0;
     state.capture.representations = 0;
     state.capture.scroll = 0;
     state.captureObservation.reset();
     state.captureProposals.reset();
     state.captureProposalContext = {};
     state.captureReviewContext = {};
+    state.capturePinObservation.reset();
     state.capturePresented = false;
     state.focusIndex = -1;
     state.captureLines = {std::string("Snapshot expired: ") + reason +

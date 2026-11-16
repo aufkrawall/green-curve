@@ -60,6 +60,7 @@ struct TuiState {
     std::unique_ptr<ProfileCaptureProposals> captureProposals;
     ProfileCaptureProposalContext captureProposalContext{};
     LinuxTuiReviewContext captureReviewContext{};
+    std::unique_ptr<PinObservationResult> capturePinObservation;
     std::vector<std::string> captureLines;
     TuiTransferView transfer;
     bool transferPresented = false;

@@ -5,6 +5,35 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-16: User-started workload pin observation (Tier 3)
+
+- Added pure analyzer `source/profile_pin_observation.h` and isolated read-only
+  NVML burst sampler `source/nvml_pin_observation_sampler.h` (bound by exact
+  captured `HardwareCaptureBinding` PCI address, no sleeps/writers, frozen wire
+  protocols unchanged), plus Tier 1/2 supremacy and confirmation helpers
+  (`profile_capture_pin_has_stronger_tier()`,
+  `profile_capture_apply_pin_observation()`,
+  `profile_capture_report_observation_result()`) in
+  `source/profile_capture_proposals.h`.
+- Wired explicit user-triggered observation and MHz confirmation/editing across
+  CLI (`--observe-pin`, `--confirm-pin-mhz` in `profile_capture_commands.h`,
+  `profile_commands_windows.h`, `profile_commands_linux.h`, `main_cli_help.cpp`,
+  `linux_cli_options.cpp`), Windows GUI (`ProfileSourceWindow`,
+  `gui_profile_capture.cpp`, `gui_profile_source.cpp`), and Linux TUI
+  (`linux_tui_capture_draft.h`, `linux_tui_layout_fan_profiles.cpp`,
+  `linux_tui_actions.cpp`, `linux_tui_layout.h`, `linux_tui_internal.h`), keeping
+  passive capture idle-safe and preserving `user_confirmed` vs `user`
+  provenance.
+- Verification: `--gates`, `--test`, `--test --asan`, `--check --target all`
+  (all 10 Windows/Linux targets), `--tidy` (0 new findings), and WSL Linux UBSan
+  regressions passed, with new regression coverage in
+  `tests/profile_pin_observation_tests.cpp` (`9900-9918`),
+  `tests/profile_capture_commands_tests.cpp` (`9920-9925`),
+  `tests/gui_profile_capture_tests.cpp` (`9930-9935`),
+  `tests/profile_source_window_tests.cpp` (`9936-9939`), and
+  `tests/tui_capture_proposals_tests.cpp` (`9940-9946`). Live physical-GPU
+  burst sampling remains unverified without hardware.
+
 ## 2026-11-16: Compatible-curve assistance (prefix repair + closest-target search)
 
 - Extended `curve_prefix_repair_prepare()` (`convertOffsetIntent`) to retain

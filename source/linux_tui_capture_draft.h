@@ -7,6 +7,7 @@
 static inline void tui_capture_cancel(TuiState& state) {
     state.capture = {}; state.capturePresented = false; state.captureObservation.reset(); state.captureLines.clear();
     state.captureProposals.reset(); state.captureProposalContext = {}; state.captureReviewContext = {};
+    state.capturePinObservation.reset();
     state.focusIndex = -1;
     std::snprintf(state.status, sizeof(state.status), "Capture cancelled; previous draft kept");
     linux_debug_logf("profile-capture: stage=cancelled");
@@ -18,6 +19,7 @@ static inline void tui_capture_begin(TuiState& state) {
         (state.document.valid ? profile_editor_document_dirty(state.document) : state.dirty);
     state.capturePresented = false; state.captureObservation.reset(); state.captureLines.clear(); state.focusIndex = -1;
     state.captureProposals.reset(); state.captureProposalContext = {}; state.captureReviewContext = {};
+    state.capturePinObservation.reset();
     std::snprintf(state.status, sizeof(state.status), "Choose capture domains; Read performs a passive snapshot only");
     linux_debug_logf("profile-capture: stage=select domains=0x%03x", (unsigned)state.capture.domains);
 }
@@ -25,9 +27,10 @@ template<class Read>
 static inline void tui_capture_read(TuiState& state, Read read) {
     if (!state.capture.active || !state.capturePresented || !state.capture.domains) return;
     state.captureObservation.reset(); state.captureLines.clear();
-    state.captureProposals.reset(); state.captureProposalContext = {};
+    state.captureProposals.reset(); state.captureProposalContext = {}; state.capturePinObservation.reset();
     state.captureReviewContext = state.serviceOnline ? linux_tui_review_context(state.service) : LinuxTuiReviewContext{};
     state.capture.hasObservation = state.capture.allowPartial = state.capture.discardConfirmed = false;
+    state.capture.pinObservable = state.capture.pinSuspected = false; state.capture.pinConfirmedHz = 0;
     state.capture.omissions = 0; state.capture.scroll = 0; state.capturePresented = false; state.focusIndex = -1;
     state.capture.representations = 0; state.capture.representation = PROFILE_CAPTURE_EXACT;
     auto observation = std::make_unique<HardwareCaptureObservation>(); ProfileCodecError error;
@@ -52,6 +55,9 @@ static inline void tui_capture_read(TuiState& state, Read read) {
     if (state.capture.hasObservation) {
         state.capture.representations = profile_capture_available_representations(*proposals);
         state.capture.representation = proposals->suggested; state.captureProposals = std::move(proposals);
+        state.capture.pinObservable = !profile_capture_pin_has_stronger_tier(captured, state.captureProposalContext) &&
+            (captured.capturedDomains & PROFILE_DOMAIN_VF_CURVE) != 0 &&
+            (captured.requestedDomains & PROFILE_DOMAIN_LOCK) != 0;
     }
     std::snprintf(state.status, sizeof(state.status), "Review settings, evidence and omissions; choose a representation for the draft");
     linux_debug_logf("profile-capture: stage=review domains=0x%03x omitted=0x%03x code=%d", (unsigned)state.capture.domains,
@@ -94,6 +100,86 @@ static inline bool tui_capture_accept(TuiState& state, Bind bind) {
     tui_install_profile_load(state, *candidate, state.currentSlot, bind, true);
     state.capture = {}; state.capturePresented = false; state.captureObservation.reset(); state.captureLines.clear(); state.focusIndex = -1;
     state.captureProposals.reset(); state.captureProposalContext = {}; state.captureReviewContext = {};
+    state.capturePinObservation.reset();
     linux_debug_logf("profile-capture: stage=accepted source-draft=unsaved representation=%s", representation);
     return true;
+}
+template<class SampleFn>
+static inline bool tui_capture_observe_pin(TuiState& state, SampleFn sampleFn) {
+    tui_reconcile_capture(state, "GPU session or ownership changed");
+    if (!state.capture.active || !state.capturePresented || !state.capture.hasObservation || !state.captureObservation ||
+        !state.captureProposals || !state.capture.pinObservable) return false;
+    if (profile_capture_pin_has_stronger_tier(*state.captureObservation, state.captureProposalContext)) {
+        state.capture.pinObservable = state.capture.pinSuspected = false;
+        snprintf(state.status, sizeof(state.status), "Tier 1 getter or Tier 2 applied intent already provides pin evidence");
+        return false;
+    }
+    std::vector<PinWorkloadSample> samples;
+    char err[192]{};
+    if (!sampleFn(state.captureObservation->binding, samples, err, sizeof(err))) samples.clear();
+    auto obs = std::make_unique<PinObservationResult>();
+    profile_pin_observation_analyze(*state.captureObservation, false, samples.data(), (int)samples.size(), *obs);
+    linux_debug_logf("%s", obs->summary);
+    auto ignored = std::make_unique<ProfileDocument>();
+    state.captureLines.clear();
+    (void)profile_editor_capture_review(*state.captureObservation, false, PROFILE_CAPTURE_UNDECIDED, *ignored,
+        state.captureLines, state.captureProposalContext);
+    if (err[0] && samples.empty()) state.captureLines.emplace_back(std::string("Sampler note: ") + err);
+    state.captureLines.emplace_back(obs->summary);
+    state.captureLines.emplace_back(std::string("Workload pin observation: ") + obs->explanation);
+    state.capture.scroll = 0;
+    if (obs->status == PIN_OBS_SUSPECTED_PIN) {
+        state.capture.pinSuspected = true;
+        state.capture.pinConfirmedHz = obs->proposedPinHz;
+        state.capturePinObservation = std::move(obs);
+        snprintf(state.status, sizeof(state.status),
+            "Suspected pin proposed (%lld MHz); adjust or use CONFIRM PIN to review PIN choice",
+            (long long)(state.capture.pinConfirmedHz / 1000000LL));
+        return true;
+    }
+    state.capture.pinSuspected = false;
+    state.capture.pinConfirmedHz = 0;
+    state.capturePinObservation.reset();
+    snprintf(state.status, sizeof(state.status), "%s", obs->explanation);
+    return false;
+}
+static inline bool tui_capture_step_pin(TuiState& state, gc_i64 deltaHz) {
+    tui_reconcile_capture(state, "GPU session or ownership changed");
+    if (!state.capture.active || !state.capture.pinSuspected || state.capture.pinConfirmedHz <= 0) return false;
+    const gc_i64 nextHz = std::clamp(state.capture.pinConfirmedHz + deltaHz, 1000000LL, 100000000000LL);
+    state.capture.pinConfirmedHz = (nextHz / 1000000LL) * 1000000LL;
+    snprintf(state.status, sizeof(state.status), "Edited pin target: %lld MHz; CONFIRM PIN to apply proposal",
+        (long long)(state.capture.pinConfirmedHz / 1000000LL));
+    return true;
+}
+static inline bool tui_capture_confirm_pin(TuiState& state) {
+    tui_reconcile_capture(state, "GPU session or ownership changed");
+    if (!state.capture.active || !state.capturePresented || !state.capture.hasObservation || !state.captureObservation ||
+        !state.captureProposals || !state.capturePinObservation ||
+        state.capturePinObservation->status != PIN_OBS_SUSPECTED_PIN || state.capture.pinConfirmedHz <= 0) return false;
+    if (!profile_capture_apply_pin_observation(*state.captureObservation, state.captureProposalContext,
+            *state.capturePinObservation, *state.captureProposals, state.capture.pinConfirmedHz)) {
+        snprintf(state.status, sizeof(state.status), "%s",
+            state.captureProposals->pin.reason[0] ? state.captureProposals->pin.reason : "Pin target unavailable");
+        return false;
+    }
+    state.capture.representations = profile_capture_available_representations(*state.captureProposals);
+    auto ignored = std::make_unique<ProfileDocument>();
+    state.captureLines.clear();
+    (void)profile_editor_capture_review(*state.captureObservation, false, PROFILE_CAPTURE_UNDECIDED, *ignored,
+        state.captureLines, state.captureProposalContext);
+    state.captureLines.emplace_back(state.capturePinObservation->summary);
+    struct {
+        std::vector<std::string>& lines;
+        void message(const std::string& text) { lines.emplace_back(text); }
+    } sink{state.captureLines};
+    profile_capture_report_proposals(sink, *state.captureProposals);
+    linux_debug_logf("profile-capture: confirmed observed pin hz=%lld provenance=%d selectable=%d",
+        (long long)state.captureProposals->pin.frequencyHz, (int)state.captureProposals->pin.provenance,
+        state.captureProposals->pin.selectable() ? 1 : 0);
+    snprintf(state.status, sizeof(state.status), "%s",
+        state.captureProposals->pin.selectable()
+            ? "Pin confirmed in capture options; select Representation: pin and USE PIN to stage draft"
+            : state.captureProposals->pin.reason);
+    return state.captureProposals->pin.selectable();
 }

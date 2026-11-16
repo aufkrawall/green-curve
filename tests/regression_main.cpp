@@ -1044,6 +1044,7 @@ int run_profile_commands_tests();
 int run_profile_legacy_ini_tests();
 int run_profile_capture_commands_tests();
 int run_profile_capture_proposals_tests();
+int run_profile_pin_observation_tests();
 int run_profile_mapping_tests();
 int run_profile_conversion_tests();
 int run_hardware_capture_tests();
@@ -2746,6 +2747,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int captureProposalFailure = run_profile_capture_proposals_tests()) {
         fprintf(stderr, "capture proposal regression failed: %d\n", captureProposalFailure);
         return captureProposalFailure;
+    }
+    if (int pinObservationFailure = run_profile_pin_observation_tests()) {
+        fprintf(stderr, "pin observation regression failed: %d\n", pinObservationFailure);
+        return pinObservationFailure;
     }
     if (int mappingFailure = run_profile_mapping_tests()) {
         fprintf(stderr, "profile mapping regression failed: %d\n", mappingFailure);

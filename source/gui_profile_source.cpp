@@ -4,6 +4,7 @@
 #include "profile_slot_io_windows.h"
 #include "profile_document_slot.h"
 #include "profile_legacy_ini.h"
+#include "nvml_pin_observation_sampler.h"
 
 static std::unique_ptr<ProfileSourceWindow> g_profileSourceWindow;
 static void gui_profile_source_refresh();
@@ -75,6 +76,15 @@ static bool gui_profile_source_open() {
         callbacks.convertDomain = gui_profile_source_convert_domain;
         callbacks.restoreExact = gui_profile_source_restore_exact;
         callbacks.prepareCurve = gui_profile_source_prepare_curve;
+        callbacks.captureObservePin = gui_profile_capture_observe_pin;
+        callbacks.captureConfirmPin = gui_profile_capture_confirm_pin;
+        g_guiProfileCapturePinSampler = [](const HardwareCaptureBinding& binding, std::vector<PinWorkloadSample>& samples,
+                char* err, size_t errSize) {
+            return nvml_pin_observation_sample_burst(binding, PROFILE_PIN_OBS_DEFAULT_SAMPLES, samples, err, errSize,
+                []() -> void* { return (void*)load_trusted_nvml_library(); },
+                [](void* lib, const char* name) -> void* { return (void*)GetProcAddress((HMODULE)lib, name); },
+                [](void* lib) { if (lib) FreeLibrary((HMODULE)lib); });
+        };
         g_profileSourceWindow = std::make_unique<ProfileSourceWindow>(g_app.guiSource, callbacks);
     }
     return g_profileSourceWindow->create(g_app.hMainWnd, g_dpi, false);

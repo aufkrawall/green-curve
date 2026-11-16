@@ -30,6 +30,8 @@ struct ProfileCaptureCommand {
     gc_u32 domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_GRAPHICS_OFFSET | PROFILE_DOMAIN_MEMORY |
         PROFILE_DOMAIN_POWER | PROFILE_DOMAIN_LOCK;
     bool allowPartial = false;
+    bool observePin = false;
+    gc_i64 confirmPinHz = 0;
     ProfileCaptureRepresentation representation = PROFILE_CAPTURE_UNDECIDED;
 };
 static inline bool profile_capture_domains(std::string_view value, gc_u32& output) {
@@ -56,7 +58,12 @@ static inline bool profile_capture_parse(const std::vector<std::string>& args, c
             if (c.allowPartial) return profile_codec::fail(&error, 0, "duplicate partial-capture decision");
             c.allowPartial = true; continue;
         }
-        if (key != "--capture-current" && key != "--domains" && key != "--representation" && key != "--config")
+        if (key == "--observe-pin") {
+            if (c.observePin) return profile_codec::fail(&error, 0, "duplicate pin observation option");
+            c.observePin = true; continue;
+        }
+        if (key != "--capture-current" && key != "--domains" && key != "--representation" &&
+            key != "--config" && key != "--confirm-pin-mhz")
             return profile_codec::fail(&error, 0, "capture cannot be combined with another command");
         if (++i == args.size() || args[i].empty() || args[i].size() >= 4096)
             return profile_codec::fail(&error, 0, "missing or overlong capture value");
@@ -70,6 +77,11 @@ static inline bool profile_capture_parse(const std::vector<std::string>& args, c
         } else if (key == "--config") {
             if (config) return profile_codec::fail(&error, 0, "duplicate configuration path");
             config = true; c.config = value;
+        } else if (key == "--confirm-pin-mhz") {
+            int mhz = 0;
+            if (c.confirmPinHz || !profile_codec::ordinal(value, mhz, 1, 100000))
+                return profile_codec::fail(&error, 0, "invalid confirmed pin frequency in MHz (expected 1..100000)");
+            c.confirmPinHz = (gc_i64)mhz * 1000000LL;
         } else {
             const auto representation = value == "exact" ? PROFILE_CAPTURE_EXACT : value == "flatten" ? PROFILE_CAPTURE_FLATTEN :
                 value == "pin" ? PROFILE_CAPTURE_PIN : PROFILE_CAPTURE_UNDECIDED;
@@ -78,9 +90,18 @@ static inline bool profile_capture_parse(const std::vector<std::string>& args, c
             c.representation = representation;
         }
     }
+    if (c.confirmPinHz && !c.observePin) return profile_codec::fail(&error, 0, "--confirm-pin-mhz requires --observe-pin");
     if (c.file.empty() || c.file == c.config) return profile_codec::fail(&error, 0, "capture requires a separate output file");
     output = std::move(c); return true;
 }
+template <class IO>
+static inline auto profile_pin_samples_from_io(IO& io, const HardwareCaptureObservation& obs,
+    std::vector<PinWorkloadSample>& samples, int) -> decltype(io.observe_pin(obs, samples), void()) {
+    io.observe_pin(obs, samples);
+}
+template <class IO>
+static inline void profile_pin_samples_from_io(IO&, const HardwareCaptureObservation&,
+    std::vector<PinWorkloadSample>&, long) {}
 
 template <class IO>
 static inline bool profile_capture_commands_run(const std::vector<std::string>& args,
@@ -114,9 +135,30 @@ static inline bool profile_capture_commands_run(const std::vector<std::string>& 
     if (!capture->capturedDomains) {
         profile_codec::fail(&error, 0, "no requested controls were captured; output was not written"); return reject(PROFILE_COMMAND_IO);
     }
+    const auto captureContext = profile_capture_context_from_io(io, 0);
     auto proposals = std::make_unique<ProfileCaptureProposals>();
-    if (!profile_capture_prepare_proposals(*capture, profile_capture_context_from_io(io, 0), *proposals,
+    if (!profile_capture_prepare_proposals(*capture, captureContext, *proposals,
         error.message, sizeof(error.message))) return reject(PROFILE_COMMAND_INVALID);
+    if (command.observePin) {
+        PinObservationResult obsResult{};
+        if (profile_capture_pin_has_stronger_tier(*capture, captureContext)) {
+            profile_pin_observation_analyze(*capture, true, nullptr, 0, obsResult);
+            profile_capture_report_observation_result(io, obsResult);
+        } else {
+            std::vector<PinWorkloadSample> samples;
+            profile_pin_samples_from_io(io, *capture, samples, 0);
+            profile_pin_observation_analyze(*capture, false, samples.data(), (int)samples.size(), obsResult);
+            profile_capture_report_observation_result(io, obsResult);
+            if (obsResult.status == PIN_OBS_SUSPECTED_PIN) {
+                if (command.confirmPinHz > 0) {
+                    (void)profile_capture_apply_pin_observation(*capture, captureContext, obsResult, *proposals,
+                        command.confirmPinHz);
+                } else {
+                    io.message("Workload observation only proposes a suspected pin; specify --confirm-pin-mhz <MHz> with --representation pin to confirm or edit it.\n");
+                }
+            }
+        }
+    }
     if (reviewed) *reviewed = *proposals;
     profile_capture_report_proposals(io, *proposals);
     if (capture->omittedDomains && !command.allowPartial) {

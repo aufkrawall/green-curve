@@ -40,6 +40,8 @@ struct ProfileSourceWindowCallbacks {
     void (*convertDomain)(void*, int) = nullptr;
     void (*restoreExact)(void*) = nullptr;
     void (*prepareCurve)(void*, int) = nullptr;
+    void (*captureObservePin)(void*) = nullptr;
+    void (*captureConfirmPin)(void*, gc_i64) = nullptr;
 };
 // The native window edits only the canonical source. It has no driver, service
 // or live-topology dependency; callbacks own storage and parent presentation.
@@ -49,7 +51,8 @@ public:
         GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, USE_MAPPED,
         CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT, ASSIST_CHOICE, PREPARE_CURVE,
         CAPTURE_READ = 9140, CAPTURE_ACCEPT, CAPTURE_ALLOW_OMISSIONS, CAPTURE_DISCARD, CAPTURE_DOMAIN_FIRST,
-        CAPTURE_DOMAIN_LAST = CAPTURE_DOMAIN_FIRST + 8, CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE, CLOSE = IDCANCEL };
+        CAPTURE_DOMAIN_LAST = CAPTURE_DOMAIN_FIRST + 8, CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE,
+        CAPTURE_OBSERVE_PIN, CAPTURE_PIN_INPUT, CAPTURE_PIN_CONFIRM, CLOSE = IDCANCEL };
     ProfileSourceWindow(ProfileEditorDocument& model, ProfileSourceWindowCallbacks callbacks)
         : model_(model), callbacks_(callbacks) {}
     ProfileSourceWindow(const ProfileSourceWindow&) = delete;
@@ -76,13 +79,29 @@ public:
         notice("Choose settings; Read takes a passive snapshot without changing the previous draft");
     }
     void capture_reset() {
-        captureReady_ = capturePartial_ = captureDiscard_ = false; captureOmissions_ = 0;
+        captureReady_ = capturePartial_ = captureDiscard_ = capturePinObservable_ = capturePinObserved_ = false;
+        captureOmissions_ = 0;
         captureRepresentation_ = PROFILE_CAPTURE_EXACT; captureRepresentations_ = 0;
         SendMessageW(control(CAPTURE_REPRESENTATION), CB_SETCURSEL, 0, 0);
         SetWindowTextW(control(CAPTURE_ACCEPT), L"Use exact");
+        if (control(CAPTURE_PIN_INPUT)) SetWindowTextW(control(CAPTURE_PIN_INPUT), L"");
         SendMessageW(control(CAPTURE_ALLOW_OMISSIONS), BM_SETCHECK, BST_UNCHECKED, 0);
         SendMessageW(control(CAPTURE_DISCARD), BM_SETCHECK, BST_UNCHECKED, 0);
         clear_report();
+    }
+    void capture_pin_state(bool observable, bool suspected, gc_i64 proposedMHz) {
+        capturePinObservable_ = observable;
+        capturePinObserved_ = suspected;
+        if (control(CAPTURE_PIN_INPUT)) {
+            if (suspected && proposedMHz > 0) {
+                wchar_t buf[32]{};
+                StringCchPrintfW(buf, sizeof(buf) / sizeof(buf[0]), L"%lld", (long long)proposedMHz);
+                SetWindowTextW(control(CAPTURE_PIN_INPUT), buf);
+            } else if (!suspected) {
+                SetWindowTextW(control(CAPTURE_PIN_INPUT), L"");
+            }
+        }
+        project_view();
     }
     void capture_report(const std::vector<std::string>& lines, bool ready, gc_u32 omissions,
         unsigned int representations = profile_capture_representation_bit(PROFILE_CAPTURE_EXACT),
@@ -100,7 +119,7 @@ public:
             const int id = GetDlgCtrlID(message.hwnd);
             if (id == STAGE || id == SAVE || id == CHECK || id == VIEW || id == USE_MAPPED || id == CLOSE ||
                 id == CONVERT_DOMAIN || id == RESTORE_EXACT || id == PREPARE_CURVE ||
-                id == CAPTURE_READ || id == CAPTURE_ACCEPT) {
+                id == CAPTURE_READ || id == CAPTURE_ACCEPT || id == CAPTURE_OBSERVE_PIN || id == CAPTURE_PIN_CONFIRM) {
                 SendMessageW(window_, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED), (LPARAM)message.hwnd); return true;
             }
         }
@@ -201,6 +220,7 @@ private:
     bool reportAvailable_ = false, reportVisible_ = false, mappedReady_ = false, assistReady_ = false;
     gc_u32 graphics_ = 0, memory_ = 0;
     bool capture_ = false, captureReady_ = false, capturePartial_ = false, captureDiscard_ = false, captureNeedsDiscard_ = false;
+    bool capturePinObservable_ = false, capturePinObserved_ = false;
     gc_u32 captureDomains_ = 31, captureOmissions_ = 0;
     unsigned int captureRepresentations_ = 0;
     ProfileCaptureRepresentation captureRepresentation_ = PROFILE_CAPTURE_EXACT;
@@ -229,7 +249,8 @@ private:
         for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE, CHECK, REPORT, VIEW,
             GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, USE_MAPPED,
             CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT, ASSIST_CHOICE, PREPARE_CURVE,
-            CAPTURE_READ, CAPTURE_ACCEPT, CAPTURE_ALLOW_OMISSIONS, CAPTURE_DISCARD, CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE})
+            CAPTURE_READ, CAPTURE_ACCEPT, CAPTURE_ALLOW_OMISSIONS, CAPTURE_DISCARD, CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE,
+            CAPTURE_OBSERVE_PIN, CAPTURE_PIN_INPUT, CAPTURE_PIN_CONFIRM})
             SendMessageW(control(id), WM_SETFONT, (WPARAM)font_, FALSE);
         for (int id = CAPTURE_DOMAIN_FIRST; id <= CAPTURE_DOMAIN_LAST; ++id) SendMessageW(control(id), WM_SETFONT, (WPARAM)font_, FALSE);
         if (old) DeleteObject(old);
@@ -282,6 +303,11 @@ private:
         for (const auto* label : {L"Exact programmed offsets", L"Recognized flatten", L"Pin from labeled evidence"})
             SendMessageW(representation, CB_ADDSTRING, 0, (LPARAM)label);
         if (!control(CAPTURE_REPRESENTATION_TITLE) || !representation) return false;
+        child(L"BUTTON", L"Observe pin", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CAPTURE_OBSERVE_PIN);
+        HWND pinEdit = child(L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER, CAPTURE_PIN_INPUT);
+        child(L"BUTTON", L"Confirm pin", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CAPTURE_PIN_CONFIRM);
+        if (!control(CAPTURE_OBSERVE_PIN) || !pinEdit || !control(CAPTURE_PIN_CONFIRM)) return false;
+        SendMessageW(pinEdit, EM_SETLIMITTEXT, 6, 0);
         SendMessageW(control(REPORT), EM_SETLIMITTEXT, 128 * 1024, 0);
         SendMessageW(input_, EM_SETLIMITTEXT, 31, 0);
         if (!SetWindowSubclass(input_, input_proc, 1, (DWORD_PTR)this)) return false;
@@ -345,8 +371,12 @@ private:
             USE_MAPPED, CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT, ASSIST_CHOICE, PREPARE_CURVE})
             ShowWindow(control(id), capture_ ? SW_HIDE : SW_SHOW);
         for (int id = CAPTURE_READ; id <= CAPTURE_DOMAIN_LAST; ++id) ShowWindow(control(id), capture_ ? SW_SHOW : SW_HIDE);
-        for (int id : {CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE}) ShowWindow(control(id), capture_ ? SW_SHOW : SW_HIDE);
+        for (int id : {CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE,
+            CAPTURE_OBSERVE_PIN, CAPTURE_PIN_INPUT, CAPTURE_PIN_CONFIRM}) ShowWindow(control(id), capture_ ? SW_SHOW : SW_HIDE);
         EnableWindow(control(CAPTURE_REPRESENTATION), capture_ && captureReady_);
+        EnableWindow(control(CAPTURE_OBSERVE_PIN), capture_ && captureReady_ && capturePinObservable_ && callbacks_.captureObservePin);
+        EnableWindow(control(CAPTURE_PIN_INPUT), capture_ && capturePinObserved_);
+        EnableWindow(control(CAPTURE_PIN_CONFIRM), capture_ && capturePinObserved_ && callbacks_.captureConfirmPin);
         EnableWindow(control(CAPTURE_READ), capture_ && captureDomains_ && callbacks_.captureRead);
         EnableWindow(control(CAPTURE_ACCEPT), capture_ && captureReady_ &&
             (captureRepresentations_ & profile_capture_representation_bit(captureRepresentation_)) && (!captureOmissions_ || capturePartial_) &&
@@ -390,14 +420,14 @@ private:
         layingOut_ = true; RECT client{};
         for (int pass = 0; pass < 2; ++pass) {
             GetClientRect(window_, &client);
-            const int width = std::max((int)client.right, px(360)), height = std::max((int)client.bottom, px(capture_ ? 456 : 426));
+            const int width = std::max((int)client.right, px(360)), height = std::max((int)client.bottom, px(capture_ ? 488 : 426));
             SCROLLINFO x{sizeof(x), SIF_RANGE | SIF_PAGE | SIF_POS, 0, width - 1, (UINT)client.right, scrollX_, 0};
             SCROLLINFO y{sizeof(y), SIF_RANGE | SIF_PAGE | SIF_POS, 0, height - 1, (UINT)client.bottom, scrollY_, 0};
             SetScrollInfo(window_, SB_HORZ, &x, TRUE); SetScrollInfo(window_, SB_VERT, &y, TRUE);
         }
         SCROLLINFO info{}; info.cbSize = sizeof(info); info.fMask = SIF_POS;
         GetScrollInfo(window_, SB_HORZ, &info); scrollX_ = info.nPos; GetScrollInfo(window_, SB_VERT, &info); scrollY_ = info.nPos;
-        GetClientRect(window_, &client); const int w = std::max((int)client.right, px(360)), h = std::max((int)client.bottom, px(capture_ ? 456 : 426));
+        GetClientRect(window_, &client); const int w = std::max((int)client.right, px(360)), h = std::max((int)client.bottom, px(capture_ ? 488 : 426));
         const int m = px(12), row = px(28), gap = px(8);
         const auto place = [&](int id, int x, int y, int width, int height) { MoveWindow(control(id), x - scrollX_, y - scrollY_, width, height, TRUE); };
         place(TITLE, m, m, w - 2*m - px(104), px(22)); place(VIEW, w - m - px(96), m, px(96), px(24));
@@ -420,7 +450,10 @@ private:
         if (capture_) {
             const int column = (w - 2*m) / 3;
             for (int i = 0; i < 9; ++i) place(CAPTURE_DOMAIN_FIRST + i, m + (i%3)*column, px(42) + (i/3)*px(28), column, px(24));
-            place(REPORT, m, px(134), w - 2*m, h - px(350));
+            place(REPORT, m, px(134), w - 2*m, h - px(386));
+            place(CAPTURE_OBSERVE_PIN, m, h - px(244), px(104), row);
+            place(CAPTURE_PIN_INPUT, m + px(110), h - px(244), px(86), row);
+            place(CAPTURE_PIN_CONFIRM, m + px(202), h - px(244), px(98), row);
             place(CAPTURE_REPRESENTATION_TITLE, m, h - px(210), px(108), px(24));
             place(CAPTURE_REPRESENTATION, m + px(112), h - px(214), w - 2*m - px(112), px(180));
             place(CAPTURE_ALLOW_OMISSIONS, m, h - px(168), w - 2*m, px(24));
@@ -473,7 +506,10 @@ private:
             case STAGE: case SAVE: case CLOSE: case CHECK: case VIEW: case USE_MAPPED:
             case CONVERT_DOMAIN: case RESTORE_EXACT: case PREPARE_CURVE:
                 return notification == BN_SETFOCUS;
-            case CAPTURE_READ: case CAPTURE_ACCEPT: case CAPTURE_ALLOW_OMISSIONS: case CAPTURE_DISCARD: return notification == BN_SETFOCUS;
+            case CAPTURE_READ: case CAPTURE_ACCEPT: case CAPTURE_ALLOW_OMISSIONS: case CAPTURE_DISCARD:
+            case CAPTURE_OBSERVE_PIN: case CAPTURE_PIN_CONFIRM:
+                return notification == BN_SETFOCUS;
+            case CAPTURE_PIN_INPUT: return notification == EN_SETFOCUS;
             default: return id >= CAPTURE_DOMAIN_FIRST && id <= CAPTURE_DOMAIN_LAST && notification == BN_SETFOCUS;
         }
     }
@@ -492,6 +528,27 @@ private:
         } else if (id == CAPTURE_READ) {
             if (captureDomains_ && callbacks_.captureRead) {
                 capture_reset(); callbacks_.captureRead(callbacks_.context, captureDomains_);
+            }
+        } else if (id == CAPTURE_OBSERVE_PIN) {
+            if (captureReady_ && capturePinObservable_ && callbacks_.captureObservePin)
+                callbacks_.captureObservePin(callbacks_.context);
+        } else if (id == CAPTURE_PIN_CONFIRM) {
+            if (capturePinObserved_ && callbacks_.captureConfirmPin) {
+                wchar_t wide[32]{}; GetWindowTextW(control(CAPTURE_PIN_INPUT), wide, 32);
+                std::string raw;
+                for (wchar_t ch : wide) { if (!ch) break; if (ch > 127) { raw.clear(); break; } raw += (char)ch; }
+                int mhz = 0;
+                bool ok = !raw.empty();
+                for (char ch : raw) {
+                    if (ch < '0' || ch > '9') { ok = false; break; }
+                    mhz = mhz * 10 + (ch - '0');
+                    if (mhz > 100000) { ok = false; break; }
+                }
+                if (!ok || mhz <= 0) {
+                    notice("Enter confirmed pin MHz (1..100000) before confirming");
+                    return true;
+                }
+                callbacks_.captureConfirmPin(callbacks_.context, (long long)mhz * 1000000LL);
             }
         } else if (id == CAPTURE_ACCEPT) {
             if (captureReady_ && (captureRepresentations_ & profile_capture_representation_bit(captureRepresentation_)) &&
@@ -514,7 +571,7 @@ private:
             "This representation is unavailable in the reviewed snapshot; choose another or Read again");
     }
     void cancel_capture() {
-        capture_ = false; captureReady_ = false; clear_report();
+        capture_ = false; captureReady_ = capturePinObservable_ = capturePinObserved_ = false; clear_report();
         SetWindowTextW(control(CLOSE), L"Close source"); SetWindowTextW(control(TITLE), L"Portable source draft");
         update_title(); layout();
         if (callbacks_.captureCancel) callbacks_.captureCancel(callbacks_.context);

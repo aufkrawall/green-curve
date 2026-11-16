@@ -1029,3 +1029,44 @@ Source anchors: `source/profile_curve_assistance.h`,
   `ProfileSourceWindow` (`ASSIST_CHOICE`/`PREPARE_CURVE`), and Linux TUI
   (`ACTION_ASSIST_CURVE_*` two-step prepare+accept). Open gaps: hardware replay of
   assisted profiles on physical GPUs remains unverified.
+
+## Workload pin observation (Tier 3, 2026-11-16)
+
+Source anchors: `source/profile_pin_observation.h`,
+`source/nvml_pin_observation_sampler.h`, `source/profile_capture_proposals.h`,
+`source/profile_capture_commands.h`, `source/profile_commands_windows.h`,
+`source/profile_commands_linux.h`, `source/profile_source_window.h`,
+`source/gui_profile_capture.cpp`, `source/gui_profile_source.cpp`,
+`source/linux_tui_capture_draft.h`, `source/linux_tui_layout_fan_profiles.cpp`,
+`source/linux_tui_actions.cpp`, `source/linux_tui_layout.h`,
+`source/linux_tui_internal.h`, `tests/profile_pin_observation_tests.cpp`
+(`9900-9918`), `tests/profile_capture_commands_tests.cpp` (`9920-9925`),
+`tests/gui_profile_capture_tests.cpp` (`9930-9935`),
+`tests/profile_source_window_tests.cpp` (`9936-9939`),
+`tests/tui_capture_proposals_tests.cpp` (`9940-9946`).
+
+- Passive Capture never auto-runs load observation or invents a hard pin when
+  Tier 1 (`pinGetterValid`) and Tier 2 (`ownedPinHz > 0`) are absent; `pin`
+  remains `PROFILE_PIN_UNKNOWN` / unselectable until the user explicitly triggers
+  observation and confirms or edits a suspected clock pin.
+- Pure GPU-free analyzer `profile_pin_observation_analyze()` (`PinWorkloadSample`,
+  capped at `<= 16` samples, `>= 3` active load samples at `>= 30%` GPU util and
+  `P0`–`P4` or `utilGpu >= 50` with active power headroom; idle/unproven states
+  stay `PIN_OBS_IDLE`/`PIN_OBS_UNKNOWN`): refuses `> 15 MHz` clock spread under
+  load (`PIN_OBS_NOT_PINNED_VARYING`), compares sustained median clock against
+  captured curve allowance at operating voltage within `30 MHz` (`PIN_OBS_AT_CURVE`),
+  and only otherwise yields `PIN_OBS_SUSPECTED_PIN` with a 1 MHz snapped target
+  and driver throttle/limit reasons (`profile_pin_observation_format_reasons()`,
+  including a thermal/power warning when power or thermal limits are active).
+- `nvml_pin_observation_sample_burst()` executes read-only NVML queries matching
+  the captured `HardwareCaptureBinding` PCI domain/bus/device without sleeps,
+  cross-GPU fallback, or hardware writes, leaving wire schemas (`SERVICE_PROTOCOL_VERSION = 37`,
+  `HARDWARE_CAPTURE_SCHEMA_CURRENT = 3`) unchanged.
+- `profile_capture_apply_pin_observation()` never overrides Tier 1/2 evidence or
+  auto-changes `proposals.suggested`, validates 1 MHz grid + writable curve anchor,
+  runs `profile_capture_check_proposal()` (with `PROFILE_CONTROL_CONDITIONAL` until
+  live destination validation), and records `PROFILE_LOCK_PROVENANCE_USER_CONFIRMED_OBSERVATION`
+  when confirming the proposed MHz or `PROFILE_LOCK_PROVENANCE_USER` when edited
+  in CLI (`--observe-pin` / `--confirm-pin-mhz`), Windows `ProfileSourceWindow`,
+  or Linux TUI capture dialogs. Open gaps: `nvml_pin_observation_sample_burst()`
+  execution against a physical GPU remains unverified in software-only runs.

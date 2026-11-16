@@ -1612,4 +1612,23 @@ Source anchors: `source/profile_curve_assistance.h`,
 - Detailed CRT grid intersection, `<= 65536` descending candidate budget,
   captured/projected prefix rules, status taxonomy, and regression fixtures
   (`9800-9874`) live in `profile-document.md` ("Compatible-curve assistance").
-  User-started load-based pin observation (`CAP-11` tier 3) remains pending.
+
+## User-started workload pin observation (Tier 3, 2026-11-16)
+
+Source anchors: `source/profile_pin_observation.h`,
+`source/nvml_pin_observation_sampler.h`, `source/profile_capture_proposals.h`,
+`source/profile_capture_commands.h`, `source/profile_source_window.h`,
+`source/gui_profile_capture.cpp`, `source/linux_tui_capture_draft.h`.
+
+- Passive capture leaves hard-pin evidence absent (`PROFILE_PIN_UNKNOWN`) unless
+  Tier 1 driver getter or Tier 2 retained service intent proves it; Tier 3 runs
+  only on explicit user action in CLI (`--observe-pin` + `--confirm-pin-mhz`),
+  Windows GUI (`Observe pin` -> editable MHz -> `Confirm pin`), or Linux TUI
+  (`ACTION_CAPTURE_OBSERVE_PIN` -> step MHz -> `ACTION_CAPTURE_CONFIRM_PIN`),
+  never overriding Tier 1/2 evidence or auto-selecting `pin`.
+- Read-only NVML burst sampling stays isolated to the exact captured GPU PCI
+  address, requires sustained active load (`>= 3` active samples, spread `<= 15 MHz`)
+  well below the captured VF curve ceiling at operating voltage, reports driver
+  clock/power/thermal limit reasons alongside warnings, and distinguishes
+  confirmed observations (`user_confirmed`) from edited targets (`user`); detailed
+  rules and tests (`9900-9946`) live in `profile-document.md`.

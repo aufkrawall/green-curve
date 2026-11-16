@@ -16,6 +16,8 @@
 #include "profile_document_slot.h"
 #include "linux_tui_source_edit.h"
 #include "linux_tui_mapped_draft.h"
+#include "platform.h"
+#include "nvml_pin_observation_sampler.h"
 #include "desired_scalar_editor.h"
 
 #include <stdio.h>
@@ -470,6 +472,21 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
             break;
         case ACTION_CAPTURE_REPRESENTATION:
             (void)tui_capture_cycle_representation(*state);
+            break;
+        case ACTION_CAPTURE_OBSERVE_PIN:
+            (void)tui_capture_observe_pin(*state, [](const HardwareCaptureBinding& binding,
+                    std::vector<PinWorkloadSample>& samples, char* err, size_t errSize) {
+                return nvml_pin_observation_sample_burst(binding, PROFILE_PIN_OBS_DEFAULT_SAMPLES, samples, err, errSize,
+                    []() -> void* { return pl_open_driver_library(PL_DRIVER_NVML); },
+                    [](void* lib, const char* name) -> void* { return pl_lib_sym((PlLib)lib, name); },
+                    [](void* lib) { pl_lib_close((PlLib)lib); });
+            });
+            break;
+        case ACTION_CAPTURE_PIN_STEP:
+            (void)tui_capture_step_pin(*state, (gc_i64)action.value);
+            break;
+        case ACTION_CAPTURE_CONFIRM_PIN:
+            (void)tui_capture_confirm_pin(*state);
             break;
         case ACTION_CAPTURE_ACCEPT:
             (void)tui_capture_accept(*state, [](TuiState& draft) { bind_current_draft(&draft); tui_recompute_dirty(&draft); });

@@ -7,11 +7,22 @@
 #include "profile_file_read.h"
 #include "profile_capture_commands.h"
 #include "profile_check_commands.h"
+#include "nvml_pin_observation_sampler.h"
 #include "profile_slot_io_windows.h"
 
 struct WindowsProfileCommands : WindowsProfileSlotIO {
     ProfileCaptureProposalContext captureContext{};
     ProfileCaptureProposalContext capture_proposal_context() const { return captureContext; }
+    void observe_pin(const HardwareCaptureObservation& obs, std::vector<PinWorkloadSample>& samples) {
+        char err[192]{};
+        if (!nvml_pin_observation_sample_burst(obs.binding, PROFILE_PIN_OBS_DEFAULT_SAMPLES, samples, err, sizeof(err),
+                []() -> void* { return (void*)load_trusted_nvml_library(); },
+                [](void* lib, const char* name) -> void* { return (void*)GetProcAddress((HMODULE)lib, name); },
+                [](void* lib) { if (lib) FreeLibrary((HMODULE)lib); })) {
+            samples.clear();
+            if (err[0]) message(std::string("Workload pin sampler: ") + err + "\n");
+        }
+    }
     bool capture(gc_u32 domains, HardwareCaptureObservation& output, ProfileCodecError& error) {
         captureContext = {};
         ServiceRequest request{}; auto response = std::make_unique<ServiceResponse>();

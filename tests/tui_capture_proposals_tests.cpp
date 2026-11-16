@@ -183,6 +183,47 @@ static int run() {
     if (!tui_capture_accept(*state, bind) || binds != 3 || state->edit.active || !state->document.unsaved ||
         state->document.value.lock.present || state->document.value.points[1].capturedOffsetHz != -100000500)
         return 9763;
+
+    // CAP-11 TUI capture workload pin observation + layout validation.
+    live->state.activeDesiredValid = 0; live->desired = {};
+    live->snapshot.health.availableMutationDomains |= SERVICE_MUTATION_DOMAIN_LOCK;
+    state->service = *live;
+    begin();
+    if (!state->capture.pinObservable || state->capture.pinSuspected ||
+        (state->capture.representations & profile_capture_representation_bit(PROFILE_CAPTURE_PIN))) return 9940;
+    PinWorkloadSample tuiIdle{}; tuiIdle.clockValid = true; tuiIdle.graphicsClockHz = 210000000LL;
+    tuiIdle.utilValid = true; tuiIdle.utilGpuPct = 3; tuiIdle.throttleValid = true; tuiIdle.throttleReasons = PIN_OBS_REASON_GPU_IDLE;
+    if (tui_capture_observe_pin(*state, [&](const auto&, std::vector<PinWorkloadSample>& out, char*, size_t) {
+            out.assign(4, tuiIdle); return true;
+        }) || state->capture.pinSuspected ||
+        (state->capture.representations & profile_capture_representation_bit(PROFILE_CAPTURE_PIN))) return 9941;
+    PinWorkloadSample tuiActive{}; tuiActive.clockValid = true; tuiActive.graphicsClockHz = 900000000LL;
+    tuiActive.utilValid = true; tuiActive.utilGpuPct = 90;
+    if (!tui_capture_observe_pin(*state, [&](const auto&, std::vector<PinWorkloadSample>& out, char*, size_t) {
+            out.assign(5, tuiActive); return true;
+        }) || !state->capture.pinSuspected || state->capture.pinConfirmedHz != 900000000LL ||
+        (state->capture.representations & profile_capture_representation_bit(PROFILE_CAPTURE_PIN))) return 9942;
+    vm.capture = state->capture; vm.capture.report = &state->captureLines;
+    for (auto size : {TuiRect{0, 0, 72, 24}, TuiRect{0, 0, 100, 32}, TuiRect{0, 0, 160, 48}}) {
+        TuiLayout layout{}; build_tui_layout(vm, size.width, size.height, &layout);
+        if (!tui_layout_actions_valid(layout)) return 9943;
+        bool obsAct = false, stepAct = false, confAct = false;
+        for (const auto& a : layout.actions) {
+            obsAct |= a.type == ACTION_CAPTURE_OBSERVE_PIN;
+            stepAct |= a.type == ACTION_CAPTURE_PIN_STEP;
+            confAct |= a.type == ACTION_CAPTURE_CONFIRM_PIN;
+        }
+        if (!obsAct || !stepAct || !confAct) return 9944;
+    }
+    if (!tui_capture_step_pin(*state, 50000000LL) || state->capture.pinConfirmedHz != 950000000LL ||
+        !tui_capture_confirm_pin(*state) || state->captureProposals->pin.provenance != PROFILE_LOCK_PROVENANCE_USER ||
+        !tui_capture_step_pin(*state, -50000000LL) || !tui_capture_confirm_pin(*state) ||
+        state->captureProposals->pin.provenance != PROFILE_LOCK_PROVENANCE_USER_CONFIRMED_OBSERVATION) return 9945;
+    state->capture.representation = PROFILE_CAPTURE_PIN;
+    state->capture.allowPartial = state->capture.discardConfirmed = true;
+    if (!tui_capture_accept(*state, bind) || state->document.value.lock.mode != LOCK_MODE_HARD ||
+        state->document.value.lock.targetFrequencyHz != 900000000LL ||
+        state->document.value.lock.provenance != PROFILE_LOCK_PROVENANCE_USER_CONFIRMED_OBSERVATION) return 9946;
     return 0;
 }
 } // namespace tui_capture_proposals_fixture

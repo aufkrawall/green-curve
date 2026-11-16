@@ -13,6 +13,8 @@ namespace gui_profile_capture_fixture {
 static AppData g_app{};
 struct Window {
     bool active = false, inputPending = true, ready = false, needsDiscard = false;
+    bool pinObservable = false, pinSuspected = false;
+    gc_i64 pinProposedMHz = 0;
     int reloads = 0;
     std::string input = "unfinished", status;
     std::vector<std::string> lines;
@@ -22,7 +24,10 @@ struct Window {
     bool capture_active() const { return active; }
     bool pending() const { return inputPending; }
     void begin_capture(bool discard) { active = true; needsDiscard = discard; }
-    void capture_reset() { ready = false; representations = 0; lines.clear(); }
+    void capture_reset() { ready = false; representations = 0; pinObservable = pinSuspected = false; pinProposedMHz = 0; lines.clear(); }
+    void capture_pin_state(bool observable, bool suspected, gc_i64 mhz) {
+        pinObservable = observable; pinSuspected = suspected; pinProposedMHz = mhz;
+    }
     void capture_report(const std::vector<std::string>& text, bool valid, gc_u32 omitted,
         unsigned int available = profile_capture_representation_bit(PROFILE_CAPTURE_EXACT), ProfileCaptureRepresentation suggested = PROFILE_CAPTURE_EXACT) {
         lines = text; ready = valid; omissions = omitted; representations = available; choice = suggested;
@@ -129,6 +134,43 @@ static int proposal_cases() {
     g_profileSourceWindow->active = false; gui_profile_capture_cancel(nullptr);
     if (g_profileCaptureProposals || g_profileCaptureObservation || g_profileCaptureJob || encoded() != accepted ||
         discards != discardsBefore + 2 || service_control_review_revision(0, &g_app.serviceActiveDesired) != owned) return 9732;
+
+    // CAP-11 GUI capture observation: passive read leaves pin unconfirmed; idle keeps unknown;
+    // confirmed observation preserves USER_CONFIRMED_OBSERVATION, edited preserves USER, never auto-selected.
+    live->state.activeDesiredValid = 0; live->desired = {}; g_app.serviceActiveDesiredValid = false;
+    g_app.serviceActiveDesired = {};
+    live->snapshot.health.availableMutationDomains |= SERVICE_MUTATION_DOMAIN_LOCK;
+    if (!read() || !g_profileSourceWindow->pinObservable || g_profileSourceWindow->pinSuspected ||
+        (g_profileSourceWindow->representations & profile_capture_representation_bit(PROFILE_CAPTURE_PIN))) return 9930;
+    static std::vector<PinWorkloadSample> nextGuiSamples;
+    g_guiProfileCapturePinSampler = [](const HardwareCaptureBinding&, std::vector<PinWorkloadSample>& out, char*, size_t) {
+        out = nextGuiSamples; return true;
+    };
+    PinWorkloadSample idleGui{}; idleGui.clockValid = true; idleGui.graphicsClockHz = 210000000LL;
+    idleGui.utilValid = true; idleGui.utilGpuPct = 0; idleGui.throttleValid = true; idleGui.throttleReasons = PIN_OBS_REASON_GPU_IDLE;
+    nextGuiSamples.assign(4, idleGui);
+    gui_profile_capture_observe_pin(nullptr);
+    if (g_profileSourceWindow->pinSuspected || g_profilePinObservation ||
+        (g_profileSourceWindow->representations & profile_capture_representation_bit(PROFILE_CAPTURE_PIN))) return 9931;
+    PinWorkloadSample activeGui{}; activeGui.clockValid = true; activeGui.graphicsClockHz = 900000000LL;
+    activeGui.utilValid = true; activeGui.utilGpuPct = 92;
+    nextGuiSamples.assign(5, activeGui);
+    gui_profile_capture_observe_pin(nullptr);
+    if (!g_profileSourceWindow->pinSuspected || g_profileSourceWindow->pinProposedMHz != 900 ||
+        g_profileSourceWindow->choice != PROFILE_CAPTURE_EXACT ||
+        (g_profileSourceWindow->representations & profile_capture_representation_bit(PROFILE_CAPTURE_PIN))) return 9932;
+    gui_profile_capture_confirm_pin(nullptr, 900000000LL);
+    if (!(g_profileSourceWindow->representations & profile_capture_representation_bit(PROFILE_CAPTURE_PIN)) ||
+        g_profileSourceWindow->choice != PROFILE_CAPTURE_EXACT || !g_profileCaptureProposals->pin.selectable() ||
+        g_profileCaptureProposals->pin.provenance != PROFILE_LOCK_PROVENANCE_USER_CONFIRMED_OBSERVATION) return 9933;
+    gui_profile_capture_confirm_pin(nullptr, 950000000LL);
+    if (g_profileCaptureProposals->pin.provenance != PROFILE_LOCK_PROVENANCE_USER ||
+        g_profileCaptureProposals->pin.frequencyHz != 950000000LL) return 9934;
+    gui_profile_capture_confirm_pin(nullptr, 900000000LL);
+    if (!gui_profile_capture_accept(nullptr, true, true, PROFILE_CAPTURE_PIN) ||
+        g_app.guiSource.value.lock.mode != LOCK_MODE_HARD || g_app.guiSource.value.lock.targetFrequencyHz != 900000000LL ||
+        g_app.guiSource.value.lock.provenance != PROFILE_LOCK_PROVENANCE_USER_CONFIRMED_OBSERVATION) return 9935;
+    g_guiProfileCapturePinSampler = nullptr;
     return 0;
 }
 static int run() {

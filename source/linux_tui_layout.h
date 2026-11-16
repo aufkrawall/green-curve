@@ -118,6 +118,9 @@ enum ActionType {
     ACTION_CAPTURE_REPRESENTATION,
     ACTION_CAPTURE_PARTIAL,
     ACTION_CAPTURE_DISCARD,
+    ACTION_CAPTURE_OBSERVE_PIN,
+    ACTION_CAPTURE_PIN_STEP,
+    ACTION_CAPTURE_CONFIRM_PIN,
     ACTION_CAPTURE_ACCEPT,
     ACTION_CAPTURE_CANCEL,
     ACTION_TRANSFER_BEGIN,
@@ -193,6 +196,8 @@ struct TuiPointValues {
 
 struct TuiCaptureView {
     bool active = false, hasObservation = false, allowPartial = false, discardConfirmed = false, needsDiscard = false;
+    bool pinObservable = false, pinSuspected = false;
+    gc_i64 pinConfirmedHz = 0;
     gc_u32 domains = 31, omissions = 0;
     unsigned int representations = 0;
     ProfileCaptureRepresentation representation = PROFILE_CAPTURE_EXACT;

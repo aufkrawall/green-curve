@@ -559,7 +559,8 @@ void tui_draw_capture_dialog(TuiCanvas* canvas) {
     std::vector<TuiSourceLine> lines;
     for (const auto& line : *view.report) lines.push_back({line});
     tui_wrap_source_lines(lines, (size_t)std::max(8, width));
-    const int rows = std::max(1, panel.height - 9);
+    const int obsRows = view.pinObservable ? 1 : 0;
+    const int rows = std::max(1, panel.height - 9 - obsRows);
     layout->captureVisibleRows = rows; layout->captureLineCount = (int)lines.size();
     const int first = std::clamp(view.scroll, 0, std::max(0, (int)lines.size() - rows));
     char meta[128]{};
@@ -571,6 +572,22 @@ void tui_draw_capture_dialog(TuiCanvas* canvas) {
     const int choices = panel.y + panel.height - 5, buttons = panel.y + panel.height - 3;
     const bool representationAvailable = (view.representations & profile_capture_representation_bit(view.representation)) != 0;
     if (view.hasObservation) {
+        if (view.pinObservable) {
+            const int obsY = choices - 2;
+            canvas->button({x, obsY, 13, 1}, "OBSERVE PIN", ACTION_CAPTURE_OBSERVE_PIN);
+            if (view.pinSuspected && view.pinConfirmedHz > 0) {
+                canvas->button({x + 15, obsY, 5, 1}, "-10", ACTION_CAPTURE_PIN_STEP, 0, -10000000);
+                canvas->button({x + 21, obsY, 4, 1}, "-1", ACTION_CAPTURE_PIN_STEP, 0, -1000000);
+                char mhzLabel[16]{};
+                snprintf(mhzLabel, sizeof(mhzLabel), "%lldM", (long long)(view.pinConfirmedHz / 1000000LL));
+                canvas->text(x + 26, obsY, 7, mhzLabel, TUI_STYLE_CYAN, true);
+                canvas->button({x + 34, obsY, 4, 1}, "+1", ACTION_CAPTURE_PIN_STEP, 0, 1000000);
+                canvas->button({x + 39, obsY, 5, 1}, "+10", ACTION_CAPTURE_PIN_STEP, 0, 10000000);
+                canvas->button({x + 46, obsY, 13, 1}, "CONFIRM PIN", ACTION_CAPTURE_CONFIRM_PIN);
+            } else {
+                canvas->text(x + 15, obsY, width - 15, "User-started load sample (never auto-captured)", TUI_STYLE_MUTED);
+            }
+        }
         const std::string label = std::string("Representation: ") + profile_capture_representation_name(view.representation);
         canvas->button({x, choices - 1, 32, 1}, label.c_str(), ACTION_CAPTURE_REPRESENTATION);
         canvas->text(x + 34, choices - 1, width - 34, representationAvailable ? "Review evidence above" : "Unavailable choice", TUI_STYLE_MUTED);

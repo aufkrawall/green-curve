@@ -9,12 +9,16 @@ namespace {
 struct CaptureIO {
     std::map<std::string, std::string> files;
     std::string messages;
-    int captures = 0, writes = 0;
+    int captures = 0, writes = 0, observes = 0;
     bool failCapture = false, failWrite = false, malformed = false, noControls = false;
     bool readOnly = false;
     bool constraints = false;
     bool dualClocks = false;
+    std::vector<PinWorkloadSample> pinSamples;
     gc_i64 vfGrid = 500;
+    void observe_pin(const HardwareCaptureObservation&, std::vector<PinWorkloadSample>& out) {
+        ++observes; out = pinSamples;
+    }
     bool read(const std::string& path, std::string& data, size_t limit, bool, ProfileCodecError& error) {
         auto found = files.find(path);
         if (found == files.end() || found->second.size() > limit) return profile_codec::fail(&error, 0, "fixture read refused");
@@ -140,5 +144,44 @@ int run_profile_capture_commands_tests() {
     for (const auto& args : invalid)
         if (!profile_capture_commands_run(args, "config.ini", io, code) || code != PROFILE_COMMAND_INVALID || io.captures != prior) return 8550;
     if (profile_capture_commands_run({"--help"}, "config.ini", io, code)) return 8551;
+
+    // CAP-11 CLI: --observe-pin (never automatic on plain Capture, idle yields unknown, observation only proposes,
+    // --confirm-pin-mhz saves confirmed/edited provenance).
+    CaptureIO pinIo; pinIo.constraints = true; pinIo.vfGrid = 500;
+    PinWorkloadSample idleSample{}; idleSample.clockValid = true; idleSample.graphicsClockHz = 210000000LL;
+    idleSample.utilValid = true; idleSample.utilGpuPct = 4; idleSample.throttleValid = true; idleSample.throttleReasons = PIN_OBS_REASON_GPU_IDLE;
+    pinIo.pinSamples.assign(4, idleSample);
+    const std::vector<std::string> plain{"--capture-current", "plain.gcprofile", "--domains", "vf,pin", "--allow-partial"};
+    if (!profile_capture_commands_run(plain, "config.ini", pinIo, code) || code != PROFILE_COMMAND_DECISION ||
+        pinIo.observes != 0 || pinIo.messages.find("Pin knowledge: unknown") == std::string::npos) return 9920;
+    auto obsIdle = plain; obsIdle.insert(obsIdle.end(), {"--observe-pin", "--representation", "pin"});
+    if (!profile_capture_commands_run(obsIdle, "config.ini", pinIo, code) || code != PROFILE_COMMAND_DECISION ||
+        pinIo.observes != 1 || pinIo.writes != 0 || pinIo.messages.find("pin-observe: status=idle") == std::string::npos) return 9921;
+    PinWorkloadSample activeSample{}; activeSample.clockValid = true; activeSample.graphicsClockHz = 900000000LL;
+    activeSample.utilValid = true; activeSample.utilGpuPct = 95; activeSample.throttleValid = true;
+    activeSample.throttleReasons = PIN_OBS_REASON_APPLICATIONS_CLOCKS;
+    pinIo.pinSamples.assign(5, activeSample); pinIo.messages.clear();
+    if (!profile_capture_commands_run(obsIdle, "config.ini", pinIo, code) || code != PROFILE_COMMAND_DECISION ||
+        pinIo.observes != 2 || pinIo.writes != 0 ||
+        pinIo.messages.find("pin-observe: status=suspected-pin") == std::string::npos ||
+        pinIo.messages.find("--confirm-pin-mhz") == std::string::npos) return 9922;
+    auto confirmPin = obsIdle; confirmPin.insert(confirmPin.end(), {"--confirm-pin-mhz", "900"}); pinIo.messages.clear();
+    if (!profile_capture_commands_run(confirmPin, "config.ini", pinIo, code) || code != PROFILE_COMMAND_OK ||
+        pinIo.writes != 1 || !profile_bank_decode(pinIo.files.at("plain.gcprofile"), *decoded) ||
+        !decoded->documents[0].lock.present || decoded->documents[0].lock.mode != LOCK_MODE_HARD ||
+        decoded->documents[0].lock.targetFrequencyHz != 900000000LL ||
+        decoded->documents[0].lock.provenance != PROFILE_LOCK_PROVENANCE_USER_CONFIRMED_OBSERVATION) return 9923;
+    auto editPin = plain; editPin.insert(editPin.end(), {"--observe-pin", "--confirm-pin-mhz", "950", "--representation", "pin"});
+    if (!profile_capture_commands_run(editPin, "config.ini", pinIo, code) || code != PROFILE_COMMAND_OK ||
+        pinIo.writes != 2 || !profile_bank_decode(pinIo.files.at("plain.gcprofile"), *decoded) ||
+        decoded->documents[0].lock.targetFrequencyHz != 950000000LL ||
+        decoded->documents[0].lock.provenance != PROFILE_LOCK_PROVENANCE_USER) return 9924;
+    const int obsBeforeInv = pinIo.captures;
+    for (const auto& args : std::vector<std::vector<std::string>>{
+            {"--capture-current", "x", "--confirm-pin-mhz", "900"},
+            {"--capture-current", "x", "--observe-pin", "--observe-pin"},
+            {"--capture-current", "x", "--observe-pin", "--confirm-pin-mhz", "bogus"}})
+        if (!profile_capture_commands_run(args, "config.ini", pinIo, code) || code != PROFILE_COMMAND_INVALID ||
+            pinIo.captures != obsBeforeInv) return 9925;
     return 0;
 }

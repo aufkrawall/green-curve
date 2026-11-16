@@ -13,6 +13,10 @@ struct GuiProfileCaptureJob {
 static std::unique_ptr<GuiProfileCaptureJob> g_profileCaptureJob;
 static std::unique_ptr<HardwareCaptureObservation> g_profileCaptureObservation;
 static std::unique_ptr<ProfileCaptureProposals> g_profileCaptureProposals;
+static ProfileCaptureProposalContext g_profileCaptureProposalContext{};
+static std::unique_ptr<PinObservationResult> g_profilePinObservation;
+typedef bool (*GuiPinObservationSamplerFn)(const HardwareCaptureBinding&, std::vector<PinWorkloadSample>&, char*, size_t);
+static GuiPinObservationSamplerFn g_guiProfileCapturePinSampler = nullptr;
 static bool g_profileCapturePending = false;
 
 static bool gui_profile_capture_active() {
@@ -25,8 +29,13 @@ static bool gui_profile_capture_needs_discard() {
 static void gui_profile_capture_invalidate(const char* reason) {
     const bool hadJob = g_profileCaptureJob != nullptr;
     if (g_profileCaptureJob && g_profileCapturePending) gui_service_io_cancel_capture(g_profileCaptureJob->token);
-    g_profileCaptureJob.reset(); g_profileCaptureObservation.reset(); g_profileCaptureProposals.reset(); g_profileCapturePending = false;
-    if (gui_profile_capture_active()) { g_profileSourceWindow->capture_reset(); g_profileSourceWindow->notice(reason); }
+    g_profileCaptureJob.reset(); g_profileCaptureObservation.reset(); g_profileCaptureProposals.reset();
+    g_profileCaptureProposalContext = {}; g_profilePinObservation.reset(); g_profileCapturePending = false;
+    if (gui_profile_capture_active()) {
+        g_profileSourceWindow->capture_pin_state(false, false, 0);
+        g_profileSourceWindow->capture_reset();
+        g_profileSourceWindow->notice(reason);
+    }
     if (hadJob) debug_log("profile-capture: expired reason=%s\n", reason);
 }
 static bool gui_profile_capture_context_current() {
@@ -97,8 +106,14 @@ static bool gui_profile_capture_handle_completion(GuiServiceIoCompletion* comple
         context, proposals.get());
     const bool ready = result == PROFILE_COMMAND_DECISION && response.capture.capturedDomains;
     g_profileCaptureObservation = std::make_unique<HardwareCaptureObservation>(response.capture);
+    g_profileCaptureProposalContext = context;
+    g_profilePinObservation.reset();
+    const bool pinObservable = ready && !profile_capture_pin_has_stronger_tier(response.capture, context) &&
+        (response.capture.capturedDomains & PROFILE_DOMAIN_VF_CURVE) &&
+        (response.capture.requestedDomains & PROFILE_DOMAIN_LOCK);
     g_profileSourceWindow->capture_report(lines, ready, response.capture.omittedDomains,
         ready ? profile_capture_available_representations(*proposals) : 0u, proposals->suggested);
+    g_profileSourceWindow->capture_pin_state(pinObservable, false, 0);
     g_profileCaptureProposals = ready ? std::move(proposals) : nullptr;
     g_profileSourceWindow->notice("Review settings, evidence and omissions; choose a representation to change only the draft");
     debug_log("profile-capture: reviewed token=%llu domains=0x%03X omitted=0x%03X ready=%d\n",
@@ -146,6 +161,81 @@ static void gui_profile_capture_cancel(void*) {
 }
 static void gui_profile_capture_domains_changed(void*) {
     gui_profile_capture_invalidate("Capture settings changed; Read a new snapshot");
+}
+static void gui_profile_capture_observe_pin(void*) {
+    if (!gui_profile_capture_active() || !g_profileCaptureObservation || !g_profileCaptureProposals ||
+        !gui_profile_capture_context_current()) {
+        gui_profile_capture_invalidate("Read a current snapshot before starting pin observation"); return;
+    }
+    if (profile_capture_pin_has_stronger_tier(*g_profileCaptureObservation, g_profileCaptureProposalContext)) {
+        g_profileSourceWindow->capture_pin_state(false, false, 0);
+        g_profileSourceWindow->notice("Tier 1 getter or Tier 2 applied intent already provides pin evidence");
+        return;
+    }
+    if (!(*g_profileCaptureObservation).capturedDomains ||
+        !((*g_profileCaptureObservation).capturedDomains & PROFILE_DOMAIN_VF_CURVE) ||
+        !((*g_profileCaptureObservation).requestedDomains & PROFILE_DOMAIN_LOCK)) {
+        g_profileSourceWindow->notice("Capture VF curve and lock domains before observing pin under load"); return;
+    }
+    std::vector<PinWorkloadSample> samples;
+    char err[192]{};
+    if (g_guiProfileCapturePinSampler) {
+        if (!g_guiProfileCapturePinSampler(g_profileCaptureObservation->binding, samples, err, sizeof(err))) samples.clear();
+    } else {
+        snprintf(err, sizeof(err), "workload pin sampler unavailable");
+    }
+    auto obs = std::make_unique<PinObservationResult>();
+    profile_pin_observation_analyze(*g_profileCaptureObservation, false, samples.data(), (int)samples.size(), *obs);
+    debug_log("%s\n", obs->summary);
+    auto ignored = std::make_unique<ProfileDocument>(); std::vector<std::string> lines;
+    (void)profile_editor_capture_review(*g_profileCaptureObservation, false, PROFILE_CAPTURE_UNDECIDED, *ignored, lines,
+        g_profileCaptureProposalContext);
+    if (err[0] && samples.empty()) lines.emplace_back(std::string("Sampler note: ") + err);
+    lines.emplace_back(obs->summary);
+    lines.emplace_back(std::string("Workload pin observation: ") + obs->explanation);
+    g_profileSourceWindow->capture_report(lines, true, g_profileCaptureObservation->omittedDomains,
+        profile_capture_available_representations(*g_profileCaptureProposals), g_profileCaptureProposals->suggested);
+    if (obs->status == PIN_OBS_SUSPECTED_PIN) {
+        const gc_i64 mhz = obs->proposedPinHz / 1000000LL;
+        g_profilePinObservation = std::move(obs);
+        g_profileSourceWindow->capture_pin_state(true, true, mhz);
+        g_profileSourceWindow->notice("Suspected pin proposed; confirm or edit MHz, then press Confirm pin");
+    } else {
+        g_profilePinObservation.reset();
+        g_profileSourceWindow->capture_pin_state(true, false, 0);
+        g_profileSourceWindow->notice(obs->explanation);
+    }
+}
+static void gui_profile_capture_confirm_pin(void*, gc_i64 confirmedOrEditedHz) {
+    if (!gui_profile_capture_active() || !g_profileCaptureObservation || !g_profileCaptureProposals ||
+        !g_profilePinObservation || g_profilePinObservation->status != PIN_OBS_SUSPECTED_PIN ||
+        !gui_profile_capture_context_current()) {
+        gui_profile_capture_invalidate("Observe a suspected pin on a current snapshot before confirming"); return;
+    }
+    if (!profile_capture_apply_pin_observation(*g_profileCaptureObservation, g_profileCaptureProposalContext,
+            *g_profilePinObservation, *g_profileCaptureProposals, confirmedOrEditedHz)) {
+        g_profileSourceWindow->notice(g_profileCaptureProposals->pin.reason[0]
+            ? g_profileCaptureProposals->pin.reason : "Could not build pin proposal for that frequency");
+        return;
+    }
+    auto ignored = std::make_unique<ProfileDocument>(); std::vector<std::string> lines;
+    (void)profile_editor_capture_review(*g_profileCaptureObservation, false, PROFILE_CAPTURE_UNDECIDED, *ignored, lines,
+        g_profileCaptureProposalContext);
+    lines.emplace_back(g_profilePinObservation->summary);
+    struct {
+        std::vector<std::string>& lines;
+        void message(const std::string& text) { lines.emplace_back(text); }
+    } sink{lines};
+    profile_capture_report_proposals(sink, *g_profileCaptureProposals);
+    debug_log("profile-capture: confirmed observed pin hz=%lld provenance=%d selectable=%d\n",
+        (long long)g_profileCaptureProposals->pin.frequencyHz, (int)g_profileCaptureProposals->pin.provenance,
+        g_profileCaptureProposals->pin.selectable() ? 1 : 0);
+    g_profileSourceWindow->capture_report(lines, true, g_profileCaptureObservation->omittedDomains,
+        profile_capture_available_representations(*g_profileCaptureProposals), g_profileCaptureProposals->suggested);
+    g_profileSourceWindow->capture_pin_state(true, true, g_profileCaptureProposals->pin.frequencyHz / 1000000LL);
+    g_profileSourceWindow->notice(g_profileCaptureProposals->pin.selectable()
+        ? "Confirmed pin proposal; choose 'Pin from labeled evidence' and press Use pin to stage draft"
+        : g_profileCaptureProposals->pin.reason);
 }
 static void gui_profile_tools_append_menu(HMENU menu) {
     if (!menu) return;

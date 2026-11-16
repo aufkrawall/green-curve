@@ -8,7 +8,8 @@ struct Host {
     int saves = 0, changes = 0, closes = 0, confirms = 0, checks = 0, inputChanges = 0, previewChanges = 0;
     gc_u32 graphics = 0, memory = 0;
     int captureReads = 0, captureAccepts = 0, captureCancels = 0, domainChanges = 0, mapped = 0;
-    int converts = 0, lastConvertKind = -1, restores = 0, prepares = 0, lastPrepareMode = -1;
+    int converts = 0, lastConvertKind = -1, restores = 0, prepares = 0, lastPrepareMode = -1, pinObserves = 0, pinConfirms = 0;
+    gc_i64 lastConfirmedPinHz = 0;
     gc_u32 captureDomains = 0;
     bool partial = false, discardCapture = false;
     ProfileCaptureRepresentation representation = PROFILE_CAPTURE_UNDECIDED;
@@ -46,6 +47,10 @@ static void restore_exact(void* context) { ++((Host*)context)->restores; }
 static void prepare_curve(void* context, int mode) {
     auto& h = *(Host*)context; ++h.prepares; h.lastPrepareMode = mode;
 }
+static void observe_pin(void* context) { ++((Host*)context)->pinObserves; }
+static void confirm_pin(void* context, gc_i64 pinHz) {
+    auto& h = *(Host*)context; ++h.pinConfirms; h.lastConfirmedPinHz = pinHz;
+}
 static void select(ProfileSourceWindow& window, int row) {
     SendMessageW(window.control(ProfileSourceWindow::LIST), LB_SETCURSEL, row, 0);
     SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::LIST, LBN_SELCHANGE), (LPARAM)window.control(ProfileSourceWindow::LIST));
@@ -74,6 +79,7 @@ int run_profile_source_window_tests() {
     callbacks.captureRead = capture_read; callbacks.captureAccept = capture_accept;
     callbacks.captureCancel = capture_cancel; callbacks.captureDomainsChanged = domains_changed;
     callbacks.convertDomain = convert_domain; callbacks.restoreExact = restore_exact; callbacks.prepareCurve = prepare_curve;
+    callbacks.captureObservePin = observe_pin; callbacks.captureConfirmPin = confirm_pin;
     ProfileSourceWindow window(*model, callbacks);
     host->window = &window;
     if (!window.create(nullptr, 96, false) || IsWindowVisible(window.handle())) return 9330;
@@ -344,6 +350,24 @@ int run_profile_source_window_tests() {
     window.clear_report();
     if (IsWindowEnabled(window.control(ProfileSourceWindow::ASSIST_CHOICE)) ||
         IsWindowEnabled(window.control(ProfileSourceWindow::PREPARE_CURVE))) return 9853;
+
+    // CAP-11 ProfileSourceWindow capture pin observation & confirmation/edit controls.
+    window.begin_capture(false);
+    if (IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_OBSERVE_PIN)) ||
+        IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_PIN_INPUT)) ||
+        IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_PIN_CONFIRM))) return 9936;
+    window.capture_report({"Absent pin getter"}, true, 0);
+    window.capture_pin_state(true, false, 0);
+    if (!IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_OBSERVE_PIN)) ||
+        IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_PIN_INPUT)) ||
+        IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_PIN_CONFIRM))) return 9937;
+    SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::CAPTURE_OBSERVE_PIN, BN_CLICKED), 0);
+    window.capture_pin_state(true, true, 1800);
+    if (host->pinObserves != 1 || text(window.control(ProfileSourceWindow::CAPTURE_PIN_INPUT)) != L"1800" ||
+        !IsWindowEnabled(window.control(ProfileSourceWindow::CAPTURE_PIN_CONFIRM))) return 9938;
+    SetWindowTextW(window.control(ProfileSourceWindow::CAPTURE_PIN_INPUT), L"1750");
+    SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::CAPTURE_PIN_CONFIRM, BN_CLICKED), 0);
+    if (host->pinConfirms != 1 || host->lastConfirmedPinHz != 1750000000LL) return 9939;
     return 0;
 }
 #else

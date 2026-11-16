@@ -5,11 +5,13 @@
 #include "hardware_capture_runtime.h"
 #include "profile_capture_representation.h"
 #include "profile_control_feasibility.h"
+#include "profile_pin_observation.h"
 #include "vf_flat_tail_recognition.h"
 #include "service_protocol.h"
 #include "service_control_review_revision.h"
 #include <algorithm>
 #include <limits>
+#include <string>
 
 struct ProfileCaptureProposalContext {
     gc_i64 ownedPinHz = 0; // Service-owned intent, never a hardware getter.
@@ -267,6 +269,74 @@ static inline unsigned int profile_capture_available_representations(const Profi
         (proposals.flatten.selectable() ? profile_capture_representation_bit(PROFILE_CAPTURE_FLATTEN) : 0u) |
         (proposals.pin.selectable() ? profile_capture_representation_bit(PROFILE_CAPTURE_PIN) : 0u);
 }
+static inline bool profile_capture_pin_has_stronger_tier(const HardwareCaptureObservation& observation,
+    ProfileCaptureProposalContext context) {
+    return observation.pinGetterValid != 0 || context.ownedPinHz > 0;
+}
+static inline bool profile_capture_apply_pin_observation(const HardwareCaptureObservation& observation,
+    ProfileCaptureProposalContext context, const PinObservationResult& obs,
+    ProfileCaptureProposals& proposals, gc_i64 confirmedOrEditedHz = 0) {
+    if (profile_capture_pin_has_stronger_tier(observation, context)) return false;
+    auto& pin = proposals.pin;
+    pin.recognized = false;
+    if (obs.status != PIN_OBS_SUSPECTED_PIN) {
+        profile_capture_proposal_reason(pin,
+            obs.explanation[0] ? obs.explanation : "workload observation yielded unknown pin state");
+        proposals.sameTarget = proposals.conflictingTargets = false;
+        return false;
+    }
+    const gc_i64 targetHz = confirmedOrEditedHz > 0 ? confirmedOrEditedHz : obs.proposedPinHz;
+    if (targetHz <= 0 || targetHz > 100000000000LL || (targetHz % 1000000LL) != 0) {
+        profile_capture_proposal_reason(pin,
+            "pin frequency must be a positive 1 MHz multiple", PROFILE_CONTROL_UNAVAILABLE);
+        proposals.sameTarget = proposals.conflictingTargets = false;
+        return false;
+    }
+    const int count = proposals.exact.topologyCount;
+    int order[VF_NUM_POINTS]{};
+    for (int i = 0; i < count; ++i) order[i] = i;
+    std::sort(order, order + count,
+        [&](int a, int b) { return observation.points[a].voltageUv < observation.points[b].voltageUv; });
+    int anchor = -1;
+    for (int i = 0; i < count; ++i) {
+        const int at = order[i];
+        if (observation.points[at].writableState == 1 && observation.points[at].frequencyHz >= targetHz) {
+            anchor = at;
+            break;
+        }
+    }
+    if (anchor < 0) {
+        profile_capture_proposal_reason(pin, "confirmed pin frequency has no complete writable curve anchor");
+        proposals.sameTarget = proposals.conflictingTargets = false;
+        return false;
+    }
+    const ProfileLockProvenance provenance = (confirmedOrEditedHz > 0 && confirmedOrEditedHz != obs.proposedPinHz)
+        ? PROFILE_LOCK_PROVENANCE_USER
+        : PROFILE_LOCK_PROVENANCE_USER_CONFIRMED_OBSERVATION;
+    profile_capture_make_lock(proposals.exact, pin, anchor, LOCK_MODE_HARD, targetHz, provenance);
+    if (context.pinAvailabilityKnown && !context.pinAvailable) {
+        profile_capture_proposal_reason(
+            pin, "hard-pin control is unavailable; exact replay or an explicit flatten remains separate");
+    } else {
+        profile_capture_check_proposal(observation, pin);
+        if (pin.controls.disposition == PROFILE_CONTROL_READY) {
+            pin.controls.disposition = PROFILE_CONTROL_CONDITIONAL;
+            snprintf(pin.reason, sizeof(pin.reason), "%s",
+                provenance == PROFILE_LOCK_PROVENANCE_USER
+                    ? "user-edited pin write and transition behavior require fresh validation"
+                    : "user-confirmed observation pin write and transition behavior require fresh validation");
+        }
+    }
+    proposals.sameTarget = proposals.flatten.recognized && pin.recognized &&
+        proposals.flatten.frequencyHz == pin.frequencyHz;
+    proposals.conflictingTargets = proposals.flatten.recognized && pin.recognized && !proposals.sameTarget;
+    return true;
+}
+template <class IO>
+static inline void profile_capture_report_observation_result(IO& io, const PinObservationResult& obs) {
+    io.message(std::string(obs.summary) + "\n");
+    io.message(std::string("Workload pin observation: ") + obs.explanation + "\n");
+}
 template <class IO>
 static inline void profile_capture_report_proposals(IO &io, const ProfileCaptureProposals &proposals) {
     const ProfileCaptureLockProposal *choices[] = {&proposals.flatten, &proposals.pin};
@@ -277,6 +347,10 @@ static inline void profile_capture_report_proposals(IO &io, const ProfileCapture
                                : choice.provenance == PROFILE_LOCK_PROVENANCE_DRIVER_GETTER ? "validated getter"
                                : choice.provenance == PROFILE_LOCK_PROVENANCE_APPLIED_INTENT
                                    ? "applied intent (not read from driver)"
+                               : choice.provenance == PROFILE_LOCK_PROVENANCE_USER_CONFIRMED_OBSERVATION
+                                   ? "user-confirmed workload observation"
+                               : choice.provenance == PROFILE_LOCK_PROVENANCE_USER
+                                   ? "user-edited observation"
                                    : "flat-tail recognition";
         io.message(std::string("capture: proposal=") + name + "; evidence=" + evidence + "; anchor=" +
                    std::to_string(choice.anchorVoltageUv) + " uV; target=" + std::to_string(choice.frequencyHz) +

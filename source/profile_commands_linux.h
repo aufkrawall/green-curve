@@ -7,6 +7,8 @@
 #include "profile_file_read.h"
 #include "profile_capture_commands.h"
 #include "profile_check_commands.h"
+#include "platform.h"
+#include "nvml_pin_observation_sampler.h"
 #include "linux_config_lock.h"
 #include "linux_debug_log.h"
 #include "profile_slot_io_linux.h"
@@ -15,6 +17,16 @@
 struct LinuxProfileCommands : LinuxProfileSlotIO {
     ProfileCaptureProposalContext captureContext{};
     ProfileCaptureProposalContext capture_proposal_context() const { return captureContext; }
+    void observe_pin(const HardwareCaptureObservation& obs, std::vector<PinWorkloadSample>& samples) {
+        char err[192]{};
+        if (!nvml_pin_observation_sample_burst(obs.binding, PROFILE_PIN_OBS_DEFAULT_SAMPLES, samples, err, sizeof(err),
+                []() -> void* { return pl_open_driver_library(PL_DRIVER_NVML); },
+                [](void* lib, const char* name) -> void* { return pl_lib_sym((PlLib)lib, name); },
+                [](void* lib) { pl_lib_close((PlLib)lib); })) {
+            samples.clear();
+            if (err[0]) message(std::string("Workload pin sampler: ") + err + "\n");
+        }
+    }
     bool capture(gc_u32 domains, HardwareCaptureObservation& output, ProfileCodecError& error) {
         captureContext = {};
         ServiceRequest request{}; auto response = std::make_unique<ServiceResponse>();
