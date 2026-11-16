@@ -8,6 +8,7 @@ struct Host {
     int saves = 0, changes = 0, closes = 0, confirms = 0, checks = 0, inputChanges = 0, previewChanges = 0;
     gc_u32 graphics = 0, memory = 0;
     int captureReads = 0, captureAccepts = 0, captureCancels = 0, domainChanges = 0, mapped = 0;
+    int converts = 0, lastConvertKind = -1, restores = 0;
     gc_u32 captureDomains = 0;
     bool partial = false, discardCapture = false;
     ProfileCaptureRepresentation representation = PROFILE_CAPTURE_UNDECIDED;
@@ -38,6 +39,10 @@ static bool capture_accept(void* context, bool partial, bool discard, ProfileCap
 static void capture_cancel(void* context) { ++((Host*)context)->captureCancels; }
 static void domains_changed(void* context) { ++((Host*)context)->domainChanges; }
 static void mapped(void* context) { ++((Host*)context)->mapped; }
+static void convert_domain(void* context, int kind) {
+    auto& h = *(Host*)context; ++h.converts; h.lastConvertKind = kind;
+}
+static void restore_exact(void* context) { ++((Host*)context)->restores; }
 static void select(ProfileSourceWindow& window, int row) {
     SendMessageW(window.control(ProfileSourceWindow::LIST), LB_SETCURSEL, row, 0);
     SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::LIST, LBN_SELCHANGE), (LPARAM)window.control(ProfileSourceWindow::LIST));
@@ -65,6 +70,7 @@ int run_profile_source_window_tests() {
     callbacks.acceptMapped = mapped;
     callbacks.captureRead = capture_read; callbacks.captureAccept = capture_accept;
     callbacks.captureCancel = capture_cancel; callbacks.captureDomainsChanged = domains_changed;
+    callbacks.convertDomain = convert_domain; callbacks.restoreExact = restore_exact;
     ProfileSourceWindow window(*model, callbacks);
     host->window = &window;
     if (!window.create(nullptr, 96, false) || IsWindowVisible(window.handle())) return 9330;
@@ -291,6 +297,37 @@ int run_profile_source_window_tests() {
     MSG cancelKey{}; cancelKey.hwnd = window.control(ProfileSourceWindow::CLOSE); cancelKey.message = WM_KEYDOWN; cancelKey.wParam = VK_RETURN;
     window.route(cancelKey);
     if (window.capture_active() || host->captureAccepts != 2 || host->captureCancels != 4) return 9736;
+
+    // UNIT-07 & CAP-10 ProfileSourceWindow controls: conversion combobox/button and restore exact button.
+    auto flat = profile_document_make_empty();
+    flat.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK;
+    flat.topologyCount = 2; flat.sourceTopologyComplete = true;
+    flat.topology[0] = {10, 22, 662000, 1}; flat.topology[1] = {11, 23, 668250, 1};
+    flat.points[0] = {PROFILE_POINT_CAPTURED_OFFSET, 0, 15000500, false, 0, true, 15000500};
+    flat.points[1] = {PROFILE_POINT_ABSENT, 0, 0, false, 0, true, -25000500};
+    flat.lock.present = true; flat.lock.mode = LOCK_MODE_FLATTEN;
+    flat.lock.anchorTopologyId = 11; flat.lock.targetFrequencyHz = 1000000000;
+    model->value = model->saved = flat; window.reload();
+    if (!IsWindowEnabled(window.control(ProfileSourceWindow::RESTORE_EXACT)) ||
+        IsWindowEnabled(window.control(ProfileSourceWindow::CONVERT_DOMAIN))) return 9411;
+    SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::RESTORE_EXACT, BN_CLICKED), 0);
+    if (host->restores != 1) return 9412;
+    model->value.points[1].hasObservedOffset = false; window.reload();
+    if (IsWindowEnabled(window.control(ProfileSourceWindow::RESTORE_EXACT))) return 9413;
+    auto plan = std::make_unique<ProfileConversionPlan>(); plan->count = 2;
+    plan->items[0].kind = PROFILE_CONVERT_MEMORY; plan->items[0].convertible = true;
+    plan->items[0].batch.affectedCount = 1; plan->items[0].batch.maximumError = 500;
+    plan->items[1].kind = PROFILE_CONVERT_XBAR_VOLTAGE; plan->items[1].unresolved = true;
+    snprintf(plan->items[1].why, sizeof(plan->items[1].why), "voltage conversion needs per-domain review");
+    window.report({"Check output"}); window.conversion_options(*plan);
+    if (!IsWindowEnabled(window.control(ProfileSourceWindow::CONVERSION_CHOICE)) ||
+        !IsWindowEnabled(window.control(ProfileSourceWindow::CONVERT_DOMAIN))) return 9414;
+    SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::CONVERT_DOMAIN, BN_CLICKED), 0);
+    if (host->converts != 1 || host->lastConvertKind != PROFILE_CONVERT_MEMORY) return 9415;
+    SendMessageW(window.control(ProfileSourceWindow::CONVERSION_CHOICE), CB_SETCURSEL, 1, 0);
+    SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::CONVERSION_CHOICE, CBN_SELCHANGE), 0);
+    if (IsWindowEnabled(window.control(ProfileSourceWindow::CONVERT_DOMAIN)) ||
+        text(window.control(ProfileSourceWindow::STATUS)).find(L"voltage") == std::wstring::npos) return 9416;
     return 0;
 }
 #else

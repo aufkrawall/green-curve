@@ -481,12 +481,36 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
             if (tui_use_mapped_draft(*state)) linux_debug_logf("profile-check: mapped draft accepted revision=%llu controlRevision=%llu",
                 (unsigned long long)state->document.revision, (unsigned long long)state->sourceReview->capture.revision);
             break;
+        case ACTION_CONVERT_SOURCE_CYCLE:
+            (void)tui_cycle_source_conversion(*state);
+            break;
+        case ACTION_CONVERT_SOURCE_ACCEPT: {
+            char logLine[256]{};
+            const bool accepted = tui_accept_source_conversion(*state, logLine, sizeof(logLine));
+            if (logLine[0]) linux_debug_logf("%s", logLine);
+            if (accepted) {
+                tui_recompute_dirty(state);
+                bind_current_draft(state);
+            }
+            break;
+        }
+        case ACTION_RESTORE_CAPTURED_TAIL: {
+            char logLine[256]{};
+            const bool restored = tui_restore_captured_tail(*state, logLine, sizeof(logLine));
+            if (logLine[0]) linux_debug_logf("%s", logLine);
+            if (restored) {
+                tui_recompute_dirty(state);
+                bind_current_draft(state);
+            }
+            break;
+        }
         case ACTION_SOURCE_GRAPHICS_CHOICE:
         case ACTION_SOURCE_MEMORY_CHOICE: {
             if (!state->document.valid) break;
             auto& choice = action.type == ACTION_SOURCE_GRAPHICS_CHOICE ? state->sourceGraphicsChoice : state->sourceMemoryChoice;
             choice = (choice + 1) % (action.type == ACTION_SOURCE_GRAPHICS_CHOICE ? 4u : 3u);
-            state->sourceCheckVisible = false; state->sourceCheckLines.clear(); state->sourceReview.reset(); state->sourceScroll = 0;
+            state->sourceCheckVisible = false; state->sourceCheckLines.clear(); state->sourceReview.reset();
+            state->sourceConvertIndex = 0; state->sourceScroll = 0;
             snprintf(state->status, sizeof(state->status), "Control preview selection changed; use Check to review this choice");
             break;
         }

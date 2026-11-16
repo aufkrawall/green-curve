@@ -5,6 +5,32 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-16: Per-domain batch conversions and captured-tail restore
+
+- Added `source/profile_domain_conversions.h` with shared per-domain batch
+  conversion planning/acceptance (`profile_conversion_plan_build()`,
+  `profile_conversion_accept_item()`, refusing voltage batches, unknown grids
+  and constraint-breaking rounding) and no-recapture captured-tail restoration
+  (`profile_document_restore_captured_tail()`).
+- Wired `PROFILE_COMMAND_CONVERSION_REQUIRED` (`4`), `--convert-domain`,
+  `--restore-captured-tail`, and `--output` into `profile_check_commands.h` +
+  CLI help text, preserving unmodified source files and leaving editor preview
+  decisions intact.
+- Exposed conversion review/acceptance and exact captured-tail restore in Windows
+  `ProfileSourceWindow` (`gui_profile_source_review.cpp`,
+  `gui_profile_source.cpp`) and Linux TUI (`linux_tui_layout_fan_profiles.cpp`,
+  `linux_tui_mapped_draft.h`, `linux_tui_render.cpp`, `linux_tui_actions.cpp`),
+  fixing a post-reset `ProfileDestinationReview` use-after-free caught by ASan.
+- Verification: `--gates`, `--test`, `--test --asan`, `--check --target all`,
+  `--tidy` (0 new findings), and WSL Linux UBSan regressions passed, with new
+  assertions in `profile_conversion_tests.cpp` (`8475-8484`),
+  `profile_check_commands_cases.h` (`9120-9127`),
+  `gui_profile_source_review_tests.cpp` (`9394-9397`),
+  `profile_source_window_tests.cpp` (`9411-9416`),
+  `tui_profile_check_tests.cpp` (`9275-9276`), and
+  `profile_mapped_draft_tests.cpp` (`9678-9680`). Hardware replay remains
+  unverified.
+
 ## 2026-11-16: Activate exact/captured replay, extended INI persistence, and backend fixes
 
 - Activated runtime authoring/captured replay (`desired_authoring_runtime_ready()`,

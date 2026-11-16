@@ -23,7 +23,7 @@ static void tui_check_source(TuiState* state) {
         [&](gc_u32 domains, HardwareCaptureObservation& out, ProfileCodecError& error) {
             return tui_read_capture(*state, domains, out, error, state->sourceReviewContext);
         }, state->sourceCheckLines, state->sourceReview.get(), state->document.revision);
-    state->sourceCheckVisible = true; state->sourceScroll = 0;
+    state->sourceCheckVisible = true; state->sourceScroll = 0; state->sourceConvertIndex = 0;
     snprintf(state->status, sizeof(state->status), "Destination Check: %s; read-only; full operation review is required before Apply",
         state->sourceReview->planned() ? profile_control_disposition_name(state->sourceReview->controls.disposition) :
         state->sourceReview->stage == PROFILE_REVIEW_CAPTURE ? "mapping or intent needs review" : "required reads unavailable");

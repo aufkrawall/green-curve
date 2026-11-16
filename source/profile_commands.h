@@ -7,7 +7,7 @@
 #include "profile_document_slot.h"
 
 enum ProfileCommandExit { PROFILE_COMMAND_OK = 0, PROFILE_COMMAND_IO = 1,
-    PROFILE_COMMAND_INVALID = 2, PROFILE_COMMAND_DECISION = 3, PROFILE_COMMAND_CONFLICT = 5 };
+    PROFILE_COMMAND_INVALID = 2, PROFILE_COMMAND_DECISION = 3, PROFILE_COMMAND_CONVERSION_REQUIRED = 4, PROFILE_COMMAND_CONFLICT = 5 };
 struct ProfileCommand {
     bool importing = false, exporting = false, confirm = false, all = true;
     std::string config, file;

@@ -4,6 +4,7 @@
 #include "profile_editor_document.h"
 #include "profile_editor_source_rows.h"
 #include "profile_capture_representation.h"
+#include "profile_domain_conversions.h"
 #include <algorithm>
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -35,6 +36,8 @@ struct ProfileSourceWindowCallbacks {
     bool (*captureAccept)(void*, bool, bool, ProfileCaptureRepresentation) = nullptr;
     void (*captureCancel)(void*) = nullptr;
     void (*captureDomainsChanged)(void*) = nullptr;
+    void (*convertDomain)(void*, int) = nullptr;
+    void (*restoreExact)(void*) = nullptr;
 };
 // The native window edits only the canonical source. It has no driver, service
 // or live-topology dependency; callbacks own storage and parent presentation.
@@ -42,6 +45,7 @@ class ProfileSourceWindow {
 public:
     enum { LIST = 9101, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CHECK, REPORT, VIEW,
         GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, USE_MAPPED,
+        CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT,
         CAPTURE_READ = 9140, CAPTURE_ACCEPT, CAPTURE_ALLOW_OMISSIONS, CAPTURE_DISCARD, CAPTURE_DOMAIN_FIRST,
         CAPTURE_DOMAIN_LAST = CAPTURE_DOMAIN_FIRST + 8, CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE, CLOSE = IDCANCEL };
     ProfileSourceWindow(ProfileEditorDocument& model, ProfileSourceWindowCallbacks callbacks)
@@ -135,7 +139,27 @@ public:
     void notice(const char* message) { GcWideUtf8Arg text(message); status(text.value); }
     void clear_report() {
         reportAvailable_ = reportVisible_ = mappedReady_ = false;
+        conversions_.clear(); selectedConversion_ = 0;
+        if (control(CONVERSION_CHOICE)) SendMessageW(control(CONVERSION_CHOICE), CB_RESETCONTENT, 0, 0);
         if (control(REPORT)) SetWindowTextW(control(REPORT), L"");
+        project_view();
+    }
+    void conversion_options(const ProfileConversionPlan& plan) {
+        conversions_.clear(); selectedConversion_ = 0;
+        HWND combo = control(CONVERSION_CHOICE);
+        if (combo) SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+        for (int i = 0; i < plan.count; ++i) {
+            const auto& item = plan.items[i];
+            if (!item.convertible && !item.unresolved) continue;
+            char text[192]{};
+            if (item.convertible) snprintf(text, sizeof(text), "%s (%d, max %llu%s)",
+                profile_conversion_kind_label(item.kind), item.batch.affectedCount, item.batch.maximumError,
+                item.kind == PROFILE_CONVERT_POWER ? "mW" : "Hz");
+            else snprintf(text, sizeof(text), "%s [unresolved]", profile_conversion_kind_label(item.kind));
+            conversions_.push_back({(int)item.kind, item.convertible, text, item.why});
+            if (combo) { GcWideUtf8Arg wide(text); SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)wide.value); }
+        }
+        if (combo && !conversions_.empty()) SendMessageW(combo, CB_SETCURSEL, 0, 0);
         project_view();
     }
     void report(const std::vector<std::string>& lines) {
@@ -178,6 +202,9 @@ private:
     ProfileCaptureRepresentation captureRepresentation_ = PROFILE_CAPTURE_EXACT;
     unsigned long long generation_ = 0;
     std::vector<ProfileEditorSourceRow> rows_;
+    struct ConversionOption { int kind = 0; bool convertible = false; std::string label, why; };
+    std::vector<ConversionOption> conversions_;
+    int selectedConversion_ = 0;
     int px(int value) const { return MulDiv(value, dpi_, 96); }
     void status(const wchar_t* text) { if (window_) SetWindowTextW(control(STATUS), text ? text : L""); }
     void update_title() {
@@ -197,6 +224,7 @@ private:
         HFONT old = font_; font_ = fresh;
         for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE, CHECK, REPORT, VIEW,
             GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, USE_MAPPED,
+            CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT,
             CAPTURE_READ, CAPTURE_ACCEPT, CAPTURE_ALLOW_OMISSIONS, CAPTURE_DISCARD, CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE})
             SendMessageW(control(id), WM_SETFONT, (WPARAM)font_, FALSE);
         for (int id = CAPTURE_DOMAIN_FIRST; id <= CAPTURE_DOMAIN_LAST; ++id) SendMessageW(control(id), WM_SETFONT, (WPARAM)font_, FALSE);
@@ -215,7 +243,10 @@ private:
         child(L"BUTTON", L"Stage value", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, STAGE);
         child(L"BUTTON", L"Save source", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, SAVE);
         child(L"BUTTON", L"Check", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CHECK);
-        child(L"BUTTON", L"Use mapped draft", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, USE_MAPPED);
+        child(L"BUTTON", L"Use mapped", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, USE_MAPPED);
+        child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, CONVERSION_CHOICE);
+        child(L"BUTTON", L"Convert", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CONVERT_DOMAIN);
+        child(L"BUTTON", L"Restore exact", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, RESTORE_EXACT);
         child(L"BUTTON", L"Source", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, VIEW);
         child(L"BUTTON", L"Close source", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CLOSE);
         child(L"EDIT", L"", ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP, STATUS);
@@ -228,7 +259,8 @@ private:
             if (id == GRAPHICS_ROUTE) SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)L"VF component");
         }
         for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE, CHECK, REPORT, VIEW,
-            GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, USE_MAPPED}) if (!control(id)) return false;
+            GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, USE_MAPPED,
+            CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT}) if (!control(id)) return false;
         child(L"BUTTON", L"Read", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CAPTURE_READ);
         child(L"BUTTON", L"Use exact", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CAPTURE_ACCEPT);
         child(L"BUTTON", L"Allow omitted settings", BS_AUTOCHECKBOX | BS_NOTIFY | WS_TABSTOP, CAPTURE_ALLOW_OMISSIONS);
@@ -300,7 +332,8 @@ private:
     }
     void project_view() {
         if (!list_) return;
-        for (int id : {HELP, INPUT, STAGE, SAVE, CHECK, GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, USE_MAPPED})
+        for (int id : {HELP, INPUT, STAGE, SAVE, CHECK, GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE,
+            USE_MAPPED, CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT})
             ShowWindow(control(id), capture_ ? SW_HIDE : SW_SHOW);
         for (int id = CAPTURE_READ; id <= CAPTURE_DOMAIN_LAST; ++id) ShowWindow(control(id), capture_ ? SW_SHOW : SW_HIDE);
         for (int id : {CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE}) ShowWindow(control(id), capture_ ? SW_SHOW : SW_HIDE);
@@ -320,6 +353,14 @@ private:
         const bool editable = !reportVisible_ && model_.valid && index >= 0 && (size_t)index < rows_.size() && rows_[index].editable;
         EnableWindow(input_, editable); EnableWindow(control(STAGE), editable);
         EnableWindow(control(USE_MAPPED), !capture_ && !pending_ && reportVisible_ && mappedReady_ && callbacks_.acceptMapped);
+        const bool hasConvs = !capture_ && !conversions_.empty();
+        const bool convReady = hasConvs && !pending_ && selectedConversion_ >= 0 &&
+            (size_t)selectedConversion_ < conversions_.size() &&
+            conversions_[selectedConversion_].convertible && callbacks_.convertDomain;
+        EnableWindow(control(CONVERSION_CHOICE), hasConvs);
+        EnableWindow(control(CONVERT_DOMAIN), convReady);
+        EnableWindow(control(RESTORE_EXACT), !capture_ && !pending_ && model_.valid &&
+            profile_document_can_restore_captured_tail(model_.value) && callbacks_.restoreExact);
     }
     void preview_choice(int id) {
         if (!model_.valid || (id == GRAPHICS_ROUTE ? !model_.value.graphicsOffset.present : !model_.value.hasMemoryOffset)) return;
@@ -354,11 +395,14 @@ private:
         place(MEMORY_TITLE, w/2 + px(6), h - px(262), w/2 - m - px(6), px(22));
         place(GRAPHICS_ROUTE, m, h - px(238), w/2 - m - px(6), px(180));
         place(MEMORY_ROUTE, w/2 + px(6), h - px(238), w/2 - m - px(6), px(180));
-        place(USE_MAPPED, m, h - px(202), px(180), row);
+        place(USE_MAPPED, m, h - px(202), px(116), row);
+        place(CONVERSION_CHOICE, m + px(122), h - px(202), w - 2*m - px(214), px(180));
+        place(CONVERT_DOMAIN, w - m - px(86), h - px(202), px(86), row);
         place(HELP, m, h - px(166), w - 2*m, px(22));
         place(INPUT, m, h - px(138), w - 2*m - px(128) - gap, row); place(STAGE, w - m - px(128), h - px(138), px(128), row);
-        place(SAVE, m, h - px(100), px(120), row); place(CHECK, m + px(128), h - px(100), px(80), row);
-        place(CLOSE, w - m - px(120), h - px(100), px(120), row);
+        place(SAVE, m, h - px(100), px(84), row); place(CHECK, m + px(90), h - px(100), px(54), row);
+        place(RESTORE_EXACT, m + px(150), h - px(100), px(92), row);
+        place(CLOSE, w - m - px(86), h - px(100), px(86), row);
         place(STATUS, m, h - px(64), w - 2*m, px(56));
         if (capture_) {
             const int column = (w - 2*m) / 3;
@@ -411,8 +455,9 @@ private:
         switch (id) {
             case LIST: return notification == LBN_SETFOCUS;
             case INPUT: case REPORT: case STATUS: return notification == EN_SETFOCUS;
-            case GRAPHICS_ROUTE: case MEMORY_ROUTE: case CAPTURE_REPRESENTATION: return notification == CBN_SETFOCUS;
-            case STAGE: case SAVE: case CLOSE: case CHECK: case VIEW: case USE_MAPPED: return notification == BN_SETFOCUS;
+            case GRAPHICS_ROUTE: case MEMORY_ROUTE: case CAPTURE_REPRESENTATION: case CONVERSION_CHOICE: return notification == CBN_SETFOCUS;
+            case STAGE: case SAVE: case CLOSE: case CHECK: case VIEW: case USE_MAPPED: case CONVERT_DOMAIN: case RESTORE_EXACT:
+                return notification == BN_SETFOCUS;
             case CAPTURE_READ: case CAPTURE_ACCEPT: case CAPTURE_ALLOW_OMISSIONS: case CAPTURE_DISCARD: return notification == BN_SETFOCUS;
             default: return id >= CAPTURE_DOMAIN_FIRST && id <= CAPTURE_DOMAIN_LAST && notification == BN_SETFOCUS;
         }
@@ -497,7 +542,9 @@ private:
                 if (l && focus_notification(LOWORD(w), HIWORD(w))) self->reveal((HWND)l);
                 if (self->capture_ && LOWORD(w) == CAPTURE_REPRESENTATION && HIWORD(w) == CBN_SELCHANGE) { self->capture_choice(); return 0; }
                 if (self->capture_command(LOWORD(w), HIWORD(w))) return 0;
-                if (self->capture_ && (LOWORD(w) == STAGE || LOWORD(w) == CHECK || LOWORD(w) == SAVE || LOWORD(w) == VIEW || LOWORD(w) == LIST || LOWORD(w) == USE_MAPPED)) return 0;
+                if (self->capture_ && (LOWORD(w) == STAGE || LOWORD(w) == CHECK || LOWORD(w) == SAVE || LOWORD(w) == VIEW ||
+                    LOWORD(w) == LIST || LOWORD(w) == USE_MAPPED || LOWORD(w) == CONVERSION_CHOICE ||
+                    LOWORD(w) == CONVERT_DOMAIN || LOWORD(w) == RESTORE_EXACT)) return 0;
                 if (LOWORD(w) == LIST && HIWORD(w) == LBN_SELCHANGE) self->select(true);
                 else if (LOWORD(w) == INPUT && HIWORD(w) == EN_CHANGE && !self->updating_) {
                     self->pending_ = true; self->update_title();
@@ -509,6 +556,21 @@ private:
                     self->callbacks_.check(self->callbacks_.context, self->model_.value, self->graphics_, self->memory_);
                 else if (LOWORD(w) == USE_MAPPED && HIWORD(w) == BN_CLICKED && !self->pending_ && self->reportVisible_ &&
                     self->mappedReady_ && self->callbacks_.acceptMapped) self->callbacks_.acceptMapped(self->callbacks_.context);
+                else if (LOWORD(w) == CONVERSION_CHOICE && HIWORD(w) == CBN_SELCHANGE) {
+                    const int idx = (int)SendMessageW(self->control(CONVERSION_CHOICE), CB_GETCURSEL, 0, 0);
+                    if (idx >= 0 && (size_t)idx < self->conversions_.size()) {
+                        self->selectedConversion_ = idx; self->project_view();
+                        if (!self->conversions_[idx].convertible && !self->conversions_[idx].why.empty())
+                            self->notice(self->conversions_[idx].why.c_str());
+                    }
+                }
+                else if (LOWORD(w) == CONVERT_DOMAIN && HIWORD(w) == BN_CLICKED && !self->pending_ &&
+                    self->selectedConversion_ >= 0 && (size_t)self->selectedConversion_ < self->conversions_.size() &&
+                    self->conversions_[self->selectedConversion_].convertible && self->callbacks_.convertDomain)
+                    self->callbacks_.convertDomain(self->callbacks_.context, self->conversions_[self->selectedConversion_].kind);
+                else if (LOWORD(w) == RESTORE_EXACT && HIWORD(w) == BN_CLICKED && !self->pending_ &&
+                    self->model_.valid && self->callbacks_.restoreExact)
+                    self->callbacks_.restoreExact(self->callbacks_.context);
                 else if ((LOWORD(w) == GRAPHICS_ROUTE || LOWORD(w) == MEMORY_ROUTE) && HIWORD(w) == CBN_SELCHANGE)
                     self->preview_choice(LOWORD(w));
                 else if (LOWORD(w) == VIEW && HIWORD(w) == BN_CLICKED && self->reportAvailable_) {

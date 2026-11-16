@@ -3,6 +3,7 @@
 #pragma once
 #include "profile_runtime_resolution.h"
 #include "profile_control_feasibility.h"
+#include "profile_domain_conversions.h"
 #include "profile_codec.h"
 
 enum ProfileDestinationReviewStage {
@@ -24,6 +25,7 @@ struct ProfileDestinationReview {
     ProfileMappingReport mapping{};
     DesiredSettings runtime{};
     ProfileControlPlan controls{};
+    ProfileConversionPlan conversions{};
     ProfileCodecError error{};
     bool mapped() const { return stage >= PROFILE_REVIEW_MAPPED; }
     bool planned() const { return stage == PROFILE_REVIEW_PLANNED; }

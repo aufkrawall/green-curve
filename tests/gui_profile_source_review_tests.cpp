@@ -11,12 +11,15 @@
 namespace gui_profile_source_review_fixture {
 static AppData g_app{};
 struct Window {
-    int reports = 0, clears = 0;
+    int reports = 0, clears = 0, reloads = 0;
     std::string status;
     std::vector<std::string> lines;
     bool mapped = false;
+    ProfileConversionPlan conversions{};
     void mapped_ready(bool ready) { mapped = ready; }
-    void clear_report() { ++clears; lines.clear(); mapped = false; }
+    void conversion_options(const ProfileConversionPlan& plan) { conversions = plan; }
+    void reload() { ++reloads; clear_report(); }
+    void clear_report() { ++clears; lines.clear(); mapped = false; conversions = {}; }
     void notice(const char* message) { status = message; }
     void report(const std::vector<std::string>& report) { ++reports; lines = report; }
 };
@@ -189,6 +192,42 @@ static int run() {
     gui_profile_source_preview_changed(nullptr);
     if (g_profileReviewJob || g_profileReadPending) return 9390;
     if (const int failure = mapped_dispatch_tests()) return failure;
+
+    // UNIT-07 & CAP-10 GUI review callbacks: batch conversion updates draft (keeps saved exact) and restore-tail works without recapture.
+    g_app.guiSource = {}; g_app.guiSource.valid = true;
+    g_app.guiSource.value = g_app.guiSource.saved = profile_review_fixture::source();
+    g_app.guiSource.value.memoryOffsetHz = -500;
+    g_app.guiSource.saved.memoryOffsetHz = -500;
+    g_app.guiSource.revision = 50;
+    gui_profile_source_observe_service(live.get());
+    start();
+    profile_review_fixture::capture(*live, g_app.guiSource.value);
+    answer = completion(*live); if (!answer) return 9373;
+    gui_profile_source_handle_check(answer);
+    if (!g_profileSourceWindow->conversions.anyConvertible() || !g_profileReview ||
+        g_profileSourceWindow->status.find("conversion") == std::string::npos) return 9394;
+    const int reloadsBefore = g_profileSourceWindow->reloads;
+    gui_profile_source_convert_domain(nullptr, PROFILE_CONVERT_MEMORY);
+    if (g_app.guiSource.value.memoryOffsetHz != -500000 || g_app.guiSource.saved.memoryOffsetHz != -500 ||
+        g_app.guiSource.revision != 51 || g_profileSourceWindow->reloads != reloadsBefore + 1 ||
+        g_profileReview || g_profileSourceWindow->conversions.anyConvertible()) return 9395;
+    auto flatSource = profile_document_make_empty();
+    flatSource.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK;
+    flatSource.topologyCount = 2; flatSource.sourceTopologyComplete = true;
+    flatSource.topology[0] = {10, 22, 662000, 1}; flatSource.topology[1] = {11, 23, 668250, 1};
+    flatSource.points[0] = {PROFILE_POINT_CAPTURED_OFFSET, 0, 15000500, false, 0, true, 15000500};
+    flatSource.points[1] = {PROFILE_POINT_ABSENT, 0, 0, false, 0, true, -25000500};
+    flatSource.lock.present = true; flatSource.lock.mode = LOCK_MODE_FLATTEN;
+    flatSource.lock.anchorTopologyId = 11; flatSource.lock.targetFrequencyHz = 1000000000;
+    g_app.guiSource.value = g_app.guiSource.saved = flatSource; g_app.guiSource.revision = 60;
+    const int sendsBeforeRestore = sends;
+    gui_profile_source_restore_exact(nullptr);
+    if (sends != sendsBeforeRestore || g_app.guiSource.value.lock.present || !g_app.guiSource.saved.lock.present ||
+        g_app.guiSource.value.points[1].kind != PROFILE_POINT_CAPTURED_OFFSET ||
+        g_app.guiSource.value.points[1].capturedOffsetHz != -25000500) return 9396;
+    g_app.guiSource.value = flatSource; g_app.guiSource.value.points[1].hasObservedOffset = false;
+    gui_profile_source_restore_exact(nullptr);
+    if (!g_app.guiSource.value.lock.present || g_profileSourceWindow->status.find("missing") == std::string::npos) return 9397;
     g_profileSourceWindow.reset(); return 0;
 }
 }

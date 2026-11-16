@@ -173,5 +173,37 @@ int run_profile_mapped_draft_tests() {
     review.mapping.structurallyValid = false;
     if (profile_mapped_draft_accept(review, source, 29))
         return 9646;
+
+    // UNIT-07 & CAP-10 TUI actions: batch conversion updates draft while saved stays exact; tail restore works offline without recapture.
+    auto convDoc = profile_review_fixture::source();
+    convDoc.memoryOffsetHz = -500;
+    state->document.valid = true; state->document.value = state->document.saved = convDoc;
+    state->document.revision = 40;
+    state->service = *live;
+    state->sourceReviewContext = linux_tui_review_context(*live);
+    profile_review_fixture::capture(*live, state->document.value);
+    state->sourceReview = std::make_unique<ProfileDestinationReview>();
+    if (profile_editor_check(state->document.value, 0, 0,
+            [&](gc_u32 domains, auto& out, auto&) { if (domains != 511u) return false; out = live->capture; return true; },
+            lines, state->sourceReview.get(), 40) != PROFILE_COMMAND_DECISION ||
+        !state->sourceReview->conversions.anyConvertible()) return 9678;
+    state->sourceCheckVisible = true;
+    char logLine[256]{};
+    if (!tui_cycle_source_conversion(*state) || !tui_accept_source_conversion(*state, logLine, sizeof(logLine)) ||
+        !strstr(logLine, "profile-map: domain=memory") || !strstr(logLine, "decision=accepted") ||
+        state->document.value.memoryOffsetHz != -500000 || state->document.saved.memoryOffsetHz != -500 ||
+        state->document.revision != 41 || state->sourceReview != nullptr) return 9679;
+    auto flat = profile_document_make_empty();
+    flat.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK;
+    flat.topologyCount = 2; flat.sourceTopologyComplete = true;
+    flat.topology[0] = {10, 22, 662000, 1}; flat.topology[1] = {11, 23, 668250, 1};
+    flat.points[0] = {PROFILE_POINT_CAPTURED_OFFSET, 0, 15000500, false, 0, true, 15000500};
+    flat.points[1] = {PROFILE_POINT_ABSENT, 0, 0, false, 0, true, -25000500};
+    flat.lock.present = true; flat.lock.mode = LOCK_MODE_FLATTEN;
+    flat.lock.anchorTopologyId = 11; flat.lock.targetFrequencyHz = 1000000000;
+    state->document.value = state->document.saved = flat;
+    if (!tui_restore_captured_tail(*state, logLine, sizeof(logLine)) || state->document.value.lock.present ||
+        !state->document.saved.lock.present || state->document.value.points[1].kind != PROFILE_POINT_CAPTURED_OFFSET ||
+        state->document.value.points[1].capturedOffsetHz != -25000500) return 9680;
     return 0;
 }

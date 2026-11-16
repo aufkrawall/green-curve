@@ -117,5 +117,19 @@ int run_tui_profile_check_tests() {
     ProfileEditorCheckIO<decltype(capture)> io{*source, capture, lines}; int code = 42;
     if (profile_check_commands_run({}, io, code, review.get()) || code != 42 || review->stage != PROFILE_REVIEW_EMPTY ||
         review->capture.valid || review->runtime.hasMemOffset) return 9274;
+    vm.sourceConvertCount = 1; vm.sourceConvertReady = true;
+    snprintf(vm.sourceConvertLabel, sizeof(vm.sourceConvertLabel), "CVT:memory");
+    vm.sourceRestoreTailVisible = true; vm.sourceCanRestoreTail = true;
+    for (const auto size : {TuiRect{0,0,72,24}, TuiRect{0,0,100,32}, TuiRect{0,0,160,48}}) {
+        TuiLayout layout{}; build_tui_layout(vm, size.width, size.height, &layout);
+        if (!tui_layout_actions_valid(layout)) return 9275;
+        bool cyc = false, cvt = false, rst = false;
+        for (const auto& a : layout.actions) {
+            cyc |= a.type == ACTION_CONVERT_SOURCE_CYCLE;
+            cvt |= a.type == ACTION_CONVERT_SOURCE_ACCEPT;
+            rst |= a.type == ACTION_RESTORE_CAPTURED_TAIL;
+        }
+        if (!cyc || !cvt || !rst) return 9276;
+    }
     return 0;
 }

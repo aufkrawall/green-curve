@@ -47,6 +47,7 @@ struct TuiState {
     int sourceScroll;
     bool sourceCheckVisible;
     gc_u32 sourceGraphicsChoice, sourceMemoryChoice;
+    int sourceConvertIndex = 0;
     std::vector<std::string> sourceCheckLines;
     std::unique_ptr<ProfileDestinationReview> sourceReview;
     LinuxTuiReviewContext sourceReviewContext;

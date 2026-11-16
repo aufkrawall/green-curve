@@ -106,6 +106,9 @@ enum ActionType {
     ACTION_USE_MAPPED,
     ACTION_SOURCE_GRAPHICS_CHOICE,
     ACTION_SOURCE_MEMORY_CHOICE,
+    ACTION_CONVERT_SOURCE_CYCLE,
+    ACTION_CONVERT_SOURCE_ACCEPT,
+    ACTION_RESTORE_CAPTURED_TAIL,
     ACTION_CAPTURE_SOURCE,
     ACTION_CAPTURE_DOMAIN,
     ACTION_CAPTURE_READ,
@@ -219,6 +222,12 @@ struct TuiViewModel {
     const std::vector<std::string>* sourceCheckLines;
     bool sourceMappedReady = false, sourceMappedAccepted = false;
     gc_u32 sourceGraphicsChoice, sourceMemoryChoice;
+    int sourceConvertCount = 0;
+    int sourceConvertIndex = 0;
+    bool sourceConvertReady = false;
+    bool sourceRestoreTailVisible = false;
+    bool sourceCanRestoreTail = false;
+    char sourceConvertLabel[32]{};
     TuiCaptureView capture;
     TuiTransferView transfer;
     bool serviceOnline;

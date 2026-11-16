@@ -108,7 +108,61 @@ static void gui_profile_source_handle_check(GuiServiceIoCompletion* completion) 
         (int)review->stage, result, (unsigned)lines.size());
     g_profileReview = std::move(review); g_profileSourceWindow->report(lines);
     g_profileSourceWindow->mapped_ready(profile_mapped_draft_ready(*g_profileReview, g_app.guiSource.value, g_app.guiSource.revision));
-    g_profileSourceWindow->notice("Review mapping, scope and feasibility; Use mapped draft stages these settings without applying them");
+    g_profileSourceWindow->conversion_options(g_profileReview->conversions);
+    g_profileSourceWindow->notice(g_profileReview->conversions.requiresDecision()
+        ? "Batch conversion or domain review is required before using this draft; source file is unchanged"
+        : "Review mapping, scope and feasibility; Use mapped draft stages these settings without applying them");
+}
+static void gui_profile_source_convert_domain(void*, int kindValue) {
+    if (!g_app.guiSource.valid || g_profileReadPending || g_app.applyInFlight || !g_profileReview || !g_profileReviewJob ||
+        g_profileReview->sourceRevision != g_app.guiSource.revision || !gui_service_model_ready(&g_app.guiServiceModel) ||
+        !profile_editor_review_context_equal(g_profileReviewJob->context, g_profileShownContext) ||
+        kindValue < PROFILE_CONVERT_VF_OFFSETS || kindValue > PROFILE_CONVERT_LOCK_FREQUENCY) {
+        if (g_profileSourceWindow) g_profileSourceWindow->notice("Check the current source and destination before converting a domain");
+        return;
+    }
+    const auto* cand = g_profileReview->conversions.find((ProfileConversionKind)kindValue);
+    ProfileDestinationTopology dest{}; char why[256]{}, summary[256]{};
+    if (!cand || !profile_destination_from_capture(g_profileReview->capture, dest, why, sizeof(why))) {
+        if (g_profileSourceWindow) g_profileSourceWindow->notice(why[0] ? why : "Conversion candidate is no longer current; Check again");
+        return;
+    }
+    auto derived = std::make_unique<ProfileDocument>();
+    if (!profile_conversion_accept_item(*cand, g_app.guiSource.value, g_app.guiSource.revision,
+            g_profileReview->capture, dest, g_profileReview->routes, *derived,
+            summary, sizeof(summary), why, sizeof(why))) {
+        debug_log("%s\n", summary);
+        if (g_profileSourceWindow) g_profileSourceWindow->notice(why[0] ? why : "Domain conversion was refused");
+        return;
+    }
+    debug_log("%s\n", summary);
+    g_app.guiSource.value = *derived; ++g_app.guiSource.revision;
+    gui_profile_source_invalidate_review("Domain conversion updated source draft");
+    if (g_profileSourceWindow) {
+        g_profileSourceWindow->reload();
+        g_profileSourceWindow->notice("Converted selected domain in source draft (saved slot unchanged); Check again before Apply");
+    }
+    gui_profile_source_refresh();
+}
+static void gui_profile_source_restore_exact(void*) {
+    if (!g_app.guiSource.valid || g_profileReadPending || g_app.applyInFlight) {
+        if (g_profileSourceWindow) g_profileSourceWindow->notice("Wait for pending operations before restoring exact tail");
+        return;
+    }
+    char why[256]{}; auto restored = std::make_unique<ProfileDocument>();
+    if (!profile_document_restore_captured_tail(g_app.guiSource.value, *restored, why, sizeof(why))) {
+        debug_log("profile-source: restore exact refused reason=%s\n", why);
+        if (g_profileSourceWindow) g_profileSourceWindow->notice(why[0] ? why : "Cannot restore exact captured tail");
+        return;
+    }
+    g_app.guiSource.value = *restored; ++g_app.guiSource.revision;
+    debug_log("profile-source: restored exact captured tail revision=%llu\n", (unsigned long long)g_app.guiSource.revision);
+    gui_profile_source_invalidate_review("Restored exact captured VF tail offsets without recapture");
+    if (g_profileSourceWindow) {
+        g_profileSourceWindow->reload();
+        g_profileSourceWindow->notice("Restored exact captured VF tail offsets without recapture (saved slot unchanged)");
+    }
+    gui_profile_source_refresh();
 }
 static void gui_profile_source_input_changed(void*) {
     gui_profile_source_invalidate_review("Source input changed; stage the value and check again");

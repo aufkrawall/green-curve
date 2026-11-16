@@ -67,6 +67,8 @@ static bool gui_profile_source_open() {
         callbacks.captureAccept = gui_profile_capture_accept;
         callbacks.captureCancel = gui_profile_capture_cancel;
         callbacks.captureDomainsChanged = gui_profile_capture_domains_changed;
+        callbacks.convertDomain = gui_profile_source_convert_domain;
+        callbacks.restoreExact = gui_profile_source_restore_exact;
         g_profileSourceWindow = std::make_unique<ProfileSourceWindow>(g_app.guiSource, callbacks);
     }
     return g_profileSourceWindow->create(g_app.hMainWnd, g_dpi, false);

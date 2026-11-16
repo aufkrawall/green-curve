@@ -119,6 +119,20 @@ void populate_view_model(const TuiState& state, TuiViewModel* vm,
     vm->sourceMappedAccepted = tui_mapped_draft_available(state);
     vm->dirty |= vm->sourceMappedAccepted;
     vm->sourceGraphicsChoice = state.sourceGraphicsChoice; vm->sourceMemoryChoice = state.sourceMemoryChoice;
+    if (state.document.valid) {
+        vm->sourceRestoreTailVisible = state.document.value.lock.present;
+        vm->sourceCanRestoreTail = !state.edit.active && profile_document_can_restore_captured_tail(state.document.value);
+        if (tui_source_conversion_context_ready(state) && state.sourceReview->conversions.count > 0) {
+            vm->sourceConvertCount = state.sourceReview->conversions.count;
+            const int idx = state.sourceConvertIndex >= 0 && state.sourceConvertIndex < vm->sourceConvertCount
+                ? state.sourceConvertIndex : 0;
+            vm->sourceConvertIndex = idx;
+            const auto& item = state.sourceReview->conversions.items[idx];
+            vm->sourceConvertReady = item.convertible;
+            snprintf(vm->sourceConvertLabel, sizeof(vm->sourceConvertLabel), "CVT:%s%s",
+                tui_conversion_short_name(item.kind), item.convertible ? "" : "*");
+        }
+    }
     vm->capture = state.capture; vm->capture.report = &state.captureLines;
     vm->transfer = state.transfer; vm->transfer.path = tui_transfer_path_display(state.transferPath);
     vm->transfer.report = state.transferPreview ? &state.transferPreview->lines : nullptr;

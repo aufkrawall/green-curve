@@ -235,8 +235,15 @@ void draw_profile_panel(TuiCanvas* c, const TuiRect& panel) {
             c->button({x, y + 4, 30, 1}, graphics.c_str(), ACTION_SOURCE_GRAPHICS_CHOICE);
         if (vm.sourceDocument->hasMemoryOffset)
             c->button({x + 32, y + 4, 30, 1}, memory.c_str(), ACTION_SOURCE_MEMORY_CHOICE);
-        c->button({x, y + 5, 25, 1}, vm.sourceMappedAccepted ? "MAPPED DRAFT STAGED" : "USE MAPPED DRAFT",
+        c->button({x, y + 5, 21, 1}, vm.sourceMappedAccepted ? "MAPPED STAGED" : "USE MAPPED DRAFT",
             ACTION_USE_MAPPED, 0, 0, vm.sourceMappedReady);
+        if (vm.sourceConvertCount > 0) {
+            c->button({x + 22, y + 5, 16, 1}, vm.sourceConvertLabel[0] ? vm.sourceConvertLabel : "CVT:domain",
+                ACTION_CONVERT_SOURCE_CYCLE);
+            c->button({x + 39, y + 5, 9, 1}, "CONVERT", ACTION_CONVERT_SOURCE_ACCEPT, 0, 0, vm.sourceConvertReady);
+        }
+        if (vm.sourceRestoreTailVisible)
+            c->button({x + 49, y + 5, 14, 1}, "RESTORE TAIL", ACTION_RESTORE_CAPTURED_TAIL, 0, 0, vm.sourceCanRestoreTail);
         return;
     }
     c->text(x, y + 4, panel.width - 6,

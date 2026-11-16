@@ -88,10 +88,12 @@ static int profile_check_commands_cases() {
         io.messages.find("Control feasibility: disposition=representable") == std::string::npos ||
         io.messages.find("Operation feasibility: conditional") == std::string::npos || io.files != unchanged || io.writes != 1) return 8941;
     io.vfGrid = 1000; io.messages.clear();
-    if (!profile_check_commands_run({"--check-profile", "review.gcprofile"}, io, code) || code != PROFILE_COMMAND_DECISION ||
+    if (!profile_check_commands_run({"--check-profile", "review.gcprofile"}, io, code) || code != PROFILE_COMMAND_CONVERSION_REQUIRED ||
         io.messages.find("Control feasibility: disposition=refused") == std::string::npos ||
         io.messages.find("reason=point-grid; proven=yes") == std::string::npos ||
         io.messages.find("Operation feasibility: refused") == std::string::npos ||
+        io.messages.find("profile-map: domain=vf-offsets") == std::string::npos ||
+        io.messages.find("decision=preview") == std::string::npos ||
         io.messages.find("worst-point=") == std::string::npos || io.files != unchanged || io.writes != 1) return 8942;
     io.dualClocks = true; io.messages.clear();
     bank->count = 1; memory.memorySurface = CLOCK_OFFSET_SURFACE_P0; memory.memoryOffsetHz = -123500000;
@@ -117,5 +119,64 @@ static int profile_check_commands_cases() {
         code != PROFILE_COMMAND_DECISION || io.messages.find("surface=global") == std::string::npos ||
         io.messages.find("Control feasibility: disposition=representable") == std::string::npos ||
         io.files != originalGraphics || io.writes != 1) return 9119;
+
+    // UNIT-07 CLI: explicit --convert-domain writes derived --output while leaving input untouched; unknown grid & voltage refuse.
+    io.vfGrid = 1000; io.messages.clear();
+    if (!profile_check_commands_run({"--check-profile", "review.gcprofile", "--convert-domain", "vf-offsets", "--output", "converted.gcprofile"}, io, code) ||
+        code != PROFILE_COMMAND_DECISION || io.messages.find("profile-map: domain=vf-offsets") == std::string::npos ||
+        io.messages.find("decision=accepted") == std::string::npos ||
+        io.messages.find("Control feasibility: disposition=representable") == std::string::npos ||
+        io.files["review.gcprofile"] != unchanged.at("review.gcprofile") ||
+        !profile_bank_decode(io.files.at("converted.gcprofile"), *bank, &error) ||
+        bank->documents[0].points[1].capturedOffsetHz != 15000000 ||
+        bank->documents[0].points[2].capturedOffsetHz != -15001000 ||
+        bank->documents[0].power.ratio.numerator != 249) return 9120;
+    const auto beforeRefused = io.files;
+    for (const auto& args : std::vector<std::vector<std::string>>{
+            {"--check-profile", "converted.gcprofile", "--output", "nope.gcprofile"},
+            {"--check-profile", "review.gcprofile", "--convert-domain", "vf-offsets", "--output", "review.gcprofile"},
+            {"--check-profile", "review.gcprofile", "--convert-domain", "bogus"},
+            {"--check-profile", "review.gcprofile", "--convert-domain", "vf-offsets,vf-offsets"},
+            {"--check-profile", "review.gcprofile", "--restore-captured-tail", "--restore-captured-tail"}})
+        if (!profile_check_commands_run(args, io, code) || code != PROFILE_COMMAND_INVALID || io.files != beforeRefused) return 9121;
+    if (!profile_check_commands_run({"--check-profile", "review.gcprofile", "--convert-domain", "xbar-voltage", "--output", "volt.gcprofile"}, io, code) ||
+        code != PROFILE_COMMAND_CONVERSION_REQUIRED || io.files != beforeRefused) return 9122;
+    io.vfGrid = 0; io.messages.clear();
+    if (!profile_check_commands_run({"--check-profile", "review.gcprofile", "--convert-domain", "vf-offsets", "--output", "unk.gcprofile"}, io, code) ||
+        code != PROFILE_COMMAND_CONVERSION_REQUIRED || io.files != beforeRefused) return 9123;
+    io.vfGrid = 500;
+
+    // CAP-10 CLI: restore original exact captured tail from flattened capture without extra recapture.
+    auto flatDoc = profile_document_make_empty();
+    flatDoc.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK;
+    flatDoc.topologyCount = 3; flatDoc.sourceTopologyComplete = true;
+    for (int i = 0; i < 3; ++i) {
+        flatDoc.topology[i] = {100 + i, 22 + i, 662000 + (gc_i64)i * 6250, (gc_u8)(io.readOnly && !i ? 2 : 1)};
+        flatDoc.points[i].hasObservedOffset = true;
+        flatDoc.points[i].observedOffsetHz = i == 0 ? 0 : i == 1 ? 15000500 : -15000500;
+        flatDoc.points[i].kind = i == 2 ? PROFILE_POINT_ABSENT : PROFILE_POINT_CAPTURED_OFFSET;
+        flatDoc.points[i].capturedOffsetHz = i == 2 ? 0 : flatDoc.points[i].observedOffsetHz;
+    }
+    flatDoc.lock.present = true; flatDoc.lock.mode = LOCK_MODE_FLATTEN;
+    flatDoc.lock.anchorTopologyId = 102; flatDoc.lock.targetFrequencyHz = 1002000000;
+    bank->count = 1; bank->documents[0] = flatDoc;
+    if (!profile_bank_encode(*bank, io.files["flat.gcprofile"], &error)) return 9124;
+    const std::string flatOrig = io.files["flat.gcprofile"];
+    const int capturesBeforeRestore = io.captures;
+    io.messages.clear();
+    if (!profile_check_commands_run({"--check-profile", "flat.gcprofile", "--restore-captured-tail", "--output", "restored.gcprofile"}, io, code) ||
+        code != PROFILE_COMMAND_DECISION || io.captures != capturesBeforeRestore + 1 ||
+        io.files["flat.gcprofile"] != flatOrig ||
+        !profile_bank_decode(io.files.at("restored.gcprofile"), *bank, &error) ||
+        bank->documents[0].lock.present || (bank->documents[0].domains & PROFILE_DOMAIN_LOCK) ||
+        bank->documents[0].points[2].kind != PROFILE_POINT_CAPTURED_OFFSET ||
+        bank->documents[0].points[2].capturedOffsetHz != -15000500) return 9125;
+    bank->documents[0] = flatDoc; bank->documents[0].points[2].hasObservedOffset = false;
+    if (!profile_bank_encode(*bank, io.files["flat_no_obs.gcprofile"], &error)) return 9126;
+    const auto beforeMissingObs = io.files;
+    io.messages.clear();
+    if (!profile_check_commands_run({"--check-profile", "flat_no_obs.gcprofile", "--restore-captured-tail", "--output", "nope2.gcprofile"}, io, code) ||
+        code != PROFILE_COMMAND_DECISION || io.messages.find("missing") == std::string::npos ||
+        io.files != beforeMissingObs) return 9127;
     return 0;
 }

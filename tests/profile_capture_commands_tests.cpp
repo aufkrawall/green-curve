@@ -61,7 +61,7 @@ struct CaptureIO {
             hardware_capture_domain(out, PROFILE_DOMAIN_POWER, CAPTURE_COMPLETE);
         }
         if (constraints) {
-            out.vfLimits = {1, 1, 1, 1, VF_OFFSET_RANGE_SOURCE_NVML_GRAPHICS, -1000000000, 1000000000, vfGrid};
+            out.vfLimits = {1, 1, (gc_bool8)(vfGrid > 0 ? 1 : 0), 1, VF_OFFSET_RANGE_SOURCE_NVML_GRAPHICS, -1000000000, 1000000000, vfGrid};
             out.memory.writable = 1; out.memory.grid = 500000;
             out.power.writable = 1; out.power.gridMw = 1;
         }

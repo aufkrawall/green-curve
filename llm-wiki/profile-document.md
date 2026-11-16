@@ -54,9 +54,9 @@ the TUI retain exact source drafts, editing, capture and reviewed offline
 transfer. Reviewed scalar drafts can be staged and submitted with complete
 service control preconditions; Windows and Linux modeled transition preflight,
 post-reset arming, exact authoring/captured runtime replay, extended INI
-persistence, and `PROFILE_SCOPE_EXPLICIT_RELEASE` resolution are active. Explicit
-per-domain conversion UI/CLI batches and user-confirmed workload pin observation
-remain pending. See
+persistence, `PROFILE_SCOPE_EXPLICIT_RELEASE` resolution, per-domain batch conversions
+and captured-tail restore (GUI/TUI/CLI) are active. Compatible-curve search
+and user-confirmed workload pin observation remain pending. See
 [config-profiles.md](config-profiles.md#reviewed-source-submission-2026-11-15)
 and [clock-transition-audit.md](clock-transition-audit.md#modeled-lockless-transition-protection-2026-11-15).
 
@@ -956,3 +956,36 @@ durability and guarded handoff are also implemented. Both platforms retain
 outgoing controls through final handover verification and enforce modeled
 lockless transition review before and after reset; remaining scope/replay and
 editor work still gate authoring activation.
+
+## Per-domain batch conversions and captured-tail restore (2026-11-16)
+
+Source anchors: `source/profile_domain_conversions.h`, `source/profile_commands.h`,
+`source/profile_destination_review.h`, `source/profile_check_commands.h`,
+`source/profile_source_window.h`, `source/gui_profile_source_review.cpp`,
+`source/gui_profile_source.cpp`, `source/linux_tui_mapped_draft.h`,
+`source/linux_tui_layout_fan_profiles.cpp`, `source/linux_tui_render.cpp`,
+`source/linux_tui_actions.cpp`, `tests/profile_conversion_tests.cpp` (8475-8484),
+`tests/profile_check_commands_cases.h` (8942, 9120-9127),
+`tests/gui_profile_source_review_tests.cpp` (9394-9397),
+`tests/profile_source_window_tests.cpp` (9411-9416),
+`tests/tui_profile_check_tests.cpp` (9275-9276),
+`tests/profile_mapped_draft_tests.cpp` (9678-9680).
+
+- Shared discovery/execution in `profile_conversion_plan_build()` and
+  `profile_conversion_accept_item()` evaluates each relevant domain against fresh
+  destination grids (`vfLimits`, named clock scalars, power default/grid, runtime
+  500 kHz memory grid and 1000 Hz aux clock constraints), emits one `profile-map:`
+  summary per domain, refuses `PROFILE_CONVERT_XBAR_VOLTAGE` and unknown grids
+  (`valid && !gridValid` or zero writable grid), and runs complete domain
+  planning so constraint-breaking batches fail atomically.
+- Accepting a conversion or `profile_document_restore_captured_tail()` updates
+  only the active derived draft (`saved` and original files stay untouched until
+  Save or `--output`). Standalone `--check-profile` exits
+  `PROFILE_COMMAND_CONVERSION_REQUIRED` (`4`) when conversions are needed without
+  `--convert-domain`, while in-memory editor checks populate
+  `ProfileDestinationReview::conversions` alongside mapping diagnostics.
+- `profile_document_restore_captured_tail()` switches a flattened/lock draft
+  back to exact `PROFILE_POINT_CAPTURED_OFFSET` tail points using stored
+  `observedOffsetHz` without hardware recapture, or refuses with exact missing
+  observation reasons while keeping current offsets untouched. Open gaps:
+  hardware conversion round trips remain unverified without a connected GPU.
