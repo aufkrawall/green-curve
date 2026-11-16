@@ -329,7 +329,7 @@ static LRESULT CALLBACK apd_hotkey_subclass_proc(HWND hWnd, UINT uMsg, WPARAM wP
     return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
-static void apd_create_controls(HWND hwnd) {
+GC_NOINLINE static void apd_create_controls(HWND hwnd) {
     apply_system_titlebar_theme(hwnd);
     allow_dark_mode_for_window(hwnd);
 
@@ -439,6 +439,21 @@ static void apd_create_controls(HWND hwnd) {
     apd_populate();
 }
 
+GC_NOINLINE static bool apd_handle_command(HWND hwnd, WPARAM wParam) {
+    int id = LOWORD(wParam);
+    int note = HIWORD(wParam);
+    if (note == BN_CLICKED && apd_toggle_checkbox(id)) return true;
+    if (id == APD_SAVE_ID && note == BN_CLICKED) {
+        if (apd_commit(hwnd)) DestroyWindow(hwnd);
+        return true;
+    }
+    if (id == APD_CANCEL_ID && note == BN_CLICKED) {
+        DestroyWindow(hwnd);
+        return true;
+    }
+    return false;
+}
+
 static LRESULT CALLBACK AutoProfileDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE:
@@ -466,20 +481,9 @@ static LRESULT CALLBACK AutoProfileDialogProc(HWND hwnd, UINT msg, WPARAM wParam
             return FALSE;
         }
 
-        case WM_COMMAND: {
-            int id = LOWORD(wParam);
-            int note = HIWORD(wParam);
-            if (note == BN_CLICKED && apd_toggle_checkbox(id)) return 0;
-            if (id == APD_SAVE_ID && note == BN_CLICKED) {
-                if (apd_commit(hwnd)) DestroyWindow(hwnd);
-                return 0;
-            }
-            if (id == APD_CANCEL_ID && note == BN_CLICKED) {
-                DestroyWindow(hwnd);
-                return 0;
-            }
+        case WM_COMMAND:
+            if (apd_handle_command(hwnd, wParam)) return 0;
             break;
-        }
 
         case WM_ERASEBKGND: {
             RECT rc = {};

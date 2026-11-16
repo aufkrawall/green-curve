@@ -7,6 +7,7 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include "platform.h"
 #include "profile_editor_transfer.h"
 #include <windows.h>
 #include <strsafe.h>
@@ -290,13 +291,13 @@ class ProfileTransferWindow {
         EnableWindow(control(CLOSE), !committing());
         SetWindowTextW(control(COMMIT), importing() ? L"Confirm import" : L"Write export");
     }
-    void prepare() {
+    GC_NOINLINE void prepare() {
         if (busy_ || reviewing_ || !callbacks_.prepare)
             return;
-        wchar_t wide[4096]{};
-        char path[4096]{};
-        GetWindowTextW(control(PATH), wide, 4096);
-        if (!gc_wide_to_utf8(wide, path, sizeof(path))) {
+        auto wide = std::make_unique<wchar_t[]>(4096);
+        auto path = std::make_unique<char[]>(4096);
+        GetWindowTextW(control(PATH), wide.get(), 4096);
+        if (!gc_wide_to_utf8(wide.get(), path.get(), 4096)) {
             notice("Choose a valid UTF-8 path shorter than 4096 bytes");
             return;
         }
@@ -307,7 +308,7 @@ class ProfileTransferWindow {
         options.sourceRecord = selected(SOURCE) + 1;
         options.legacy = {(ProfileLegacyFormat)selected(FORMAT), (ProfileLegacyMemoryUnit)selected(MEMORY),
                           (ProfileLegacyCurveKind)selected(CURVE)};
-        callbacks_.prepare(callbacks_.context, options, path);
+        callbacks_.prepare(callbacks_.context, options, path.get());
     }
     void layout() {
         if (!control(PATH) || layingOut_)

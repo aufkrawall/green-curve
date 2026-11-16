@@ -4,6 +4,8 @@
 #define GREEN_CURVE_PROFILE_CONVERSION_BATCH_H
 #include "profile_mapping.h"
 #include "profile_conversion_grid.h"
+#include <memory>
+#include <string.h>
 
 enum ProfileConversionKind {
     PROFILE_CONVERT_VF_OFFSETS, PROFILE_CONVERT_VF_FREQUENCIES,
@@ -32,6 +34,21 @@ struct ProfileConversionBatch {
     ProfileConversionChange changes[VF_NUM_POINTS]{};
     TuningPowerRatio derivedPowerRatio{};
 };
+
+static inline void profile_conversion_batch_reset(ProfileConversionBatch& b) {
+    profile_document_reset(b.source);
+    b.binding = {};
+    b.surface = {};
+    b.affectedCount = 0;
+    b.firstTopologyId = -1;
+    b.worstTopologyId = -1;
+    b.firstVoltageUv = 0;
+    b.worstVoltageUv = 0;
+    b.maximumError = 0;
+    memset(b.changes, 0, sizeof(b.changes));
+    for (int i = 0; i < VF_NUM_POINTS; ++i) b.changes[i].topologyId = -1;
+    b.derivedPowerRatio = {};
+}
 
 static inline bool profile_conversion_surface_equal(const ProfileConversionSurface& a,
     const ProfileConversionSurface& b) {
@@ -81,7 +98,8 @@ static inline bool profile_conversion_prepare(const ProfileDocument& source, gc_
     if (surface.kind < PROFILE_CONVERT_VF_OFFSETS || surface.kind > PROFILE_CONVERT_LOCK_FREQUENCY)
         return fail("unknown conversion surface");
     if (surface.kind == PROFILE_CONVERT_XBAR_VOLTAGE) return fail("voltage conversion requires separate review; no safe rounding direction is established");
-    ProfileConversionBatch batch;
+    auto batchPtr = std::make_unique<ProfileConversionBatch>();
+    ProfileConversionBatch& batch = *batchPtr;
     batch.source = source; batch.surface = surface;
     batch.binding = {sourceRevision, surface.gpuGeneration, surface.destinationRevision};
     const auto add = [&](int at, long long original, long long lower, unsigned long long error) {
@@ -133,9 +151,9 @@ static inline bool profile_conversion_prepare(const ProfileDocument& source, gc_
     }
     if (!valid) return fail("conversion is unrepresentable or needs reviewed topology identities");
     if (batch.affectedCount) {
-        ProfileDocument derived = source;
-        if (!profile_conversion_apply_changes(batch, derived) || !profile_document_structurally_valid(derived, why, whySize) ||
-            !validate(derived, why, whySize)) return false;
+        auto derived = std::make_unique<ProfileDocument>(source);
+        if (!profile_conversion_apply_changes(batch, *derived) || !profile_document_structurally_valid(*derived, why, whySize) ||
+            !validate(*derived, why, whySize)) return false;
     }
     output = batch;
     return true;
@@ -154,10 +172,10 @@ static inline bool profile_conversion_accept(const ProfileConversionBatch& batch
         if (why && whySize) snprintf(why, whySize, "%s", "source values or destination conversion changed; review it again");
         return false;
     }
-    ProfileDocument next = current;
-    if (!profile_conversion_apply_changes(batch, next) || !profile_document_structurally_valid(next, why, whySize) ||
-        !validate(next, why, whySize)) return false;
-    derived = next;
+    auto next = std::make_unique<ProfileDocument>(current);
+    if (!profile_conversion_apply_changes(batch, *next) || !profile_document_structurally_valid(*next, why, whySize) ||
+        !validate(*next, why, whySize)) return false;
+    derived = *next;
     return true;
 }
 

@@ -15,6 +15,17 @@ struct ProfileEditorCandidate {
     DesiredSettings settings{};
     ProfileEditorDocument source{};
 };
+static inline void profile_editor_document_reset(ProfileEditorDocument& doc) {
+    doc.valid = false;
+    doc.unsaved = false;
+    doc.revision = 1;
+    profile_document_reset(doc.value);
+    profile_document_reset(doc.saved);
+}
+static inline void profile_editor_candidate_reset(ProfileEditorCandidate& c) {
+    memset(&c.settings, 0, sizeof(c.settings));
+    profile_editor_document_reset(c.source);
+}
 static inline bool profile_editor_document_dirty(const ProfileEditorDocument& source) {
     if (!source.valid) return false;
     if (source.unsaved) return true;
@@ -33,7 +44,7 @@ static inline bool profile_editor_mhz_preview(long long hz, int& value) {
 // Display scalars only. Point/lock source identities are not destination indices.
 // This projection grants no Apply authority, and saving uses the document alone.
 static inline void profile_editor_source_display(const ProfileDocument& source, DesiredSettings& d) {
-    d = {};
+    memset(&d, 0, sizeof(d));
     d.hasGpuOffset = source.graphicsOffset.present && profile_editor_mhz_preview(source.graphicsOffset.offsetHz, d.gpuOffsetMHz);
     d.hasMemOffset = source.hasMemoryOffset && profile_editor_mhz_preview(source.memoryOffsetHz, d.memOffsetMHz);
     if (source.hasMemoryOffset) (void)desired_memory_set_precise(&d, source.memoryOffsetHz, source.memorySurface);
@@ -44,7 +55,7 @@ static inline void profile_editor_source_display(const ProfileDocument& source, 
     }
 }
 static inline void profile_editor_source_candidate(const ProfileDocument& source, ProfileEditorCandidate& out) {
-    out = {};
+    profile_editor_candidate_reset(out);
     out.source.valid = true; out.source.value = out.source.saved = source;
     profile_editor_source_display(source, out.settings);
 }

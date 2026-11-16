@@ -47,7 +47,7 @@ static void gui_profile_capture_service_changed() {
     if (g_profileCaptureJob && !gui_profile_capture_context_current())
         gui_profile_capture_invalidate("GPU session or ownership changed; Read a new capture before accepting");
 }
-static void gui_profile_capture_begin() {
+static GC_NOINLINE void gui_profile_capture_begin() {
     if (gui_profile_transfer_active()) return;
     if (gui_profile_capture_active()) { g_profileSourceWindow->show(); return; }
     if (!gui_profile_source_open()) {
@@ -81,7 +81,7 @@ static void gui_profile_capture_read(void*, gc_u32 domains) {
 }
 // Return true only when this controller took ownership of the completion.
 // The ordinary Check controller frees stale/unmatched capture replies.
-static bool gui_profile_capture_handle_completion(GuiServiceIoCompletion* completion) {
+static GC_NOINLINE bool gui_profile_capture_handle_completion(GuiServiceIoCompletion* completion) {
     if (!completion || !g_profileCaptureJob || completion->captureToken != g_profileCaptureJob->token) return false;
     const auto release = [](GuiServiceIoCompletion* value) { HeapFree(GetProcessHeap(), 0, value); };
     std::unique_ptr<GuiServiceIoCompletion, decltype(release)> owned(completion, release);

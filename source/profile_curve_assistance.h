@@ -262,7 +262,8 @@ static inline void profile_curve_assistance_prepare(
     auto curveDoc = std::make_unique<ProfileDocument>();
     profile_assist_detail::isolate_curve_doc(source, *curveDoc);
     auto baseRuntime = std::make_unique<DesiredSettings>();
-    ProfileMappingReport mapping{};
+    auto mappingPtr = std::make_unique<ProfileMappingReport>();
+    ProfileMappingReport& mapping = *mappingPtr;
     if (!profile_resolve_runtime(*curveDoc, destination, sourceRevision, routes, *baseRuntime, mapping, why, sizeof(why)))
         ASSIST_FAIL(PROFILE_ASSIST_UNAVAILABLE, why[0] ? why : "destination mapping requires review");
 
@@ -277,7 +278,11 @@ static inline void profile_curve_assistance_prepare(
     if (in.lockMode == LOCK_MODE_FLATTEN && !vf_offset_range_supports_flatten({in.range.minKHz, in.range.maxKHz, true}))
         ASSIST_FAIL(PROFILE_ASSIST_UNAVAILABLE, "flatten lock is unsupported by destination VF offset range");
 
-    out->binding = {sourceRevision, capture.gpuGeneration, capture.revision, destination.revision, source};
+    out->binding.sourceRevision = sourceRevision;
+    out->binding.gpuGeneration = capture.gpuGeneration;
+    out->binding.captureRevision = capture.revision;
+    out->binding.destinationRevision = destination.revision;
+    out->binding.expectedSourceSnapshot = source;
     out->planBefore = curve_plan_evaluate(in);
     const bool baselineProves = curve_plan_baseline_proves(in.evidence);
     const auto acceptReady = [&](const CurvePlanResult& res) {
@@ -293,7 +298,8 @@ static inline void profile_curve_assistance_prepare(
     }
 
     if (mode == PROFILE_ASSIST_PREFIX) {
-        const auto rep = curve_prefix_repair_prepare(in, true);
+        auto repPtr = std::make_unique<CurvePrefixRepair>(curve_prefix_repair_prepare(in, true));
+        const auto& rep = *repPtr;
         out->repair = rep;
         if (rep.status == CURVE_PREFIX_REPAIR_NOT_NEEDED || rep.status == CURVE_PREFIX_REPAIR_NO_LOCK) {
             ASSIST_FAIL(out->planBefore.disposition == CURVE_PLAN_REFUSED ? PROFILE_ASSIST_NO_COMPATIBLE_TARGET : PROFILE_ASSIST_UNAVAILABLE,
@@ -393,14 +399,14 @@ static inline void profile_curve_assistance_prepare(
     auto checkDoc = std::make_unique<ProfileDocument>();
     auto fullRt = std::make_unique<DesiredSettings>();
     auto fullStorage = std::make_unique<ProfileCaptureCurvePlan>();
-    ProfileMappingReport fullMap{};
+    auto fullMap = std::make_unique<ProfileMappingReport>();
     CurvePlanInput workIn = in;
     workIn.desired = workDesired.get();
 
     unsigned int evals = 0;
     bool budgetExhausted = false, sawBaselineRequired = false;
     gc_i64 foundHz = 0;
-    CurvePrefixRepair foundRepair{};
+    auto foundRepair = std::make_unique<CurvePrefixRepair>();
     CurvePlanResult foundPlan{};
     for (gc_i64 candHz = hiProj.lower; candHz >= loGrid;) {
         if (evals >= maxCandidates) { budgetExhausted = true; break; }
@@ -409,32 +415,32 @@ static inline void profile_curve_assistance_prepare(
         workDesired->authoring.lockFrequencyHz = candHz;
         workDesired->lockMHz = curve_plan_display_hz(candHz);
         bool ok = false;
-        CurvePrefixRepair candRep{};
+        auto candRep = std::make_unique<CurvePrefixRepair>();
         CurvePlanResult candPlan{};
         if (!allowPrefix) {
             candPlan = curve_plan_evaluate(workIn);
             ok = acceptReady(candPlan);
         } else {
-            candRep = curve_prefix_repair_prepare(workIn, true);
-            if (candRep.status == CURVE_PREFIX_REPAIR_NOT_NEEDED) {
+            *candRep = curve_prefix_repair_prepare(workIn, true);
+            if (candRep->status == CURVE_PREFIX_REPAIR_NOT_NEEDED) {
                 candPlan = curve_plan_evaluate(workIn);
                 ok = acceptReady(candPlan);
-            } else if (candRep.status == CURVE_PREFIX_REPAIR_PREPARED) {
-                candPlan = candRep.after;
+            } else if (candRep->status == CURVE_PREFIX_REPAIR_PREPARED) {
+                candPlan = candRep->after;
                 ok = acceptReady(candPlan);
-            } else if (candRep.status == CURVE_PREFIX_REPAIR_BASELINE_REQUIRED ||
-                       candRep.status == CURVE_PREFIX_REPAIR_CONVERSION_REQUIRED) {
+            } else if (candRep->status == CURVE_PREFIX_REPAIR_BASELINE_REQUIRED ||
+                       candRep->status == CURVE_PREFIX_REPAIR_CONVERSION_REQUIRED) {
                 sawBaselineRequired = true;
             }
         }
-        if (ok && profile_assist_detail::apply_assist_to_doc(source, mapping, candRep, candHz, *candDoc)) {
+        if (ok && profile_assist_detail::apply_assist_to_doc(source, mapping, *candRep, candHz, *candDoc)) {
             profile_assist_detail::isolate_curve_doc(*candDoc, *checkDoc);
-            if (profile_resolve_runtime(*checkDoc, destination, sourceRevision + 1, routes, *fullRt, fullMap, nullptr, 0) &&
+            if (profile_resolve_runtime(*checkDoc, destination, sourceRevision + 1, routes, *fullRt, *fullMap, nullptr, 0) &&
                 profile_capture_curve_plan_input(capture, *fullRt, *fullStorage)) {
                 const CurvePlanResult fullRes = curve_plan_evaluate(fullStorage->input);
                 if (acceptReady(fullRes)) {
                     foundHz = candHz;
-                    foundRepair = candRep;
+                    *foundRepair = *candRep;
                     foundPlan = fullRes;
                     out->previewDocument = *candDoc;
                     break;
@@ -449,13 +455,13 @@ static inline void profile_curve_assistance_prepare(
     out->budgetExhausted = budgetExhausted;
     if (foundHz > 0) {
         out->suggestedLockHz = foundHz;
-        out->repair = foundRepair;
-        out->prefixChangedCount = foundRepair.changedCount;
-        out->conversionCount = foundRepair.conversionCount;
+        out->repair = *foundRepair;
+        out->prefixChangedCount = foundRepair->changedCount;
+        out->conversionCount = foundRepair->conversionCount;
         out->planAfter = foundPlan;
         out->proven = baselineProves && foundPlan.disposition == CURVE_PLAN_REPRESENTABLE;
         out->status = out->proven ? PROFILE_ASSIST_PREPARED : PROFILE_ASSIST_ESTIMATE;
-        profile_assist_detail::format_preview_explanation(*out, foundRepair);
+        profile_assist_detail::format_preview_explanation(*out, *foundRepair);
         profile_assist_detail::finalize_summary(*out, evals);
         result = *out;
         return;
@@ -506,8 +512,8 @@ static inline bool profile_curve_assistance_accept(
     auto checkDoc = std::make_unique<ProfileDocument>();
     profile_assist_detail::isolate_curve_doc(*candidate, *checkDoc);
     auto rt = std::make_unique<DesiredSettings>();
-    ProfileMappingReport map{};
-    if (!profile_resolve_runtime(*checkDoc, freshDestination, sourceRevision + 1, routes, *rt, map, why, whySize))
+    auto map = std::make_unique<ProfileMappingReport>();
+    if (!profile_resolve_runtime(*checkDoc, freshDestination, sourceRevision + 1, routes, *rt, *map, why, whySize))
         return false;
     auto storage = std::make_unique<ProfileCaptureCurvePlan>();
     if (!profile_capture_curve_plan_input(freshCapture, *rt, *storage))

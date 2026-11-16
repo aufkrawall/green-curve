@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
-static void gui_profile_load_command() {
+GC_NOINLINE static void gui_profile_load_command() {
     do {
         int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
         if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
@@ -12,7 +12,8 @@ static void gui_profile_load_command() {
         }
         if (gui_profile_source_load(slot)) break;
         if (!maybe_confirm_profile_load_replace(slot)) break;
-        DesiredSettings desired = {};
+        auto desiredPtr = std::make_unique<DesiredSettings>();
+        DesiredSettings& desired = *desiredPtr;
         char err[256] = {};
         if (!load_profile_from_config(g_app.configPath, slot, &desired, err, sizeof(err))) {
             write_error_report_log_for_user_failure("Profile load failed", err);
@@ -37,13 +38,14 @@ static void gui_profile_load_command() {
     } while (false);
 }
 
-static void gui_profile_save_command() {
+GC_NOINLINE static void gui_profile_save_command() {
     do {
         int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
         if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
         slot += 1;
         if (gui_profile_source_save()) break;
-        DesiredSettings desired = {};
+        auto desiredPtr = std::make_unique<DesiredSettings>();
+        DesiredSettings& desired = *desiredPtr;
         char err[256] = {};
         if (!gui_service_model_ready(&g_app.guiServiceModel)) {
             gui_service_io_queue_full_sync("profile save requested while reconnecting");

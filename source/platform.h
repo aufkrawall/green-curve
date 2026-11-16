@@ -24,6 +24,16 @@
 
 #define PL_ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
 
+#ifndef GC_NOINLINE
+    #if defined(_MSC_VER)
+        #define GC_NOINLINE __declspec(noinline)
+    #elif defined(__GNUC__) || defined(__clang__)
+        #define GC_NOINLINE __attribute__((noinline))
+    #else
+        #define GC_NOINLINE
+    #endif
+#endif
+
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>

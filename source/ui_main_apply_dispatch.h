@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 // Window-thread Apply dispatch, isolated for executing request-lifetime tests.
-static void apply_changes() {
+GC_NOINLINE static void apply_changes() {
     const bool mappedSource = g_app.guiSource.valid;
     if ((mappedSource && !gui_profile_source_mapped_ready()) || gui_profile_capture_active()) {
         set_profile_status_text("Review this source against the destination before Apply.");
@@ -21,8 +21,10 @@ static void apply_changes() {
     }
     set_pending_operation_source("GUI apply");
     record_ui_action("Apply clicked");
-    DesiredSettings desired = {};
-    OcApplyBaseline baseline = {};
+    auto desiredPtr = std::make_unique<DesiredSettings>();
+    DesiredSettings& desired = *desiredPtr;
+    auto baselinePtr = std::make_unique<OcApplyBaseline>();
+    OcApplyBaseline& baseline = *baselinePtr;
     gc_u64 controlRevision = 0;
     char err[256] = {};
     if (mappedSource && !gui_profile_source_prepare_apply(desired, controlRevision, baseline)) {
@@ -56,9 +58,11 @@ static void apply_changes() {
     if (mappedSource) { requestedSource = SERVICE_PROFILE_SOURCE_AD_HOC; requestedSlot = 0; }
     // Modal confirmations can dispatch edits, reconnects or another capture.
     if (mappedSource) {
-        DesiredSettings checked{}; gc_u64 currentRevision = 0; OcApplyBaseline ignored{};
-        if (!gui_profile_source_prepare_apply(checked, currentRevision, ignored) || currentRevision != controlRevision ||
-            memcmp(&checked, &desired, sizeof(desired))) {
+        auto checkedPtr = std::make_unique<DesiredSettings>();
+        auto ignoredPtr = std::make_unique<OcApplyBaseline>();
+        gc_u64 currentRevision = 0;
+        if (!gui_profile_source_prepare_apply(*checkedPtr, currentRevision, *ignoredPtr) || currentRevision != controlRevision ||
+            memcmp(checkedPtr.get(), &desired, sizeof(desired))) {
             set_profile_status_text("The mapped source changed during confirmation; check it again."); return;
         }
     }

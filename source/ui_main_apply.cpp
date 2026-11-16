@@ -167,7 +167,7 @@ static void refresh_curve() {
     gui_service_request_resync("manual refresh", false);
 }
 
-static void reset_curve() {
+GC_NOINLINE static void reset_curve() {
     if (!gui_service_model_ready(&g_app.guiServiceModel) ||
         !g_app.guiDraft.attached || g_app.guiDraft.detached) return;
     char gpuSelectionErr[256] = {};

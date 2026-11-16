@@ -240,7 +240,7 @@ static void gud_set_text(HWND control, const char* text) {
 // Project the cached service state onto every control.  Called after each
 // command and on every poll tick, so there is exactly one function that decides
 // what the dialog looks like for a given state.
-static void gud_refresh_controls() {
+GC_NOINLINE static void gud_refresh_controls() {
     if (!g_updateDialog.hwnd) return;
     ServiceUpdateState stateValue = {};
     const ServiceUpdateState* state =
@@ -425,7 +425,7 @@ static void gui_update_dialog_apply_command_completion(
     gud_refresh_controls();
 }
 
-static void gud_apply_auto_check(HWND hwnd) {
+GC_NOINLINE static void gud_apply_auto_check(HWND hwnd) {
     ServiceUpdateState stateValue = {};
     const ServiceUpdateState* state =
         gui_update_state(&stateValue) ? &stateValue : nullptr;
@@ -445,7 +445,7 @@ static void gud_apply_auto_check(HWND hwnd) {
     gud_refresh_controls();
 }
 
-static void gud_open_releases_page() {
+GC_NOINLINE static void gud_open_releases_page() {
     // The releases page, built from the same compiled-in owner/repo constants
     // the updater itself uses, so there is one source of truth for where Green
     // Curve lives and no configurable URL to redirect.
@@ -471,7 +471,7 @@ static HWND gud_label(HWND hwnd, const char* text, int x, int y, int w, int h) {
         dp(x), dp(y), dp(w), dp(h), hwnd, nullptr, g_app.hInst, nullptr);
 }
 
-static void gud_create_controls(HWND hwnd) {
+GC_NOINLINE static void gud_create_controls(HWND hwnd) {
     // FIRST, before anything can call gud_refresh_controls().
     //
     // This runs from WM_CREATE, which is dispatched from INSIDE

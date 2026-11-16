@@ -1592,6 +1592,38 @@ def check_canonical_tui_documents(ctx, require_text, forbid_text):
                  "live flat-tail lock detection never fabricates applied lock state from unowned curves")
 
 
+def check_wndproc_stack_discipline(ctx, require_text, forbid_text):
+    """Ensure top-level Win32 message loops stay free of huge inline stack frames.
+
+    Under ThinLTO, inlining large UI command/review/reset handlers directly into
+    WndProc multiplies per-message stack usage across synchronous Win32 nesting
+    (ShowWindow -> WM_SHOWWINDOW -> WM_IME_SETCONTEXT -> WM_IME_NOTIFY) and can
+    exhaust the 1 MiB UI thread stack. Keep heavy WndProc branches split into
+    GC_NOINLINE helpers and initialize composite profile structs in-place or on
+    the heap rather than via large value temporaries.
+    """
+    window_cpp = _p(ctx, "ui_main_window.cpp")
+    for helper in (
+        "handle_main_window_create",
+        "handle_main_window_paint",
+        "handle_main_window_command",
+        "handle_main_window_app_message",
+        "handle_main_window_destroy",
+    ):
+        require_text(window_cpp, f"GC_NOINLINE", f"{helper} keeps WndProc stack compact")
+        require_text(window_cpp, f"{helper}(", f"WndProc delegates to {helper}")
+    require_text(_p(ctx, "profile_destination_review.h"), "profile_destination_review_reset(",
+                 "review reset clears large structs without stack temporaries")
+    require_text(_p(ctx, "profile_domain_conversions.h"), "profile_conversion_plan_reset(",
+                 "conversion plan reset clears in place without stack temporaries")
+    require_text(_p(ctx, "profile_editor_document.h"), "profile_editor_document_reset(",
+                 "editor document reset clears in place without stack temporaries")
+    forbid_text(_p(ctx, "profile_editor_review_session.h"), "review = {};",
+                "review session clears review in place rather than allocating a 190 KB stack temporary")
+    forbid_text(_p(ctx, "gui_profile_source.cpp"), "g_app.guiSource = {};",
+                "profile source reset clears g_app.guiSource in place")
+
+
 def check_all(ctx, require_text, forbid_text):
     check_canonical_tui_documents(ctx, require_text, forbid_text)
     check_profile_draft_replacement(ctx, require_text)
@@ -1621,3 +1653,4 @@ def check_all(ctx, require_text, forbid_text):
     check_service_actionability(ctx, require_text, forbid_text)
     check_read_miss_is_not_a_disconnect(ctx, require_text, forbid_text)
     check_service_status_notices(ctx, require_text, forbid_text)
+    check_wndproc_stack_discipline(ctx, require_text, forbid_text)

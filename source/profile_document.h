@@ -189,8 +189,8 @@ struct ProfileDocument {
     long long videoClkOffsetHz;
 };
 
-static inline ProfileDocument profile_document_make_empty() {
-    ProfileDocument d{};
+static inline void profile_document_reset(ProfileDocument& d) {
+    memset(&d, 0, sizeof(d));
     d.documentVersion = 1;
     d.applicationScope = PROFILE_SCOPE_UPDATE_INCLUDED;
     d.documentId = 1;
@@ -199,6 +199,11 @@ static inline ProfileDocument profile_document_make_empty() {
         d.topology[i].sourceIndex = -1;
     }
     d.lock.anchorTopologyId = -1;
+}
+
+static inline ProfileDocument profile_document_make_empty() {
+    ProfileDocument d;
+    profile_document_reset(d);
     return d;
 }
 

@@ -21,6 +21,13 @@ struct ProfileControlPlan {
     int issueCount = 0, omittedIssues = 0;
     ProfileControlIssue issues[9]{};
 };
+static inline void profile_control_plan_reset(ProfileControlPlan& p) {
+    p.disposition = PROFILE_CONTROL_READY;
+    p.curveChecked = false;
+    memset(&p.curve, 0, sizeof(p.curve));
+    p.issueCount = p.omittedIssues = 0;
+    memset(p.issues, 0, sizeof(p.issues));
+}
 static inline const char* profile_control_disposition_name(ProfileControlFeasibility d) {
     switch (d) {
         case PROFILE_CONTROL_READY: return "representable";

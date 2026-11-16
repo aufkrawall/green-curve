@@ -22,15 +22,15 @@ static void gui_profile_source_refresh() {
     gui_set_editor_enabled(gui_service_model_ready(&g_app.guiServiceModel));
     invalidate_main_window();
 }
-static void gui_profile_source_changed(void*) {
+static GC_NOINLINE void gui_profile_source_changed(void*) {
     gui_profile_source_invalidate_review("Source intent changed; check the destination again");
     debug_log("profile-source: staged revision=%llu points=%d\n",
         (unsigned long long)g_app.guiSource.revision, g_app.guiSource.value.topologyCount);
     gui_profile_source_refresh();
 }
-static void gui_profile_source_closed(void*) {
+static GC_NOINLINE void gui_profile_source_closed(void*) {
     gui_profile_source_invalidate_review("Source closed");
-    g_app.guiSource = {};
+    profile_editor_document_reset(g_app.guiSource);
     debug_log("profile-source: closed; live editor restored\n");
     // The abandoned legacy draft must be replaced by a coherent live envelope
     // before its controls can be used again.
@@ -52,7 +52,7 @@ static bool gui_profile_source_write(void*, const ProfileDocument& document, cha
     debug_log("profile-source: saved slot=%d points=%d\n", slot, document.topologyCount);
     return true;
 }
-static void gui_profile_source_prepare_curve(void*, int modeValue) {
+static GC_NOINLINE void gui_profile_source_prepare_curve(void*, int modeValue) {
     (void)gui_profile_source_prepare_curve_with_confirm(modeValue, [](const char* title, const char* body) {
         return gc_message_box(g_app.hMainWnd, body, title, MB_YESNO | MB_ICONQUESTION) == IDYES;
     });
@@ -125,7 +125,8 @@ static bool gui_profile_source_load(int slot) {
     }
     gui_draft_discard();
     gui_profile_source_invalidate_review("Another source was loaded");
-    g_app.guiSource = {}; g_app.guiSource.valid = true;
+    profile_editor_document_reset(g_app.guiSource);
+    g_app.guiSource.valid = true;
     g_app.guiSource.value = g_app.guiSource.saved = *candidate;
     g_profileSourceWindow->reload(); g_profileSourceWindow->show();
     gui_profile_source_refresh();

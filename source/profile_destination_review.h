@@ -30,3 +30,20 @@ struct ProfileDestinationReview {
     bool mapped() const { return stage >= PROFILE_REVIEW_MAPPED; }
     bool planned() const { return stage == PROFILE_REVIEW_PLANNED; }
 };
+static inline void profile_destination_review_reset(ProfileDestinationReview& r) {
+    r.accepted = false;
+    r.stage = PROFILE_REVIEW_EMPTY;
+    r.sourceRevision = 0;
+    profile_document_reset(r.source);
+    memset(&r.capture, 0, sizeof(r.capture));
+    r.routes = {};
+    memset(&r.mapping, 0, sizeof(r.mapping));
+    for (int i = 0; i < VF_NUM_POINTS + 16; ++i) {
+        r.mapping.issues[i].topologyId = -1;
+        r.mapping.issues[i].destinationIndex = -1;
+    }
+    memset(&r.runtime, 0, sizeof(r.runtime));
+    profile_control_plan_reset(r.controls);
+    profile_conversion_plan_reset(r.conversions);
+    memset(&r.error, 0, sizeof(r.error));
+}

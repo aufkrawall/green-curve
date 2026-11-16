@@ -60,13 +60,15 @@ static bool gui_curve_prepare_accept(const CurvePrefixRepair& repair) {
 // declined) a draft repair, or the planner proved a prefix refusal the repair
 // cannot fix and the user has been told why.  False lets the Apply continue
 // to the service, which plans again on a fresh read.
-static bool gui_curve_prepare_intercept_apply(const DesiredSettings* desired) {
+GC_NOINLINE static bool gui_curve_prepare_intercept_apply(const DesiredSettings* desired) {
     if (!desired || !desired->resetOcBeforeApply) return false;
     if (!desired->hasLock || desired->lockCi < 0 || desired->lockMHz == 0) return false;
     if (!g_app.vfFloorBinding.bound) return false;
     const ApplyCurvePlanPreWriteRoute route = apply_curve_plan_pre_write_route(desired);
-    int componentKHz[VF_NUM_POINTS] = {};
-    gc_i64 componentHz[VF_NUM_POINTS] = {};
+    auto componentKHzStorage = std::make_unique<int[]>(VF_NUM_POINTS);
+    auto componentHzStorage = std::make_unique<gc_i64[]>(VF_NUM_POINTS);
+    int* componentKHz = componentKHzStorage.get();
+    gc_i64* componentHz = componentHzStorage.get();
     const CurvePlanInput input =
         apply_curve_plan_pre_write_input(desired, route, componentKHz, componentHz);
     const CurvePlanResult plan = curve_plan_evaluate(input);
@@ -80,16 +82,18 @@ static bool gui_curve_prepare_intercept_apply(const DesiredSettings* desired) {
     // Anchor and tail refusals are reported by the service's own check.
     if (!provenPrefix) return false;
 
-    const CurvePrefixRepair repair = curve_prefix_repair_prepare(input);
+    auto repairPtr = std::make_unique<CurvePrefixRepair>(curve_prefix_repair_prepare(input));
+    const CurvePrefixRepair& repair = *repairPtr;
     curve_prefix_repair_log(repair, "gui-draft", gui_curve_prepare_log_line);
     if (repair.status == CURVE_PREFIX_REPAIR_NOT_NEEDED ||
         repair.status == CURVE_PREFIX_REPAIR_NO_LOCK) {
         return false;
     }
-    char message[2048] = {};
+    constexpr size_t kMessageSize = 2048;
+    auto messageBuf = std::make_unique<char[]>(kMessageSize);
     if (repair.status == CURVE_PREFIX_REPAIR_PREPARED) {
-        curve_prefix_repair_format_preview(repair, plan, message, sizeof(message));
-        const int answer = gc_message_box(g_app.hMainWnd, message,
+        curve_prefix_repair_format_preview(repair, plan, messageBuf.get(), kMessageSize);
+        const int answer = gc_message_box(g_app.hMainWnd, messageBuf.get(),
             "Prepare Compatible Curve", MB_YESNO | MB_ICONQUESTION);
         if (answer != IDYES) {
             record_ui_action("Prepare compatible curve declined (%d points)",
@@ -112,14 +116,15 @@ static bool gui_curve_prepare_intercept_apply(const DesiredSettings* desired) {
             " Apply.", repair.changedCount, repair.changedCount == 1 ? "" : "s");
         return true;
     }
-    curve_plan_format_message(plan, true, message, sizeof(message));
-    char why[768] = {};
-    curve_prefix_repair_format_refusal(repair, why, sizeof(why));
-    if (why[0]) {
-        curve_plan_appendf(message, sizeof(message), "\n\n%s", why);
+    curve_plan_format_message(plan, true, messageBuf.get(), kMessageSize);
+    constexpr size_t kWhySize = 768;
+    auto whyBuf = std::make_unique<char[]>(kWhySize);
+    curve_prefix_repair_format_refusal(repair, whyBuf.get(), kWhySize);
+    if (whyBuf[0]) {
+        curve_plan_appendf(messageBuf.get(), kMessageSize, "\n\n%s", whyBuf.get());
     }
-    write_error_report_log_for_user_failure("GUI apply refused (curve prefix)", message);
-    gc_message_box(g_app.hMainWnd, message, "Green Curve", MB_OK | MB_ICONWARNING);
+    write_error_report_log_for_user_failure("GUI apply refused (curve prefix)", messageBuf.get());
+    gc_message_box(g_app.hMainWnd, messageBuf.get(), "Green Curve", MB_OK | MB_ICONWARNING);
     set_profile_status_text(
         "Apply refused: earlier points rise above the lock. Nothing was changed.");
     return true;

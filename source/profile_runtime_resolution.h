@@ -4,6 +4,7 @@
 #define GREEN_CURVE_PROFILE_RUNTIME_RESOLUTION_H
 #include "profile_mapping.h"
 #include "hardware_capture.h"
+#include <memory>
 
 // Read-side destination evidence. A missing capture getter does not prove that
 // a write surface is unavailable (in particular for pins and fan ownership).
@@ -39,14 +40,15 @@ static inline bool profile_resolve_runtime(const ProfileDocument& source,
     const auto fail = [&](const char* text) {
         if (why && whySize) snprintf(why, whySize, "%s", text); return false;
     };
-    const auto report = profile_map_topology(source, destination, sourceRevision);
+    auto reportPtr = std::make_unique<ProfileMappingReport>(profile_map_topology(source, destination, sourceRevision));
+    const auto& report = *reportPtr;
     mapping = report;
     if (!report.ready()) return fail("destination mapping requires review");
     if (!sourceRevision || !destination.gpuGeneration || !destination.revision)
         return fail("destination review binding is missing");
     if (routes.graphics > DESIRED_GRAPHICS_VF_COMPONENT || routes.memory > CLOCK_OFFSET_SURFACE_GLOBAL)
         return fail("invalid destination control route");
-    DesiredSettings next{}; next.lockCi = -1;
+    auto nextPtr = std::make_unique<DesiredSettings>(); DesiredSettings& next = *nextPtr; next.lockCi = -1;
     next.applicationScope = source.applicationScope == PROFILE_SCOPE_REPLACE_PROFILE ? DESIRED_SCOPE_REPLACE_PROFILE :
         source.applicationScope == PROFILE_SCOPE_EXPLICIT_RELEASE ? DESIRED_SCOPE_EXPLICIT_RELEASE : DESIRED_SCOPE_UPDATE_INCLUDED;
     if ((source.domains & PROFILE_DOMAIN_VF_CURVE) && source.pointSetPolicy == PROFILE_POINTS_REPLACE &&

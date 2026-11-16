@@ -81,13 +81,13 @@ static inline void profile_capture_proposal_reason(ProfileCaptureLockProposal &p
 static inline void profile_capture_check_proposal(const HardwareCaptureObservation &observation,
                                                   ProfileCaptureLockProposal &proposal) {
     auto runtime = std::make_unique<DesiredSettings>();
-    ProfileMappingReport mapping;
-    ProfileDestinationTopology destination;
+    auto mapping = std::make_unique<ProfileMappingReport>();
+    auto destination = std::make_unique<ProfileDestinationTopology>();
     ProfileRuntimeRoutes routes;
     routes.graphics = proposal.document.graphicsOffset.present ? observation.graphics.surface : 0;
     routes.memory = observation.memory.surface;
-    if (!profile_destination_from_capture(observation, destination, proposal.reason, sizeof(proposal.reason)) ||
-        !profile_resolve_runtime(proposal.document, destination, 1, routes, *runtime, mapping, proposal.reason,
+    if (!profile_destination_from_capture(observation, *destination, proposal.reason, sizeof(proposal.reason)) ||
+        !profile_resolve_runtime(proposal.document, *destination, 1, routes, *runtime, *mapping, proposal.reason,
                                  sizeof(proposal.reason))) {
         proposal.controls.disposition = PROFILE_CONTROL_UNAVAILABLE;
         return;
@@ -136,12 +136,12 @@ static inline bool profile_capture_prepare_proposals(const HardwareCaptureObserv
         return false;
     profile_capture_proposal_reason(proposals->flatten, "no complete writable flattened tail was recognized");
     profile_capture_proposal_reason(proposals->pin, "pin unknown: no validated getter or retained applied intent");
-    int order[VF_NUM_POINTS]{};
-    VFCurvePoint normalized[VF_NUM_POINTS]{};
+    auto order = std::make_unique<int[]>(VF_NUM_POINTS);
+    auto normalized = std::make_unique<VFCurvePoint[]>(VF_NUM_POINTS);
     const int count = proposals->exact.topologyCount;
     for (int i = 0; i < count; ++i)
         order[i] = i;
-    std::sort(order, order + count,
+    std::sort(order.get(), order.get() + count,
               [&](int a, int b) { return observation.points[a].voltageUv < observation.points[b].voltageUv; });
     VfFloorTopology floor{};
     floor.valid = count > 0 && observation.topologyComplete;
@@ -168,7 +168,7 @@ static inline bool profile_capture_prepare_proposals(const HardwareCaptureObserv
     if (!writable)
         floor.valid = false;
     if (floor.valid && (observation.capturedDomains & PROFILE_DOMAIN_VF_CURVE)) {
-        const auto recognized = vf_recognize_flat_tail(normalized, floor, 1, 3);
+        const auto recognized = vf_recognize_flat_tail(normalized.get(), floor, 1, 3);
         if (recognized.found) {
             auto &flatten = proposals->flatten;
             const int anchor = order[recognized.anchorCi];

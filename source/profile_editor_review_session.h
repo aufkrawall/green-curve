@@ -52,7 +52,7 @@ static inline gc_u32 profile_editor_review_domains(const ProfileDocument&) {
 static inline bool profile_editor_review_complete(const ProfileEditorReviewJob& job, gc_u64 token, gc_u64 revision,
     const ProfileEditorReviewContext& current, const ServiceResponse& response,
     std::vector<std::string>& lines, ProfileDestinationReview& review, int& result) {
-    review = {}; lines.clear(); result = PROFILE_COMMAND_IO;
+    profile_destination_review_reset(review); lines.clear(); result = PROFILE_COMMAND_IO;
     if (!token || token != job.token || revision != job.sourceRevision ||
         !profile_editor_review_context_equal(job.context, current) || !profile_editor_review_capture_matches(job.context, response)) return false;
     result = profile_editor_check(job.source, job.graphics, job.memory,

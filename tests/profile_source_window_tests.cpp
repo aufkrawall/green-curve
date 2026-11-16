@@ -368,6 +368,17 @@ int run_profile_source_window_tests() {
     SetWindowTextW(window.control(ProfileSourceWindow::CAPTURE_PIN_INPUT), L"1750");
     SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::CAPTURE_PIN_CONFIRM, BN_CLICKED), 0);
     if (host->pinConfirms != 1 || host->lastConfirmedPinHz != 1750000000LL) return 9939;
+
+    // Nested Win32 visibility/IME/command dispatch must remain stack-safe even under deep re-entrancy.
+    for (int cycle = 0; cycle < 8; ++cycle) {
+        ShowWindow(window.handle(), SW_SHOW);
+        SendMessageW(window.handle(), WM_SHOWWINDOW, TRUE, 0);
+        SendMessageW(window.handle(), 0x0281u /* WM_IME_SETCONTEXT */, TRUE, 0);
+        SendMessageW(window.handle(), 0x0282u /* WM_IME_NOTIFY */, 0x0002 /* IMN_CLOSESTATUSWINDOW */, 0);
+        SendMessageW(window.handle(), WM_COMMAND, ProfileSourceWindow::CAPTURE_READ, 0);
+        ShowWindow(window.handle(), SW_HIDE);
+        SendMessageW(window.handle(), WM_SHOWWINDOW, FALSE, 0);
+    }
     return 0;
 }
 #else

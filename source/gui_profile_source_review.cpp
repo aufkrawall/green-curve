@@ -67,7 +67,7 @@ static void gui_profile_source_observe_service(const ServiceResponse* response) 
     g_profileShownContext = response ? profile_editor_review_context(*response) : ProfileEditorReviewContext{};
     gui_profile_source_service_changed();
 }
-static void gui_profile_source_check(void*, const ProfileDocument& document, gc_u32 graphics = 0, gc_u32 memory = 0) {
+static GC_NOINLINE void gui_profile_source_check(void*, const ProfileDocument& document, gc_u32 graphics = 0, gc_u32 memory = 0) {
     char error[256]{};
     if (g_profileReadPending) { g_profileSourceWindow->notice("A destination check is already pending"); return; }
     gui_profile_source_invalidate_review("Checking the destination again");
@@ -86,7 +86,7 @@ static void gui_profile_source_check(void*, const ProfileDocument& document, gc_
     g_profileReviewJob = std::move(job); g_profileReadPending = true;
     g_profileSourceWindow->notice("Reading destination controls; source settings and GPU ownership stay unchanged");
 }
-static void gui_profile_source_handle_check(GuiServiceIoCompletion* completion) {
+static GC_NOINLINE void gui_profile_source_handle_check(GuiServiceIoCompletion* completion) {
     const auto release = [](GuiServiceIoCompletion* value) { if (value) HeapFree(GetProcessHeap(), 0, value); };
     std::unique_ptr<GuiServiceIoCompletion, decltype(release)> owned(completion, release);
     if (!completion || !g_profileReviewJob || completion->captureToken != g_profileReviewJob->token) return;
@@ -116,7 +116,7 @@ static void gui_profile_source_handle_check(GuiServiceIoCompletion* completion) 
         ? "Batch conversion or domain review is required before using this draft; source file is unchanged"
         : "Review mapping, scope and feasibility; Use mapped draft stages these settings without applying them");
 }
-static void gui_profile_source_convert_domain(void*, int kindValue) {
+static GC_NOINLINE void gui_profile_source_convert_domain(void*, int kindValue) {
     if (!g_app.guiSource.valid || g_profileReadPending || g_app.applyInFlight || !g_profileReview || !g_profileReviewJob ||
         g_profileReview->sourceRevision != g_app.guiSource.revision || !gui_service_model_ready(&g_app.guiServiceModel) ||
         !profile_editor_review_context_equal(g_profileReviewJob->context, g_profileShownContext) ||
@@ -125,7 +125,9 @@ static void gui_profile_source_convert_domain(void*, int kindValue) {
         return;
     }
     const auto* cand = g_profileReview->conversions.find((ProfileConversionKind)kindValue);
-    ProfileDestinationTopology dest{}; char why[256]{}, summary[256]{};
+    auto destPtr = std::make_unique<ProfileDestinationTopology>();
+    ProfileDestinationTopology& dest = *destPtr;
+    char why[256]{}, summary[256]{};
     if (!cand || !profile_destination_from_capture(g_profileReview->capture, dest, why, sizeof(why))) {
         if (g_profileSourceWindow) g_profileSourceWindow->notice(why[0] ? why : "Conversion candidate is no longer current; Check again");
         return;
@@ -147,7 +149,7 @@ static void gui_profile_source_convert_domain(void*, int kindValue) {
     }
     gui_profile_source_refresh();
 }
-static void gui_profile_source_restore_exact(void*) {
+static GC_NOINLINE void gui_profile_source_restore_exact(void*) {
     if (!g_app.guiSource.valid || g_profileReadPending || g_app.applyInFlight) {
         if (g_profileSourceWindow) g_profileSourceWindow->notice("Wait for pending operations before restoring exact tail");
         return;
@@ -177,13 +179,14 @@ static bool gui_profile_source_prepare_curve_with_confirm(int modeValue, Confirm
         if (g_profileSourceWindow) g_profileSourceWindow->notice("Check the current source and destination before preparing curve assistance");
         return false;
     }
-    ProfileDestinationTopology dest{}; char why[256]{};
-    if (!profile_destination_from_capture(g_profileReview->capture, dest, why, sizeof(why))) {
+    auto destPtr = std::make_unique<ProfileDestinationTopology>();
+    char why[256]{};
+    if (!profile_destination_from_capture(g_profileReview->capture, *destPtr, why, sizeof(why))) {
         if (g_profileSourceWindow) g_profileSourceWindow->notice(why[0] ? why : "Capture invalid; Check again");
         return false;
     }
     auto assist = std::make_unique<ProfileCurveAssistance>();
-    profile_curve_assistance_prepare(g_app.guiSource.value, g_profileReview->capture, dest,
+    profile_curve_assistance_prepare(g_app.guiSource.value, g_profileReview->capture, *destPtr,
         g_app.guiSource.revision, g_profileReview->routes, (ProfileCurveAssistMode)modeValue, *assist);
     debug_log("%s\n", assist->summary);
     if (assist->status != PROFILE_ASSIST_PREPARED && assist->status != PROFILE_ASSIST_ESTIMATE) {
@@ -203,10 +206,10 @@ static bool gui_profile_source_prepare_curve_with_confirm(int modeValue, Confirm
         return false;
     }
     auto derived = std::make_unique<ProfileDocument>();
-    ProfileDestinationTopology freshDest{};
-    if (!profile_destination_from_capture(g_profileReview->capture, freshDest, why, sizeof(why)) ||
+    auto freshDestPtr = std::make_unique<ProfileDestinationTopology>();
+    if (!profile_destination_from_capture(g_profileReview->capture, *freshDestPtr, why, sizeof(why)) ||
         !profile_curve_assistance_accept(*assist, g_app.guiSource.value, g_app.guiSource.revision,
-            g_profileReview->capture, freshDest, g_profileReview->routes, *derived, why, sizeof(why))) {
+            g_profileReview->capture, *freshDestPtr, g_profileReview->routes, *derived, why, sizeof(why))) {
         if (g_profileSourceWindow) g_profileSourceWindow->notice(why[0] ? why : "Prepared curve no longer matches draft/destination");
         return false;
     }

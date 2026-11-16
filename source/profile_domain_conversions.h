@@ -41,6 +41,19 @@ struct ProfileConversionPlan {
         return nullptr;
     }
 };
+static inline void profile_conversion_candidate_reset(ProfileConversionCandidate& c) {
+    c.kind = PROFILE_CONVERT_VF_OFFSETS;
+    c.convertible = false;
+    c.unresolved = false;
+    c.surface = {};
+    profile_conversion_batch_reset(c.batch);
+    memset(c.why, 0, sizeof(c.why));
+}
+static inline void profile_conversion_plan_reset(ProfileConversionPlan& p) {
+    p.count = 0;
+    for (int i = 0; i < PROFILE_CONVERSION_MAX_CANDIDATES; ++i)
+        profile_conversion_candidate_reset(p.items[i]);
+}
 
 static inline const char* profile_conversion_kind_key(ProfileConversionKind kind) {
     switch (kind) {
@@ -443,8 +456,8 @@ static inline bool validate_domain(ProfileConversionKind kind, const ProfileDocu
         } else return fail("voltage or unknown domain cannot be batch converted");
     }
     auto runtime = std::make_unique<DesiredSettings>();
-    ProfileMappingReport mapping;
-    if (!profile_resolve_runtime(*scoped, destination, sourceRevision, domainRoutes, *runtime, mapping, why, whySize))
+    auto mapping = std::make_unique<ProfileMappingReport>();
+    if (!profile_resolve_runtime(*scoped, destination, sourceRevision, domainRoutes, *runtime, *mapping, why, whySize))
         return false;
     const auto plan = profile_control_plan(*runtime, capture);
     if (curveDomain) {
@@ -480,8 +493,9 @@ static inline bool validate_domain(ProfileConversionKind kind, const ProfileDocu
 static inline void profile_conversion_plan_build(const ProfileDocument& source,
     const HardwareCaptureObservation& capture, const ProfileDestinationTopology& destination,
     gc_u64 sourceRevision, ProfileRuntimeRoutes routes, ProfileConversionPlan& output) {
-    output = {};
-    const auto mapping = profile_map_topology(source, destination, sourceRevision);
+    profile_conversion_plan_reset(output);
+    auto mappingPtr = std::make_unique<ProfileMappingReport>(profile_map_topology(source, destination, sourceRevision));
+    const auto& mapping = *mappingPtr;
     const ProfileConversionKind order[] = {
         PROFILE_CONVERT_VF_OFFSETS, PROFILE_CONVERT_VF_FREQUENCIES, PROFILE_CONVERT_LOCK_FREQUENCY,
         PROFILE_CONVERT_GRAPHICS, PROFILE_CONVERT_MEMORY, PROFILE_CONVERT_POWER,
@@ -513,7 +527,8 @@ static inline void profile_conversion_plan_build(const ProfileDocument& source,
             case PROFILE_CONVERT_XBAR_VOLTAGE: q = profile_conversion_detail::query_xbar_voltage(source, capture); break;
         }
         if (!q.needed) continue;
-        ProfileConversionCandidate item{};
+        ProfileConversionCandidate& item = output.items[output.count];
+        profile_conversion_candidate_reset(item);
         item.kind = kind;
         item.surface = q.surface;
         item.batch.source = source;
@@ -522,7 +537,7 @@ static inline void profile_conversion_plan_build(const ProfileDocument& source,
         if (!q.gridKnown) {
             item.unresolved = true;
             snprintf(item.why, sizeof(item.why), "%s", q.why);
-            output.items[output.count++] = item;
+            ++output.count;
             continue;
         }
         const auto validator = [&](const ProfileDocument& derived, char* why, size_t whySize) {
@@ -532,11 +547,13 @@ static inline void profile_conversion_plan_build(const ProfileDocument& source,
         if (profile_conversion_prepare(source, sourceRevision, q.surface, validator, item.batch, item.why, sizeof(item.why))) {
             if (item.batch.affectedCount > 0) {
                 item.convertible = true;
-                output.items[output.count++] = item;
+                ++output.count;
+            } else {
+                profile_conversion_candidate_reset(item);
             }
         } else {
             item.unresolved = true;
-            output.items[output.count++] = item;
+            ++output.count;
         }
     }
 }
@@ -550,7 +567,8 @@ static inline bool profile_conversion_accept_item(const ProfileConversionCandida
         if (why && whySize) snprintf(why, whySize, "%s", item.why[0] ? item.why : "conversion candidate is unresolved");
         return false;
     }
-    const auto mapping = profile_map_topology(current, freshDestination, sourceRevision);
+    auto mappingPtr = std::make_unique<ProfileMappingReport>(profile_map_topology(current, freshDestination, sourceRevision));
+    const auto& mapping = *mappingPtr;
     profile_conversion_detail::SurfaceQuery freshQuery{};
     switch (item.kind) {
         case PROFILE_CONVERT_VF_OFFSETS: freshQuery = profile_conversion_detail::query_vf_offsets(current, freshCapture); break;

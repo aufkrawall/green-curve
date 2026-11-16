@@ -2,7 +2,66 @@
 // SPDX-License-Identifier: MIT
 #include "profile_conversion_batch.h"
 #include "profile_domain_conversions.h"
+#include "profile_destination_review.h"
+#include "profile_editor_document.h"
+#include <cstring>
 #include <memory>
+
+static int run_profile_reset_equivalence_tests() {
+    auto zeroDoc = std::make_unique<ProfileDocument>(profile_document_make_empty());
+    auto dirtyDoc = std::make_unique<ProfileDocument>();
+    memset(dirtyDoc.get(), 0xA5, sizeof(*dirtyDoc));
+    profile_document_reset(*dirtyDoc);
+    if (dirtyDoc->documentVersion != 1 || dirtyDoc->applicationScope != PROFILE_SCOPE_UPDATE_INCLUDED ||
+        dirtyDoc->documentId != 1 || dirtyDoc->domains != 0 || dirtyDoc->topologyCount != 0 ||
+        dirtyDoc->topology[0].topologyId != -1 || dirtyDoc->topology[0].sourceIndex != -1 ||
+        dirtyDoc->topology[VF_NUM_POINTS - 1].topologyId != -1 ||
+        dirtyDoc->lock.anchorTopologyId != -1 || dirtyDoc->displayName[0] != '\0' ||
+        dirtyDoc->lock.present || dirtyDoc->fan.present ||
+        !profile_document_semantically_equal(*dirtyDoc, *zeroDoc)) return 8485;
+
+    auto plan = std::make_unique<ProfileControlPlan>();
+    memset(plan.get(), 0xA5, sizeof(*plan));
+    profile_control_plan_reset(*plan);
+    if (plan->disposition != PROFILE_CONTROL_READY || plan->curveChecked ||
+        plan->issueCount != 0 || plan->omittedIssues != 0 ||
+        plan->curve.issueCount != 0) return 8486;
+
+    auto batch = std::make_unique<ProfileConversionBatch>();
+    memset(batch.get(), 0xA5, sizeof(*batch));
+    profile_conversion_batch_reset(*batch);
+    if (batch->surface.identity != 0 || batch->affectedCount != 0 ||
+        batch->firstTopologyId != -1 || batch->worstTopologyId != -1 ||
+        batch->source.documentVersion != 1 || batch->source.lock.anchorTopologyId != -1) return 8487;
+
+    auto convPlan = std::make_unique<ProfileConversionPlan>();
+    memset(convPlan.get(), 0xA5, sizeof(*convPlan));
+    profile_conversion_plan_reset(*convPlan);
+    if (convPlan->count != 0 || convPlan->items[0].convertible || convPlan->items[0].why[0] != '\0' ||
+        convPlan->items[PROFILE_CONVERSION_MAX_CANDIDATES - 1].batch.source.documentVersion != 1) return 8488;
+
+    auto review = std::make_unique<ProfileDestinationReview>();
+    memset(review.get(), 0xA5, sizeof(*review));
+    profile_destination_review_reset(*review);
+    if (review->accepted || review->stage != PROFILE_REVIEW_EMPTY || review->sourceRevision != 0 ||
+        review->conversions.count != 0 || review->runtime.hasLock ||
+        review->mapping.issues[0].topologyId != -1 ||
+        review->controls.disposition != PROFILE_CONTROL_READY) return 8489;
+
+    auto edDoc = std::make_unique<ProfileEditorDocument>();
+    memset(edDoc.get(), 0xA5, sizeof(*edDoc));
+    profile_editor_document_reset(*edDoc);
+    if (edDoc->valid || edDoc->unsaved || edDoc->revision != 1 ||
+        edDoc->value.documentVersion != 1 || edDoc->saved.documentVersion != 1 ||
+        edDoc->value.lock.anchorTopologyId != -1) return 8490;
+
+    auto edCand = std::make_unique<ProfileEditorCandidate>();
+    memset(edCand.get(), 0xA5, sizeof(*edCand));
+    profile_editor_candidate_reset(*edCand);
+    if (edCand->settings.hasLock || edCand->settings.hasPowerLimit ||
+        edCand->source.value.documentVersion != 1 || edCand->source.revision != 1) return 8491;
+    return 0;
+}
 
 int run_profile_conversion_tests() {
     auto source = std::make_unique<ProfileDocument>(profile_document_make_empty());
@@ -192,5 +251,6 @@ int run_profile_conversion_tests() {
     if (profile_document_can_restore_captured_tail(*flat, why, sizeof(why)) || !strstr(why, "missing") ||
         profile_document_restore_captured_tail(*flat, *restored, why, sizeof(why)) ||
         !profile_document_semantically_equal(*flat, frozenFlat)) return 8484;
+    if (const int resetFailure = run_profile_reset_equivalence_tests()) return resetFailure;
     return 0;
 }

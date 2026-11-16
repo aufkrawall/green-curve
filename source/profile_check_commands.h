@@ -49,7 +49,7 @@ static inline bool parse_convert_domains(std::string_view value, bool& all,
 template <class IO>
 static inline bool profile_check_commands_run(const std::vector<std::string>& args, IO& io, int& exitCode,
     ProfileDestinationReview* review = nullptr, gc_u64 sourceRevision = 1) {
-    if (review) *review = {};
+    if (review) profile_destination_review_reset(*review);
     bool handled = false;
     for (const auto& arg : args) handled |= arg == "--check-profile";
     if (!handled) return false;
@@ -143,7 +143,8 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
     const gc_u32 domains = 511u; // Bind later review to preserved and cleanup domains too.
     auto capture = std::make_unique<HardwareCaptureObservation>();
     if (!io.capture(domains, *capture, error)) return reject(PROFILE_COMMAND_IO);
-    ProfileDestinationTopology destination;
+    auto destinationPtr = std::make_unique<ProfileDestinationTopology>();
+    ProfileDestinationTopology& destination = *destinationPtr;
     if (capture->requestedDomains != domains ||
         !profile_destination_from_capture(*capture, destination, error.message, sizeof(error.message))) {
         profile_codec::fail(&error, 0, "destination capture is invalid or differs from the request"); return reject(PROFILE_COMMAND_IO);
@@ -234,7 +235,8 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
         }
     }
     profile_conversion_plan_build(*working, *capture, destination, workingRevision, routes, *conversionPlan);
-    auto runtime = std::make_unique<DesiredSettings>(); ProfileMappingReport mapping;
+    auto runtime = std::make_unique<DesiredSettings>(); auto mappingPtr = std::make_unique<ProfileMappingReport>();
+    ProfileMappingReport& mapping = *mappingPtr;
     auto reviewedSource = std::make_unique<ProfileDocument>(*working);
     if (memoryChoice) reviewedSource->memorySurface = memoryChoice;
     const bool resolved = profile_resolve_runtime(*reviewedSource, destination,
