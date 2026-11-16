@@ -40,7 +40,7 @@ under the cursor; later launches restore the last validated normal placement.
 | `source/ui_checkbox_state.h` | `UiCheckboxState` plus `ui_checkbox_state_needs_repaint()`, the only correct repaint gate for an owner-draw checkbox |
 | `source/ui_control_projection.h` | Inert text/enable projections; deliberately holds **no** check-state helper (see F-CHECKBOX-PAINT) |
 | `source/gui_render_forward.h` | Forward declarations for the curve renderers and the F-PENDING queries, needed by shards amalgamated before their definitions |
-| `source/ui_main_window.cpp` | Resize, scroll, reconnect overlay, paint fallback, display/composition/device, focus, and `WM_DPICHANGED` routing |
+| `source/ui_main_window.cpp` | Resize, scroll, reconnect overlay, paint fallback, display/composition/device, focus, `WM_DPICHANGED`, and `GC_NOINLINE` handler dispatch keeping `WndProc` stack-bounded under ThinLTO |
 | `source/config_profiles_gui_state.cpp` | Profile-intent projection onto the editor, profile status/state labels, and background-service controls (split out of `config_profiles_ui.cpp`) |
 | `source/gui_service_state.cpp` | Main-thread state acceptance, draft reconciliation, reconnect presentation, and one-transaction rendering |
 | `source/gui_service_actionability_policy.h` | Pure per-capability enablement decision from service/draft state, plus the `gui_service_actionability_from_app()` glue in `app_shared.h` |
@@ -1245,6 +1245,8 @@ high-overclock confirmation (F-OC-HINT / F-OC-WARN), including the
 `ui_main_window.cpp` -> `ui_main_apply.cpp` split, against compiled pure
 regressions and a full six-target build. The caption values, the tooltips, and
 the dialog sequence have NOT yet been confirmed on real hardware.
+
+Last verified: 2026-11-16 for `WndProc` / dialog procedure stack discipline under ThinLTO: Win32 message handlers (`WndProc`, `GuiUpdateDialogProc`, `AutoProfileDialogProc`) keep heavy command, paint, timer, service-I/O, review, and shutdown branches in `GC_NOINLINE` helpers and clear composite profile/review/conversion/editor structs via in-place `profile_*_reset()` helpers or heap allocation (`std::make_unique`) rather than `x = {}` value temporaries (which previously let ThinLTO inline ~190 KB `ProfileDestinationReview` / `ProfileConversionPlan` temporaries directly into `WndProc` and overflow the 1 MiB UI thread stack across synchronous `ShowWindow(SW_HIDE)` -> `WM_SHOWWINDOW` -> IME notification re-entrancy). Enforced by `check_wndproc_stack_discipline()` in `tools/ui_gates.py`, `8485-8491` in `tests/profile_conversion_tests.cpp`, and Win32 re-entrancy coverage in `tests/profile_source_window_tests.cpp`.
 
 Last verified: 2026-07-15 against the source anchors above, compiled layout/
 theme/reconnect regressions, and Windows x64/ARM64 checks.

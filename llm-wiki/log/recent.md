@@ -5,6 +5,13 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-16: Fix Win32 `WndProc` stack overflow (`0xC00000FD`) under ThinLTO
+
+- Root cause: under release `-Oz -flto`, ThinLTO inlined single-caller UI/review helpers directly into `WndProc` (`ui_main_window.cpp`), where value-reset assignments (`review = {}`, `output = {}`, `g_app.guiSource = {}`) materialized ~180–192 KB stack temporaries for `ProfileDestinationReview`, `ProfileConversionPlan`, and `ProfileEditorDocument` (`WndProc` frame reached `0x31788` = 202,632 bytes per message). Minimizing to tray (`ShowWindow(SW_HIDE)`) triggered synchronous Win32 re-entrancy through `WndProc` (`WM_SYSCOMMAND` -> `WM_SHOWWINDOW` -> `WM_IME_SETCONTEXT` -> `WM_IME_NOTIFY`) and overflowed the 1 MiB UI thread stack.
+- Added in-place `profile_*_reset()` helpers (`source/profile_document.h`, `source/profile_control_feasibility.h`, `source/profile_conversion_batch.h`, `source/profile_domain_conversions.h`, `source/profile_destination_review.h`, `source/profile_editor_document.h`) and moved large `ProfileMappingReport`, `ProfileDestinationTopology`, `ProfileDocument`, `CurvePrefixRepair`, `DesiredSettings`, and path buffers onto `std::make_unique` in UI/review/assistance/proposal paths (`source/profile_runtime_resolution.h`, `source/profile_check_commands.h`, `source/profile_curve_assistance.h`, `source/profile_capture_proposals.h`, `source/profile_transfer_window.h`, `source/ui_curve_prepare.cpp`, `source/ui_main_apply_dispatch.h`, `source/gui_profile_commands.cpp`, `source/gui_profile_source.cpp`, `source/gui_profile_source_review.cpp`).
+- Added `GC_NOINLINE` in `source/platform.h` and extracted heavy message/command branches out of `WndProc` (`source/ui_main_window.cpp`), `GuiUpdateDialogProc` (`source/gui_update_dialog.cpp`), `AutoProfileDialogProc` (`source/auto_profile_dialog.cpp`), `apply_changes` / `reset_curve` (`source/ui_main_apply_dispatch.h`, `source/ui_main_apply.cpp`), and capture/transfer handlers (`source/gui_profile_capture.cpp`), reducing all `WNDPROC` / `DLGPROC` stack frames below 2 KB.
+- Added regression checks in `tools/ui_gates.py` (`check_wndproc_stack_discipline()`), `tests/profile_conversion_tests.cpp` (`8485-8491`), and `tests/profile_source_window_tests.cpp`, plus a concise bullet under `### Fixed` in `CHANGELOG.md`.
+
 ## 2026-11-16: Final acceptance fuzzing, wiki audit, and deliverable build (build 373)
 
 - Extended `tests/profile_codec_fuzz.h` with structured `curve_plan_evaluate()`

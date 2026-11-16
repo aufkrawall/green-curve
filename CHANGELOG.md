@@ -65,6 +65,7 @@ Curve checks, profile transfer and capture improve.
 - **Memory changes:** preserve exact curves on both platforms or refuse cleanly.
 - **Flatten editing:** retyping a selected target preserves typing and caret position.
 - **Flatten detection:** selects the true plateau start, including hidden low-voltage points.
+- **Minimize to tray:** minimizing after profile actions no longer crashes.
 
 ### Compatibility notes
 

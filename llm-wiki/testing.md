@@ -1,5 +1,9 @@
 # Testing
 
+## WndProc stack discipline & in-place resets (2026-11-16)
+
+`tests/profile_conversion_tests.cpp` (`8485-8491`) verifies that in-place reset helpers (`profile_document_reset()`, `profile_control_plan_reset()`, `profile_conversion_batch_reset()`, `profile_conversion_plan_reset()`, `profile_destination_review_reset()`, `profile_editor_document_reset()`, `profile_editor_candidate_reset()`) clear `0xA5`-poisoned structs to exact clean defaults without materializing large stack temporaries. `tests/profile_source_window_tests.cpp` exercises nested synchronous `ShowWindow` + `WM_SHOWWINDOW` + `WM_IME_SETCONTEXT` (`0x0281`) + `WM_IME_NOTIFY` (`0x0282`) + `WM_COMMAND` dispatch cycles on Windows, while `check_wndproc_stack_discipline()` in `tools/ui_gates.py` enforces `GC_NOINLINE` handler separation and in-place resets across Win32 message loops.
+
 ## Capture lock proposals (2026-11-15)
 
 `tests/profile_capture_proposals_tests.cpp` (9680-9715) executes hidden/physical
