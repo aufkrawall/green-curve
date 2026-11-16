@@ -8,6 +8,7 @@
 #include "linux_profile_curve_codec.h"
 #include "linux_config_lock.h"
 #include "profile_slot_codec.h"
+#include "profile_desired_ini_ext.h"
 
 #include <string>
 #include <vector>
@@ -69,6 +70,7 @@ void merge_desired_settings(DesiredSettings* base, const DesiredSettings* incomi
             base->curvePointCapturedOffsetHz[i] = incoming->curvePointCapturedOffsetHz[i];
         }
     }
+    desired_merge_authoring_override(base, incoming);
 }
 
 bool default_probe_output_path(const char* configPath, char* dst, size_t dstSize) {
@@ -413,6 +415,12 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
 
     if (!load_fan_curve_config_from_section(doc, fanCurveSection, &desired->fanCurve, err, errSize)) return false;
 
+    if (!desired_ini_load_controls_ext([&](const char* key, char* out, size_t outSize) {
+            std::string val = get_section_value(doc, controlsSection, key);
+            snprintf(out, outSize, "%s", val.c_str());
+            return !val.empty();
+        }, desired, err, errSize)) return false;
+
     std::string curveSemantics = get_section_value(doc, curveSection, "curve_semantics");
     const ProfileCurveDecode curveDecode =
         profile_curve_decode_from_marker(curveSemantics.c_str());
@@ -434,40 +442,51 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
     }
 
     // Per-point provenance when the section carries it; only a section written
+    // Per-point provenance first: an `absolute_with_origin` section written
     // by an older build falls through to the whole-section reconstruction.
     linux_profile_read_curve_point_origins(doc, curveSection, curveSemantics,
                                            desired);
 
-    bool basePlusGpuOffsetCurve =
-        curveDecode == PROFILE_CURVE_DECODE_BASE_PLUS_GPU_OFFSET;
-    if (basePlusGpuOffsetCurve && desired->hasGpuOffset && desired->gpuOffsetMHz != 0) {
-        for (int i = 0; i < VF_NUM_POINTS; i++) {
-            if (!desired->hasCurvePoint[i]) continue;
-            int offsetCompMHz = gpu_offset_component_mhz_for_point_linux(i, desired->gpuOffsetMHz, desired->gpuOffsetExcludeLowCount);
-            int absoluteMHz = (int)desired->curvePointMHz[i] + offsetCompMHz;
-            if (absoluteMHz <= 0) {
+    if (desired->applicationScope == DESIRED_SCOPE_LEGACY) {
+        bool basePlusGpuOffsetCurve =
+            curveDecode == PROFILE_CURVE_DECODE_BASE_PLUS_GPU_OFFSET;
+        if (basePlusGpuOffsetCurve && desired->hasGpuOffset && desired->gpuOffsetMHz != 0) {
+            for (int i = 0; i < VF_NUM_POINTS; i++) {
+                if (!desired->hasCurvePoint[i]) continue;
+                int offsetCompMHz = gpu_offset_component_mhz_for_point_linux(i, desired->gpuOffsetMHz, desired->gpuOffsetExcludeLowCount);
+                int absoluteMHz = (int)desired->curvePointMHz[i] + offsetCompMHz;
+                if (absoluteMHz <= 0) {
+                    desired->hasCurvePoint[i] = false;
+                    desired->curvePointMHz[i] = 0;
+                    desired->curvePointFromGpuOffset[i] = 0;
+                    continue;
+                }
+                desired->curvePointMHz[i] = (unsigned int)absoluteMHz;
+                // Same provenance rule as the Windows loader.
+                desired->curvePointFromGpuOffset[i] = gc_bool8_from_bool(true);
+            }
+        } else if (legacyCurveSemantics && desired->hasGpuOffset && desired->gpuOffsetMHz != 0) {
+            for (int i = 0; i < VF_NUM_POINTS; i++) {
                 desired->hasCurvePoint[i] = false;
                 desired->curvePointMHz[i] = 0;
                 desired->curvePointFromGpuOffset[i] = 0;
-                continue;
             }
-            desired->curvePointMHz[i] = (unsigned int)absoluteMHz;
-            // Same provenance rule as the Windows loader.
-            desired->curvePointFromGpuOffset[i] = gc_bool8_from_bool(true);
         }
-    } else if (legacyCurveSemantics && desired->hasGpuOffset && desired->gpuOffsetMHz != 0) {
-        for (int i = 0; i < VF_NUM_POINTS; i++) {
-            desired->hasCurvePoint[i] = false;
-            desired->curvePointMHz[i] = 0;
-            desired->curvePointFromGpuOffset[i] = 0;
+
+        for (int i = 1; i < VF_NUM_POINTS; i++) {
+            if (desired->hasCurvePoint[i] && desired->hasCurvePoint[i - 1] && desired->curvePointMHz[i] < desired->curvePointMHz[i - 1]) {
+                desired->curvePointMHz[i] = desired->curvePointMHz[i - 1];
+            }
         }
     }
 
-    for (int i = 1; i < VF_NUM_POINTS; i++) {
-        if (desired->hasCurvePoint[i] && desired->hasCurvePoint[i - 1] && desired->curvePointMHz[i] < desired->curvePointMHz[i - 1]) {
-            desired->curvePointMHz[i] = desired->curvePointMHz[i - 1];
-        }
-    }
+    if (!desired_ini_load_curve_ext([&](const char* key, char* out, size_t outSize) {
+            std::string val = get_section_value(doc, curveSection, key);
+            snprintf(out, outSize, "%s", val.c_str());
+            return !val.empty();
+        }, desired, err, errSize)) return false;
+
+    if (!desired_ini_validate_loaded(desired, err, errSize)) return false;
 
     // IPC trust boundary: clamp hostile stored values on load. Pre-fix
     // effective-unit values were already halved by the stored-unit migration
@@ -510,6 +529,26 @@ static void migrate_profile_bank_mem_units(const char* /*path*/, IniDocument* do
                      context ? context : "", rewritten);
 }
 
+static void format_slot_sections(int slot, char* controls, size_t controlsSize,
+    char* curve, size_t curveSize, char* fan, size_t fanSize) {
+    snprintf(controls, controlsSize, "profile%d", slot);
+    snprintf(curve, curveSize, "profile%d_curve", slot);
+    snprintf(fan, fanSize, "profile%d_fan_curve", slot);
+}
+
+static int clamp_optional_slot(const IniDocument* doc, const char* key, int fallback) {
+    int v = get_section_int(doc, "profiles", key, fallback);
+    return (v < 0 || v > CONFIG_NUM_SLOTS) ? fallback : v;
+}
+
+static bool load_sections_normalized(const IniDocument* doc, const char* controls,
+    const char* curve, const char* fan, DesiredSettings* desired, const char* context,
+    char* err, size_t errSize) {
+    if (!load_desired_settings_from_sections(doc, controls, curve, fan, desired, context, err, errSize)) return false;
+    normalize_desired_settings_for_ui(desired);
+    return true;
+}
+
 bool load_profile_from_config_path(const char* path, int slot, DesiredSettings* desired, char* err, size_t errSize) {
     if (!desired || slot < 1 || slot > CONFIG_NUM_SLOTS) {
         set_message(err, errSize, "Invalid profile load arguments");
@@ -520,23 +559,15 @@ bool load_profile_from_config_path(const char* path, int slot, DesiredSettings* 
     if (!load_ini_document(path, &doc, err, errSize)) return false;
     migrate_profile_bank_mem_units(path, &doc, "load");
 
-    char controlsSection[32] = {};
-    char curveSection[32] = {};
-    char fanCurveSection[32] = {};
-    snprintf(controlsSection, sizeof(controlsSection), "profile%d", slot);
-    snprintf(curveSection, sizeof(curveSection), "profile%d_curve", slot);
-    snprintf(fanCurveSection, sizeof(fanCurveSection), "profile%d_fan_curve", slot);
+    char controlsSection[32] = {}, curveSection[32] = {}, fanCurveSection[32] = {};
+    format_slot_sections(slot, controlsSection, sizeof(controlsSection),
+        curveSection, sizeof(curveSection), fanCurveSection, sizeof(fanCurveSection));
 
     bool hasSlotSections = section_has_keys(&doc, controlsSection) || section_has_keys(&doc, curveSection) || section_has_keys(&doc, fanCurveSection);
-    if (!hasSlotSections && slot == 1) {
-        if (section_has_keys(&doc, "controls") || section_has_keys(&doc, "curve") || section_has_keys(&doc, "fan_curve")) {
-            snprintf(controlsSection, sizeof(controlsSection), "controls");
-            snprintf(curveSection, sizeof(curveSection), "curve");
-            snprintf(fanCurveSection, sizeof(fanCurveSection), "fan_curve");
-        } else {
-            set_message(err, errSize, "Profile %d is empty", slot);
-            return false;
-        }
+    if (!hasSlotSections && slot == 1 && (section_has_keys(&doc, "controls") || section_has_keys(&doc, "curve") || section_has_keys(&doc, "fan_curve"))) {
+        snprintf(controlsSection, sizeof(controlsSection), "controls");
+        snprintf(curveSection, sizeof(curveSection), "curve");
+        snprintf(fanCurveSection, sizeof(fanCurveSection), "fan_curve");
     } else if (!hasSlotSections) {
         set_message(err, errSize, "Profile %d is empty", slot);
         return false;
@@ -560,34 +591,25 @@ static bool load_legacy_config_path(const char* path, DesiredSettings* desired, 
 
 bool load_default_or_selected_profile(const char* path, int* slot, DesiredSettings* desired, char* err, size_t errSize) {
     if (!desired) return false;
-
     IniDocument doc;
     if (!load_ini_document(path, &doc, err, errSize)) return false;
     migrate_profile_bank_mem_units(path, &doc, "default-load");
-
     int selectedSlot = slot && *slot >= 1 && *slot <= CONFIG_NUM_SLOTS ? *slot : get_selected_profile_slot(&doc);
-
-    char controlsSection[32] = {};
-    char curveSection[32] = {};
-    char fanCurveSection[32] = {};
-    snprintf(controlsSection, sizeof(controlsSection), "profile%d", selectedSlot);
-    snprintf(curveSection, sizeof(curveSection), "profile%d_curve", selectedSlot);
-    snprintf(fanCurveSection, sizeof(fanCurveSection), "profile%d_fan_curve", selectedSlot);
-
+    char controlsSection[32] = {}, curveSection[32] = {}, fanCurveSection[32] = {};
+    format_slot_sections(selectedSlot, controlsSection, sizeof(controlsSection),
+        curveSection, sizeof(curveSection), fanCurveSection, sizeof(fanCurveSection));
     bool hasSelectedSections = section_has_keys(&doc, controlsSection) || section_has_keys(&doc, curveSection) || section_has_keys(&doc, fanCurveSection);
     if (hasSelectedSections) {
         char context[32] = {};
         snprintf(context, sizeof(context), "profile %d", selectedSlot);
-        if (!load_desired_settings_from_sections(&doc, controlsSection, curveSection, fanCurveSection, desired, context, err, errSize)) return false;
-        normalize_desired_settings_for_ui(desired);
+        if (!load_sections_normalized(&doc, controlsSection, curveSection, fanCurveSection, desired, context, err, errSize)) return false;
         if (slot) *slot = selectedSlot;
         return true;
     }
 
     bool hasLegacySections = section_has_keys(&doc, "controls") || section_has_keys(&doc, "curve") || section_has_keys(&doc, "fan_curve");
     if (hasLegacySections) {
-        if (!load_desired_settings_from_sections(&doc, "controls", "curve", "fan_curve", desired, path, err, errSize)) return false;
-        normalize_desired_settings_for_ui(desired);
+        if (!load_sections_normalized(&doc, "controls", "curve", "fan_curve", desired, path, err, errSize)) return false;
         if (slot) *slot = CONFIG_DEFAULT_SLOT;
         return true;
     }
@@ -601,65 +623,68 @@ bool load_default_or_selected_profile(const char* path, int* slot, DesiredSettin
 static void write_profile_sections(IniDocument* doc, const char* controlsSection, const char* curveSection, const char* fanCurveSection, const DesiredSettings* desired) {
     std::vector<IniEntry> controlsEntries;
     std::vector<IniEntry> curveEntries;
+    const bool emitAll = desired_ini_should_emit_all_domains(desired);
 
-    auto addControl = [&](const char* key, const char* value) {
+    auto addControl = [&](const char* key, const char* value) -> bool {
         IniEntry entry;
         entry.key = key;
         entry.value = value;
         controlsEntries.push_back(entry);
+        return true;
+    };
+    auto addCurveExt = [&](const char* key, const char* value) -> bool {
+        IniEntry entry;
+        entry.key = key;
+        entry.value = value;
+        curveEntries.push_back(entry);
+        return true;
     };
 
     char value[64] = {};
-    snprintf(value, sizeof(value), "%d", desired->gpuOffsetMHz);
-    addControl("gpu_offset_mhz", value);
-    snprintf(value, sizeof(value), "%d", desired->gpuOffsetExcludeLowCount);
-    addControl("gpu_offset_exclude_low_count", value);
-    snprintf(value, sizeof(value), "%d", desired->hasLock ? desired->lockCi : -1);
-    addControl("lock_ci", value);
-    snprintf(value, sizeof(value), "%u", desired->hasLock ? desired->lockMHz : 0u);
-    addControl("lock_mhz", value);
-    snprintf(value, sizeof(value), "%d",
-             desired->hasLock ? (int)desired->lockMode : (int)LOCK_MODE_NONE);
-    addControl("lock_mode", value);
-    snprintf(value, sizeof(value), "%d", desired->lockTracksAnchor ? 1 : 0);
-    addControl("lock_tracks_anchor", value);
-    snprintf(value, sizeof(value), "%d", desired->memOffsetMHz);
-    addControl("mem_offset_mhz", value);
-    snprintf(value, sizeof(value), "%d", desired->powerLimitPct);
-    addControl("power_limit_pct", value);
+    auto addInt = [&](const char* key, int v) {
+        snprintf(value, sizeof(value), "%d", v); addControl(key, value);
+    };
+    if (emitAll || desired->hasGpuOffset) {
+        addInt("gpu_offset_mhz", desired->gpuOffsetMHz);
+        addInt("gpu_offset_exclude_low_count", desired->gpuOffsetExcludeLowCount);
+    }
+    if (emitAll || desired->hasLock) {
+        addInt("lock_ci", desired->hasLock ? desired->lockCi : -1);
+        snprintf(value, sizeof(value), "%u", desired->hasLock ? desired->lockMHz : 0u);
+        addControl("lock_mhz", value);
+        snprintf(value, sizeof(value), "%d", desired->hasLock ? (int)desired->lockMode : (int)LOCK_MODE_NONE);
+        addControl("lock_mode", value);
+        addInt("lock_tracks_anchor", desired->lockTracksAnchor ? 1 : 0);
+    }
+    if (emitAll || desired->hasMemOffset) addInt("mem_offset_mhz", desired->memOffsetMHz);
+    if (emitAll || desired->hasPowerLimit) addInt("power_limit_pct", desired->powerLimitPct);
     // Preserve the record's ownership declaration.  Fabricating explicit zeros
     // would turn a profile that never owned XBAR into one that resets it after
     // transfer to a supported Blackwell system.
-    if (desired->hasXbarOffsetKhz) {
-        snprintf(value, sizeof(value), "%d", desired->xbarOffsetKhz);
-        addControl("xbar_offset_khz", value);
-    }
+    if (desired->hasXbarOffsetKhz) addInt("xbar_offset_khz", desired->xbarOffsetKhz);
     if (desired->hasXbarMsvddOffsetUv) {
         snprintf(value, sizeof(value), "%d", desired->xbarMsvddOffsetUv);
         addControl("xbar_msvdd_offset_uv", value);
     }
-    if (desired->hasSysClkOffsetKhz) {
-        snprintf(value, sizeof(value), "%d", desired->sysClkOffsetKhz);
-        addControl("sys_clk_offset_khz", value);
+    if (desired->hasSysClkOffsetKhz) addInt("sys_clk_offset_khz", desired->sysClkOffsetKhz);
+    if (desired->hasVideoClkOffsetKhz) addInt("video_clk_offset_khz", desired->videoClkOffsetKhz);
+    if (emitAll || desired->hasFan) {
+        addControl("fan_mode", fan_mode_to_config_value(desired->fanMode));
+        if (desired->fanMode == FAN_MODE_AUTO) addControl("fan", "auto");
+        else addInt("fan", clamp_percent(desired->fanPercent));
+        addInt("fan_fixed_pct", clamp_percent(desired->fanPercent));
     }
-    if (desired->hasVideoClkOffsetKhz) {
-        snprintf(value, sizeof(value), "%d", desired->videoClkOffsetKhz);
-        addControl("video_clk_offset_khz", value);
-    }
-    addControl("fan_mode", fan_mode_to_config_value(desired->fanMode));
-    if (desired->fanMode == FAN_MODE_AUTO) addControl("fan", "auto");
-    else {
-        snprintf(value, sizeof(value), "%d", clamp_percent(desired->fanPercent));
-        addControl("fan", value);
-    }
-    snprintf(value, sizeof(value), "%d", clamp_percent(desired->fanPercent));
-    addControl("fan_fixed_pct", value);
+    desired_ini_append_controls_ext(addControl, desired);
 
     linux_profile_write_curve_points(curveSection, desired, &curveEntries);
+    desired_ini_append_curve_ext(addCurveExt, desired);
 
     replace_section(doc, controlsSection, controlsEntries);
     replace_section(doc, curveSection, curveEntries);
-    save_fan_curve_section(doc, fanCurveSection, &desired->fanCurve);
+    if (emitAll || desired->hasFan)
+        save_fan_curve_section(doc, fanCurveSection, &desired->fanCurve);
+    else
+        replace_section(doc, fanCurveSection, std::vector<IniEntry>{});
 }
 
 bool save_profile_to_config_path(const char* path, int slot, const DesiredSettings* desired, char* err, size_t errSize) {
@@ -696,25 +721,19 @@ bool save_profile_to_config_path(const char* path, int slot, const DesiredSettin
 
     set_section_int(&doc, "meta", "format_version", 2);
 
-    int appLaunchSlot = get_section_int(&doc, "profiles", "app_launch_slot", 0);
-    int logonSlot = get_section_int(&doc, "profiles", "logon_slot", 0);
-    int appliedSlot = get_section_int(&doc, "profiles", "applied_slot", 0);
+    int appLaunchSlot = clamp_optional_slot(&doc, "app_launch_slot", 0);
+    int logonSlot = clamp_optional_slot(&doc, "logon_slot", 0);
+    int appliedSlot = clamp_optional_slot(&doc, "applied_slot", 0);
     int startOnLogon = get_section_int(&doc, "startup", "start_program_on_logon", 0);
-    if (appLaunchSlot < 0 || appLaunchSlot > CONFIG_NUM_SLOTS) appLaunchSlot = 0;
-    if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
-    if (appliedSlot < 0 || appliedSlot > CONFIG_NUM_SLOTS) appliedSlot = 0;
 
     set_section_int(&doc, "profiles", "selected_slot", slot);
     set_section_int(&doc, "profiles", "applied_slot", appliedSlot);
     set_section_int(&doc, "profiles", "app_launch_slot", appLaunchSlot);
     set_section_int(&doc, "profiles", "logon_slot", logonSlot);
 
-    char controlsSection[32] = {};
-    char curveSection[32] = {};
-    char fanCurveSection[32] = {};
-    snprintf(controlsSection, sizeof(controlsSection), "profile%d", slot);
-    snprintf(curveSection, sizeof(curveSection), "profile%d_curve", slot);
-    snprintf(fanCurveSection, sizeof(fanCurveSection), "profile%d_fan_curve", slot);
+    char controlsSection[32] = {}, curveSection[32] = {}, fanCurveSection[32] = {};
+    format_slot_sections(slot, controlsSection, sizeof(controlsSection),
+        curveSection, sizeof(curveSection), fanCurveSection, sizeof(fanCurveSection));
     write_profile_sections(&doc, controlsSection, curveSection, fanCurveSection, &normalized);
 
     if (slot == 1) {
@@ -752,9 +771,7 @@ bool clear_profile_from_config_path(const char* path, int slot,
     IniDocument doc;
     if (!load_ini_document(path, &doc, err, errSize)) return false;
     char controls[32] = {}, curve[32] = {}, fan[32] = {};
-    snprintf(controls, sizeof(controls), "profile%d", slot);
-    snprintf(curve, sizeof(curve), "profile%d_curve", slot);
-    snprintf(fan, sizeof(fan), "profile%d_fan_curve", slot);
+    format_slot_sections(slot, controls, sizeof(controls), curve, sizeof(curve), fan, sizeof(fan));
     std::vector<IniSection> retained;
     retained.reserve(doc.sections.size());
     for (const IniSection& section : doc.sections) {
@@ -766,19 +783,11 @@ bool clear_profile_from_config_path(const char* path, int slot,
         if (!remove) retained.push_back(section);
     }
     doc.sections.swap(retained);
-    int selectedSlot = get_section_int(
-        &doc, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
-    int appliedSlot = get_section_int(&doc, "profiles", "applied_slot", 0);
-    int appLaunchSlot = get_section_int(
-        &doc, "profiles", "app_launch_slot", 0);
-    int logonSlot = get_section_int(&doc, "profiles", "logon_slot", 0);
-    if (selectedSlot < 1 || selectedSlot > CONFIG_NUM_SLOTS)
-        selectedSlot = CONFIG_DEFAULT_SLOT;
-    if (appliedSlot < 0 || appliedSlot > CONFIG_NUM_SLOTS) appliedSlot = 0;
-    if (appLaunchSlot < 0 || appLaunchSlot > CONFIG_NUM_SLOTS) appLaunchSlot = 0;
-    if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
-    selectedSlot = profile_slot_reference_after_clear(
-        selectedSlot, slot, CONFIG_DEFAULT_SLOT);
+    int selectedSlot = get_selected_profile_slot(&doc);
+    int appliedSlot = clamp_optional_slot(&doc, "applied_slot", 0);
+    int appLaunchSlot = clamp_optional_slot(&doc, "app_launch_slot", 0);
+    int logonSlot = clamp_optional_slot(&doc, "logon_slot", 0);
+    selectedSlot = profile_slot_reference_after_clear(selectedSlot, slot, CONFIG_DEFAULT_SLOT);
     appliedSlot = profile_slot_reference_after_clear(appliedSlot, slot, 0);
     appLaunchSlot = profile_slot_reference_after_clear(appLaunchSlot, slot, 0);
     logonSlot = profile_slot_reference_after_clear(logonSlot, slot, 0);

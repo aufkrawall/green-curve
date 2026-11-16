@@ -12,6 +12,7 @@
 #include "startup_task_definition_policy.h"
 #include "gpu_selection_policy.h"
 #include "profile_persistence_policy.h"
+#include "profile_desired_ini_ext.h"
 #include "ui_theme_metrics.h"
 #include "gui_mutation_forward.h"
 #include "reconnect_state_forward.h"

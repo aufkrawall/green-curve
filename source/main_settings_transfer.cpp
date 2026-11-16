@@ -228,11 +228,9 @@ static bool settings_transfer_apply(const char* path, char* result, size_t resul
         path);
 
     set_pending_operation_source("CLI settings transfer");
-    // The snapshot describes absolute intent, so the GPU is returned to stock
-    // first: without it, a curve restored on top of whatever the freshly started
-    // service found would compound offsets instead of reproducing the state the
-    // user had before the upgrade.
-    desired.resetOcBeforeApply = true;
+    // The snapshot describes absolute intent, so legacy configs return the GPU
+    // to stock first; scoped configs already carry explicit ownership/release.
+    desired_prepare_replacement_request(&desired);
 
     // Restore the profile identity the export recorded, and let the service
     // decide whether it is still true.

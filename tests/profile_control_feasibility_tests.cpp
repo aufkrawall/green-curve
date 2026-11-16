@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 #include "profile_control_feasibility.h"
+#include "profile_runtime_resolution.h"
 #include <stdio.h>
 
 namespace {
@@ -150,6 +151,33 @@ int run_profile_control_feasibility_tests() {
     o.graphicsAlternate.rangeValid = 0; o.graphicsAlternate.minimum = o.graphicsAlternate.maximum = 0;
     o.graphicsAlternate.valid = 0;
     if (profile_control_plan(d, o).disposition != PROFILE_CONTROL_UNAVAILABLE) return 9114;
+    // Explicit release documents resolve without failing on non-writable points
+    // and report relationship-conditional control feasibility.
+    {
+        auto ro = observation();
+        ro.revision = 1;
+        ro.points[1].writableState = 2;
+        ProfileDestinationTopology dst{};
+        char rWhy[192]{};
+        if (!profile_destination_from_capture(ro, dst, rWhy, sizeof(rWhy))) return 9115;
+        ProfileDocument rel = profile_document_make_empty();
+        rel.applicationScope = PROFILE_SCOPE_EXPLICIT_RELEASE;
+        rel.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_MEMORY |
+            PROFILE_DOMAIN_POWER | PROFILE_DOMAIN_FAN | PROFILE_DOMAIN_LOCK;
+        ProfileMappingReport relMap;
+        DesiredSettings relRuntime{};
+        if (!profile_resolve_runtime(rel, dst, 1, {}, relRuntime, relMap, rWhy, sizeof(rWhy)) ||
+            desired_application_scope_kind(relRuntime.applicationScope) != DESIRED_SCOPE_EXPLICIT_RELEASE ||
+            !relRuntime.curvePointCaptured[2] || relRuntime.curvePointCapturedOffsetHz[2] ||
+            relRuntime.curvePointCaptured[3] || relRuntime.hasCurvePoint[2] ||
+            !relRuntime.hasMemOffset || !relRuntime.hasPowerLimit ||
+            relRuntime.powerLimitPct != POWER_LIMIT_DEFAULT_PCT ||
+            !relRuntime.hasFan || relRuntime.fanMode != FAN_MODE_AUTO ||
+            !relRuntime.hasLock || relRuntime.lockMode != LOCK_MODE_NONE) return 9116;
+        const ProfileControlPlan relPlan = profile_control_plan(relRuntime, ro);
+        if (relPlan.disposition != PROFILE_CONTROL_CONDITIONAL || relPlan.issueCount != 1 ||
+            relPlan.issues[0].kind != PROFILE_CONTROL_RELATIONSHIP) return 9117;
+    }
     return 0;
 }
 #ifdef GC_PROFILE_CONTROL_FIXTURE_MAIN

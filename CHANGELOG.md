@@ -40,12 +40,13 @@ Curve checks, profile transfer and capture improve.
 - **Legacy transfer:** preserve Windows/Linux units and tuning intent.
 - **Source profiles:** offline Windows/TUI editing survives GPU switches.
 - **Hardware capture:** Windows/TUI/CLI offer exact, flatten and pin drafts with labeled evidence and omission review.
-- **Profile checks:** stage reviewed scalar sources for Apply; preview mapping, controls and conversions.
+- **Profile checks:** run exact captured and custom curve profiles on compatible GPUs, stage scalar sources, and preview mapping, controls and releases.
 
 ### Improved
 
 - **Curve checks before Apply:** conflicts name frequency, voltage or range and guard transition peaks.
 - **Saving over another tool's curve:** Save and lock state ignore unowned curves and offer Capture.
+- **Profile storage:** saved profiles retain exact sub-MHz curve points, captured offsets, power ratios and domain scope across local slots.
 - **Linux profile switching:** replaced points clear first; flatten and lock readback are verified.
 - **Linux memory clocks:** curve-only changes preserve memory; failed preparation restores prior curves.
 - **Profile matching:** exact offsets and power ratios remain matched as previews change.

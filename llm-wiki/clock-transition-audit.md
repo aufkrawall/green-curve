@@ -91,9 +91,36 @@ UBSan fixtures and all-target checks pass (2026-11-15); static analysis retains
 34 baseline findings and adds none. Missing backend/request inputs issue no
 setter.
 
-The authoring runtime gate (`desired_authoring_runtime_ready()`) remains closed;
-backend transition wiring alone does not enable replay or grant Apply authority.
-Physical composition/calibration and live driver replay remain unverified.
+The authoring runtime gate (`desired_authoring_runtime_ready()`) was activated on
+2026-11-16 (`persistence-schema.md`); physical composition/calibration and live
+driver replay remain unverified.
+
+## Windows authoring evidence/tallies and Linux rollback preimage (2026-11-16)
+
+Source anchors: `source/gpu_backend_apply_authoring.h`,
+`source/gpu_backend_apply_diagnostics.h`, `source/gpu_backend_apply.cpp`,
+`source/linux_graphics_offset_control.h`, `source/linux_backend.h`,
+`source/linux_backend_mutation.cpp`, `source/linux_daemon.cpp`,
+`tests/windows_vf_exact_tests.cpp` (8783-8788),
+`tests/linux_clock_offset_tests.cpp` (9003-9005).
+
+- **Windows pre-write evidence & post-apply diagnostics:**
+  `apply_authoring_curve_evidence()` preserves
+  `CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE` when `!resetBaseline` and pre-write
+  independent scalars are proven zero with no intervening scalar write
+  (`!gpuApplied`), while falling back to `LIVE_SHAPED_ESTIMATE` when reset is
+  followed by a scalar write (`wroteIncomingGpuScalar`).
+  `apply_authoring_prepare_verify_desired()` and
+  `apply_authoring_flatten_tally()` populate `verifyDesired` / `diagExplicitMask`
+  from exact `CurveAuthoringTargets`, and `apply_log_post_apply_curve_diagnostics()`
+  preserves exact flatten counts (`preserveFlattenTally = authoringCurveWrite`)
+  instead of overwriting them with rounded-MHz comparisons.
+- **Linux daemon rollback preimage on surface release/handoff:**
+  `linux_backend_capture_apply_snapshot()` runs
+  `linux_bind_previous_graphics_snapshot()` before binding incoming `d` whenever
+  `linux_graphics_previous_touched()` detects a release, surface switch, or
+  baseline reset over an active named graphics control (`P0`/`GLOBAL`), leaving
+  unrelated independent updates (such as fan-only edits) untouched.
 
 ## Windows named-control handoff (2026-11-14)
 

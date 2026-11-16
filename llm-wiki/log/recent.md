@@ -5,6 +5,36 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-16: Activate exact/captured replay, extended INI persistence, and backend fixes
+
+- Activated runtime authoring/captured replay (`desired_authoring_runtime_ready()`,
+  `service_protocol_validation.h`, `service_scoped_apply_policy.h`,
+  `service_lifecycle_policy.h`, `profile_check_commands.h`) and switched
+  replacement callers (`desired_prepare_replacement_request()`) so scoped
+  profiles promote cleanly to `DESIRED_SCOPE_REPLACE_PROFILE` without forcing
+  `resetOcBeforeApply`, while legacy configs retain reset-before-apply.
+- Added shared `source/profile_desired_ini_ext.h` wired across Windows and Linux
+  INI persistence (`config_profiles.cpp`, `linux_port_profiles.cpp`,
+  `main_shell.cpp`, `main_runtime_capture.cpp`, `config_profiles_ui.cpp`),
+  keeping scoped unowned domains omitted, skipping legacy coercions on scoped
+  profiles, validating before IPC canonicalization, and resolving
+  `PROFILE_SCOPE_EXPLICIT_RELEASE` in `profile_runtime_resolution.h` and
+  `profile_control_feasibility.h`.
+- Fixed Windows `authoringCurveWrite` pre-write evidence (`apply_authoring_curve_evidence`),
+  `apply_authoring_prepare_verify_desired`, `apply_authoring_flatten_tally`
+  (`gpu_backend_apply_authoring.h`, `gpu_backend_apply_diagnostics.h`,
+  `gpu_backend_apply.cpp`), and Linux daemon rollback preimage capture on
+  released/switched named graphics surfaces (`linux_graphics_offset_control.h`,
+  `linux_backend_mutation.cpp`, `linux_daemon.cpp`).
+- Verification: `--gates`, `--check --target all`, `--tidy`, `--test`,
+  `--test --asan`, and WSL Linux UBSan suites passed cleanly, with new cases in
+  `captured_intent_runtime_tests.cpp` (`8061-8071`),
+  `profile_control_feasibility_tests.cpp` (`9115-9117`),
+  `windows_vf_exact_tests.cpp` (`8783-8788`), and
+  `linux_clock_offset_tests.cpp` (`9003-9005`). Hardware replay remains
+  unverified. See
+  [persistence-schema.md](../persistence-schema.md#exact-authoring--captured-replay-activation-and-ini-persistence-2026-11-16).
+
 ## 2026-11-15: Exclude unowned external state from Save and live lock detection
 
 - Isolated live lock adoption and Save pre-tail preservation from unowned

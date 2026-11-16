@@ -124,8 +124,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         ? desired->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT
         : apply_curve_plan_pre_write_route(desired).offsetInVfTable;
     ScalarCurveSubmissionReview scalarReview{};
+    bool preWriteScalarKnownZero = false;
     if (!apply_authoring_precheck_before_writes(desired, authoringComposeGraphics,
-            result, resultSize, &scalarReview, &modeledCtx)) return false;
+            result, resultSize, &scalarReview, &modeledCtx, &preWriteScalarKnownZero)) return false;
 #ifdef GREEN_CURVE_SERVICE_BINARY
     bool proofInvalidatedForWrite = false;
 #endif
@@ -522,6 +523,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     if (!apply_handoff_curve_snapshot(scalarReview))
         return apply_recover_clock_failure(clockCeiling, "Fresh curve readback after graphics handoff failed", result, resultSize);
     bool gpuApplied = scalarReview.outgoingReleased;
+    bool wroteIncomingGpuScalar = false;
     // The NVML-free sample for measuring what the NVML write below does to each
     // point (curve_point_scalar_shift_measurable()).  Trusted only right after
     // a reset that owned the GPU-offset domain: that reset forced the NVML
@@ -540,6 +542,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             : nvapi_set_gpu_offset(targetGpuOffsetkHz)) {
             successCount++;
             gpuApplied = true;
+            wroteIncomingGpuScalar = true;
             g_app.appliedGpuOffsetMHz = desired->gpuOffsetMHz;
             g_app.appliedGpuOffsetExcludeLowCount = 0;
             g_app.lastApplyUsedGpuOffset = true;
@@ -635,7 +638,10 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 originalCurve, originalCurveOffsets,
                 originalCurveFrequencyExact && originalCurveExact ? originalCurveFreqHz : nullptr,
                 originalCurveFrequencyExact && originalCurveExact ? originalCurveOffsetsHz : nullptr,
-                desired->resetOcBeforeApply ? CURVE_PLAN_EVIDENCE_TRANSACTION_BASELINE : CURVE_PLAN_EVIDENCE_LIVE_SHAPED_ESTIMATE,
+                apply_authoring_curve_evidence(g_app.vfFloorBinding.floor,
+                    desired->resetOcBeforeApply != 0, preWriteScalarKnownZero, gpuApplied,
+                    wroteIncomingGpuScalar, originalCurve, originalCurveOffsets,
+                    originalCurveExact ? originalCurveOffsetsHz : nullptr),
                 nullptr, authoringTargets, detail, sizeof(detail)))
             return apply_recover_clock_failure(clockCeiling, detail, result, resultSize);
         for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
@@ -850,7 +856,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             }
             apply_log_curve_peak_after_batch(clockCeiling, hasLock, lockMhz, lockMode);
             DesiredSettings verifyDesired = *desired;
+            bool diagExplicitMask[VF_NUM_POINTS] = {};
             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+                diagExplicitMask[ci] = explicitCurveMask[ci];
                 if (hasLock && lockedTailMask[ci]) continue;
                 if (!desired_curve_point_present(desired, ci)) {
                     verifyDesired.hasCurvePoint[ci] = false;
@@ -858,7 +866,11 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                     verifyDesired.curvePointFromGpuOffset[ci] = 0;
                 }
             }
-            if (gpuPolicyViaCurveBatch && !authoringCurveWrite) {
+            if (authoringCurveWrite) {
+                apply_authoring_prepare_verify_desired(authoringTargets, lockedTailMask,
+                    hasLock, lockMode, lockCi, lockMhz, verifyDesired, diagExplicitMask,
+                    flattenApplied, flattenFailed);
+            } else if (gpuPolicyViaCurveBatch) {
                 bool currentDetected = (currentAppliedGpuOffsetMHz != 0 || currentActiveGpuOffsetExcludeLowCount > 0);
                 for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                     if (!originalCurvePopulated[ci] || desired_curve_point_present(&verifyDesired, ci)) continue;
@@ -1169,10 +1181,15 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                             boost.firstFailedTargetMHz, boost.firstFailedOffsetIntent ? 1 : 0);
                     }
                 }
+                if (authoringCurveWrite && hasLock) {
+                    apply_authoring_flatten_tally(authoringTargets, lockMode, lockCi,
+                        flattenApplied, flattenFailed);
+                }
                 apply_log_post_apply_curve_diagnostics(
                     &verifyDesired, originalCurvePopulated, originalCurveVoltUv,
                     lockedTailMask, hasLock, lockMhz, flattenApplied, flattenFailed,
-                    gpuPolicyViaCurveBatch, explicitCurveMask, targetCurveOffsets);
+                    gpuPolicyViaCurveBatch, diagExplicitMask, targetCurveOffsets,
+                    authoringCurveWrite);
                 apply_log_nvml_composition_evidence(desired, offsetInVfTable,
                     originalCurvePopulated, lockedTailMask, targetCurveOffsets);
                 // Success/failure counting and state persistence

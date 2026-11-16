@@ -28,6 +28,15 @@ static bool apply_authoring_scalar_review_refusal(Guard& guard, char* why, size_
     return false;
 }
 
+static CurvePlanEvidence apply_authoring_curve_evidence(const VfFloorTopology& floor,
+    bool resetBaseline, bool preWriteScalarKnownZero, bool gpuApplied,
+    bool wroteIncomingScalar, const VFCurvePoint* curve, const int* offsetsKHz,
+    const gc_i64* offsetsHz) {
+    if (resetBaseline && !wroteIncomingScalar) return CURVE_PLAN_EVIDENCE_TRANSACTION_BASELINE;
+    return curve_plan_classify_pre_write_evidence(curve, offsetsKHz,
+        floor, preWriteScalarKnownZero && !gpuApplied, offsetsHz);
+}
+
 // Included after the Windows planner and exact writer. Frozen originals are
 // used before memory writes; corrections use fresh paired samples but retain
 // the transaction's original unowned controls.
@@ -73,7 +82,9 @@ static bool apply_verify_authoring_curve_targets(const CurveAuthoringTargets& ta
 
 static bool apply_authoring_precheck_before_writes(const DesiredSettings* d, bool composeGraphics,
     char* why, size_t whySize, ScalarCurveSubmissionReview* review = nullptr,
-    const AuthoringModeledPrecheckContext* modeled = nullptr) {
+    const AuthoringModeledPrecheckContext* modeled = nullptr,
+    bool* preWriteScalarKnownZeroOut = nullptr) {
+    if (preWriteScalarKnownZeroOut) *preWriteScalarKnownZeroOut = false;
     ScalarCurveSubmissionReview local{};
     if (!review) review = &local;
     *review = {};
@@ -108,6 +119,7 @@ static bool apply_authoring_precheck_before_writes(const DesiredSettings* d, boo
         return true;
     };
     const bool scalarKnownZero = composition == CAPTURE_COMPOSITION_INDEPENDENT && nvml_present_scalars_zero();
+    if (preWriteScalarKnownZeroOut) *preWriteScalarKnownZeroOut = scalarKnownZero;
     int componentKHz[VF_NUM_POINTS]{}; gc_i64 componentHz[VF_NUM_POINTS]{};
     auto in = apply_curve_plan_input(d, d->hasLock ? d->lockMode : LOCK_MODE_NONE,
         g_app.curve, g_app.freqOffsets, CURVE_PLAN_EVIDENCE_LIVE_SHAPED_ESTIMATE,
@@ -318,18 +330,35 @@ static bool apply_correct_authoring_curve_targets(const DesiredSettings& desired
     return !compileFailed && (loop.verified || apply_verify_authoring_curve_targets(targets, mode, desired.lockCi, why, whySize));
 }
 
+static bool apply_authoring_point_matched(const CurveAuthoringTargets& targets, int ci) {
+    if (!g_app.vfFrequenciesHzValid || !g_app.vfOffsetsHzValid) return false;
+    auto legacyFrequency = [](int i) { return g_app.curve[i].freq_kHz; };
+    auto exactFrequency = [](int i) { return g_app.curveFrequencyHz[i]; };
+    return targets.absoluteMask[ci]
+        ? curve_point_absolute_target_verified_hz_over(
+              legacyFrequency, exactFrequency, ci, VF_NUM_POINTS, targets.absoluteHz[ci])
+        : g_app.freqOffsetsHz[ci] == targets.offsetHz[ci];
+}
+
+static void apply_authoring_flatten_tally(const CurveAuthoringTargets& targets,
+    LockMode mode, int lockCi, int& appliedOut, int& failedOut) {
+    appliedOut = 0;
+    failedOut = 0;
+    if (mode == LOCK_MODE_NONE || lockCi < 0) return;
+    for (int i = lockCi; i < VF_NUM_POINTS; ++i) {
+        if (!targets.mask[i] || targets.preservedMask[i] || g_app.curve[i].freq_kHz == 0) continue;
+        if (apply_authoring_point_matched(targets, i)) ++appliedOut;
+        else ++failedOut;
+    }
+}
+
 static ApplyBoostTally apply_authoring_curve_boost_tally(const CurveAuthoringTargets& targets,
     LockMode mode, int lockCi) {
     ApplyBoostTally tally{}; tally.firstFailedCi = -1;
-    auto legacyFrequency = [](int i) { return g_app.curve[i].freq_kHz; };
-    auto exactFrequency = [](int i) { return g_app.curveFrequencyHz[i]; };
     for (int i = 0; i < VF_NUM_POINTS; ++i) {
         if (!targets.mask[i] || targets.preservedMask[i] ||
             (mode != LOCK_MODE_NONE && lockCi >= 0 && i >= lockCi)) continue;
-        const bool matched = g_app.vfFrequenciesHzValid && g_app.vfOffsetsHzValid &&
-            (targets.absoluteMask[i] ? curve_point_absolute_target_verified_hz_over(
-                legacyFrequency, exactFrequency, i, VF_NUM_POINTS, targets.absoluteHz[i])
-                : g_app.freqOffsetsHz[i] == targets.offsetHz[i]);
+        const bool matched = apply_authoring_point_matched(targets, i);
         const bool user = g_app.curveFrequencyHz[i] >= 500000000 &&
             (targets.absoluteMask[i] || targets.offsetHz[i] != 0);
         if (matched) { ++tally.applied; if (user) ++tally.userApplied; }
@@ -345,4 +374,33 @@ static ApplyBoostTally apply_authoring_curve_boost_tally(const CurveAuthoringTar
         }
     }
     return tally;
+}
+
+static void apply_authoring_prepare_verify_desired(const CurveAuthoringTargets& targets,
+    const bool* lockedTailMask, bool hasLock, LockMode lockMode, int lockCi, unsigned int lockMhz,
+    DesiredSettings& verifyDesired, bool* diagExplicitMask,
+    int& flattenApplied, int& flattenFailed) {
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        if (!targets.mask[ci]) continue;
+        if (hasLock && lockedTailMask[ci]) {
+            verifyDesired.curvePointMHz[ci] = lockMhz;
+            continue;
+        }
+        verifyDesired.hasCurvePoint[ci] = true;
+        if (targets.absoluteMask[ci]) {
+            verifyDesired.curvePointMHz[ci] = curve_plan_display_hz(targets.absoluteHz[ci]);
+            verifyDesired.curvePointCaptured[ci] = 0;
+            verifyDesired.curvePointFromGpuOffset[ci] = 0;
+            diagExplicitMask[ci] = true;
+        } else {
+            verifyDesired.curvePointCaptured[ci] = 1;
+            verifyDesired.curvePointMHz[ci] = 0;
+            diagExplicitMask[ci] = false;
+        }
+    }
+    if (hasLock) {
+        apply_authoring_flatten_tally(targets, lockMode, lockCi, flattenApplied, flattenFailed);
+        debug_log("flatten undervolt: target=%u MHz applied=%d failed=%d\n",
+            lockMhz, flattenApplied, flattenFailed);
+    }
 }

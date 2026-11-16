@@ -156,7 +156,7 @@ static ApApplyStart ap_do_apply_slot(int slot, ServiceApplyOrigin origin) {
 
     // Hardware mutation is serialized by the GUI worker; the foreground hook,
     // timers, and window remain responsive while the service writes the curve.
-    desired.resetOcBeforeApply = true;
+    desired_prepare_replacement_request(&desired);
     char queueStatus[512] = {};
     g_apApplyInFlight = true;
     if (!gui_mutation_queue_apply(&desired, false, origin,

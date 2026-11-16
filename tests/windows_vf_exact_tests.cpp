@@ -500,5 +500,61 @@ int run_windows_vf_exact_tests() {
     desired.curvePointCapturedOffsetHz[0] = 1000000500;
     if (apply_curve_correction_exact_hz(desired, target, mask, tail, old, original, true, 2, 0, voltages) ||
         driver.sets) return 8782;
+
+    // Pre-write evidence, verifyDesired preparation, and exact flatten/boost tallies.
+    {
+        initialize();
+        for (int i = 0; i < 8; ++i) {
+            g_app.curve[i] = {1500000u + (unsigned)i * 50000u, 650000u + (unsigned)i * 6250u};
+            g_app.curveFrequencyHz[i] = (gc_i64)g_app.curve[i].freq_kHz * 1000LL;
+            g_app.freqOffsets[i] = 0;
+            g_app.freqOffsetsHz[i] = 0;
+        }
+        g_app.vfFrequenciesHzValid = g_app.vfOffsetsHzValid = true;
+        const VfFloorTopology floor = vf_floor_topology_compute(g_app.curve, g_app.freqOffsets, VF_NUM_POINTS);
+        if (apply_authoring_curve_evidence(floor, true, false, false, false,
+                g_app.curve, g_app.freqOffsets, g_app.freqOffsetsHz) !=
+                CURVE_PLAN_EVIDENCE_TRANSACTION_BASELINE) return 8783;
+        if (apply_authoring_curve_evidence(floor, true, false, true, true,
+                g_app.curve, g_app.freqOffsets, g_app.freqOffsetsHz) !=
+                CURVE_PLAN_EVIDENCE_LIVE_SHAPED_ESTIMATE) return 8784;
+        if (apply_authoring_curve_evidence(floor, false, true, false, false,
+                g_app.curve, g_app.freqOffsets, g_app.freqOffsetsHz) !=
+                CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE) return 8785;
+        if (apply_authoring_curve_evidence(floor, false, true, true, false,
+                g_app.curve, g_app.freqOffsets, g_app.freqOffsetsHz) !=
+                CURVE_PLAN_EVIDENCE_LIVE_SHAPED_ESTIMATE) return 8786;
+
+        CurveAuthoringTargets targets{};
+        targets.mask[1] = targets.mask[2] = targets.mask[4] = targets.mask[5] = true;
+        targets.absoluteMask[1] = true; targets.absoluteHz[1] = 1550000500LL;
+        targets.capturedMask[2] = true; targets.offsetHz[2] = -500;
+        targets.absoluteMask[4] = targets.absoluteMask[5] = true;
+        targets.absoluteHz[4] = targets.absoluteHz[5] = 1700000000LL;
+        g_app.curveFrequencyHz[1] = 1550000500LL;
+        g_app.curve[1].freq_kHz = 1550000u;
+        g_app.freqOffsetsHz[2] = -500;
+        g_app.curveFrequencyHz[4] = g_app.curveFrequencyHz[5] = 1700000000LL;
+        g_app.curve[4].freq_kHz = g_app.curve[5].freq_kHz = 1700000u;
+
+        bool lockedTail[VF_NUM_POINTS]{};
+        lockedTail[4] = lockedTail[5] = true;
+        DesiredSettings verifyDesired{};
+        bool diagExplicit[VF_NUM_POINTS]{};
+        int flattenOk = -1, flattenFail = -1;
+        apply_authoring_prepare_verify_desired(targets, lockedTail, true, LOCK_MODE_FLATTEN,
+            4, 1700u, verifyDesired, diagExplicit, flattenOk, flattenFail);
+        const ApplyBoostTally boost = apply_authoring_curve_boost_tally(targets, LOCK_MODE_FLATTEN, 4);
+        if (!diagExplicit[1] || verifyDesired.curvePointMHz[1] != 1550u ||
+            diagExplicit[2] || !verifyDesired.curvePointCaptured[2] ||
+            verifyDesired.curvePointMHz[4] != 1700u ||
+            flattenOk != 2 || flattenFail != 0 ||
+            boost.applied != 2 || boost.failed != 0) return 8787;
+
+        g_app.curveFrequencyHz[5] = 1690000000LL;
+        g_app.curve[5].freq_kHz = 1690000u;
+        apply_authoring_flatten_tally(targets, LOCK_MODE_FLATTEN, 4, flattenOk, flattenFail);
+        if (flattenOk != 1 || flattenFail != 1) return 8788;
+    }
     return 0;
 }

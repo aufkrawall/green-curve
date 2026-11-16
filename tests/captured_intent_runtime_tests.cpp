@@ -8,6 +8,10 @@
 #include "linux_daemon_state.h"
 #include "apply_correction_policy.h"
 #include "gpu_backend_apply_correction.h"
+#include "profile_desired_ini_ext.h"
+#include "service_scoped_apply_policy.h"
+#include <map>
+#include <string>
 
 int run_captured_intent_runtime_tests() {
     DesiredSettings desired{};
@@ -125,5 +129,114 @@ int run_captured_intent_runtime_tests() {
     changed = projection;
     changed.curvePointMHz[22] = 1025;
     if (!desired_curve_point_semantically_equal(&projection, &changed, 22)) return 8060;
+
+    // desired_prepare_replacement_request and legacy scope upgrade rules.
+    {
+        DesiredSettings leg{}; leg.hasPowerLimit = 1; leg.powerLimitPct = 80;
+        desired_prepare_replacement_request(&leg);
+        if (leg.applicationScope != DESIRED_SCOPE_LEGACY || !leg.resetOcBeforeApply) return 8061;
+
+        DesiredSettings scoped{};
+        scoped.applicationScope = DESIRED_SCOPE_UPDATE_INCLUDED;
+        scoped.curvePointCaptured[5] = 1; scoped.curvePointCapturedOffsetHz[5] = -500;
+        desired_prepare_replacement_request(&scoped);
+        if (desired_application_scope_kind(scoped.applicationScope) != DESIRED_SCOPE_REPLACE_PROFILE ||
+            scoped.resetOcBeforeApply) return 8062;
+
+        DesiredSettings prevAuthoring{};
+        prevAuthoring.applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+        prevAuthoring.curvePointCaptured[5] = 1;
+        DesiredSettings legacyFollower{}; legacyFollower.hasFan = 1; legacyFollower.fanMode = FAN_MODE_AUTO;
+        service_upgrade_legacy_scalar_scope(&prevAuthoring, &legacyFollower);
+        if (legacyFollower.applicationScope != DESIRED_SCOPE_UPDATE_INCLUDED) return 8063;
+        legacyFollower.applicationScope = DESIRED_SCOPE_LEGACY;
+        legacyFollower.resetOcBeforeApply = 1;
+        service_upgrade_legacy_scalar_scope(&prevAuthoring, &legacyFollower);
+        if (legacyFollower.applicationScope != DESIRED_SCOPE_REPLACE_PROFILE ||
+            legacyFollower.resetOcBeforeApply) return 8071;
+    }
+
+    // Extended INI round-trip and strict rejection (DOC-01, DOC-02, CAP-10).
+    {
+        DesiredSettings iniSrc{};
+        iniSrc.lockCi = 22;
+        iniSrc.applicationScope = DESIRED_SCOPE_UPDATE_INCLUDED | DESIRED_SCOPE_REPLACE_VF_POINTS;
+        iniSrc.hasGpuOffset = 1; iniSrc.gpuOffsetMHz = 0;
+        iniSrc.authoring.graphicsPrecise = 1;
+        iniSrc.authoring.graphicsSurface = DESIRED_GRAPHICS_VF_COMPONENT;
+        iniSrc.authoring.graphicsOffsetHz = 0;
+        iniSrc.authoring.identityExclusions = 1;
+        iniSrc.authoring.graphicsExcluded[2] = 1;
+        iniSrc.authoring.topologyBound = 1;
+        iniSrc.authoring.topologyCount = 4;
+        iniSrc.authoring.voltageUv[2] = 650000;
+        iniSrc.authoring.voltageUv[3] = 662500;
+        iniSrc.authoring.voltageUv[21] = 850000;
+        iniSrc.authoring.voltageUv[22] = 862500;
+        iniSrc.curvePointCaptured[3] = 1; iniSrc.curvePointCapturedOffsetHz[3] = -15000500;
+        iniSrc.curvePointCaptured[21] = 1; iniSrc.curvePointCapturedOffsetHz[21] = 0;
+        iniSrc.hasCurvePoint[22] = 1; iniSrc.curvePointMHz[22] = 1000;
+        iniSrc.authoring.pointFrequencyPrecise[22] = 1;
+        iniSrc.authoring.pointFrequencyHz[22] = 1000000500;
+        iniSrc.hasLock = 1; iniSrc.lockMode = LOCK_MODE_FLATTEN; iniSrc.lockMHz = 1100;
+        iniSrc.authoring.lockPrecise = 1; iniSrc.authoring.lockFrequencyHz = 1100000500;
+        desired_memory_set_precise(&iniSrc, -500000, CLOCK_OFFSET_SURFACE_P0);
+        desired_power_set_ratio(&iniSrc, {249, 250});
+        if (desired_ini_should_emit_all_domains(&iniSrc)) return 8064;
+        DesiredSettings iniLeg{};
+        if (!desired_ini_should_emit_all_domains(&iniLeg)) return 8065;
+
+        std::map<std::string, std::string> ctrlMap, curveMap;
+        auto putCtrl = [&](const char* k, const char* v) -> bool { ctrlMap[k] = v; return true; };
+        auto putCurve = [&](const char* k, const char* v) -> bool { curveMap[k] = v; return true; };
+        if (!desired_ini_append_controls_ext(putCtrl, &iniSrc) ||
+            !desired_ini_append_curve_ext(putCurve, &iniSrc)) return 8066;
+
+        DesiredSettings loaded{};
+        loaded.lockCi = iniSrc.lockCi; loaded.hasGpuOffset = 1;
+        loaded.hasCurvePoint[22] = 1; loaded.curvePointMHz[22] = 1000;
+        loaded.hasLock = 1; loaded.lockMode = LOCK_MODE_FLATTEN; loaded.lockMHz = 1100;
+        loaded.hasMemOffset = 1; loaded.memOffsetMHz = iniSrc.memOffsetMHz;
+        loaded.hasPowerLimit = 1; loaded.powerLimitPct = iniSrc.powerLimitPct;
+        auto readFrom = [](const std::map<std::string, std::string>& m,
+                           const char* key, char* buf, size_t bufSize) -> bool {
+            auto it = m.find(key);
+            if (it == m.end()) return false;
+            snprintf(buf, bufSize, "%s", it->second.c_str());
+            return true;
+        };
+        char err[192]{};
+        if (!desired_ini_load_controls_ext(
+                [&](const char* k, char* b, size_t n) { return readFrom(ctrlMap, k, b, n); },
+                &loaded, err, sizeof(err)) ||
+            !desired_ini_load_curve_ext(
+                [&](const char* k, char* b, size_t n) { return readFrom(curveMap, k, b, n); },
+                &loaded, err, sizeof(err)) ||
+            !desired_ini_validate_loaded(&loaded, err, sizeof(err)) ||
+            !desired_settings_equal(&iniSrc, &loaded)) return 8067;
+
+        // Corrupt INI entries must fail loudly instead of silently clearing.
+        auto badCtrl = ctrlMap; badCtrl["application_scope"] = "99";
+        DesiredSettings bad = loaded;
+        if (desired_ini_load_controls_ext(
+                [&](const char* k, char* b, size_t n) { return readFrom(badCtrl, k, b, n); },
+                &bad, err, sizeof(err))) return 8068;
+
+        auto badPow = ctrlMap; badPow["power_ratio_den"] = "0";
+        bad = {};
+        if (!desired_ini_load_controls_ext(
+                [&](const char* k, char* b, size_t n) { return readFrom(badPow, k, b, n); },
+                &bad, err, sizeof(err)) ||
+            desired_ini_validate_loaded(&bad, err, sizeof(err))) return 8069;
+
+        auto badCurve = curveMap; badCurve.erase("point3_captured");
+        bad = loaded;
+        for (int i = 0; i < VF_NUM_POINTS; ++i) {
+            bad.curvePointCaptured[i] = 0; bad.curvePointCapturedOffsetHz[i] = 0;
+        }
+        if (desired_ini_load_curve_ext(
+                [&](const char* k, char* b, size_t n) { return readFrom(badCurve, k, b, n); },
+                &bad, err, sizeof(err))) return 8070;
+    }
     return 0;
 }

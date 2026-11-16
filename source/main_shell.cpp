@@ -524,6 +524,12 @@ static void unlock_all() {
         }
     }
 
+    if (!desired_ini_load_controls_ext([&](const char* key, char* out, size_t outSize) {
+            gc_GetPrivateProfileStringUtf8("controls", key, "", out, (DWORD)outSize, path);
+            trim_ascii(out);
+            return out[0] != '\0';
+        }, desired, err, errSize)) return false;
+
     if (!load_fan_curve_config_from_section(path, "fan_curve", &desired->fanCurve, err, errSize)) return false;
 
     char curveLoadErr[256] = {};
@@ -535,16 +541,26 @@ static void unlock_all() {
         debug_log("load_desired_settings_from_ini: config has no explicit [curve] point*_mhz entries in %s\n", path);
     }
 
-    // Same order as the slot loader: per-point provenance when the section has
-    // it, the legacy whole-section reconstruction only when it does not.
-    if (!restore_curve_point_origins_from_section(path, "curve", desired) &&
-        curve_section_uses_base_plus_gpu_offset_semantics(path, "curve", desired)) {
-        restore_curve_points_from_base_plus_gpu_offset(desired);
+    if (desired->applicationScope == DESIRED_SCOPE_LEGACY) {
+        // Same order as the slot loader: per-point provenance when the section has
+        // it, the legacy whole-section reconstruction only when it does not.
+        if (!restore_curve_point_origins_from_section(path, "curve", desired) &&
+            curve_section_uses_base_plus_gpu_offset_semantics(path, "curve", desired)) {
+            restore_curve_points_from_base_plus_gpu_offset(desired);
+        }
+
+        repair_profile_locked_curve_readback_artifacts(path, "curve", 1, desired);
+    } else {
+        restore_curve_point_origins_from_section(path, "curve", desired);
     }
 
-    repair_profile_locked_curve_readback_artifacts(path, "curve", 1, desired);
+    if (!desired_ini_load_curve_ext([&](const char* key, char* out, size_t outSize) {
+            gc_GetPrivateProfileStringUtf8("curve", key, "", out, (DWORD)outSize, path);
+            trim_ascii(out);
+            return out[0] != '\0';
+        }, desired, err, errSize)) return false;
 
-    return true;
+    return desired_ini_validate_loaded(desired, err, errSize);
 }
 
 #include "config_profiles.cpp"

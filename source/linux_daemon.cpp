@@ -376,7 +376,8 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             if (!capture_uncertain_record(wasUncertain, &uncertainRecord,
                                           &capturedUncertain, stateErr, sizeof(stateErr)) ||
                 !daemon_fan_ownership_allows_selected_write(stateErr, sizeof(stateErr)) ||
-                !linux_backend_capture_apply_snapshot(&g_gpu, &d, &before, stateErr, sizeof(stateErr)) ||
+                !linux_backend_capture_apply_snapshot(&g_gpu, &d, &before, stateErr, sizeof(stateErr),
+                                                      hadPrevious ? &previousDesired : nullptr, &committedDesired) ||
                 !daemon_fan_ownership_ensure_before_write(&committedDesired,
                                                           stateErr, sizeof(stateErr)) ||
                 !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu,

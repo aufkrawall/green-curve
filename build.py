@@ -2389,7 +2389,7 @@ def run_source_regression_checks():
     require_text(logon_startup_cpp, "already active in background service; skipping reset-before-apply", "app-start auto-load skips disruptive reset/apply when service already owns the same intent")
     require_order(logon_startup_cpp,
         "desired_settings_match_active_service_intent(&desired",
-        "desired.resetOcBeforeApply = true;",
+        "desired_prepare_replacement_request(&desired);",
         "app-start active-service match is checked before reset-before-apply")
     require_text(gpu_backend_apply_cpp, "applying anyway by design", "memory offsets outside reported range are still attempted (F-DOM-1: not gated)")
     xbar_gates.check_all(_gate_ctx(), require_text, forbid_text)

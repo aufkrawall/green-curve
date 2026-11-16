@@ -53,7 +53,8 @@ static void apply_log_post_apply_curve_diagnostics(
     const DesiredSettings* verifyDesiredIn, const bool* originalCurvePopulated,
     const unsigned int* originalCurveVoltUv, const bool* lockedTailMask,
     bool hasLock, unsigned int lockMhz, int& flattenApplied, int& flattenFailed,
-    bool selective, const bool* explicitMask, const int* targetOffsets) {
+    bool selective, const bool* explicitMask, const int* targetOffsets,
+    bool preserveFlattenTally = false) {
     const DesiredSettings& verifyDesired = *verifyDesiredIn;
                 // Log voltage consistency diagnostic: compare post-apply voltage
                 // against the pre-apply snapshot to detect unexpected voltage drift.
@@ -175,7 +176,7 @@ static void apply_log_post_apply_curve_diagnostics(
                         debug_log("post-apply SHORTFALL: %d point(s) landed >=100 MHz below the requested curve; worst ci=%d actual=%u target=%u (short by %u MHz). The apply may still report success -- check whether this profile is being applied at all.\n",
                             farBelow, farBelowCi, farBelowActual, farBelowTarget, farBelowWorst);
                     }
-                    if (hasLock && lockMhz > 0) {
+                    if (!preserveFlattenTally && hasLock && lockMhz > 0) {
                         flattenApplied = tailOK;
                         flattenFailed = tailOff;
                     }

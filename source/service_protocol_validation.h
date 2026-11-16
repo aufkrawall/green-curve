@@ -95,11 +95,9 @@ static inline const char* service_request_reject_reason(
     if ((r->desired.memOffsetPrecise || r->desired.powerLimitRatio) &&
         r->desired.applicationScope == DESIRED_SCOPE_LEGACY)
         return "precise scalar intent requires an explicit application scope";
-    // The layout can preserve captured intent before a client can request
-    // replay. Never let an unimplemented point kind become a silent no-op.
-    for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
-        if (r->desired.curvePointCaptured[ci])
-            return "captured offset replay is not available";
+    if ((!desired_authoring_is_zero(r->desired.authoring) || desired_curve_captured_any(&r->desired)) &&
+        r->desired.applicationScope == DESIRED_SCOPE_LEGACY)
+        return "captured or exact authoring intent requires an explicit application scope";
     if (r->desired.applicationScope != DESIRED_SCOPE_LEGACY) {
         if (r->command != SERVICE_CMD_APPLY && r->command != SERVICE_CMD_SET_STARTUP_POLICY &&
             r->command != SERVICE_CMD_REFRESH_STARTUP_PROFILE)

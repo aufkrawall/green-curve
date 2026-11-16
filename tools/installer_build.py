@@ -1194,8 +1194,8 @@ def check_all(ctx, require_text, forbid_text):
     # second, weaker path around the event-only auto-restore contract.
     require_text(transfer, "SERVICE_APPLY_ORIGIN_CLI",
                  "restored settings are applied as an explicit CLI apply")
-    require_text(transfer, "resetOcBeforeApply = true",
-                 "restored settings start from stock so offsets cannot compound")
+    require_text(transfer, "desired_prepare_replacement_request(&desired)",
+                 "restored settings start from stock on legacy configs and replace cleanly on scoped configs")
     # An APPLY request is only valid when it carries the instance id, GPU
     # generation, topology signature, and adapter from a READY envelope.  The
     # first real upgrade restore failed because this preamble was missing.

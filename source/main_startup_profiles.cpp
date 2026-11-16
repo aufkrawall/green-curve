@@ -139,8 +139,9 @@ static void maybe_load_app_launch_profile_to_gui() {
             g_app.usingBackgroundService ? 1 : 0,
             g_app.backgroundServiceAvailable ? 1 : 0);
     }
-    debug_log("maybe_load_app_launch_profile_to_gui: applying slot %d with reset-before-apply\n", appLaunchSlot);
-    desired.resetOcBeforeApply = true;
+    desired_prepare_replacement_request(&desired);
+    debug_log("maybe_load_app_launch_profile_to_gui: applying slot %d (scope=%lu reset=%d)\n",
+        appLaunchSlot, (unsigned long)desired.applicationScope, desired.resetOcBeforeApply ? 1 : 0);
     char queueStatus[512] = {};
     if (!gui_mutation_queue_apply(&desired, false,
             SERVICE_APPLY_ORIGIN_APP_LAUNCH,

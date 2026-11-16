@@ -42,8 +42,6 @@ static inline bool profile_resolve_runtime(const ProfileDocument& source,
     const auto report = profile_map_topology(source, destination, sourceRevision);
     mapping = report;
     if (!report.ready()) return fail("destination mapping requires review");
-    if (source.applicationScope == PROFILE_SCOPE_EXPLICIT_RELEASE)
-        return fail("release requires current ownership resolution");
     if (!sourceRevision || !destination.gpuGeneration || !destination.revision)
         return fail("destination review binding is missing");
     if (routes.graphics > DESIRED_GRAPHICS_VF_COMPONENT || routes.memory > CLOCK_OFFSET_SURFACE_GLOBAL)
@@ -145,6 +143,36 @@ static inline bool profile_resolve_runtime(const ProfileDocument& source,
         if (source.xbarMsvddOffsetUv < -100000 || source.xbarMsvddOffsetUv > 100000)
             return fail("auxiliary voltage exceeds application bounds; edit the draft explicitly");
         next.hasXbarMsvddOffsetUv = 1; next.xbarMsvddOffsetUv = (int)source.xbarMsvddOffsetUv;
+    }
+    if (source.applicationScope == PROFILE_SCOPE_EXPLICIT_RELEASE) {
+        if ((source.domains & PROFILE_DOMAIN_GRAPHICS_OFFSET) && !next.hasGpuOffset) next.hasGpuOffset = 1;
+        if ((source.domains & PROFILE_DOMAIN_MEMORY) && !next.hasMemOffset) next.hasMemOffset = 1;
+        if ((source.domains & PROFILE_DOMAIN_POWER) && !next.hasPowerLimit) {
+            next.hasPowerLimit = 1; next.powerLimitPct = POWER_LIMIT_DEFAULT_PCT;
+        }
+        if ((source.domains & PROFILE_DOMAIN_FAN) && !next.hasFan) {
+            next.hasFan = 1; next.fanAuto = 1; next.fanMode = FAN_MODE_AUTO;
+        }
+        if ((source.domains & PROFILE_DOMAIN_LOCK) && !next.hasLock) {
+            next.hasLock = 1; next.lockCi = -1; next.lockMode = LOCK_MODE_NONE;
+        }
+        if ((source.domains & PROFILE_DOMAIN_XBAR) && !next.hasXbarOffsetKhz && !next.hasXbarMsvddOffsetUv) {
+            next.hasXbarOffsetKhz = 1; next.hasXbarMsvddOffsetUv = 1;
+        }
+        if ((source.domains & PROFILE_DOMAIN_SYS_CLK) && !next.hasSysClkOffsetKhz) next.hasSysClkOffsetKhz = 1;
+        if ((source.domains & PROFILE_DOMAIN_VIDEO_CLK) && !next.hasVideoClkOffsetKhz) next.hasVideoClkOffsetKhz = 1;
+        if (source.domains & PROFILE_DOMAIN_VF_CURVE) {
+            bool anyCurve = false;
+            for (int ci = 0; ci < VF_NUM_POINTS; ++ci) anyCurve |= desired_curve_point_present(&next, ci);
+            if (!anyCurve) {
+                for (int i = 0; i < destination.count; ++i) {
+                    if (!destination.points[i].graphics || !destination.points[i].writable ||
+                        destination.points[i].index >= VF_NUM_POINTS) continue;
+                    const int ci = (int)destination.points[i].index;
+                    next.curvePointCaptured[ci] = 1; next.curvePointCapturedOffsetHz[ci] = 0;
+                }
+            }
+        }
     }
     if (!desired_curve_intent_valid(&next) || !desired_scalar_intent_valid(&next) || !desired_authoring_valid(&next))
         return fail("mapped runtime intent is contradictory or out of bounds");

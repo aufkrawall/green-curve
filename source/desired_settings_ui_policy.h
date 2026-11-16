@@ -45,26 +45,33 @@ static inline void initialize_desired_settings_defaults(DesiredSettings* desired
 
 static inline void normalize_desired_settings_for_ui(DesiredSettings* desired) {
     if (!desired) return;
-    desired->hasGpuOffset = true;
-    desired->hasMemOffset = true;
-    desired->hasPowerLimit = true;
-    desired->hasFan = true;
-    if (desired->gpuOffsetMHz == 0) desired->gpuOffsetExcludeLowCount = 0;
+    const bool legacyScope = desired->applicationScope == DESIRED_SCOPE_LEGACY;
+    if (legacyScope) {
+        desired->hasGpuOffset = true;
+        desired->hasMemOffset = true;
+        desired->hasPowerLimit = true;
+        desired->hasFan = true;
+    }
+    if (desired->hasGpuOffset && desired->gpuOffsetMHz == 0) desired->gpuOffsetExcludeLowCount = 0;
     // Deliberately NOT a 0..100 percent clamp: the power limit is a percentage
     // *of the board default*, and every board worth overclocking allows more
     // than 100% (an RTX 5070 defaults to 250 W with a 300 W ceiling).
-    if (!desired->powerLimitRatio) desired->powerLimitPct = clamp_power_limit_pct(
-        desired->powerLimitPct == 0 ? 100 : desired->powerLimitPct);
-    // A fan duty, unlike the power limit, really is 0..100.
-    desired->fanPercent = desired_ui_clamp_fan_percent(
-        desired->fanPercent <= 0 ? 50 : desired->fanPercent);
-    if (desired->fanMode < FAN_MODE_AUTO || desired->fanMode > FAN_MODE_CURVE)
-        desired->fanMode = FAN_MODE_AUTO;
-    desired->fanAuto = desired->fanMode == FAN_MODE_AUTO;
-    fan_curve_normalize(&desired->fanCurve);
-    char err[128] = {};
-    if (!fan_curve_validate(&desired->fanCurve, err, sizeof(err))) {
-        fan_curve_set_default(&desired->fanCurve);
+    if (desired->hasPowerLimit && !desired->powerLimitRatio) {
+        desired->powerLimitPct = clamp_power_limit_pct(
+            desired->powerLimitPct == 0 ? 100 : desired->powerLimitPct);
+    }
+    if (desired->hasFan) {
+        // A fan duty, unlike the power limit, really is 0..100.
+        desired->fanPercent = desired_ui_clamp_fan_percent(
+            desired->fanPercent <= 0 ? 50 : desired->fanPercent);
+        if (desired->fanMode < FAN_MODE_AUTO || desired->fanMode > FAN_MODE_CURVE)
+            desired->fanMode = FAN_MODE_AUTO;
+        desired->fanAuto = desired->fanMode == FAN_MODE_AUTO;
+        fan_curve_normalize(&desired->fanCurve);
+        char err[128] = {};
+        if (!fan_curve_validate(&desired->fanCurve, err, sizeof(err))) {
+            fan_curve_set_default(&desired->fanCurve);
+        }
     }
 }
 

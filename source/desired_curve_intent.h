@@ -159,4 +159,13 @@ static inline bool desired_curve_intent_valid(const Settings* d, int* badPoint =
     return true;
 }
 
+template <class Settings>
+static inline bool desired_curve_captured_any(const Settings* d) {
+    if (!d) return false;
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        if (d->curvePointCaptured[ci]) return true;
+    }
+    return false;
+}
+
 #endif

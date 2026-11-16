@@ -481,6 +481,7 @@ static void merge_desired_settings(DesiredSettings* base, const DesiredSettings*
             base->curvePointCapturedOffsetHz[i] = override->curvePointCapturedOffsetHz[i];
         }
     }
+    desired_merge_authoring_override(base, override);
 }
 
 static bool desired_has_any_action(const DesiredSettings* desired) {

@@ -262,8 +262,10 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
 }
 
 bool linux_backend_capture_apply_snapshot(LinuxGpuState* g, const DesiredSettings* d,
-    LinuxHardwareSnapshot* snapshot, char* err, size_t errSize) {
+    LinuxHardwareSnapshot* snapshot, char* err, size_t errSize,
+    const DesiredSettings* previous, const DesiredSettings* committed) {
     return linux_backend_capture_snapshot(g, snapshot, err, errSize) &&
+        linux_bind_previous_graphics_snapshot(g, d, previous, committed, snapshot, err, errSize) &&
         linux_bind_graphics_snapshot(g, d, snapshot, err, errSize);
 }
 
@@ -444,7 +446,9 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     }
     const int graphicsRouteOverride = d && d->applicationScope != DESIRED_SCOPE_LEGACY
         ? (scopedPlan.graphicsOffsetViaVf ? 2 : 1) : 0;
-    if (!linux_bind_graphics_snapshot(g, d, &snapshot, preflight, sizeof(preflight))) {
+    if (!linux_bind_previous_graphics_snapshot(g, d, previousIntent, committedIntent,
+            &snapshot, preflight, sizeof(preflight)) ||
+        !linux_bind_graphics_snapshot(g, d, &snapshot, preflight, sizeof(preflight))) {
         LinuxMutationResult mutation{};
         if (result) gc_strlcpy(result, resultSize, preflight);
         return mutation;

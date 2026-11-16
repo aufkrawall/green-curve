@@ -72,6 +72,10 @@ static inline ProfileControlPlan profile_control_plan(const DesiredSettings& d, 
         !desired_authoring_valid(&d) || !desired_scalar_intent_valid(&d) || !desired_curve_intent_valid(&d)) {
         profile_control_note(p, PROFILE_CONTROL_UNAVAILABLE, 0, PROFILE_CONTROL_MISSING); return p;
     }
+    if (desired_application_scope_kind(d.applicationScope) == DESIRED_SCOPE_EXPLICIT_RELEASE) {
+        profile_control_note(p, PROFILE_CONTROL_CONDITIONAL, 0, PROFILE_CONTROL_RELATIONSHIP);
+        return p;
+    }
     const gc_u32 graphics = d.authoring.graphicsSurface;
     bool needsCurve = d.hasLock || (d.hasGpuOffset && graphics == DESIRED_GRAPHICS_VF_COMPONENT);
     bool hasProjection = false;

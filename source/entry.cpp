@@ -274,8 +274,9 @@ static bool handle_cli(LPWSTR wCmdLine) {
         merge_desired_settings(&cfg, &opts.desired);
         char result[512] = {};
         set_pending_operation_source("CLI apply-config");
-        debug_log("CLI apply-config: enabling reset-before-apply\n");
-        cfg.resetOcBeforeApply = true;
+        desired_prepare_replacement_request(&cfg);
+        debug_log("CLI apply-config: prepared replacement scope=%lu reset=%d\n",
+            (unsigned long)cfg.applicationScope, cfg.resetOcBeforeApply ? 1 : 0);
         bool ok = apply_desired_settings(&cfg, false,
             SERVICE_APPLY_ORIGIN_CLI, SERVICE_PROFILE_SOURCE_USER_SLOT, logonSlot,
             result, sizeof(result));

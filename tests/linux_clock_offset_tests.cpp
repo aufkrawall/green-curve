@@ -472,5 +472,55 @@ int run_linux_clock_offset_tests() {
             !rev.deferredModeledCheck || rev.modeledCeiling.arm ||
             sd.p0Writes || sd.globalWrites || sd.capWrites) return 9002;
     }
+
+    // Daemon rollback preimage captures released/changed previous named graphics surfaces
+    // without breaking unrelated independent fan-only updates.
+    {
+        Driver rd{}; LinuxGpuState rg{}; initialize(&rd, &rg);
+        rd.p0Value = 71; rd.globalValue = -243;
+        DesiredSettings prev{};
+        prev.applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+        prev.hasGpuOffset = 1; prev.gpuOffsetMHz = 71;
+        prev.authoring.graphicsPrecise = 1;
+        prev.authoring.graphicsSurface = DESIRED_GRAPHICS_P0;
+        prev.authoring.graphicsOffsetHz = 71000000LL;
+
+        DesiredSettings fanReq{};
+        fanReq.applicationScope = DESIRED_SCOPE_UPDATE_INCLUDED;
+        fanReq.hasFan = fanReq.fanAuto = 1; fanReq.fanMode = FAN_MODE_AUTO;
+        DesiredSettings fanCommitted = prev;
+        rd.failP0Read = true;
+        LinuxHardwareSnapshot snap{}; char why[192]{};
+        if (linux_graphics_previous_touched(&fanReq, &prev, &fanCommitted) ||
+            !linux_bind_previous_graphics_snapshot(&rg, &fanReq, &prev, &fanCommitted, &snap, why, sizeof(why)))
+            return 9003;
+
+        rd.failP0Read = false;
+        DesiredSettings releaseReq{};
+        releaseReq.applicationScope = DESIRED_SCOPE_EXPLICIT_RELEASE;
+        releaseReq.hasGpuOffset = 1;
+        DesiredSettings releaseCommitted{};
+        snap = {};
+        if (!linux_graphics_previous_touched(&releaseReq, &prev, &releaseCommitted) ||
+            !linux_bind_previous_graphics_snapshot(&rg, &releaseReq, &prev, &releaseCommitted, &snap, why, sizeof(why)) ||
+            !linux_bind_graphics_snapshot(&rg, &releaseReq, &snap, why, sizeof(why)) ||
+            !(snap.graphicsPreimage.validMask & GRAPHICS_SCALAR_RECOVERY_P0) ||
+            snap.graphicsPreimage.p0MHz != 71 ||
+            snap.gpuOffsetSurface != CLOCK_OFFSET_SURFACE_P0 || snap.gpuOffsetMHz != 71)
+            return 9004;
+
+        DesiredSettings handoffReq{};
+        handoffReq.applicationScope = DESIRED_SCOPE_UPDATE_INCLUDED;
+        handoffReq.hasGpuOffset = 1; handoffReq.gpuOffsetMHz = -243;
+        handoffReq.authoring.graphicsPrecise = 1;
+        handoffReq.authoring.graphicsSurface = DESIRED_GRAPHICS_GLOBAL;
+        handoffReq.authoring.graphicsOffsetHz = -243000000LL;
+        snap = {};
+        if (!linux_bind_graphics_snapshots(&rg, &handoffReq, &prev, &handoffReq, &snap, why, sizeof(why)) ||
+            snap.graphicsPreimage.validMask != (GRAPHICS_SCALAR_RECOVERY_P0 | GRAPHICS_SCALAR_RECOVERY_GLOBAL) ||
+            snap.graphicsPreimage.p0MHz != 71 || snap.graphicsPreimage.globalMHz != -243 ||
+            snap.gpuOffsetSurface != CLOCK_OFFSET_SURFACE_GLOBAL || snap.gpuOffsetMHz != -243)
+            return 9005;
+    }
     return 0;
 }

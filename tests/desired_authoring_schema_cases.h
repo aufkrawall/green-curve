@@ -15,7 +15,7 @@ static int authoring_schema_cases() {
     d.authoring.topologyBound = 1; d.authoring.topologyCount = 2;
     d.authoring.voltageUv[20] = 662000; d.authoring.voltageUv[21] = 675000;
     if (!desired_authoring_valid(&d) || !service_desired_bool_fields_valid(&d) ||
-        desired_authoring_runtime_ready(&d) || service_desired_settings_is_zero(d)) return 8650;
+        !desired_authoring_runtime_ready(&d) || service_desired_settings_is_zero(d)) return 8650;
     DesiredSettings copy = d;
     validate_desired_settings_for_ipc(&copy);
     if (!desired_settings_equal(&d, &copy) || desired_absolute_hz(d, 20) != 1000000500 ||
@@ -106,11 +106,12 @@ static int authoring_schema_cases() {
 #endif
     ServiceRequest request{}; request.magic = SERVICE_PROTOCOL_MAGIC;
     request.version = SERVICE_PROTOCOL_VERSION; request.command = SERVICE_CMD_APPLY; request.callerPid = 1;
+    request.operationId = 1; request.expectedServiceInstanceId = 1; request.expectedGpuGeneration = 1;
+    request.expectedTopologySignature = 1; request.targetGpu.valid = 1; request.applyOrigin = SERVICE_APPLY_ORIGIN_GUI;
     request.desired = d;
-    const char* reason = service_request_reject_reason(&request);
-    if (!reason || !strstr(reason, "destination review")) return 8675;
+    if (service_request_reject_reason(&request) != nullptr) return 8675;
     request.desired = {}; request.expectedControlFingerprint = 1;
-    reason = service_request_reject_reason(&request);
+    const char* reason = service_request_reject_reason(&request);
     if (!reason || !strstr(reason, "control preconditions")) return 8676;
     return 0;
 }

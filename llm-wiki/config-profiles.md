@@ -64,9 +64,8 @@ Check passively reads all domains, including preserved and cleanup controls,
 so its opaque service revision can bind a complete scoped operation. Use mapped
 draft is a separate local choice. It retains the source document and exact runtime
 units, creates no ownership/save acknowledgment and performs no service write.
-Only representable/conditional reviews whose runtime adapters are activated
-can be staged. Exact graphics/curve replay remains gated pending transition
-integration; scalar-only sources can use the existing precise adapters.
+Representable/conditional reviews whose runtime adapters match now execute
+through active exact authoring and captured-offset runtime paths.
 
 Windows and TUI Apply submit the frozen runtime value with that complete
 control token through their existing transport/coordinator. The service checks

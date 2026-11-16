@@ -311,6 +311,31 @@ static inline bool linux_bind_graphics_snapshot(LinuxGpuState* g, const DesiredS
     return true;
 }
 
+static inline bool linux_graphics_previous_touched(const DesiredSettings* d,
+    const DesiredSettings* previous, const DesiredSettings* committed) {
+    if (!previous || !previous->authoring.graphicsPrecise ||
+        previous->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT) return false;
+    if (d && d->resetOcBeforeApply) return true;
+    if (!committed || !committed->hasGpuOffset || !committed->authoring.graphicsPrecise) return true;
+    return committed->authoring.graphicsSurface != previous->authoring.graphicsSurface;
+}
+
+static inline bool linux_bind_previous_graphics_snapshot(LinuxGpuState* g, const DesiredSettings* d,
+    const DesiredSettings* previous, const DesiredSettings* committed,
+    LinuxHardwareSnapshot* snapshot, char* why, size_t whySize) {
+    return !linux_graphics_previous_touched(d, previous, committed) ||
+        linux_bind_graphics_snapshot(g, previous, snapshot, why, whySize);
+}
+
+static inline bool linux_bind_graphics_snapshots(LinuxGpuState* g, const DesiredSettings* d,
+    const DesiredSettings* previous, const DesiredSettings* committed,
+    LinuxHardwareSnapshot* snapshot, char* why, size_t whySize) {
+    if (linux_graphics_previous_touched(d, previous, committed) &&
+        !linux_bind_graphics_snapshot(g, previous, snapshot, why, whySize))
+        return false;
+    return linux_bind_graphics_snapshot(g, d, snapshot, why, whySize);
+}
+
 static inline bool linux_apply_named_graphics_offset(LinuxGpuState* g, const DesiredSettings* d,
     ScalarCurveSubmissionReview* review = nullptr) {
     scalar_curve_note_write(review, false);

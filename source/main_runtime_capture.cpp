@@ -485,27 +485,46 @@ static bool save_desired_to_config_with_startup(const char* path, const DesiredS
     }
     buildOk = buildOk && appendf("[debug]\r\nenabled=%s\r\n", g_debug_logging ? "1" : "0");
 
+    const bool legacyScope = !desired || desired->applicationScope == DESIRED_SCOPE_LEGACY || useCurrentForUnset;
+    auto writeCtrlKv = [&](const char* k, const char* v) { return appendf("%s=%s\r\n", k, v); };
     buildOk = buildOk && appendf("[controls]\r\n");
-    buildOk = buildOk && appendf("gpu_offset_mhz=%d\r\n", gpuOffset);
-    buildOk = buildOk && appendf("gpu_offset_exclude_low_count=%d\r\n", gpuOffsetExcludeLowCount);
-    buildOk = buildOk && appendf("lock_ci=%d\r\n", desired && desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1));
-    buildOk = buildOk && appendf("lock_mhz=%u\r\n", desired && desired->hasLock ? desired->lockMHz : g_app.lockedFreq);
-    buildOk = buildOk && appendf("lock_tracks_anchor=%d\r\n", desired && desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0));
-    buildOk = buildOk && appendf("mem_offset_mhz=%d\r\n", memOffset);
-    buildOk = buildOk && appendf("power_limit_pct=%d\r\n", powerPct);
-    if (g_app.xbarProbeValid) {
-        buildOk = buildOk && appendf("xbar_offset_khz=%d\r\n", xbarFreqKhz);
-        buildOk = buildOk && appendf("xbar_msvdd_offset_uv=%d\r\n", xbarMsvddUv);
+    if (legacyScope || (desired && desired->hasGpuOffset)) {
+        buildOk = buildOk && appendf("gpu_offset_mhz=%d\r\n", gpuOffset);
+        buildOk = buildOk && appendf("gpu_offset_exclude_low_count=%d\r\n", gpuOffsetExcludeLowCount);
     }
-    StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", fanPct);
-    buildOk = buildOk && appendf("fan_mode=%s\r\n", fan_mode_to_config_value(fanMode));
-    buildOk = buildOk && appendf("fan_fixed_pct=%d\r\n", fanPct);
-    buildOk = buildOk && appendf("fan=%s\r\n", fanMode == FAN_MODE_AUTO ? "auto" : buf);
+    if (legacyScope || (desired && desired->hasLock)) {
+        buildOk = buildOk && appendf("lock_ci=%d\r\n", desired && desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1));
+        buildOk = buildOk && appendf("lock_mhz=%u\r\n", desired && desired->hasLock ? desired->lockMHz : g_app.lockedFreq);
+        buildOk = buildOk && appendf("lock_tracks_anchor=%d\r\n", desired && desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0));
+        if (desired && desired->hasLock)
+            buildOk = buildOk && appendf("lock_mode=%d\r\n", (int)desired->lockMode);
+    }
+    if (legacyScope || (desired && desired->hasMemOffset))
+        buildOk = buildOk && appendf("mem_offset_mhz=%d\r\n", memOffset);
+    if (legacyScope || (desired && desired->hasPowerLimit))
+        buildOk = buildOk && appendf("power_limit_pct=%d\r\n", powerPct);
+    if ((legacyScope && g_app.xbarProbeValid) || (desired && desired->hasXbarOffsetKhz))
+        buildOk = buildOk && appendf("xbar_offset_khz=%d\r\n", xbarFreqKhz);
+    if ((legacyScope && g_app.xbarProbeValid) || (desired && desired->hasXbarMsvddOffsetUv))
+        buildOk = buildOk && appendf("xbar_msvdd_offset_uv=%d\r\n", xbarMsvddUv);
+    if (desired && desired->hasSysClkOffsetKhz)
+        buildOk = buildOk && appendf("sys_clk_offset_khz=%d\r\n", desired->sysClkOffsetKhz);
+    if (desired && desired->hasVideoClkOffsetKhz)
+        buildOk = buildOk && appendf("video_clk_offset_khz=%d\r\n", desired->videoClkOffsetKhz);
+    if (legacyScope || (desired && desired->hasFan)) {
+        StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", fanPct);
+        buildOk = buildOk && appendf("fan_mode=%s\r\n", fan_mode_to_config_value(fanMode));
+        buildOk = buildOk && appendf("fan_fixed_pct=%d\r\n", fanPct);
+        buildOk = buildOk && appendf("fan=%s\r\n", fanMode == FAN_MODE_AUTO ? "auto" : buf);
+    }
+    buildOk = buildOk && desired_ini_append_controls_ext(writeCtrlKv, desired);
 
     buildOk = buildOk && appendf("[curve]\r\n");
     buildOk = buildOk && appendf("format=explicit_vf_points_v1\r\n");
-    buildOk = buildOk && appendf("gpu_offset_mhz=%d\r\n", gpuOffset);
-    buildOk = buildOk && appendf("gpu_offset_exclude_low_count=%d\r\n", gpuOffsetExcludeLowCount);
+    if (legacyScope || (desired && desired->hasGpuOffset)) {
+        buildOk = buildOk && appendf("gpu_offset_mhz=%d\r\n", gpuOffset);
+        buildOk = buildOk && appendf("gpu_offset_exclude_low_count=%d\r\n", gpuOffsetExcludeLowCount);
+    }
     // The transfer export is a profile like any other, and a receiving install
     // decodes it with the same loader -- so it carries per-point provenance
     // too.  Flattening it here was the same defect as flattening a saved slot,
@@ -520,12 +539,14 @@ static bool save_desired_to_config_with_startup(const char* path, const DesiredS
         buildOk = buildOk && appendf("point%d_mhz=%u\r\n", i, point.mhz);
         buildOk = buildOk && appendf("point%d_mv=%u\r\n", i, point.voltMv);
         buildOk = buildOk && appendf("point%d_offset_khz=%d\r\n", i, point.offsetKHz);
-        buildOk = buildOk && appendf("point%d_visible=%s\r\n", i, point.visible ? "1" : "0");
+        buildOk = buildOk && appendf("point%d_visible=%s\r\n", i,
+            (point.visible || !legacyScope) ? "1" : "0");
         if (point.fromGpuOffset) {
             buildOk = buildOk && appendf("point%d_%s=1\r\n", i, PROFILE_CURVE_POINT_ORIGIN_SUFFIX);
             exportedProjectedPoints++;
         }
     }
+    buildOk = buildOk && desired_ini_append_curve_ext(writeCtrlKv, desired);
     debug_log("settings transfer export: [curve] written as %s "
         "(gpuOffset=%d excludeLow=%d projectedPoints=%d useCurrentForUnset=%d)\n",
         PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN, gpuOffset,

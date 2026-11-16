@@ -28,6 +28,7 @@ struct ConfigStorageLockGuard {
 
 #include "config_profile_xbar_io.h"
 #include "profile_config_windows.h"
+#include "profile_desired_ini_ext.h"
 
 static void infer_profile_lock_from_curve(const DesiredSettings* desired, int* lockCiOut, unsigned int* lockMHzOut);
 static void resolve_profile_gpu_offset_state_for_save(const DesiredSettings* desired, int* gpuOffsetMHzOut, int* excludeLowCountOut);
@@ -274,6 +275,12 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
 
     if (!load_fan_curve_config_from_section(path, fanCurveSection, &desired->fanCurve, err, errSize)) return false;
 
+    if (!desired_ini_load_controls_ext([&](const char* key, char* out, size_t outSize) {
+            gc_GetPrivateProfileStringUtf8(controlsSection, key, "", out, (DWORD)outSize, path);
+            trim_ascii(out);
+            return out[0] != '\0';
+        }, desired, err, errSize)) return false;
+
     char curveLoadErr[256] = {};
     if (!load_curve_points_explicit_from_section(path, curveSection, desired, curveLoadErr, sizeof(curveLoadErr))) {
         if (curveLoadErr[0]) {
@@ -288,123 +295,120 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
     // (e.g. a curve point > INT_MAX) would otherwise reach the (int) casts in
     // restore_curve_points_from_base_plus_gpu_offset with implementation-
     // defined results.  Legit saved values are always within these ranges.
-    validate_desired_settings_for_ipc(desired);
+    if (desired->applicationScope == DESIRED_SCOPE_LEGACY) {
+        validate_desired_settings_for_ipc(desired);
 
-    // Per-point provenance first: a section this build wrote carries it, and a
-    // point that was never flagged keeps the absolute authority the loader just
-    // gave it.  Only when the section is NOT in that format does the legacy
-    // whole-section reconstruction run -- which necessarily flattens every
-    // point to offset-derived, because a base+offset file cannot say otherwise.
-    if (!restore_curve_point_origins_from_section(path, curveSection, desired) &&
-        curve_section_uses_base_plus_gpu_offset_semantics(path, curveSection, desired)) {
-        restore_curve_points_from_base_plus_gpu_offset(desired);
-    }
+        // Per-point provenance first: a section this build wrote carries it, and a
+        // point that was never flagged keeps the absolute authority the loader just
+        // gave it.  Only when the section is NOT in that format does the legacy
+        // whole-section reconstruction run -- which necessarily flattens every
+        // point to offset-derived, because a base+offset file cannot say otherwise.
+        if (!restore_curve_point_origins_from_section(path, curveSection, desired) &&
+            curve_section_uses_base_plus_gpu_offset_semantics(path, curveSection, desired)) {
+            restore_curve_points_from_base_plus_gpu_offset(desired);
+        }
 
-    repair_profile_locked_curve_readback_artifacts(path, curveSection, slot, desired, mode);
+        repair_profile_locked_curve_readback_artifacts(path, curveSection, slot, desired, mode);
 
-    for (int i = 1; i < VF_NUM_POINTS; i++) {
-        if (desired->hasCurvePoint[i] && desired->hasCurvePoint[i - 1]) {
-            if (desired->curvePointMHz[i] < desired->curvePointMHz[i - 1]) {
-                set_message(err, errSize, "Profile %d has a non-monotonic curve point at index %d (%u MHz < %u MHz)", slot, i, desired->curvePointMHz[i], desired->curvePointMHz[i - 1]);
+        for (int i = 1; i < VF_NUM_POINTS; i++) {
+            if (desired->hasCurvePoint[i] && desired->hasCurvePoint[i - 1]) {
+                if (desired->curvePointMHz[i] < desired->curvePointMHz[i - 1]) {
+                    set_message(err, errSize, "Profile %d has a non-monotonic curve point at index %d (%u MHz < %u MHz)", slot, i, desired->curvePointMHz[i], desired->curvePointMHz[i - 1]);
+                    return false;
+                }
+            }
+        }
+
+        if (desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0) {
+            unsigned int maxPreTailMHz = 0;
+            int maxPreTailCi = -1;
+            for (int ci = 0; ci < desired->lockCi && ci < VF_NUM_POINTS; ci++) {
+                if (!desired->hasCurvePoint[ci]) continue;
+                if (desired->curvePointMHz[ci] > maxPreTailMHz) {
+                    maxPreTailMHz = desired->curvePointMHz[ci];
+                    maxPreTailCi = ci;
+                }
+            }
+            if (maxPreTailCi >= 0 && maxPreTailMHz > desired->lockMHz) {
+                set_message(err, errSize,
+                    "Profile %d lock target %u MHz at point %d is below pre-tail point %d (%u MHz). "
+                    "Lower the preceding point or raise the lock target.",
+                    slot, desired->lockMHz, desired->lockCi, maxPreTailCi, maxPreTailMHz);
                 return false;
             }
         }
-    }
 
-    // Validate that no saved pre-tail curve point exceeds the requested lock target.
-    // If a pre-tail point MHz > lockMHz, the driver would reject the lock tail as
-    // non-monotonic during apply. Catch this at load time rather than at apply time.
-    if (desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0) {
-        unsigned int maxPreTailMHz = 0;
-        int maxPreTailCi = -1;
-        for (int ci = 0; ci < desired->lockCi && ci < VF_NUM_POINTS; ci++) {
-            if (!desired->hasCurvePoint[ci]) continue;
-            if (desired->curvePointMHz[ci] > maxPreTailMHz) {
-                maxPreTailMHz = desired->curvePointMHz[ci];
-                maxPreTailCi = ci;
+        if (!(lockCiWasExplicit && desired->lockCi < 0) && (!desired->hasLock || desired->lockCi < 0 || desired->lockMHz == 0)) {
+            int inferredLockCi = -1;
+            unsigned int inferredLockMHz = 0;
+            infer_profile_lock_from_curve(desired, &inferredLockCi, &inferredLockMHz);
+            if (inferredLockCi >= 0 && inferredLockMHz > 0) {
+                desired->hasLock = true;
+                desired->lockCi = inferredLockCi;
+                desired->lockMHz = inferredLockMHz;
+                desired->lockTracksAnchor = false;
             }
         }
-        if (maxPreTailCi >= 0 && maxPreTailMHz > desired->lockMHz) {
-            set_message(err, errSize,
-                "Profile %d lock target %u MHz at point %d is below pre-tail point %d (%u MHz). "
-                "Lower the preceding point or raise the lock target.",
-                slot, desired->lockMHz, desired->lockCi, maxPreTailCi, maxPreTailMHz);
-            return false;
-        }
-    }
 
-    if (!(lockCiWasExplicit && desired->lockCi < 0) && (!desired->hasLock || desired->lockCi < 0 || desired->lockMHz == 0)) {
-        int inferredLockCi = -1;
-        unsigned int inferredLockMHz = 0;
-        infer_profile_lock_from_curve(desired, &inferredLockCi, &inferredLockMHz);
-        if (inferredLockCi >= 0 && inferredLockMHz > 0) {
-            desired->hasLock = true;
-            desired->lockCi = inferredLockCi;
-            desired->lockMHz = inferredLockMHz;
-            desired->lockTracksAnchor = false;
-        }
-    }
-
-    // Very old configs could contain a captured live curve next to lock_ci=-1.
-    // Current explicit_vf_points_v1 sections, however, intentionally support an
-    // unlocked custom curve.  Treating lock_ci=-1 alone as a cleanup marker
-    // erased those legitimate points on manual, app-start, and logon loads.
-    if (profile_should_strip_legacy_unlocked_curve(lockCiWasExplicit,
-            desired->lockCi, explicitVfPointsFormat)) {
-        bool hadCurvePoints = false;
-        for (int i = 0; i < VF_NUM_POINTS; i++) {
-            if (desired->hasCurvePoint[i]) {
-                desired->hasCurvePoint[i] = false;
-                desired->curvePointMHz[i] = 0; desired->curvePointFromGpuOffset[i] = 0;
-                hadCurvePoints = true;
+        if (profile_should_strip_legacy_unlocked_curve(lockCiWasExplicit,
+                desired->lockCi, explicitVfPointsFormat)) {
+            bool hadCurvePoints = false;
+            for (int i = 0; i < VF_NUM_POINTS; i++) {
+                if (desired->hasCurvePoint[i]) {
+                    desired->hasCurvePoint[i] = false;
+                    desired->curvePointMHz[i] = 0; desired->curvePointFromGpuOffset[i] = 0;
+                    hadCurvePoints = true;
+                }
+            }
+            if (hadCurvePoints) {
+                debug_log("load_profile_from_config: stripped explicit curve points for lock_ci=-1 profile (slot %d)\n", slot);
+            }
+            desired->hasLock = false;
+            desired->lockCi = -1;
+            desired->lockMHz = 0;
+        } else if (projectOntoLiveCurve && desired->hasLock &&
+                   desired->lockCi >= 0 && desired->lockMHz > 0) {
+            bool sawVisibleTailPoint = false;
+            bool tailMatchesLock = true;
+            for (int ci = desired->lockCi; ci < VF_NUM_POINTS; ci++) {
+                if (!desired->hasCurvePoint[ci]) continue;
+                if (!is_curve_point_visible_in_gui(ci)) continue;
+                sawVisibleTailPoint = true;
+                if (desired->curvePointMHz[ci] != desired->lockMHz) {
+                    tailMatchesLock = false;
+                    break;
+                }
+            }
+            if (sawVisibleTailPoint && tailMatchesLock) {
+                desired->lockTracksAnchor = false;
             }
         }
-        if (hadCurvePoints) {
-            debug_log("load_profile_from_config: stripped explicit curve points for lock_ci=-1 profile (slot %d)\n", slot);
+
+        bool haveLiveCurveVisibility = projectOntoLiveCurve &&
+            g_app.loaded && g_app.numPopulated > 0;
+        if (haveLiveCurveVisibility) {
+            const unsigned int dropped = vf_filter_unlisted_editor_curve_points(
+                desired, g_app.vfFloorBinding.floor, g_app.curve);
+            if (dropped)
+                debug_log("profile load: editor projection dropped %u hidden VF points\n", dropped);
         }
-        desired->hasLock = false;
-        desired->lockCi = -1;
-        desired->lockMHz = 0;
-    } else if (projectOntoLiveCurve && desired->hasLock &&
-               desired->lockCi >= 0 && desired->lockMHz > 0) {
-        // The editor derives the tail from the current visible point set.
-        // An ownership read keeps the stored lockTracksAnchor value: missing
-        // live entries or a reconnect must not change a profile's saved claim.
-        bool sawVisibleTailPoint = false;
-        bool tailMatchesLock = true;
-        for (int ci = desired->lockCi; ci < VF_NUM_POINTS; ci++) {
-            if (!desired->hasCurvePoint[ci]) continue;
-            if (!is_curve_point_visible_in_gui(ci)) continue;
-            sawVisibleTailPoint = true;
-            if (desired->curvePointMHz[ci] != desired->lockMHz) {
-                tailMatchesLock = false;
-                break;
-            }
+
+        if (!desired->hasFan) {
+            desired->fanAuto = true;
+            desired->fanMode = FAN_MODE_AUTO;
         }
-        if (sawVisibleTailPoint && tailMatchesLock) {
-            desired->lockTracksAnchor = false;
-        }
+    } else {
+        restore_curve_point_origins_from_section(path, curveSection, desired);
     }
 
-    // Points the current GPU cannot show are dropped for the editor: nothing
-    // can type into a row that is not on screen, and applying one would write
-    // to a point the user never saw.  An ownership read keeps them, because
-    // dropping them changes the curve OWNERSHIP mask the comparison tests --
-    // and the gate itself (g_app.loaded) is false during every reconnect, so
-    // the same file decoded two different ways within one session.
-    bool haveLiveCurveVisibility = projectOntoLiveCurve &&
-        g_app.loaded && g_app.numPopulated > 0;
-    if (haveLiveCurveVisibility) {
-        const unsigned int dropped = vf_filter_unlisted_editor_curve_points(
-            desired, g_app.vfFloorBinding.floor, g_app.curve);
-        if (dropped)
-            debug_log("profile load: editor projection dropped %u hidden VF points\n", dropped);
-    }
+    if (!desired_ini_load_curve_ext([&](const char* key, char* out, size_t outSize) {
+            gc_GetPrivateProfileStringUtf8(curveSection, key, "", out, (DWORD)outSize, path);
+            trim_ascii(out);
+            return out[0] != '\0';
+        }, desired, err, errSize)) return false;
 
-    if (!desired->hasFan) {
-        desired->fanAuto = true;
-        desired->fanMode = FAN_MODE_AUTO;
-    }
+    if (!desired_ini_validate_loaded(desired, err, errSize)) return false;
+    validate_desired_settings_for_ipc(desired);
 
     return true;
 }
@@ -539,6 +543,94 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
     appendf("logon_shared_slot=%d\r\n", logonSharedSlot);
     appendf("\r\n");
 
+    auto append_runtime_sections = [&](const char* controlsSection, const char* curveSection, const char* fanCurveSection) {
+        const bool emitAll = desired_ini_should_emit_all_domains(desired);
+        int profileGpuOffsetMHz = 0;
+        int profileExcludeLowCount = 0;
+        resolve_profile_gpu_offset_state_for_save(desired, &profileGpuOffsetMHz, &profileExcludeLowCount);
+        auto writeKv = [&](const char* k, const char* v) -> bool {
+            appendf("%s=%s\r\n", k, v);
+            return true;
+        };
+
+        appendf("[%s]\r\n", controlsSection);
+        if (emitAll || desired->hasGpuOffset) {
+            appendf("gpu_offset_mhz=%d\r\n", profileGpuOffsetMHz);
+            appendf("gpu_offset_exclude_low_count=%d\r\n", profileExcludeLowCount);
+        }
+        if (emitAll || desired->hasLock) {
+            appendf("lock_ci=%d\r\n", desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1));
+            appendf("lock_mhz=%u\r\n", desired->hasLock ? desired->lockMHz : g_app.lockedFreq);
+            appendf("lock_tracks_anchor=%d\r\n", desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0));
+            appendf("lock_mode=%d\r\n", desired->hasLock ? (int)desired->lockMode : (int)g_app.lockMode);
+        }
+        if (emitAll || desired->hasMemOffset)
+            appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
+        if (emitAll || desired->hasPowerLimit)
+            appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
+        if ((emitAll && profile_xbar_keys_should_be_written()) || desired->hasXbarOffsetKhz)
+            appendf("xbar_offset_khz=%d\r\n", desired->hasXbarOffsetKhz ? desired->xbarOffsetKhz : savedXbarFreqKhz);
+        if ((emitAll && profile_xbar_keys_should_be_written()) || desired->hasXbarMsvddOffsetUv)
+            appendf("xbar_msvdd_offset_uv=%d\r\n", desired->hasXbarMsvddOffsetUv ? desired->xbarMsvddOffsetUv : savedXbarMsvddUv);
+        if ((emitAll && g_app.sysClkProbeValid) || desired->hasSysClkOffsetKhz) {
+            int savedSysClkKhz = desired->hasSysClkOffsetKhz
+                ? desired->sysClkOffsetKhz
+                : (haveSaveControl && saveControl.hasSysClkOffset ? saveControl.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz);
+            appendf("sys_clk_offset_khz=%d\r\n", savedSysClkKhz);
+        }
+        if ((emitAll && g_app.videoClkProbeValid) || desired->hasVideoClkOffsetKhz) {
+            int savedVideoClkKhz = desired->hasVideoClkOffsetKhz
+                ? desired->videoClkOffsetKhz
+                : (haveSaveControl && saveControl.hasVideoClkOffset ? saveControl.videoClkOffsetKhz : g_app.videoClkFreqOffsetKhz);
+            appendf("video_clk_offset_khz=%d\r\n", savedVideoClkKhz);
+        }
+        if (emitAll || desired->hasFan) {
+            appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : current_green_curve_fan_intent_mode()));
+            if (desired->hasFan) {
+                if (desired->fanMode == FAN_MODE_AUTO) appendf("fan=auto\r\n");
+                else appendf("fan=%d\r\n", desired->fanPercent);
+                appendf("fan_fixed_pct=%d\r\n", clamp_percent(desired->fanPercent));
+            } else {
+                if (g_app.fanIsAuto) appendf("fan=auto\r\n");
+                else appendf("fan=%u\r\n", current_manual_fan_target_percent());
+                appendf("fan_fixed_pct=%u\r\n", current_manual_fan_target_percent());
+            }
+        }
+        desired_ini_append_controls_ext(writeKv, desired);
+        appendf("\r\n");
+
+        appendf("[%s]\r\n", curveSection);
+        appendf("format=explicit_vf_points_v1\r\n");
+        if (emitAll || desired->hasGpuOffset) {
+            appendf("gpu_offset_mhz=%d\r\n", profileGpuOffsetMHz);
+            appendf("gpu_offset_exclude_low_count=%d\r\n", profileExcludeLowCount);
+        }
+        appendf("curve_semantics=%s\r\n", PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN);
+        int savedProjectedPoints = 0;
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            ProfileCurvePointRecord point = {};
+            if (!profile_curve_point_record_for_save(desired, i, false, &point)) continue;
+            appendf("point%d_mhz=%u\r\n", i, point.mhz);
+            appendf("point%d_mv=%u\r\n", i, point.voltMv);
+            appendf("point%d_offset_khz=%d\r\n", i, point.offsetKHz);
+            appendf("point%d_visible=%d\r\n", i, (point.visible || !emitAll) ? 1 : 0);
+            if (point.fromGpuOffset) {
+                appendf("point%d_%s=1\r\n", i, PROFILE_CURVE_POINT_ORIGIN_SUFFIX);
+                savedProjectedPoints++;
+            }
+        }
+        desired_ini_append_curve_ext(writeKv, desired);
+        debug_log("save_profile_to_config: [%s] written as %s (gpuOffset=%d excludeLow=%d projectedPoints=%d)\n",
+            curveSection, PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN,
+            profileGpuOffsetMHz, profileExcludeLowCount, savedProjectedPoints);
+        appendf("\r\n");
+
+        if (emitAll || desired->hasFan) {
+            const FanCurveConfig* curveToWrite = desired->hasFan ? &desired->fanCurve : &g_app.activeFanCurve;
+            append_fan_curve_section_text(cfg, CFG_BUFFER_SIZE, &used, fanCurveSection, curveToWrite);
+        }
+    };
+
     // Write the target profile section
     {
         char controlsSection[32];
@@ -547,77 +639,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         StringCchPrintfA(controlsSection, ARRAY_COUNT(controlsSection), "profile%d", slot);
         StringCchPrintfA(curveSection, ARRAY_COUNT(curveSection), "profile%d_curve", slot);
         StringCchPrintfA(fanCurveSection, ARRAY_COUNT(fanCurveSection), "profile%d_fan_curve", slot);
-
-        int profileGpuOffsetMHz = 0;
-        int profileExcludeLowCount = 0;
-        resolve_profile_gpu_offset_state_for_save(desired, &profileGpuOffsetMHz, &profileExcludeLowCount);
-
-        appendf("[%s]\r\n", controlsSection);
-        appendf("gpu_offset_mhz=%d\r\n", profileGpuOffsetMHz);
-        appendf("gpu_offset_exclude_low_count=%d\r\n", profileExcludeLowCount);
-        appendf("lock_ci=%d\r\n", desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1));
-        appendf("lock_mhz=%u\r\n", desired->hasLock ? desired->lockMHz : g_app.lockedFreq);
-        appendf("lock_tracks_anchor=%d\r\n", desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0));
-        appendf("lock_mode=%d\r\n", desired->hasLock ? (int)desired->lockMode : (int)g_app.lockMode);
-        appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
-        appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
-        if (profile_xbar_keys_should_be_written()) {
-            appendf("xbar_offset_khz=%d\r\n", savedXbarFreqKhz);
-            appendf("xbar_msvdd_offset_uv=%d\r\n", savedXbarMsvddUv);
-        }
-        if (g_app.sysClkProbeValid) {
-            int savedSysClkKhz = desired && desired->hasSysClkOffsetKhz
-                ? desired->sysClkOffsetKhz
-                : (haveSaveControl && saveControl.hasSysClkOffset
-                    ? saveControl.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz);
-            appendf("sys_clk_offset_khz=%d\r\n", savedSysClkKhz);
-        }
-        if (g_app.videoClkProbeValid) {
-            int savedVideoClkKhz = desired && desired->hasVideoClkOffsetKhz
-                ? desired->videoClkOffsetKhz
-                : (haveSaveControl && saveControl.hasVideoClkOffset
-                    ? saveControl.videoClkOffsetKhz : g_app.videoClkFreqOffsetKhz);
-            appendf("video_clk_offset_khz=%d\r\n", savedVideoClkKhz);
-        }
-        appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : current_green_curve_fan_intent_mode()));
-        if (desired->hasFan) {
-            if (desired->fanMode == FAN_MODE_AUTO) appendf("fan=auto\r\n");
-            else appendf("fan=%d\r\n", desired->fanPercent);
-            appendf("fan_fixed_pct=%d\r\n", clamp_percent(desired->fanPercent));
-        } else {
-            if (g_app.fanIsAuto) appendf("fan=auto\r\n");
-            else appendf("fan=%u\r\n", current_manual_fan_target_percent());
-            appendf("fan_fixed_pct=%u\r\n", current_manual_fan_target_percent());
-        }
-        appendf("\r\n");
-
-        appendf("[%s]\r\n", curveSection);
-        appendf("format=explicit_vf_points_v1\r\n");
-        appendf("gpu_offset_mhz=%d\r\n", profileGpuOffsetMHz);
-        appendf("gpu_offset_exclude_low_count=%d\r\n", profileExcludeLowCount);
-        appendf("curve_semantics=%s\r\n",
-            PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN);
-        int savedProjectedPoints = 0;
-        for (int i = 0; i < VF_NUM_POINTS; i++) {
-            ProfileCurvePointRecord point = {};
-            if (!profile_curve_point_record_for_save(desired, i, false, &point)) continue;
-            appendf("point%d_mhz=%u\r\n", i, point.mhz);
-            appendf("point%d_mv=%u\r\n", i, point.voltMv);
-            appendf("point%d_offset_khz=%d\r\n", i, point.offsetKHz);
-            appendf("point%d_visible=%d\r\n", i, point.visible ? 1 : 0);
-            if (point.fromGpuOffset) {
-                appendf("point%d_%s=1\r\n", i, PROFILE_CURVE_POINT_ORIGIN_SUFFIX);
-                savedProjectedPoints++;
-            }
-        }
-        debug_log("save_profile_to_config: [%s] written as %s "
-            "(gpuOffset=%d excludeLow=%d projectedPoints=%d)\n",
-            curveSection, PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN,
-            profileGpuOffsetMHz, profileExcludeLowCount, savedProjectedPoints);
-        appendf("\r\n");
-
-        const FanCurveConfig* curveToWrite = desired->hasFan ? &desired->fanCurve : &g_app.activeFanCurve;
-        append_fan_curve_section_text(cfg, CFG_BUFFER_SIZE, &used, fanCurveSection, curveToWrite);
+        append_runtime_sections(controlsSection, curveSection, fanCurveSection);
     }
 
     // Copy other profile sections (except the one being written)
@@ -664,75 +686,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
 
     // Write legacy sections for backward compatibility when slot 1 is saved
     if (slot == 1) {
-        int profileGpuOffsetMHz = 0;
-        int profileExcludeLowCount = 0;
-        resolve_profile_gpu_offset_state_for_save(desired, &profileGpuOffsetMHz, &profileExcludeLowCount);
-
-        appendf("[controls]\r\n");
-        appendf("gpu_offset_mhz=%d\r\n", profileGpuOffsetMHz);
-        appendf("gpu_offset_exclude_low_count=%d\r\n", profileExcludeLowCount);
-        appendf("lock_ci=%d\r\n", desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1));
-        appendf("lock_mhz=%u\r\n", desired->hasLock ? desired->lockMHz : g_app.lockedFreq);
-        appendf("lock_tracks_anchor=%d\r\n", desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0));
-        appendf("lock_mode=%d\r\n", desired->hasLock ? (int)desired->lockMode : (int)g_app.lockMode);
-        appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
-        appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
-        if (profile_xbar_keys_should_be_written()) {
-            appendf("xbar_offset_khz=%d\r\n", savedXbarFreqKhz);
-            appendf("xbar_msvdd_offset_uv=%d\r\n", savedXbarMsvddUv);
-        }
-        if (g_app.sysClkProbeValid) {
-            int savedSysClkKhz = desired && desired->hasSysClkOffsetKhz
-                ? desired->sysClkOffsetKhz
-                : (haveSaveControl && saveControl.hasSysClkOffset
-                    ? saveControl.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz);
-            appendf("sys_clk_offset_khz=%d\r\n", savedSysClkKhz);
-        }
-        if (g_app.videoClkProbeValid) {
-            int savedVideoClkKhz = desired && desired->hasVideoClkOffsetKhz
-                ? desired->videoClkOffsetKhz
-                : (haveSaveControl && saveControl.hasVideoClkOffset
-                    ? saveControl.videoClkOffsetKhz : g_app.videoClkFreqOffsetKhz);
-            appendf("video_clk_offset_khz=%d\r\n", savedVideoClkKhz);
-        }
-        appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : current_green_curve_fan_intent_mode()));
-        if (desired->hasFan) {
-            if (desired->fanMode == FAN_MODE_AUTO) appendf("fan=auto\r\n");
-            else appendf("fan=%d\r\n", desired->fanPercent);
-            appendf("fan_fixed_pct=%d\r\n", clamp_percent(desired->fanPercent));
-        } else {
-            if (g_app.fanIsAuto) appendf("fan=auto\r\n");
-            else appendf("fan=%u\r\n", current_manual_fan_target_percent());
-            appendf("fan_fixed_pct=%u\r\n", current_manual_fan_target_percent());
-        }
-        appendf("\r\n");
-        appendf("[curve]\r\n");
-        appendf("format=explicit_vf_points_v1\r\n");
-        appendf("gpu_offset_mhz=%d\r\n", profileGpuOffsetMHz);
-        appendf("gpu_offset_exclude_low_count=%d\r\n", profileExcludeLowCount);
-        appendf("curve_semantics=%s\r\n",
-            PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN);
-        int savedLegacyProjectedPoints = 0;
-        for (int i = 0; i < VF_NUM_POINTS; i++) {
-            ProfileCurvePointRecord point = {};
-            if (!profile_curve_point_record_for_save(desired, i, false, &point)) continue;
-            appendf("point%d_mhz=%u\r\n", i, point.mhz);
-            appendf("point%d_mv=%u\r\n", i, point.voltMv);
-            appendf("point%d_offset_khz=%d\r\n", i, point.offsetKHz);
-            appendf("point%d_visible=%d\r\n", i, point.visible ? 1 : 0);
-            if (point.fromGpuOffset) {
-                appendf("point%d_%s=1\r\n", i, PROFILE_CURVE_POINT_ORIGIN_SUFFIX);
-                savedLegacyProjectedPoints++;
-            }
-        }
-        debug_log("save_profile_to_config: [curve] written as %s "
-            "(gpuOffset=%d excludeLow=%d projectedPoints=%d)\n",
-            PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN, profileGpuOffsetMHz,
-            profileExcludeLowCount, savedLegacyProjectedPoints);
-        appendf("\r\n");
-
-        const FanCurveConfig* curveToWrite = desired->hasFan ? &desired->fanCurve : &g_app.activeFanCurve;
-        append_fan_curve_section_text(cfg, CFG_BUFFER_SIZE, &used, "fan_curve", curveToWrite);
+        append_runtime_sections("controls", "curve", "fan_curve");
     }
 
     appendf("[startup]\r\napply_on_launch=%d\r\nstart_program_on_logon=%d\r\n\r\n", logonSlot > 0 ? 1 : 0, startOnLogon ? 1 : 0);

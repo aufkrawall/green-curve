@@ -217,7 +217,8 @@ struct LinuxBackendRefreshResult {
     ServiceGpuHealth health;
 };
 bool linux_backend_capture_apply_snapshot(LinuxGpuState* g, const DesiredSettings* d,
-    LinuxHardwareSnapshot* snapshot, char* err, size_t errSize);
+    LinuxHardwareSnapshot* snapshot, char* err, size_t errSize,
+    const DesiredSettings* previous = nullptr, const DesiredSettings* committed = nullptr);
 
 // Load the driver libraries and initialise the selected GPU (ordinal `index`).
 // On success the curve, masks and ranges are read.  Returns false + message on

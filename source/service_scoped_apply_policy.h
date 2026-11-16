@@ -22,7 +22,8 @@ struct ServiceScopedApplyPlan {
 static inline void service_upgrade_legacy_scalar_scope(const DesiredSettings* previous,
     DesiredSettings* requested, bool replacement = false) {
     if (!previous || !requested || requested->applicationScope != DESIRED_SCOPE_LEGACY ||
-        (!previous->memOffsetPrecise && !previous->powerLimitRatio && desired_authoring_is_zero(previous->authoring))) return;
+        (!previous->memOffsetPrecise && !previous->powerLimitRatio &&
+            desired_authoring_is_zero(previous->authoring) && !desired_curve_captured_any(previous))) return;
     requested->applicationScope = replacement || requested->resetOcBeforeApply
         ? DESIRED_SCOPE_REPLACE_PROFILE : DESIRED_SCOPE_UPDATE_INCLUDED;
     requested->resetOcBeforeApply = false;

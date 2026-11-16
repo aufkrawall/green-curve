@@ -69,7 +69,8 @@ static inline bool service_build_profile_transition_request(
     if (!nextIntent || !requestOut) return false;
     *requestOut = *nextIntent;
     if (nextIntent->applicationScope == DESIRED_SCOPE_LEGACY && previousIntent &&
-        (previousIntent->memOffsetPrecise || previousIntent->powerLimitRatio)) {
+        (previousIntent->memOffsetPrecise || previousIntent->powerLimitRatio ||
+            !desired_authoring_is_zero(previousIntent->authoring) || desired_curve_captured_any(previousIntent))) {
         requestOut->applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
         requestOut->resetOcBeforeApply = false;
         return true; // the scoped compiler retains exact cleanup authority

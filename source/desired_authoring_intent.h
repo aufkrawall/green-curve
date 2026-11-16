@@ -99,9 +99,19 @@ template <class D> static inline void desired_authoring_canonicalize(D* d) {
     if (!a.topologyBound) a.topologyCount = 0;
     a.reserved = 0;
 }
-// Capacity may be retained on disk before a producer is activated. Backends and
-// IPC refuse its use until exact adapters and binding review are connected.
+template <class D> static inline void desired_prepare_replacement_request(D* d) {
+    if (!d) return;
+    if (d->applicationScope == DESIRED_SCOPE_LEGACY) {
+        d->resetOcBeforeApply = true;
+        return;
+    }
+    d->resetOcBeforeApply = false;
+    if (desired_application_scope_kind(d->applicationScope) == DESIRED_SCOPE_UPDATE_INCLUDED)
+        d->applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+}
+// Backends and IPC allow exact authoring replay once structural invariants and
+// destination topology/value bindings pass validation.
 template <class D> static inline bool desired_authoring_runtime_ready(const D* d) {
-    return d && desired_authoring_is_zero(d->authoring);
+    return desired_authoring_valid(d);
 }
 #endif

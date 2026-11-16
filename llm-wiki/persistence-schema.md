@@ -112,8 +112,50 @@ intent and durable disk layouts unchanged.
 The active request control-precondition fields bind physical controls and
 outgoing owned intent, while its physical fingerprint stays separate. Reviewed
 Apply requires all-domain passive evidence and an explicit interactive scope;
-authoring/captured replay remains gated. See
-[profile-document.md](profile-document.md#fresh-controls-and-ownership-review-2026-11-13).
+see [profile-document.md](profile-document.md#fresh-controls-and-ownership-review-2026-11-13) and
+the activation section below.
+
+## Exact authoring & captured replay activation and INI persistence (2026-11-16)
+
+Source anchors: `source/profile_desired_ini_ext.h`, `source/desired_authoring_intent.h`,
+`source/desired_curve_intent.h`, `source/desired_settings_ui_policy.h`,
+`source/service_protocol_validation.h`, `source/service_scoped_apply_policy.h`,
+`source/service_lifecycle_policy.h`, `source/profile_runtime_resolution.h`,
+`source/profile_control_feasibility.h`, `source/config_profiles.cpp`,
+`source/linux_port_profiles.cpp`, `source/main_shell.cpp`,
+`source/main_runtime_capture.cpp`, `source/config_profiles_ui.cpp`,
+`tests/captured_schema_tests.cpp`, `tests/captured_intent_runtime_tests.cpp`
+(8061-8071), `tests/desired_authoring_schema_cases.h`,
+`tests/profile_control_feasibility_tests.cpp` (9115-9117).
+
+`desired_authoring_runtime_ready()` now defers directly to
+`desired_authoring_valid()`, enabling runtime execution of exact authoring and
+`curvePointCaptured` payloads under explicit application scopes while
+`service_protocol_validation.h` continues refusing legacy-scoped authoring or
+captured offsets.
+
+- **Shared INI persistence (`profile_desired_ini_ext.h`):** Windows and Linux
+  slot/config INI paths persist and validate `application_scope`, exact memory
+  (`mem_offset_precise`, `mem_offset_surface`, `mem_offset_hz`), rational power
+  (`power_limit_ratio`, `power_ratio_num`, `power_ratio_den`), graphics scalar
+  precision/exclusions, exact lock targets, bound point voltages, and per-point
+  `pointN_captured*` / `pointN_freq_*` / `pointN_graphics_excluded` /
+  `pointN_topology_uv`. Scoped profiles skip legacy rounding/visibility
+  heuristics, omit unowned domains cleanly on save, validate extended fields via
+  `desired_ini_validate_loaded()` before IPC canonicalization can clear
+  inconsistent payloads, and emit `pointN_visible=1` for owned scoped points on
+  Windows.
+- **Replacement & explicit release:** Replacement callers use
+  `desired_prepare_replacement_request()` so `DESIRED_SCOPE_UPDATE_INCLUDED`
+  promotes to `DESIRED_SCOPE_REPLACE_PROFILE` without forcing
+  `resetOcBeforeApply`, while `DESIRED_SCOPE_LEGACY` retains reset-before-apply.
+  `service_upgrade_legacy_scalar_scope()` and
+  `service_build_profile_transition_request()` also upgrade legacy follow-ups
+  following authoring or captured intent. `profile_resolve_runtime()` resolves
+  `PROFILE_SCOPE_EXPLICIT_RELEASE` (skipping non-writable VF points and setting
+  zero-offset `curvePointCaptured[ci] = 1` cleanup targets), and
+  `profile_control_plan()` reports `PROFILE_CONTROL_CONDITIONAL` with
+  `PROFILE_CONTROL_RELATIONSHIP`.
 
 ## Captured-offset capacity (2026-11-12)
 

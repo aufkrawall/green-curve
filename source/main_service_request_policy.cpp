@@ -410,9 +410,9 @@ static bool service_apply_shared_only_policy(ServiceRequest* request,
             sharedSlot);
     }
 
-    sharedDesired.resetOcBeforeApply = true;
+    desired_prepare_replacement_request(&sharedDesired);
     request->desired = sharedDesired;
-    request->resetOcBeforeApply = 1u;
+    request->resetOcBeforeApply = sharedDesired.resetOcBeforeApply ? 1u : 0u;
     request->profileSource = SERVICE_PROFILE_SOURCE_SHARED_SLOT;
     request->profileSlot = (gc_u32)sharedSlot;
     *enforcePublishedGpuBinding = true;

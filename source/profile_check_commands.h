@@ -147,8 +147,6 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
         plan.disposition == PROFILE_CONTROL_UNAVAILABLE ? "unavailable" : "conditional";
     io.message(std::string("Operation feasibility: ") + operation +
         "; fresh ownership, transition and recovery checks are still required before Apply.\n");
-    if (!desired_authoring_runtime_ready(runtime.get()))
-        io.message("Exact graphics source replay is unavailable in this build; this source remains inspectable and exportable.\n");
     exitCode = PROFILE_COMMAND_DECISION;
     return true;
 }

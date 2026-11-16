@@ -52,9 +52,11 @@ this type independently of the live wire `DesiredSettings` (`gpu_core.h`).
 The service keeps its separate resolved runtime representation. Windows and
 the TUI retain exact source drafts, editing, capture and reviewed offline
 transfer. Reviewed scalar drafts can be staged and submitted with complete
-service control preconditions; Windows and Linux modeled transition preflight and
-post-reset arming are integrated, while exact graphics/curve replay remains
-gated pending transition/scope integration. See
+service control preconditions; Windows and Linux modeled transition preflight,
+post-reset arming, exact authoring/captured runtime replay, extended INI
+persistence, and `PROFILE_SCOPE_EXPLICIT_RELEASE` resolution are active. Explicit
+per-domain conversion UI/CLI batches and user-confirmed workload pin observation
+remain pending. See
 [config-profiles.md](config-profiles.md#reviewed-source-submission-2026-11-15)
 and [clock-transition-audit.md](clock-transition-audit.md#modeled-lockless-transition-protection-2026-11-15).
 
