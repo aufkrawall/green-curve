@@ -35,8 +35,7 @@ Apply dispatch and mutation binding; it checks both confirmation cancellations
 and modal reentrancy before enqueue, without a real service or GPU setter.
 The fixtures preserve precise memory units and ad hoc submission despite an
 older loaded shared slot. A private pre-fix keyboard fixture fails at 9673;
-focused native buttons explicitly route Enter after the fix. Exact graphics
-replay remains gated.
+focused native buttons explicitly route Enter after the fix. (Exact graphics replay was later activated alongside extended INI persistence in `ac1a118`.)
 
 ## Modeled transition factory (2026-11-15)
 
@@ -2907,6 +2906,9 @@ and are read-only: libFuzzer writes new inputs to a scratch corpus in
 | `config_strings` | `trim_ascii`, `parse_int_strict`, `parse_fan_value`, `config_section_header_matches_ascii`, `parse_cli_point_arg_w` | INI text and CLI arguments |
 | `wire_prefix` | `service_wire_prefix_disposition`, `daemon_accept_disposition`, `linux_daemon_format_permission_facts` | Daemon transport classification and a bounded diagnostic formatter |
 | `update_manifest` | `gc_update_manifest_parse()`, the URL/redirect allowlist, the backoff schedule | The signed release manifest and where the updater may connect. In production this parser only ever sees signature-verified bytes, so it is not nominally untrusted — it is fuzzed anyway, because "the verifier ran first" is exactly the assumption that must not be load-bearing twice, and the result of a bad manifest should be a refusal rather than memory corruption in a LocalSystem process about to launch an installer |
+| `service_response` | `service_response_wire_valid()` | Service response boundary |
+| `installer_archive` | Installer container payload header & entry bounds | Elevated setup payload verification |
+| `profile_codec` | Portable bank/legacy INI/local slot codecs, `profile_map_topology()`, `profile_resolve_runtime()`, `profile_grid_lower()`, `curve_plan_evaluate()`, `profile_pin_observation_analyze()` | Document parsing/encoding, extreme-range/mask curve planning without driver calls, and Tier 3 sample analysis non-mutation/bounds (mixed-kind and malformed-relation seeds added 2026-11-16) |
 
 ### Assertions, not just "did it crash"
 

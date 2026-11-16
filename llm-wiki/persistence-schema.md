@@ -49,7 +49,8 @@ overrides following precise ownership resolve exact units; a named-profile trans
 following precise ownership goes through scoped cleanup. Profile matching uses
 physical memory intent and rational power, retaining named-surface authority.
 Flat local document storage and offline transfer are connected; precise runtime
-document compilation and GUI/TUI draft integration remain pending.
+document compilation and GUI/TUI/CLI draft integration were subsequently
+activated (`ac1a118`).
 
 Protocol 33 adds a getter-only capture command and a separate 4832-byte
 observation. The requested-domain word occupies former trailing request padding,
@@ -259,8 +260,8 @@ Source anchors: `source/linux_daemon_graphics_recovery_schema.h`,
   Positive UUID identity still follows PCI movement during backend rebind;
   without comparable UUIDs the existing exact PCI/model identity is required.
 - New named writes refuse unresolved recovery and control-surface handoffs.
-  Full authoring replay remains closed pending cross-surface transitions and
-  reviewed transition/pin evidence. Legacy unknown-GPU fallback remains enabled.
+  (Full authoring replay was later activated alongside extended INI persistence
+  and reviewed capture/transition rules; see [profile-document.md](profile-document.md).) Legacy unknown-GPU fallback remains enabled.
 - The native file fixture adapts root identity only for its own scratch tree;
   production loader/store, permissions, links, fsync and atomic replacement
   execute unchanged. It checks old-file migration without rewriting, current

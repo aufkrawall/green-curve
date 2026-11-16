@@ -5,6 +5,27 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-16: Final acceptance fuzzing, wiki audit, and deliverable build (build 373)
+
+- Extended `tests/profile_codec_fuzz.h` with structured `curve_plan_evaluate()`
+  and `profile_pin_observation_analyze()` property checks (extreme ranges,
+  overflows, invalid masks, non-mutation, and bounded outputs) and added
+  sanitized seeds (`mixed-kinds.gcprofile`, `malformed-relations.gcprofile`)
+  under `tests/fuzz-corpus/profile_codec/`.
+- Ran all 9 libFuzzer targets (`--fuzz --fuzz-runs 5000`) under ASan + UBSan with
+  zero findings (`profile_codec` reached cov 2085 / ft 4006).
+- Completed semantic audit across `llm-wiki/*.md` (no orphan pages; cleared
+  stale `pending`/`gated` notes in top summaries against completed authoring,
+  replay, assistance, and Tier 3 pin observation docs) and verified `CHANGELOG.md`
+  `## Unreleased` stays under the ~400-word budget.
+- Completed plain deliverable `build.py` (build 373) and verified all 12
+  expected packages (Windows MSVC-ABI + release x64/arm64 installers/7z and
+  Linux x64/arm64 tarballs/Arch packages) and all 20 packaged application/service
+  binaries against fresh timestamps, SHA-256 sidecars, and extracted bytes.
+- Hardware boundaries remain explicitly unverified on physical hardware
+  (RTX 5080 and Pascal live replays, live hardware burst sampling, live
+  multi-GPU/driver-error injection, and physical native ARM64 runs).
+
 ## 2026-11-16: User-started workload pin observation (Tier 3)
 
 - Added pure analyzer `source/profile_pin_observation.h` and isolated read-only

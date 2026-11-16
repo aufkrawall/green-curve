@@ -55,8 +55,9 @@ transfer. Reviewed scalar drafts can be staged and submitted with complete
 service control preconditions; Windows and Linux modeled transition preflight,
 post-reset arming, exact authoring/captured runtime replay, extended INI
 persistence, `PROFILE_SCOPE_EXPLICIT_RELEASE` resolution, per-domain batch conversions
-and captured-tail restore (GUI/TUI/CLI) are active. Compatible-curve search
-and user-confirmed workload pin observation remain pending. See
+and captured-tail restore (GUI/TUI/CLI), compatible-curve preparation/search
+(`profile_curve_assistance.h`), and user-started workload pin observation (Tier 3,
+`profile_pin_observation.h`) are all active across GUI, TUI, and CLI (2026-11-16). See
 [config-profiles.md](config-profiles.md#reviewed-source-submission-2026-11-15)
 and [clock-transition-audit.md](clock-transition-audit.md#modeled-lockless-transition-protection-2026-11-15).
 

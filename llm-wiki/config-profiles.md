@@ -46,7 +46,8 @@ previous source and unfinished input. Telemetry-only updates keep it usable.
 Acceptance checks newly dirty input again before replacement. Both frontends
 clear cached proposals on cancellation or a new read. Cases 9720-9763 cover
 production controllers, transport context, DPI, keyboard and compact layouts.
-Bounded load-based user observations remain pending.
+User-started bounded workload observations are documented under
+[User-started workload pin observation](#user-started-workload-pin-observation-tier-3-2026-11-16).
 Physical replay and optional pin getters remain unverified.
 The Windows ASan/UBSan suite, native Linux UBSan fixtures, all-target builds and
 source gates pass; static analysis adds no findings to its 34-entry baseline.
@@ -355,8 +356,8 @@ failure preserves the previous source, slot and edit buffer.
 Exact source points, owned zero, memory API/Hz and rational power survive the
 factory. Read-only points retain observations without write authority. This
 workflow preserves exact controls, with reviewed alternatives described under
-[capture lock proposals](#capture-lock-proposals-2026-11-15). Reviewed scalar
-Apply is available separately; graphics replay remains gated. Cases 9295-9329 cover strict decisions, frozen acceptance,
+[capture lock proposals](#capture-lock-proposals-2026-11-15). (Graphics replay was later
+activated alongside extended INI persistence; see [profile-document.md](profile-document.md).) Cases 9295-9329 cover strict decisions, frozen acceptance,
 discard/cancel, empty reads, unsaved state, compact modal actions, keyboard/
 wheel isolation, Cancel focus and wrapping.
 
@@ -660,11 +661,9 @@ with native legacy slots. Destination replacement still uses the existing
 review, confirmation, generation check and single atomic write. Native export
 logs one bounded `profile legacy export:` result per inspected slot.
 
-GUI/TUI destination checks exist; accepting their mapped drafts remains pending.
-Historical Apply readers deliberately refuse these new records until reviewed
-destination acceptance exists; they cannot silently
-read a new document as an empty/default legacy profile. Shared publication and
-the updater's richer-intent handoff still require their document integration.
+GUI/TUI/CLI destination reviews, mapped drafts, per-domain conversions, and
+assistance workflows were subsequently wired (2026-11-15/16; historical Apply
+readers refuse unknown new-format records as intended).
 
 ### Passive capture CLI (2026-11-13)
 

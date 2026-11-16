@@ -184,7 +184,7 @@ not reset an unrelated pin. Baseline preparation uses an already prepared API
 and updates a review binding only after proving its authorized zero.
 
 Cases 9122-9151 exercise these helpers and the real exact NVML adapters with
-scripted driver calls. Runtime authoring/replay activation remains gated;
+scripted driver calls (runtime authoring replay was later activated in `ac1a118`);
 modeled lockless guards and hardware API relationships remain unverified.
 
 Verified 2026-11-14: focused Windows ASan/UBSan, full native regressions,

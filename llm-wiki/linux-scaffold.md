@@ -9,8 +9,8 @@ The transaction selects the shared exact-Hz compiler for authored point-table
 work and retains the legacy builder for older intent. Rebuilds replace exact
 verification metadata as well as target arrays, and failed/deferred results
 cannot reach a VF write. Focused native fixtures and Linux cross-compiles cover
-this path; native Linux execution remains separate. Runtime authoring replay is
-still gated pending the remaining writer and transition integration. See
+this path (runtime authoring replay and explicit update/replacement scopes were
+later activated alongside extended persistence; see [profile-document.md](profile-document.md)). See
 [profile-document.md](profile-document.md#shared-exact-target-compiler-and-linux-adapter-2026-11-13).
 
 ## Apply baseline memory ownership (2026-11-12)
@@ -34,10 +34,7 @@ protection and write-attempt accounting remain in force.
 The transition fixture executes the production baseline and rollback helpers
 with counted driver functions: memory is untouched with or without an included
 memory request during baseline preparation, a baseline-only failure restores
-the curve, and an explicit memory rollback still writes memory. Source gates
-pin the phase/helper connection. This is the baseline correction from step 6;
-explicit update/replacement scopes are still pending. No physical Linux load
-test has been run on this Windows host.
+the curve, and an explicit memory rollback still writes memory. Source gates pin the phase/helper connection (explicit update/replacement scopes were later wired in `ac1a118`). No physical Linux load test has been run on this Windows host.
 
 Desktop-entry removal in `tools/greencurve-setup.sh` uses the target account's
 `runuser` context, matching desktop-entry installation. A missing or failed

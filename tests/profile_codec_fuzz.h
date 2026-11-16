@@ -6,6 +6,9 @@
 #include "profile_mapping.h"
 #include "profile_conversion_grid.h"
 #include "profile_runtime_resolution.h"
+#include "profile_curve_assistance.h"
+#include "profile_pin_observation.h"
+#include "curve_feasibility_message.h"
 #include "desired_settings_ui_policy.h"
 
 static void profile_codec_fuzz_round_trip(const ProfileBank& input) {
@@ -128,5 +131,108 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         if (origin < 0) origin += grid.step;
         GC_FUZZ_CHECK(actual == origin, "converted value does not belong to the destination grid");
     }
+    // Structured planner and pin-observation property fuzzing (overflow, invalid masks, extreme ranges, non-mutation).
+    auto nextI64 = [&]() -> long long {
+        const unsigned long long bits = ((unsigned long long)in.u32() << 32) | in.u32();
+        return bits <= (unsigned long long)LLONG_MAX ? (long long)bits : LLONG_MIN + (long long)(bits - (1ull << 63));
+    };
+    VFCurvePoint fuzzCurve[VF_NUM_POINTS]{};
+    int fuzzOffsetsKHz[VF_NUM_POINTS]{};
+    long long fuzzFreqHz[VF_NUM_POINTS]{};
+    long long fuzzOffsetsHz[VF_NUM_POINTS]{};
+    auto fuzzDesired = std::make_unique<DesiredSettings>();
+    for (int i = 0; i < VF_NUM_POINTS; ++i) {
+        if ((in.byte() & 3) == 0) {
+            fuzzCurve[i].freq_kHz = in.u32() % 6000001u;
+            fuzzCurve[i].volt_uV = 400000u + (in.u32() % 1200001u);
+            fuzzOffsetsKHz[i] = in.i32();
+            fuzzFreqHz[i] = (in.byte() & 1) ? nextI64() : (long long)fuzzCurve[i].freq_kHz * 1000LL;
+            fuzzOffsetsHz[i] = (in.byte() & 1) ? nextI64() : (long long)fuzzOffsetsKHz[i] * 1000LL;
+        }
+        const uint8_t dMode = in.byte();
+        if ((dMode & 3) == 1) {
+            fuzzDesired->hasCurvePoint[i] = 1;
+            fuzzDesired->curvePointMHz[i] = in.u32() % 6001u;
+        } else if ((dMode & 3) == 2) {
+            fuzzDesired->curvePointCaptured[i] = 1;
+            fuzzDesired->curvePointCapturedOffsetHz[i] = (in.byte() & 1) ? nextI64() : (long long)(in.i32() % 2000001) * 1000LL;
+        }
+    }
+    fuzzDesired->hasLock = in.byte() % 2;
+    fuzzDesired->lockMode = (LockMode)(in.byte() % 4);
+    fuzzDesired->lockCi = (in.i32() % (VF_NUM_POINTS + 8)) - 4;
+    fuzzDesired->lockMHz = in.u32() % 6001u;
+    fuzzDesired->hasGpuOffset = in.byte() % 2;
+    fuzzDesired->gpuOffsetMHz = in.i32() % 2001;
+    const auto snapshotFuzzDesired = std::make_unique<DesiredSettings>(*fuzzDesired);
+
+    CurvePlanInput planInput{};
+    planInput.curve = fuzzCurve;
+    planInput.programmedOffsetsKHz = fuzzOffsetsKHz;
+    planInput.floor.valid = (in.byte() & 1) != 0;
+    planInput.floor.firstPopulated = (int)(in.byte() % (VF_NUM_POINTS + 4));
+    planInput.floor.floorRun = (int)(in.byte() % 8);
+    planInput.floor.floorEnd = planInput.floor.floorRun;
+    planInput.floor.graphicsEnd = (int)(in.byte() % (VF_NUM_POINTS + 4));
+    planInput.evidence = (CurvePlanEvidence)(in.byte() % 4);
+    planInput.range.minKHz = in.i32();
+    planInput.range.maxKHz = in.i32();
+    planInput.range.source = (CurvePlanRangeSource)(in.byte() % 3);
+    planInput.tailStrategy = (CurvePlanTailStrategy)(in.byte() % 3);
+    planInput.provenanceMode = (ApplyLockPretailProvenance)(in.byte() % 2);
+    planInput.unownedAtStock = (in.byte() & 1) != 0;
+    planInput.prefixAppliesToHardLock = (in.byte() & 1) != 0;
+    planInput.desired = fuzzDesired.get();
+    planInput.lockMode = (LockMode)(in.byte() % 4);
+    planInput.offsetGridHz = (in.byte() & 1) ? (int)(in.u32() % 1000001u) : 0;
+    if (in.byte() & 1) {
+        planInput.frequencyHz = fuzzFreqHz;
+        planInput.programmedOffsetsHz = fuzzOffsetsHz;
+    }
+    planInput.lockGridHz = (in.byte() & 1) ? 1000000 : (int)(in.u32() % 1000001u);
+
+    const CurvePlanResult planRes = curve_plan_evaluate(planInput);
+    GC_FUZZ_CHECK(planRes.issueCount >= 0 && planRes.issueCount <= CURVE_PLAN_MAX_ISSUES && planRes.omittedIssues >= 0,
+        "curve planner exceeded bounded issue capacity");
+    GC_FUZZ_CHECK(!memcmp(fuzzDesired.get(), snapshotFuzzDesired.get(), sizeof(DesiredSettings)),
+        "curve planner mutated its DesiredSettings input");
+    char planText[512]{};
+    curve_plan_format_message(planRes, (in.byte() & 1) != 0, planText, sizeof(planText));
+    GC_FUZZ_CHECK(planText[sizeof(planText) - 1] == '\0', "unterminated planner message");
+
+    PinWorkloadSample obsSamples[PROFILE_PIN_OBS_MAX_SAMPLES + 2]{};
+    const int nObs = (int)(in.byte() % (PROFILE_PIN_OBS_MAX_SAMPLES + 3));
+    for (int i = 0; i < nObs && i < PROFILE_PIN_OBS_MAX_SAMPLES + 2; ++i) {
+        obsSamples[i].clockValid = (in.byte() & 1) != 0;
+        obsSamples[i].graphicsClockHz = nextI64();
+        obsSamples[i].utilValid = (in.byte() & 2) != 0;
+        obsSamples[i].utilGpuPct = (unsigned int)in.byte();
+        obsSamples[i].perfStateValid = (in.byte() & 4) != 0;
+        obsSamples[i].perfState = (unsigned int)(in.byte() % 16);
+        obsSamples[i].voltageValid = (in.byte() & 8) != 0;
+        obsSamples[i].operatingVoltageUv = nextI64();
+        obsSamples[i].throttleValid = (in.byte() & 16) != 0;
+        obsSamples[i].throttleReasons = ((unsigned long long)in.u32() << 32) | in.u32();
+    }
+    auto obsCap = std::make_unique<HardwareCaptureObservation>();
+    obsCap->valid = obsCap->binding.valid = obsCap->topologyComplete = 1;
+    obsCap->schemaVersion = HARDWARE_CAPTURE_SCHEMA_CURRENT;
+    obsCap->requestedDomains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK;
+    obsCap->capturedDomains = (in.byte() & 1) ? (PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK) : 0u;
+    obsCap->pointCount = std::min<unsigned int>(4u, (unsigned int)(in.byte() % 6));
+    for (gc_u32 i = 0; i < obsCap->pointCount; ++i) {
+        obsCap->points[i].index = 20 + i;
+        obsCap->points[i].voltageUv = 700000 + (gc_i64)i * 100000;
+        obsCap->points[i].writableState = 1;
+        obsCap->points[i].frequencyValid = 1;
+        obsCap->points[i].frequencyHz = 1200000000LL + (gc_i64)i * 250000000LL;
+    }
+    const auto snapshotCap = std::make_unique<HardwareCaptureObservation>(*obsCap);
+    PinObservationResult obsResult{};
+    profile_pin_observation_analyze(*obsCap, (in.byte() & 2) != 0, obsSamples, nObs, obsResult);
+    GC_FUZZ_CHECK(obsResult.totalSamples >= 0 && obsResult.totalSamples <= PROFILE_PIN_OBS_MAX_SAMPLES,
+        "pin analyzer exceeded sample budget");
+    GC_FUZZ_CHECK(!memcmp(obsCap.get(), snapshotCap.get(), sizeof(HardwareCaptureObservation)),
+        "pin analyzer mutated capture observation");
     return 0;
 }
