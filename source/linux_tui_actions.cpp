@@ -489,6 +489,7 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
             const bool accepted = tui_accept_source_conversion(*state, logLine, sizeof(logLine));
             if (logLine[0]) linux_debug_logf("%s", logLine);
             if (accepted) {
+                state->sourceAssistPending.reset();
                 tui_recompute_dirty(state);
                 bind_current_draft(state);
             }
@@ -499,6 +500,26 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
             const bool restored = tui_restore_captured_tail(*state, logLine, sizeof(logLine));
             if (logLine[0]) linux_debug_logf("%s", logLine);
             if (restored) {
+                state->sourceAssistPending.reset();
+                tui_recompute_dirty(state);
+                bind_current_draft(state);
+            }
+            break;
+        }
+        case ACTION_ASSIST_CURVE_CYCLE:
+            tui_cycle_assist_mode(*state);
+            break;
+        case ACTION_ASSIST_CURVE_PREPARE: {
+            char logLine[300]{};
+            (void)tui_prepare_curve_assist(*state, logLine, sizeof(logLine));
+            if (logLine[0]) linux_debug_logf("%s", logLine);
+            break;
+        }
+        case ACTION_ASSIST_CURVE_ACCEPT: {
+            char logLine[300]{};
+            const bool accepted = tui_accept_curve_assist(*state, logLine, sizeof(logLine));
+            if (logLine[0]) linux_debug_logf("%s", logLine);
+            if (accepted) {
                 tui_recompute_dirty(state);
                 bind_current_draft(state);
             }
@@ -510,7 +531,7 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
             auto& choice = action.type == ACTION_SOURCE_GRAPHICS_CHOICE ? state->sourceGraphicsChoice : state->sourceMemoryChoice;
             choice = (choice + 1) % (action.type == ACTION_SOURCE_GRAPHICS_CHOICE ? 4u : 3u);
             state->sourceCheckVisible = false; state->sourceCheckLines.clear(); state->sourceReview.reset();
-            state->sourceConvertIndex = 0; state->sourceScroll = 0;
+            state->sourceAssistPending.reset(); state->sourceConvertIndex = 0; state->sourceScroll = 0;
             snprintf(state->status, sizeof(state->status), "Control preview selection changed; use Check to review this choice");
             break;
         }
@@ -681,6 +702,7 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
         case ACTION_RESET_DRAFT:
             state->document = {};
             state->sourceCheckVisible = false; state->sourceCheckLines.clear(); state->sourceReview.reset();
+            state->sourceAssistPending.reset(); state->sourceConvertIndex = 0;
             state->desired = state->acceptedDesired;
             state->dirty = false;
             bind_current_draft(state);

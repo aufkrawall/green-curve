@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include "profile_editor_review_session.h"
 #include "profile_mapped_draft.h"
+#include "profile_curve_assistance.h"
 
 // Window-thread state only. The coordinator sees a fixed getter request and
 // token; it never accesses this document, report or native source window.
@@ -109,6 +110,8 @@ static void gui_profile_source_handle_check(GuiServiceIoCompletion* completion) 
     g_profileReview = std::move(review); g_profileSourceWindow->report(lines);
     g_profileSourceWindow->mapped_ready(profile_mapped_draft_ready(*g_profileReview, g_app.guiSource.value, g_app.guiSource.revision));
     g_profileSourceWindow->conversion_options(g_profileReview->conversions);
+    g_profileSourceWindow->assist_ready(g_app.guiSource.valid && g_app.guiSource.value.lock.present &&
+        g_profileReview->stage >= PROFILE_REVIEW_CAPTURE);
     g_profileSourceWindow->notice(g_profileReview->conversions.requiresDecision()
         ? "Batch conversion or domain review is required before using this draft; source file is unchanged"
         : "Review mapping, scope and feasibility; Use mapped draft stages these settings without applying them");
@@ -163,6 +166,60 @@ static void gui_profile_source_restore_exact(void*) {
         g_profileSourceWindow->notice("Restored exact captured VF tail offsets without recapture (saved slot unchanged)");
     }
     gui_profile_source_refresh();
+}
+template<class Confirm>
+static bool gui_profile_source_prepare_curve_with_confirm(int modeValue, Confirm confirm) {
+    if (!g_app.guiSource.valid || g_profileReadPending || g_app.applyInFlight || !g_profileReview || !g_profileReviewJob ||
+        g_profileReview->sourceRevision != g_app.guiSource.revision ||
+        !gui_service_model_ready(&g_app.guiServiceModel) ||
+        !profile_editor_review_context_equal(g_profileReviewJob->context, g_profileShownContext) ||
+        modeValue < PROFILE_ASSIST_PREFIX || modeValue > PROFILE_ASSIST_COMBINED) {
+        if (g_profileSourceWindow) g_profileSourceWindow->notice("Check the current source and destination before preparing curve assistance");
+        return false;
+    }
+    ProfileDestinationTopology dest{}; char why[256]{};
+    if (!profile_destination_from_capture(g_profileReview->capture, dest, why, sizeof(why))) {
+        if (g_profileSourceWindow) g_profileSourceWindow->notice(why[0] ? why : "Capture invalid; Check again");
+        return false;
+    }
+    auto assist = std::make_unique<ProfileCurveAssistance>();
+    profile_curve_assistance_prepare(g_app.guiSource.value, g_profileReview->capture, dest,
+        g_app.guiSource.revision, g_profileReview->routes, (ProfileCurveAssistMode)modeValue, *assist);
+    debug_log("%s\n", assist->summary);
+    if (assist->status != PROFILE_ASSIST_PREPARED && assist->status != PROFILE_ASSIST_ESTIMATE) {
+        if (g_profileSourceWindow) g_profileSourceWindow->notice(assist->explanation);
+        return false;
+    }
+    const char* title = assist->status == PROFILE_ASSIST_ESTIMATE
+        ? "Prepare Compatible Curve (Estimate)" : "Prepare Compatible Curve";
+    if (!confirm(title, assist->explanation)) {
+        if (g_profileSourceWindow) g_profileSourceWindow->notice("Curve preparation cancelled; draft unchanged");
+        return false;
+    }
+    if (!g_app.guiSource.valid || g_profileReadPending || g_app.applyInFlight || !g_profileReview || !g_profileReviewJob ||
+        !gui_service_model_ready(&g_app.guiServiceModel) ||
+        !profile_editor_review_context_equal(g_profileReviewJob->context, g_profileShownContext)) {
+        if (g_profileSourceWindow) g_profileSourceWindow->notice("Draft or GPU state changed before acceptance; review again");
+        return false;
+    }
+    auto derived = std::make_unique<ProfileDocument>();
+    ProfileDestinationTopology freshDest{};
+    if (!profile_destination_from_capture(g_profileReview->capture, freshDest, why, sizeof(why)) ||
+        !profile_curve_assistance_accept(*assist, g_app.guiSource.value, g_app.guiSource.revision,
+            g_profileReview->capture, freshDest, g_profileReview->routes, *derived, why, sizeof(why))) {
+        if (g_profileSourceWindow) g_profileSourceWindow->notice(why[0] ? why : "Prepared curve no longer matches draft/destination");
+        return false;
+    }
+    g_app.guiSource.value = *derived; ++g_app.guiSource.revision;
+    gui_profile_source_invalidate_review("Prepared compatible curve updated source draft");
+    if (g_profileSourceWindow) {
+        g_profileSourceWindow->reload();
+        g_profileSourceWindow->notice(assist->proven
+            ? "Prepared compatible curve staged in source draft (saved slot unchanged); Check again before Apply"
+            : "Prepared curve estimate staged in draft (reset baseline still required at Apply); saved slot unchanged");
+    }
+    gui_profile_source_refresh();
+    return true;
 }
 static void gui_profile_source_input_changed(void*) {
     gui_profile_source_invalidate_review("Source input changed; stage the value and check again");

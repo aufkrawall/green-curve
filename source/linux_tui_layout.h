@@ -109,6 +109,9 @@ enum ActionType {
     ACTION_CONVERT_SOURCE_CYCLE,
     ACTION_CONVERT_SOURCE_ACCEPT,
     ACTION_RESTORE_CAPTURED_TAIL,
+    ACTION_ASSIST_CURVE_CYCLE,
+    ACTION_ASSIST_CURVE_PREPARE,
+    ACTION_ASSIST_CURVE_ACCEPT,
     ACTION_CAPTURE_SOURCE,
     ACTION_CAPTURE_DOMAIN,
     ACTION_CAPTURE_READ,
@@ -228,6 +231,9 @@ struct TuiViewModel {
     bool sourceRestoreTailVisible = false;
     bool sourceCanRestoreTail = false;
     char sourceConvertLabel[32]{};
+    int sourceAssistMode = 0;
+    bool sourceAssistReady = false;
+    bool sourceAssistPending = false;
     TuiCaptureView capture;
     TuiTransferView transfer;
     bool serviceOnline;

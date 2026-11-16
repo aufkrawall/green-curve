@@ -5,6 +5,34 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-16: Compatible-curve assistance (prefix repair + closest-target search)
+
+- Extended `curve_prefix_repair_prepare()` (`convertOffsetIntent`) to retain
+  exact captured-offset intent under proven baselines, convert `PROJECTED`
+  prefix points explicitly to typed values, and refuse shaped live baselines
+  with `CURVE_PREFIX_REPAIR_BASELINE_REQUIRED`.
+- Created `source/profile_curve_assistance.h` implementing `PROFILE_ASSIST_PREFIX`,
+  `PROFILE_ASSIST_CLOSEST_TARGET`, and `PROFILE_ASSIST_COMBINED`: extended-GCD
+  CRT grid intersection (`1 MHz` pin grid + anchor `vfGrid`), bounded `<= 65536`
+  descending search via the shared complete planner (without binary-search
+  monotonicity assumptions), distinct `NO_COMPATIBLE_TARGET` vs `INDETERMINATE` vs
+  `ESTIMATE` vs `BASELINE_REQUIRED` statuses, and revision/capture binding.
+- Wired `--prepare-curve prefix|closest-target|combined` into
+  `profile_check_commands.h` + CLI help/options, confirmation flow into Windows
+  `ProfileSourceWindow` (`gui_profile_source_review.cpp`,
+  `gui_profile_source.cpp`), and two-step prepare+accept controls into Linux TUI
+  (`linux_tui_layout_fan_profiles.cpp`, `linux_tui_mapped_draft.h`,
+  `linux_tui_render.cpp`, `linux_tui_actions.cpp`, `linux_tui_source_check.h`).
+- Verification: `--gates`, `--test`, `--test --asan`, `--check --target all`,
+  `--tidy` (0 new findings), and WSL Linux UBSan regressions passed, with new
+  tests in `profile_curve_assistance_tests.cpp` (`9800-9825`),
+  `profile_check_commands_cases.h` (`9830-9836`),
+  `gui_profile_source_review_tests.cpp` (`9840-9845`),
+  `profile_source_window_tests.cpp` (`9850-9853`),
+  `tui_profile_check_tests.cpp` (`9860-9861`), and
+  `profile_mapped_draft_tests.cpp` (`9870-9874`). Hardware replay remains
+  unverified.
+
 ## 2026-11-16: Per-domain batch conversions and captured-tail restore
 
 - Added `source/profile_domain_conversions.h` with shared per-domain batch

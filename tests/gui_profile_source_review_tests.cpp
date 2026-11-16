@@ -14,12 +14,13 @@ struct Window {
     int reports = 0, clears = 0, reloads = 0;
     std::string status;
     std::vector<std::string> lines;
-    bool mapped = false;
+    bool mapped = false, assist = false;
     ProfileConversionPlan conversions{};
     void mapped_ready(bool ready) { mapped = ready; }
+    void assist_ready(bool ready) { assist = ready; }
     void conversion_options(const ProfileConversionPlan& plan) { conversions = plan; }
     void reload() { ++reloads; clear_report(); }
-    void clear_report() { ++clears; lines.clear(); mapped = false; conversions = {}; }
+    void clear_report() { ++clears; lines.clear(); mapped = false; assist = false; conversions = {}; }
     void notice(const char* message) { status = message; }
     void report(const std::vector<std::string>& report) { ++reports; lines = report; }
 };
@@ -228,6 +229,55 @@ static int run() {
     g_app.guiSource.value = flatSource; g_app.guiSource.value.points[1].hasObservedOffset = false;
     gui_profile_source_restore_exact(nullptr);
     if (!g_app.guiSource.value.lock.present || g_profileSourceWindow->status.find("missing") == std::string::npos) return 9397;
+
+    // HELP-01..08 GUI review callbacks: cancel preserves draft, confirm mutates draft only (saved exact), HELP-07 mid-confirm drift refuses.
+    auto aDoc = profile_document_make_empty();
+    aDoc.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK | PROFILE_DOMAIN_MEMORY;
+    aDoc.topologyCount = 3; aDoc.sourceTopologyComplete = true;
+    for (int i = 0; i < 3; ++i) aDoc.topology[i] = {10 + i, 22 + i, 662000 + (gc_i64)i * 6250, 1};
+    aDoc.points[0].kind = PROFILE_POINT_ABSOLUTE_FREQUENCY; aDoc.points[0].absoluteFrequencyHz = 1200000000LL;
+    aDoc.points[1].kind = PROFILE_POINT_ABSOLUTE_FREQUENCY; aDoc.points[1].absoluteFrequencyHz = 1000000000LL;
+    aDoc.hasMemoryOffset = true; aDoc.memoryOffsetHz = -500000; aDoc.memorySurface = CLOCK_OFFSET_SURFACE_P0;
+    aDoc.lock.present = true; aDoc.lock.mode = LOCK_MODE_FLATTEN;
+    aDoc.lock.anchorTopologyId = 11; aDoc.lock.targetFrequencyHz = 1050000250LL;
+    g_app.guiSource.value = g_app.guiSource.saved = aDoc; g_app.guiSource.revision = 70;
+    const auto fillCleanAssistCap = [&] {
+        profile_review_fixture::capture(*live, g_app.guiSource.value);
+        auto& o = live->capture; o.pointCount = 3;
+        for (gc_u32 i = 0; i < 3; ++i) {
+            o.points[i].index = 22 + i; o.points[i].voltageUv = 662000 + (gc_i64)i * 6250;
+            o.points[i].writableState = o.points[i].frequencyValid = o.points[i].offsetValid = 1;
+            o.points[i].offsetHz = 0; o.points[i].frequencyHz = 1000000000LL + (gc_i64)i * 50000000LL;
+        }
+        o.vfLimits = {1, 1, 1, 1, VF_OFFSET_RANGE_SOURCE_NVML_GRAPHICS, -500000000, 500000000, 500};
+        o.fingerprint = hardware_capture_fingerprint(o);
+        o.revision = service_control_review_revision(o.fingerprint, nullptr);
+    };
+    gui_profile_source_observe_service(live.get());
+    start(); fillCleanAssistCap();
+    answer = completion(*live); if (!answer) return 9840;
+    gui_profile_source_handle_check(answer);
+    if (!g_profileSourceWindow->assist) return 9841;
+    bool confirmCalled = false;
+    if (gui_profile_source_prepare_curve_with_confirm(PROFILE_ASSIST_COMBINED, [&](const char*, const char*) {
+            confirmCalled = true; return false;
+        }) || !confirmCalled || g_app.guiSource.value.lock.targetFrequencyHz != 1050000250LL ||
+        g_app.guiSource.value.points[0].absoluteFrequencyHz != 1200000000LL ||
+        g_app.guiSource.revision != 70) return 9842;
+    if (gui_profile_source_prepare_curve_with_confirm(PROFILE_ASSIST_COMBINED, [](const char*, const char*) {
+            ++g_app.guiSource.revision; return true;
+        }) || g_app.guiSource.value.lock.targetFrequencyHz != 1050000250LL) return 9843;
+    g_app.guiSource.revision = 70;
+    start(); fillCleanAssistCap();
+    answer = completion(*live); if (!answer) return 9844;
+    gui_profile_source_handle_check(answer);
+    if (!gui_profile_source_prepare_curve_with_confirm(PROFILE_ASSIST_COMBINED, [](const char*, const char* msg) {
+            return msg && strstr(msg, "1050000000") != nullptr;
+        }) || g_app.guiSource.value.lock.targetFrequencyHz != 1050000000LL ||
+        g_app.guiSource.value.points[0].absoluteFrequencyHz != 1050000000LL ||
+        g_app.guiSource.saved.lock.targetFrequencyHz != 1050000250LL ||
+        g_app.guiSource.saved.points[0].absoluteFrequencyHz != 1200000000LL ||
+        g_app.guiSource.revision != 71 || g_profileSourceWindow->assist) return 9845;
     g_profileSourceWindow.reset(); return 0;
 }
 }

@@ -4,6 +4,7 @@
 #define GREEN_CURVE_PROFILE_CHECK_COMMANDS_H
 #include "profile_commands.h"
 #include "profile_destination_review.h"
+#include "profile_curve_assistance.h"
 
 namespace profile_check_detail {
 template <class IO>
@@ -54,7 +55,8 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
     if (!handled) return false;
     ProfileCodecError error; std::string file, outputFile; int selected = 0;
     gc_u32 graphicsChoice = 0, memoryChoice = 0, convertMask = 0;
-    bool restoreTail = false, convertRequested = false, convertAll = false;
+    bool restoreTail = false, convertRequested = false, convertAll = false, assistRequested = false;
+    ProfileCurveAssistMode assistMode = PROFILE_ASSIST_PREFIX;
     std::vector<ProfileConversionKind> requestedDomains;
     const auto reject = [&](int code) {
         if (review) review->error = error;
@@ -67,11 +69,11 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
             restoreTail = true; continue;
         }
         if ((key != "--check-profile" && key != "--profile" && key != "--graphics-control" && key != "--memory-control" &&
-                key != "--convert-domain" && key != "--output") || ++i == args.size() ||
+                key != "--convert-domain" && key != "--prepare-curve" && key != "--output") || ++i == args.size() ||
             args[i].empty() || args[i].size() >= 4096) {
             profile_codec::fail(&error, 0,
                 "use --check-profile FILE [--profile N] [--graphics-control p0|global|vf] [--memory-control p0|global] "
-                "[--convert-domain domains|all] [--restore-captured-tail] [--output FILE]");
+                "[--convert-domain domains|all] [--restore-captured-tail] [--prepare-curve prefix|closest-target|combined] [--output FILE]");
             return reject(PROFILE_COMMAND_INVALID);
         }
         if (key == "--check-profile") {
@@ -80,6 +82,11 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
         } else if (key == "--output") {
             if (!outputFile.empty()) { profile_codec::fail(&error, 0, "duplicate output file"); return reject(PROFILE_COMMAND_INVALID); }
             outputFile = args[i];
+        } else if (key == "--prepare-curve") {
+            if (assistRequested || !profile_curve_assist_mode_from_key(args[i], assistMode)) {
+                profile_codec::fail(&error, 0, "invalid or duplicate --prepare-curve selection"); return reject(PROFILE_COMMAND_INVALID);
+            }
+            assistRequested = true;
         } else if (key == "--convert-domain") {
             if (convertRequested || !profile_check_detail::parse_convert_domains(args[i], convertAll, requestedDomains, convertMask)) {
                 profile_codec::fail(&error, 0, "invalid or duplicate --convert-domain selection"); return reject(PROFILE_COMMAND_INVALID);
@@ -101,8 +108,9 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
     if (!outputFile.empty() && review) {
         profile_codec::fail(&error, 0, "--output cannot be used in editor preview mode"); return reject(PROFILE_COMMAND_INVALID);
     }
-    if (!outputFile.empty() && !convertRequested && !restoreTail) {
-        profile_codec::fail(&error, 0, "--output requires --convert-domain or --restore-captured-tail"); return reject(PROFILE_COMMAND_INVALID);
+    if (!outputFile.empty() && !convertRequested && !restoreTail && !assistRequested) {
+        profile_codec::fail(&error, 0, "--output requires --convert-domain, --restore-captured-tail or --prepare-curve");
+        return reject(PROFILE_COMMAND_INVALID);
     }
     if (!outputFile.empty() && !profile_check_detail::distinct_impl(io, file, outputFile, error, 0))
         return reject(PROFILE_COMMAND_INVALID);
@@ -213,6 +221,18 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
         }
     }
     routes = resolve_routes(*working);
+    if (assistRequested) {
+        auto assist = std::make_unique<ProfileCurveAssistance>();
+        profile_curve_assistance_prepare(*working, *capture, destination, workingRevision, routes, assistMode, *assist);
+        io.message(std::string(assist->summary) + "\n" + assist->explanation + "\n");
+        if (assist->status == PROFILE_ASSIST_PREPARED || assist->status == PROFILE_ASSIST_ESTIMATE) {
+            auto assisted = std::make_unique<ProfileDocument>();
+            if (profile_curve_assistance_accept(*assist, *working, workingRevision, *capture, destination,
+                    routes, *assisted, error.message, sizeof(error.message))) {
+                *working = *assisted; ++workingRevision; transformed = true;
+            }
+        }
+    }
     profile_conversion_plan_build(*working, *capture, destination, workingRevision, routes, *conversionPlan);
     auto runtime = std::make_unique<DesiredSettings>(); ProfileMappingReport mapping;
     auto reviewedSource = std::make_unique<ProfileDocument>(*working);

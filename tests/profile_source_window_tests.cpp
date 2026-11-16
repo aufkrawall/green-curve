@@ -8,7 +8,7 @@ struct Host {
     int saves = 0, changes = 0, closes = 0, confirms = 0, checks = 0, inputChanges = 0, previewChanges = 0;
     gc_u32 graphics = 0, memory = 0;
     int captureReads = 0, captureAccepts = 0, captureCancels = 0, domainChanges = 0, mapped = 0;
-    int converts = 0, lastConvertKind = -1, restores = 0;
+    int converts = 0, lastConvertKind = -1, restores = 0, prepares = 0, lastPrepareMode = -1;
     gc_u32 captureDomains = 0;
     bool partial = false, discardCapture = false;
     ProfileCaptureRepresentation representation = PROFILE_CAPTURE_UNDECIDED;
@@ -43,6 +43,9 @@ static void convert_domain(void* context, int kind) {
     auto& h = *(Host*)context; ++h.converts; h.lastConvertKind = kind;
 }
 static void restore_exact(void* context) { ++((Host*)context)->restores; }
+static void prepare_curve(void* context, int mode) {
+    auto& h = *(Host*)context; ++h.prepares; h.lastPrepareMode = mode;
+}
 static void select(ProfileSourceWindow& window, int row) {
     SendMessageW(window.control(ProfileSourceWindow::LIST), LB_SETCURSEL, row, 0);
     SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::LIST, LBN_SELCHANGE), (LPARAM)window.control(ProfileSourceWindow::LIST));
@@ -70,7 +73,7 @@ int run_profile_source_window_tests() {
     callbacks.acceptMapped = mapped;
     callbacks.captureRead = capture_read; callbacks.captureAccept = capture_accept;
     callbacks.captureCancel = capture_cancel; callbacks.captureDomainsChanged = domains_changed;
-    callbacks.convertDomain = convert_domain; callbacks.restoreExact = restore_exact;
+    callbacks.convertDomain = convert_domain; callbacks.restoreExact = restore_exact; callbacks.prepareCurve = prepare_curve;
     ProfileSourceWindow window(*model, callbacks);
     host->window = &window;
     if (!window.create(nullptr, 96, false) || IsWindowVisible(window.handle())) return 9330;
@@ -328,6 +331,19 @@ int run_profile_source_window_tests() {
     SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::CONVERSION_CHOICE, CBN_SELCHANGE), 0);
     if (IsWindowEnabled(window.control(ProfileSourceWindow::CONVERT_DOMAIN)) ||
         text(window.control(ProfileSourceWindow::STATUS)).find(L"voltage") == std::wstring::npos) return 9416;
+
+    // HELP-01..08 ProfileSourceWindow controls: ASSIST_CHOICE + PREPARE_CURVE enabled on report & clear on invalidation.
+    if (IsWindowEnabled(window.control(ProfileSourceWindow::ASSIST_CHOICE)) ||
+        IsWindowEnabled(window.control(ProfileSourceWindow::PREPARE_CURVE))) return 9850;
+    window.report({"Curve locked off-grid"}); window.assist_ready(true);
+    if (!IsWindowEnabled(window.control(ProfileSourceWindow::ASSIST_CHOICE)) ||
+        !IsWindowEnabled(window.control(ProfileSourceWindow::PREPARE_CURVE))) return 9851;
+    SendMessageW(window.control(ProfileSourceWindow::ASSIST_CHOICE), CB_SETCURSEL, PROFILE_ASSIST_COMBINED, 0);
+    SendMessageW(window.handle(), WM_COMMAND, MAKEWPARAM(ProfileSourceWindow::PREPARE_CURVE, BN_CLICKED), 0);
+    if (host->prepares != 1 || host->lastPrepareMode != PROFILE_ASSIST_COMBINED) return 9852;
+    window.clear_report();
+    if (IsWindowEnabled(window.control(ProfileSourceWindow::ASSIST_CHOICE)) ||
+        IsWindowEnabled(window.control(ProfileSourceWindow::PREPARE_CURVE))) return 9853;
     return 0;
 }
 #else

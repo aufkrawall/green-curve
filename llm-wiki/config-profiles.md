@@ -1595,3 +1595,21 @@ Source anchors: `source/profile_save_policy.h`, `source/gpu_lock_ownership_polic
   explicit Capture flow -> Save -> Reset -> Load -> Apply plans as
   representable at the true anchor (ROUND-01, 7885-7889; ownership exclusion
   7894-7899).
+
+## Source curve assistance and closest-target search (2026-11-16)
+
+Source anchors: `source/profile_curve_assistance.h`,
+`source/curve_prefix_repair.h`, `source/profile_check_commands.h`,
+`source/gui_profile_source_review.cpp`, `source/profile_source_window.h`,
+`source/linux_tui_mapped_draft.h`.
+
+- Portable source drafts checked against a live destination support three
+  explicit draft-only preparation modes (`prefix`, `closest-target`,
+  `combined`), exposed in Windows `ProfileSourceWindow` (`ASSIST_CHOICE` /
+  `PREPARE_CURVE` confirmation), Linux TUI (`ACTION_ASSIST_CURVE_CYCLE`,
+  `ACTION_ASSIST_CURVE_PREPARE`, two-step `ACTION_ASSIST_CURVE_ACCEPT`), and CLI
+  (`--check-profile ... --prepare-curve ... --output ...`).
+- Detailed CRT grid intersection, `<= 65536` descending candidate budget,
+  captured/projected prefix rules, status taxonomy, and regression fixtures
+  (`9800-9874`) live in `profile-document.md` ("Compatible-curve assistance").
+  User-started load-based pin observation (`CAP-11` tier 3) remains pending.

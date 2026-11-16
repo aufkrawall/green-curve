@@ -132,6 +132,9 @@ void populate_view_model(const TuiState& state, TuiViewModel* vm,
             snprintf(vm->sourceConvertLabel, sizeof(vm->sourceConvertLabel), "CVT:%s%s",
                 tui_conversion_short_name(item.kind), item.convertible ? "" : "*");
         }
+        vm->sourceAssistMode = state.sourceAssistMode >= 0 && state.sourceAssistMode <= 2 ? state.sourceAssistMode : 0;
+        vm->sourceAssistReady = tui_source_conversion_context_ready(state) && state.document.value.lock.present;
+        vm->sourceAssistPending = vm->sourceAssistReady && state.sourceAssistPending != nullptr;
     }
     vm->capture = state.capture; vm->capture.report = &state.captureLines;
     vm->transfer = state.transfer; vm->transfer.path = tui_transfer_path_display(state.transferPath);

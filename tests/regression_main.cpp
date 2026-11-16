@@ -1024,6 +1024,9 @@ int run_curve_plan_tests();
 // "Prepare compatible curve" prefix repair (tests/curve_prefix_repair_tests.cpp,
 // 7900-7939).
 int run_curve_prefix_repair_tests();
+// Combined / closest-target curve assistance (tests/profile_curve_assistance_tests.cpp,
+// 9800-9899).
+int run_profile_curve_assistance_tests();
 // The new authoring document, point intent and unit/power-ratio conversions
 // (tests/profile_document_tests.cpp, 7960-8000). Pure; no GPU, no IPC.
 int run_profile_document_fixture_tests();
@@ -2813,6 +2816,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int prefixRepairFailure = run_curve_prefix_repair_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", prefixRepairFailure);
         return prefixRepairFailure;
+    }
+    if (int curveAssistFailure = run_profile_curve_assistance_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", curveAssistFailure);
+        return curveAssistFailure;
     }
     if (int profileDocFailure = run_profile_document_fixture_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", profileDocFailure);

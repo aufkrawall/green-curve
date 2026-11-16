@@ -10,7 +10,7 @@ static void tui_check_source(TuiState* state) {
         state->sourceCheckVisible = false; state->sourceScroll = 0;
         snprintf(state->status, sizeof(state->status), "Showing stored source intent"); return;
     }
-    state->sourceReview.reset();
+    state->sourceReview.reset(); state->sourceAssistPending.reset();
     const auto* shown = linux_tui_authoritative_gpu(&state->service);
     state->sourceReviewContext = linux_tui_review_context(state->service);
     if (!state->serviceOnline || !shown || !state->sourceReviewContext.serviceInstanceId ||

@@ -51,6 +51,11 @@ static bool gui_profile_source_write(void*, const ProfileDocument& document, cha
     debug_log("profile-source: saved slot=%d points=%d\n", slot, document.topologyCount);
     return true;
 }
+static void gui_profile_source_prepare_curve(void*, int modeValue) {
+    (void)gui_profile_source_prepare_curve_with_confirm(modeValue, [](const char* title, const char* body) {
+        return gc_message_box(g_app.hMainWnd, body, title, MB_YESNO | MB_ICONQUESTION) == IDYES;
+    });
+}
 static bool gui_profile_source_open() {
     if (!g_profileSourceWindow) {
         ProfileSourceWindowCallbacks callbacks{};
@@ -69,6 +74,7 @@ static bool gui_profile_source_open() {
         callbacks.captureDomainsChanged = gui_profile_capture_domains_changed;
         callbacks.convertDomain = gui_profile_source_convert_domain;
         callbacks.restoreExact = gui_profile_source_restore_exact;
+        callbacks.prepareCurve = gui_profile_source_prepare_curve;
         g_profileSourceWindow = std::make_unique<ProfileSourceWindow>(g_app.guiSource, callbacks);
     }
     return g_profileSourceWindow->create(g_app.hMainWnd, g_dpi, false);

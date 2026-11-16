@@ -989,3 +989,43 @@ Source anchors: `source/profile_domain_conversions.h`, `source/profile_commands.
   `observedOffsetHz` without hardware recapture, or refuses with exact missing
   observation reasons while keeping current offsets untouched. Open gaps:
   hardware conversion round trips remain unverified without a connected GPU.
+
+## Compatible-curve assistance (2026-11-16)
+
+Source anchors: `source/profile_curve_assistance.h`,
+`source/curve_prefix_repair.h`, `source/curve_prefix_repair_message.h`,
+`source/profile_check_commands.h`, `source/profile_source_window.h`,
+`source/gui_profile_source_review.cpp`, `source/gui_profile_source.cpp`,
+`source/linux_tui_mapped_draft.h`, `source/linux_tui_layout_fan_profiles.cpp`,
+`source/linux_tui_actions.cpp`, `tests/profile_curve_assistance_tests.cpp`
+(`9800-9825`), `tests/profile_check_commands_cases.h` (`9830-9836`),
+`tests/gui_profile_source_review_tests.cpp` (`9840-9845`),
+`tests/profile_source_window_tests.cpp` (`9850-9853`),
+`tests/tui_profile_check_tests.cpp` (`9860-9861`),
+`tests/profile_mapped_draft_tests.cpp` (`9870-9874`).
+
+- Operation A (`PROFILE_ASSIST_PREFIX`) extends `curve_prefix_repair_prepare()`
+  via `convertOffsetIntent = true`: under a proven unshaped baseline, conflicting
+  `PROFILE_POINT_CAPTURED_OFFSET` points lower cleanly while retaining captured
+  offset intent (`CURVE_PLAN_POINT_CAPTURED`), `PROFILE_POINT_PROJECTION` points
+  preview explicit conversion to `PROFILE_POINT_ABSOLUTE_FREQUENCY`, and
+  over-shaped or unresolved baselines refuse conversion with
+  `PROFILE_ASSIST_BASELINE_REQUIRED`.
+- Operation B (`PROFILE_ASSIST_CLOSEST_TARGET` / `PROFILE_ASSIST_COMBINED`)
+  intersects the `1 MHz` pin grid (when `LOCK_MODE_HARD`) and anchor `vfGrid`
+  congruences via extended-GCD/CRT (`intersect_congruences()`), bounds the
+  search interval, and evaluates up to `<= 65536` descending grid candidates
+  through `curve_resolve_runtime()` + `profile_capture_curve_plan_input()` +
+  `curve_plan_evaluate()` without assuming binary-search monotonicity.
+- Distinct statuses separate `NO_COMPATIBLE_TARGET` (exhausted finite set with
+  proven unshaped baseline) from `INDETERMINATE` (search budget exhausted or
+  shaped live baseline failing without estimate), `BASELINE_REQUIRED`, `LIMITED`,
+  and `ESTIMATE` (`ESTIMATE ONLY` warning over shaped curves).
+- Acceptance binds `sourceRevision`, `gpuGeneration`, `capture.revision`,
+  `destination.revision`, and `profile_document_semantically_equal()`, mutates
+  only the draft (`saved` slot and source file stay untouched; unrelated
+  memory/power/fan/aux domains unchanged), and never auto-triggers Apply. Exposed
+  via `--prepare-curve prefix|closest-target|combined` (with `--output`), Windows
+  `ProfileSourceWindow` (`ASSIST_CHOICE`/`PREPARE_CURVE`), and Linux TUI
+  (`ACTION_ASSIST_CURVE_*` two-step prepare+accept). Open gaps: hardware replay of
+  assisted profiles on physical GPUs remains unverified.

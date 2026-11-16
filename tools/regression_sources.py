@@ -38,6 +38,7 @@ REGRESSION_SOURCES = (
     'vf_point_visibility_tests.cpp',
     'curve_plan_tests.cpp',
     'curve_prefix_repair_tests.cpp',
+    'profile_curve_assistance_tests.cpp',
     'profile_document_tests.cpp',
     'profile_document_contract_tests.cpp',
     'profile_codec_tests.cpp',

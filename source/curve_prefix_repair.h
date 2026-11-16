@@ -47,12 +47,20 @@ struct CurvePrefixRepairPoint {
     unsigned int voltUv;
     unsigned int oldMHz;
     unsigned int newMHz;
+    long long oldHz;
+    long long newHz;
+    long long oldOffsetHz;
+    long long newOffsetHz;
+    CurvePlanPointKind oldKind;
+    CurvePlanPointKind newKind;
     bool wasAbsent;  // the request did not own it; it becomes a typed point
+    bool wasConverted;
 };
 
 struct CurvePrefixRepair {
     CurvePrefixRepairStatus status;
     int changedCount;
+    int conversionCount;
     CurvePrefixRepairPoint points[VF_NUM_POINTS];
     int firstCi;               // the lowest-voltage changed (or offending) point
     unsigned int minVoltUv;
@@ -82,7 +90,8 @@ static inline const char* curve_prefix_repair_status_name(CurvePrefixRepairStatu
     }
 }
 
-static inline CurvePrefixRepair curve_prefix_repair_prepare(const CurvePlanInput& in) {
+static inline CurvePrefixRepair curve_prefix_repair_prepare(const CurvePlanInput& in,
+                                                              bool convertOffsetIntent = false) {
     CurvePrefixRepair out = {};
     out.firstCi = -1;
     out.limitingCi = -1;
@@ -96,51 +105,87 @@ static inline CurvePrefixRepair curve_prefix_repair_prepare(const CurvePlanInput
     }
     const int a = d->lockCi;
     const unsigned int plateau = d->lockMHz;
+    const bool precise = in.frequencyHz != nullptr && curve_plan_uses_precise_values(d);
+    const bool checkPrefix = in.lockMode != LOCK_MODE_HARD || in.prefixAppliesToHardLock;
+    if (!checkPrefix) {
+        out.status = CURVE_PREFIX_REPAIR_NOT_NEEDED;
+        return out;
+    }
     const bool baselineProves = curve_plan_baseline_proves(in.evidence);
+    const long long gridHz = in.offsetGridHz > 0 ? (long long)in.offsetGridHz : 1000LL;
+    const long long minHz = (long long)in.range.minKHz * 1000LL;
+    const long long maxHz = (long long)in.range.maxKHz * 1000LL;
     // Backward pass from the anchor.
-    unsigned int bound = plateau;
+    long long boundHz = precise ? curve_plan_lock_hz(d) : (long long)plateau * 1000000LL;
     CurvePrefixRepairStatus problem = CURVE_PREFIX_REPAIR_PREPARED;
     for (int ci = a - 1; ci >= 0; --ci) {
         if (ci >= in.floor.graphicsEnd || in.curve[ci].freq_kHz == 0) continue;
         const long long baseKHz = curve_point_stock_base_khz(in.curve[ci].freq_kHz,
                                                              in.programmedOffsetsKHz[ci]);
+        const long long baseHz = in.frequencyHz ? curve_plan_base_hz(in, ci) : baseKHz * 1000LL;
         const long long componentKHz = in.gpuComponentKHz ? in.gpuComponentKHz[ci] : 0;
+        const long long componentHz = in.gpuComponentHz ? in.gpuComponentHz[ci] : componentKHz * 1000LL;
         // The planner's own value for this point (curve_plan_prefix_point_target).
         const CurvePlanPrefixTarget t =
             curve_plan_prefix_point_target(in, baseKHz, ci, baselineProves);
         const bool requested = t.requested;
-        // Lowering a point that follows the GPU offset (projected, or unowned
-        // but shifted by the offset) would turn it into a typed value.
         const bool projected = t.kind == CURVE_PLAN_POINT_PROJECTED ||
             t.kind == CURVE_PLAN_POINT_CAPTURED ||
-            (!requested && d->hasGpuOffset && componentKHz != 0);
-        const unsigned int target = t.targetMHz;
-        if (target <= bound) {
-            bound = target;
+            (!requested && d->hasGpuOffset && componentHz != 0);
+        const long long targetHz = precise ? t.targetHz : (long long)t.targetMHz * 1000000LL;
+        if (targetHz <= boundHz) {
+            boundHz = targetHz;
             continue;
         }
-        // This point must come down to `bound`.
+        // Quantize downward onto the active grid when exact Hz precision is used.
+        long long desiredTargetHz = boundHz;
+        long long neededHz = desiredTargetHz - baseHz;
+        if (precise) {
+            long long rem = neededHz % gridHz;
+            if (rem < 0) rem += gridHz;
+            neededHz -= rem;
+            desiredTargetHz = baseHz + neededHz;
+        } else {
+            desiredTargetHz = (boundHz / 1000000LL) * 1000000LL;
+            neededHz = desiredTargetHz - baseHz;
+        }
+        const unsigned int newMHz = precise ? curve_plan_display_hz(desiredTargetHz) : (unsigned int)(desiredTargetHz / 1000000LL);
+        const bool keepCaptured = convertOffsetIntent && t.kind == CURVE_PLAN_POINT_CAPTURED && baselineProves;
+        const bool converts = convertOffsetIntent && !keepCaptured && t.kind == CURVE_PLAN_POINT_PROJECTED;
+        const bool inFloor = vf_point_in_flat_floor(in.floor, in.curve, ci);
+        const bool canQuantize = !precise || (desiredTargetHz > 0 && (neededHz % gridHz) == 0);
+        const long long oldOffsetHz = t.kind == CURVE_PLAN_POINT_CAPTURED ? d->curvePointCapturedOffsetHz[ci] : 0;
+
         CurvePrefixRepairPoint& p = out.points[out.changedCount++];
         p.ci = ci;
         p.voltUv = in.curve[ci].volt_uV;
-        p.oldMHz = target;
-        p.newMHz = bound;
+        p.oldMHz = t.targetMHz;
+        p.newMHz = newMHz;
+        p.oldHz = targetHz;
+        p.newHz = desiredTargetHz;
+        p.oldOffsetHz = oldOffsetHz;
+        p.newOffsetHz = neededHz;
+        p.oldKind = t.kind;
+        p.newKind = keepCaptured ? CURVE_PLAN_POINT_CAPTURED : CURVE_PLAN_POINT_ABSOLUTE;
         p.wasAbsent = !requested;
+        p.wasConverted = converts;
+        if (converts) ++out.conversionCount;
         out.firstCi = ci;
         if (out.minVoltUv == 0 || p.voltUv < out.minVoltUv) out.minVoltUv = p.voltUv;
         if (p.voltUv > out.maxVoltUv) out.maxVoltUv = p.voltUv;
+        boundHz = desiredTargetHz;
+
         // A point that cannot be lowered at all outranks one that only needs a
         // decision (conversion, baseline): that decision would not help.
         if (problem == CURVE_PREFIX_REPAIR_LIMITED) continue;
-        const long long neededKHz = (long long)bound * 1000LL - baseKHz;
-        const bool inFloor = vf_point_in_flat_floor(in.floor, in.curve, ci);
         CurvePrefixRepairStatus pointProblem = CURVE_PREFIX_REPAIR_PREPARED;
         if (inFloor || !vf_point_listed(in.floor, in.curve, ci) ||
-            neededKHz < in.range.minKHz) {
+            neededHz < minHz || neededHz > maxHz || !canQuantize) {
             pointProblem = CURVE_PREFIX_REPAIR_LIMITED;
-        } else if (projected) {
+        } else if (projected && !convertOffsetIntent) {
             pointProblem = CURVE_PREFIX_REPAIR_CONVERSION_REQUIRED;
-        } else if (!requested && !baselineProves) {
+        } else if ((!requested || t.kind == CURVE_PLAN_POINT_CAPTURED || t.kind == CURVE_PLAN_POINT_PROJECTED) &&
+                   !baselineProves) {
             pointProblem = CURVE_PREFIX_REPAIR_BASELINE_REQUIRED;
         }
         if (pointProblem == CURVE_PREFIX_REPAIR_PREPARED) continue;
@@ -149,8 +194,8 @@ static inline CurvePrefixRepair curve_prefix_repair_prepare(const CurvePlanInput
         problem = pointProblem;
         out.limitingCi = ci;
         out.limitingVoltUv = in.curve[ci].volt_uV;
-        out.limitingNeededMHz = bound;
-        out.limitingKHz = neededKHz;
+        out.limitingNeededMHz = newMHz;
+        out.limitingKHz = neededHz / 1000LL;
         out.limitingFloor = inFloor;
     }
     out.rangeMinKHz = in.range.minKHz;
@@ -166,14 +211,30 @@ static inline CurvePrefixRepair curve_prefix_repair_prepare(const CurvePlanInput
     }
     for (int k = 0; k < out.changedCount; ++k) {
         const CurvePrefixRepairPoint& p = out.points[k];
-        out.repaired.hasCurvePoint[p.ci] = true;
-        out.repaired.curvePointMHz[p.ci] = p.newMHz;
-        out.repaired.curvePointFromGpuOffset[p.ci] = false;
+        if (p.newKind == CURVE_PLAN_POINT_CAPTURED) {
+            out.repaired.hasCurvePoint[p.ci] = false;
+            out.repaired.curvePointMHz[p.ci] = 0;
+            out.repaired.curvePointFromGpuOffset[p.ci] = false;
+            out.repaired.authoring.pointFrequencyPrecise[p.ci] = 0;
+            out.repaired.authoring.pointFrequencyHz[p.ci] = 0;
+            out.repaired.curvePointCaptured[p.ci] = 1;
+            out.repaired.curvePointCapturedOffsetHz[p.ci] = p.newOffsetHz;
+        } else {
+            out.repaired.curvePointCaptured[p.ci] = 0;
+            out.repaired.curvePointCapturedOffsetHz[p.ci] = 0;
+            out.repaired.hasCurvePoint[p.ci] = true;
+            out.repaired.curvePointMHz[p.ci] = p.newMHz;
+            out.repaired.curvePointFromGpuOffset[p.ci] = false;
+            if (precise) {
+                out.repaired.authoring.pointFrequencyPrecise[p.ci] = 1;
+                out.repaired.authoring.pointFrequencyHz[p.ci] = p.newHz;
+            }
+        }
     }
     CurvePlanInput after = in;
     after.desired = &out.repaired;
     out.after = curve_plan_evaluate(after);
-    if (out.after.disposition == CURVE_PLAN_REFUSED) {
+    if (out.after.disposition == CURVE_PLAN_REFUSED || out.after.disposition == CURVE_PLAN_UNAVAILABLE) {
         out.status = CURVE_PREFIX_REPAIR_UNRESOLVED;
         out.repaired = *d;
         return out;

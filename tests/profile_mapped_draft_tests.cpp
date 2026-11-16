@@ -205,5 +205,50 @@ int run_profile_mapped_draft_tests() {
     if (!tui_restore_captured_tail(*state, logLine, sizeof(logLine)) || state->document.value.lock.present ||
         !state->document.saved.lock.present || state->document.value.points[1].kind != PROFILE_POINT_CAPTURED_OFFSET ||
         state->document.value.points[1].capturedOffsetHz != -25000500) return 9680;
+
+    // HELP-01..08 TUI actions: cycle mode, prepare two-step preview (draft untouched until ACCEPT ASSIST), reject stale revision.
+    auto assistDoc = profile_document_make_empty();
+    assistDoc.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK;
+    assistDoc.topologyCount = 3; assistDoc.sourceTopologyComplete = true;
+    for (int i = 0; i < 3; ++i) assistDoc.topology[i] = {10 + i, 22 + i, 662000 + (gc_i64)i * 6250, 1};
+    assistDoc.points[0].kind = PROFILE_POINT_ABSOLUTE_FREQUENCY; assistDoc.points[0].absoluteFrequencyHz = 1200000000LL;
+    assistDoc.points[1].kind = PROFILE_POINT_ABSOLUTE_FREQUENCY; assistDoc.points[1].absoluteFrequencyHz = 1000000000LL;
+    assistDoc.lock.present = true; assistDoc.lock.mode = LOCK_MODE_FLATTEN;
+    assistDoc.lock.anchorTopologyId = 11; assistDoc.lock.targetFrequencyHz = 1050000250LL;
+    state->document.value = state->document.saved = assistDoc; state->document.revision = 80;
+    profile_review_fixture::capture(*live, state->document.value);
+    {
+        auto& o = live->capture; o.pointCount = 3;
+        for (gc_u32 i = 0; i < 3; ++i) {
+            o.points[i].index = 22 + i; o.points[i].voltageUv = 662000 + (gc_i64)i * 6250;
+            o.points[i].writableState = o.points[i].frequencyValid = o.points[i].offsetValid = 1;
+            o.points[i].offsetHz = 0; o.points[i].frequencyHz = 1000000000LL + (gc_i64)i * 50000000LL;
+        }
+        o.vfLimits = {1, 1, 1, 1, VF_OFFSET_RANGE_SOURCE_NVML_GRAPHICS, -500000000, 500000000, 500};
+        o.fingerprint = hardware_capture_fingerprint(o);
+        o.revision = service_control_review_revision(o.fingerprint, nullptr);
+    }
+    state->service = *live;
+    state->sourceReviewContext = linux_tui_review_context(*live);
+    state->sourceReview = std::make_unique<ProfileDestinationReview>();
+    if (profile_editor_check(state->document.value, 0, 0,
+            [&](gc_u32 domains, auto& out, auto&) { if (domains != 511u) return false; out = live->capture; return true; },
+            lines, state->sourceReview.get(), 80) != PROFILE_COMMAND_DECISION) return 9870;
+    state->sourceCheckVisible = true;
+    state->sourceAssistMode = PROFILE_ASSIST_PREFIX;
+    tui_cycle_assist_mode(*state);
+    tui_cycle_assist_mode(*state);
+    if (state->sourceAssistMode != PROFILE_ASSIST_COMBINED) return 9871;
+    if (!tui_prepare_curve_assist(*state, logLine, sizeof(logLine)) || !state->sourceAssistPending ||
+        state->document.value.lock.targetFrequencyHz != 1050000250LL || !state->sourceCheckVisible) return 9872;
+    ++state->document.revision;
+    if (tui_accept_curve_assist(*state, logLine, sizeof(logLine)) ||
+        state->document.value.lock.targetFrequencyHz != 1050000250LL) return 9873;
+    --state->document.revision;
+    if (!tui_accept_curve_assist(*state, logLine, sizeof(logLine)) || state->sourceAssistPending != nullptr ||
+        state->document.value.lock.targetFrequencyHz != 1050000000LL ||
+        state->document.value.points[0].absoluteFrequencyHz != 1050000000LL ||
+        state->document.saved.lock.targetFrequencyHz != 1050000250LL ||
+        state->document.revision != 81) return 9874;
     return 0;
 }

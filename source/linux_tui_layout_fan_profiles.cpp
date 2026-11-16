@@ -244,6 +244,12 @@ void draw_profile_panel(TuiCanvas* c, const TuiRect& panel) {
         }
         if (vm.sourceRestoreTailVisible)
             c->button({x + 49, y + 5, 14, 1}, "RESTORE TAIL", ACTION_RESTORE_CAPTURED_TAIL, 0, 0, vm.sourceCanRestoreTail);
+        const char* assistText = vm.sourceAssistMode == 1 ? "Assist: Closest target"
+            : vm.sourceAssistMode == 2 ? "Assist: Prefix+target" : "Assist: Lower prefix";
+        c->button({x, y + 6, 24, 1}, assistText, ACTION_ASSIST_CURVE_CYCLE);
+        c->button({x + 25, y + 6, 15, 1}, "PREPARE CURVE", ACTION_ASSIST_CURVE_PREPARE, 0, 0, vm.sourceAssistReady);
+        if (vm.sourceAssistPending)
+            c->button({x + 41, y + 6, 15, 1}, "ACCEPT ASSIST", ACTION_ASSIST_CURVE_ACCEPT, 0, 0, true);
         return;
     }
     c->text(x, y + 4, panel.width - 6,
@@ -499,8 +505,8 @@ void tui_draw_fan_tab(TuiCanvas* canvas, const TuiRect& content) {
 void tui_draw_profiles_tab(TuiCanvas* canvas, const TuiRect& content) {
     TuiLayout* out = canvas->layout();
     if (canvas->view().sourceDocument) {
-        draw_profile_panel(canvas, {2, content.y, content.width - 2, 9});
-        tui_draw_document_source(canvas, {2, content.y + 9, content.width - 2, content.height - 9});
+        draw_profile_panel(canvas, {2, content.y, content.width - 2, 10});
+        tui_draw_document_source(canvas, {2, content.y + 10, content.width - 2, content.height - 10});
         return;
     }
     if (out->breakpoint == TUI_BREAKPOINT_WIDE) {

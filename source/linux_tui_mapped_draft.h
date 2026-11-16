@@ -131,3 +131,77 @@ static inline bool tui_restore_captured_tail(TuiState& state, char* logLine = nu
              "Restored exact captured VF tail offsets without recapture (saved slot unchanged)");
     return true;
 }
+static inline void tui_cycle_assist_mode(TuiState& state) {
+    state.sourceAssistMode = (state.sourceAssistMode + 1) % 3;
+    state.sourceAssistPending.reset();
+    snprintf(state.status, sizeof(state.status), "Curve assistance mode: %s",
+        profile_curve_assist_mode_label((ProfileCurveAssistMode)state.sourceAssistMode));
+}
+static inline bool tui_prepare_curve_assist(TuiState& state, char* logLine = nullptr, size_t logSize = 0) {
+    if (logLine && logSize) logLine[0] = 0;
+    state.sourceAssistPending.reset();
+    if (!tui_source_conversion_context_ready(state) || !state.document.value.lock.present) {
+        snprintf(state.status, sizeof(state.status),
+            "Check a lock-containing source draft on the shown GPU before preparing curve");
+        return false;
+    }
+    ProfileDestinationTopology dest{}; char why[256]{};
+    if (!profile_destination_from_capture(state.sourceReview->capture, dest, why, sizeof(why))) {
+        snprintf(state.status, sizeof(state.status), "%s", why[0] ? why : "Capture invalid; Check again");
+        return false;
+    }
+    auto assist = std::make_unique<ProfileCurveAssistance>();
+    profile_curve_assistance_prepare(state.document.value, state.sourceReview->capture, dest,
+        state.document.revision, state.sourceReview->routes, (ProfileCurveAssistMode)state.sourceAssistMode, *assist);
+    if (logLine && logSize) snprintf(logLine, logSize, "%s", assist->summary);
+    state.sourceCheckLines.push_back(assist->summary);
+    {
+        const char* p = assist->explanation;
+        while (*p) {
+            const char* nl = strchr(p, '\n');
+            if (nl) { state.sourceCheckLines.emplace_back(p, (size_t)(nl - p)); p = nl + 1; }
+            else { state.sourceCheckLines.emplace_back(p); break; }
+        }
+    }
+    state.sourceCheckVisible = true;
+    state.sourceScroll = 0;
+    if (assist->status == PROFILE_ASSIST_PREPARED || assist->status == PROFILE_ASSIST_ESTIMATE) {
+        const bool proven = assist->proven;
+        state.sourceAssistPending = std::move(assist);
+        snprintf(state.status, sizeof(state.status), "%s",
+            proven ? "Prepared curve preview ready; use ACCEPT ASSIST to update draft only"
+                   : "Estimated curve preview ready (reset baseline required); use ACCEPT ASSIST to stage");
+        return true;
+    }
+    snprintf(state.status, sizeof(state.status), "%s", assist->explanation);
+    return false;
+}
+static inline bool tui_accept_curve_assist(TuiState& state, char* logLine = nullptr, size_t logSize = 0) {
+    if (logLine && logSize) logLine[0] = 0;
+    if (!tui_source_conversion_context_ready(state) || !state.sourceAssistPending) {
+        snprintf(state.status, sizeof(state.status), "Prepare a compatible curve preview before accepting");
+        return false;
+    }
+    ProfileDestinationTopology dest{}; char why[256]{};
+    if (!profile_destination_from_capture(state.sourceReview->capture, dest, why, sizeof(why))) {
+        snprintf(state.status, sizeof(state.status), "%s", why[0] ? why : "Capture invalid; Check again");
+        return false;
+    }
+    auto derived = std::make_unique<ProfileDocument>();
+    if (!profile_curve_assistance_accept(*state.sourceAssistPending, state.document.value, state.document.revision,
+            state.sourceReview->capture, dest, state.sourceReview->routes, *derived, why, sizeof(why))) {
+        snprintf(state.status, sizeof(state.status), "%s", why[0] ? why : "Prepared curve stale; Check again");
+        return false;
+    }
+    const bool proven = state.sourceAssistPending->proven;
+    if (logLine && logSize) snprintf(logLine, logSize, "accepted %s", state.sourceAssistPending->summary);
+    state.document.value = *derived;
+    ++state.document.revision;
+    state.sourceReview.reset(); state.sourceAssistPending.reset();
+    state.sourceCheckVisible = false; state.sourceCheckLines.clear();
+    state.sourceConvertIndex = 0; state.sourceScroll = 0;
+    snprintf(state.status, sizeof(state.status), "%s",
+        proven ? "Accepted prepared curve in draft (saved slot unchanged); Check before Apply"
+               : "Accepted curve estimate in draft (reset baseline required at Apply); saved slot unchanged");
+    return true;
+}

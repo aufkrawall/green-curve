@@ -178,5 +178,60 @@ static int profile_check_commands_cases() {
     if (!profile_check_commands_run({"--check-profile", "flat_no_obs.gcprofile", "--restore-captured-tail", "--output", "nope2.gcprofile"}, io, code) ||
         code != PROFILE_COMMAND_DECISION || io.messages.find("missing") == std::string::npos ||
         io.files != beforeMissingObs) return 9127;
+
+    // HELP-01..08 CLI: --prepare-curve (prefix / closest-target / combined) writes derived --output, never alters source file.
+    io.constraints = true; io.vfGrid = 500;
+    auto assistDoc = profile_document_make_empty();
+    assistDoc.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK | PROFILE_DOMAIN_MEMORY;
+    assistDoc.topologyCount = 3; assistDoc.sourceTopologyComplete = true;
+    for (int i = 0; i < 3; ++i) assistDoc.topology[i] = {100 + i, 22 + i, 662000 + (gc_i64)i * 6250, 1};
+    assistDoc.points[0].kind = PROFILE_POINT_ABSOLUTE_FREQUENCY; assistDoc.points[0].absoluteFrequencyHz = 1200000000LL;
+    assistDoc.points[1].kind = PROFILE_POINT_ABSOLUTE_FREQUENCY; assistDoc.points[1].absoluteFrequencyHz = 1000000000LL;
+    assistDoc.points[2].kind = PROFILE_POINT_ABSENT;
+    assistDoc.lock.present = true; assistDoc.lock.mode = LOCK_MODE_FLATTEN;
+    assistDoc.lock.anchorTopologyId = 101; assistDoc.lock.targetFrequencyHz = 1000000000LL;
+    assistDoc.hasMemoryOffset = true; assistDoc.memoryOffsetHz = -500000; assistDoc.memorySurface = CLOCK_OFFSET_SURFACE_P0;
+    bank->count = 1; bank->documents[0] = assistDoc;
+    if (!profile_bank_encode(*bank, io.files["assist.gcprofile"], &error)) return 9830;
+    const std::string assistOrig = io.files["assist.gcprofile"];
+    io.messages.clear();
+    if (!profile_check_commands_run({"--check-profile", "assist.gcprofile", "--prepare-curve", "prefix", "--output", "assist_prefix.gcprofile"}, io, code) ||
+        code != PROFILE_COMMAND_DECISION || io.files["assist.gcprofile"] != assistOrig ||
+        io.messages.find("curve-assist: mode=prefix status=estimate") == std::string::npos ||
+        io.messages.find("ESTIMATE ONLY") == std::string::npos ||
+        !profile_bank_decode(io.files.at("assist_prefix.gcprofile"), *bank, &error) ||
+        bank->documents[0].points[0].absoluteFrequencyHz != 1000000000LL ||
+        bank->documents[0].memoryOffsetHz != -500000) return 9831;
+    bank->count = 1; bank->documents[0] = assistDoc;
+    bank->documents[0].lock.targetFrequencyHz = 1050000250LL;
+    if (!profile_bank_encode(*bank, io.files["assist_combined.gcprofile"], &error)) return 9832;
+    const std::string combOrig = io.files["assist_combined.gcprofile"];
+    io.messages.clear();
+    if (!profile_check_commands_run({"--check-profile", "assist_combined.gcprofile", "--prepare-curve", "combined", "--output", "assist_comb_out.gcprofile"}, io, code) ||
+        code != PROFILE_COMMAND_DECISION || io.files["assist_combined.gcprofile"] != combOrig ||
+        io.messages.find("curve-assist: mode=combined status=estimate") == std::string::npos ||
+        !profile_bank_decode(io.files.at("assist_comb_out.gcprofile"), *bank, &error) ||
+        bank->documents[0].lock.targetFrequencyHz != 1050000000LL ||
+        bank->documents[0].points[0].absoluteFrequencyHz != 1050000000LL ||
+        bank->documents[0].memoryOffsetHz != -500000) return 9833;
+    io.dualClocks = true;
+    bank->count = 1; bank->documents[0] = assistDoc;
+    bank->documents[0].domains |= PROFILE_DOMAIN_GRAPHICS_OFFSET;
+    bank->documents[0].graphicsOffset.present = true;
+    bank->documents[0].graphicsOffset.offsetHz = 250000000LL;
+    bank->documents[0].points[0].kind = PROFILE_POINT_PROJECTION; bank->documents[0].points[0].absoluteFrequencyHz = 0;
+    if (!profile_bank_encode(*bank, io.files["assist_proj.gcprofile"], &error)) return 9834;
+    const auto beforeProj = io.files;
+    io.messages.clear();
+    if (!profile_check_commands_run({"--check-profile", "assist_proj.gcprofile", "--prepare-curve", "prefix", "--output", "assist_proj_out.gcprofile"}, io, code) ||
+        code != PROFILE_COMMAND_DECISION ||
+        io.messages.find("status=baseline-required") == std::string::npos ||
+        io.files != beforeProj) return 9835;
+    io.dualClocks = false;
+    for (const auto& args : std::vector<std::vector<std::string>>{
+            {"--check-profile", "assist.gcprofile", "--prepare-curve"},
+            {"--check-profile", "assist.gcprofile", "--prepare-curve", "bogus"},
+            {"--check-profile", "assist.gcprofile", "--prepare-curve", "prefix", "--prepare-curve", "prefix"}})
+        if (!profile_check_commands_run(args, io, code) || code != PROFILE_COMMAND_INVALID || io.files != beforeProj) return 9836;
     return 0;
 }

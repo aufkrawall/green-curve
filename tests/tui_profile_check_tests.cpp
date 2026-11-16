@@ -131,5 +131,17 @@ int run_tui_profile_check_tests() {
         }
         if (!cyc || !cvt || !rst) return 9276;
     }
+    vm.sourceAssistReady = true; vm.sourceAssistPending = true; vm.sourceAssistMode = PROFILE_ASSIST_COMBINED;
+    for (const auto size : {TuiRect{0,0,72,24}, TuiRect{0,0,100,32}, TuiRect{0,0,160,48}}) {
+        TuiLayout layout{}; build_tui_layout(vm, size.width, size.height, &layout);
+        if (!tui_layout_actions_valid(layout) || layout.sourceVisibleRows <= 0) return 9860;
+        bool cyc = false, prep = false, acc = false;
+        for (const auto& a : layout.actions) {
+            cyc |= a.type == ACTION_ASSIST_CURVE_CYCLE;
+            prep |= a.type == ACTION_ASSIST_CURVE_PREPARE;
+            acc |= a.type == ACTION_ASSIST_CURVE_ACCEPT;
+        }
+        if (!cyc || !prep || !acc) return 9861;
+    }
     return 0;
 }

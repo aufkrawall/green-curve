@@ -5,6 +5,7 @@
 #include "profile_editor_source_rows.h"
 #include "profile_capture_representation.h"
 #include "profile_domain_conversions.h"
+#include "profile_curve_assistance.h"
 #include <algorithm>
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -38,6 +39,7 @@ struct ProfileSourceWindowCallbacks {
     void (*captureDomainsChanged)(void*) = nullptr;
     void (*convertDomain)(void*, int) = nullptr;
     void (*restoreExact)(void*) = nullptr;
+    void (*prepareCurve)(void*, int) = nullptr;
 };
 // The native window edits only the canonical source. It has no driver, service
 // or live-topology dependency; callbacks own storage and parent presentation.
@@ -45,7 +47,7 @@ class ProfileSourceWindow {
 public:
     enum { LIST = 9101, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CHECK, REPORT, VIEW,
         GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, USE_MAPPED,
-        CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT,
+        CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT, ASSIST_CHOICE, PREPARE_CURVE,
         CAPTURE_READ = 9140, CAPTURE_ACCEPT, CAPTURE_ALLOW_OMISSIONS, CAPTURE_DISCARD, CAPTURE_DOMAIN_FIRST,
         CAPTURE_DOMAIN_LAST = CAPTURE_DOMAIN_FIRST + 8, CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE, CLOSE = IDCANCEL };
     ProfileSourceWindow(ProfileEditorDocument& model, ProfileSourceWindowCallbacks callbacks)
@@ -57,6 +59,7 @@ public:
     HWND control(int id) const { return window_ ? GetDlgItem(window_, id) : nullptr; }
     bool pending() const { return window_ && pending_; }
     void mapped_ready(bool ready) { mappedReady_ = ready; project_view(); }
+    void assist_ready(bool ready) { assistReady_ = ready; project_view(); }
     bool capture_active() const { return window_ && capture_; }
     void capture_require_discard() {
         captureNeedsDiscard_ = true; captureDiscard_ = false;
@@ -96,6 +99,7 @@ public:
         if (message.message == WM_KEYDOWN && message.wParam == VK_RETURN && IsWindowEnabled(message.hwnd)) {
             const int id = GetDlgCtrlID(message.hwnd);
             if (id == STAGE || id == SAVE || id == CHECK || id == VIEW || id == USE_MAPPED || id == CLOSE ||
+                id == CONVERT_DOMAIN || id == RESTORE_EXACT || id == PREPARE_CURVE ||
                 id == CAPTURE_READ || id == CAPTURE_ACCEPT) {
                 SendMessageW(window_, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED), (LPARAM)message.hwnd); return true;
             }
@@ -138,7 +142,7 @@ public:
     }
     void notice(const char* message) { GcWideUtf8Arg text(message); status(text.value); }
     void clear_report() {
-        reportAvailable_ = reportVisible_ = mappedReady_ = false;
+        reportAvailable_ = reportVisible_ = mappedReady_ = assistReady_ = false;
         conversions_.clear(); selectedConversion_ = 0;
         if (control(CONVERSION_CHOICE)) SendMessageW(control(CONVERSION_CHOICE), CB_RESETCONTENT, 0, 0);
         if (control(REPORT)) SetWindowTextW(control(REPORT), L"");
@@ -194,7 +198,7 @@ private:
     HBRUSH background_ = nullptr, inputBrush_ = nullptr;
     int dpi_ = 96, selected_ = -1, scrollX_ = 0, scrollY_ = 0;
     bool pending_ = false, updating_ = false, layingOut_ = false;
-    bool reportAvailable_ = false, reportVisible_ = false, mappedReady_ = false;
+    bool reportAvailable_ = false, reportVisible_ = false, mappedReady_ = false, assistReady_ = false;
     gc_u32 graphics_ = 0, memory_ = 0;
     bool capture_ = false, captureReady_ = false, capturePartial_ = false, captureDiscard_ = false, captureNeedsDiscard_ = false;
     gc_u32 captureDomains_ = 31, captureOmissions_ = 0;
@@ -224,7 +228,7 @@ private:
         HFONT old = font_; font_ = fresh;
         for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE, CHECK, REPORT, VIEW,
             GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, USE_MAPPED,
-            CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT,
+            CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT, ASSIST_CHOICE, PREPARE_CURVE,
             CAPTURE_READ, CAPTURE_ACCEPT, CAPTURE_ALLOW_OMISSIONS, CAPTURE_DISCARD, CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE})
             SendMessageW(control(id), WM_SETFONT, (WPARAM)font_, FALSE);
         for (int id = CAPTURE_DOMAIN_FIRST; id <= CAPTURE_DOMAIN_LAST; ++id) SendMessageW(control(id), WM_SETFONT, (WPARAM)font_, FALSE);
@@ -247,6 +251,11 @@ private:
         child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, CONVERSION_CHOICE);
         child(L"BUTTON", L"Convert", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CONVERT_DOMAIN);
         child(L"BUTTON", L"Restore exact", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, RESTORE_EXACT);
+        HWND assistCombo = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, ASSIST_CHOICE);
+        for (const auto* label : {L"Lower prefix", L"Closest target", L"Prefix + target"})
+            SendMessageW(assistCombo, CB_ADDSTRING, 0, (LPARAM)label);
+        SendMessageW(assistCombo, CB_SETCURSEL, 0, 0);
+        child(L"BUTTON", L"Prepare", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, PREPARE_CURVE);
         child(L"BUTTON", L"Source", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, VIEW);
         child(L"BUTTON", L"Close source", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CLOSE);
         child(L"EDIT", L"", ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP, STATUS);
@@ -260,7 +269,7 @@ private:
         }
         for (int id : {LIST, INPUT, STAGE, SAVE, HELP, STATUS, TITLE, CLOSE, CHECK, REPORT, VIEW,
             GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE, USE_MAPPED,
-            CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT}) if (!control(id)) return false;
+            CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT, ASSIST_CHOICE, PREPARE_CURVE}) if (!control(id)) return false;
         child(L"BUTTON", L"Read", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CAPTURE_READ);
         child(L"BUTTON", L"Use exact", BS_OWNERDRAW | BS_NOTIFY | WS_TABSTOP, CAPTURE_ACCEPT);
         child(L"BUTTON", L"Allow omitted settings", BS_AUTOCHECKBOX | BS_NOTIFY | WS_TABSTOP, CAPTURE_ALLOW_OMISSIONS);
@@ -333,7 +342,7 @@ private:
     void project_view() {
         if (!list_) return;
         for (int id : {HELP, INPUT, STAGE, SAVE, CHECK, GRAPHICS_ROUTE, MEMORY_ROUTE, GRAPHICS_TITLE, MEMORY_TITLE,
-            USE_MAPPED, CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT})
+            USE_MAPPED, CONVERSION_CHOICE, CONVERT_DOMAIN, RESTORE_EXACT, ASSIST_CHOICE, PREPARE_CURVE})
             ShowWindow(control(id), capture_ ? SW_HIDE : SW_SHOW);
         for (int id = CAPTURE_READ; id <= CAPTURE_DOMAIN_LAST; ++id) ShowWindow(control(id), capture_ ? SW_SHOW : SW_HIDE);
         for (int id : {CAPTURE_REPRESENTATION, CAPTURE_REPRESENTATION_TITLE}) ShowWindow(control(id), capture_ ? SW_SHOW : SW_HIDE);
@@ -361,6 +370,8 @@ private:
         EnableWindow(control(CONVERT_DOMAIN), convReady);
         EnableWindow(control(RESTORE_EXACT), !capture_ && !pending_ && model_.valid &&
             profile_document_can_restore_captured_tail(model_.value) && callbacks_.restoreExact);
+        EnableWindow(control(ASSIST_CHOICE), !capture_ && assistReady_);
+        EnableWindow(control(PREPARE_CURVE), !capture_ && !pending_ && assistReady_ && callbacks_.prepareCurve);
     }
     void preview_choice(int id) {
         if (!model_.valid || (id == GRAPHICS_ROUTE ? !model_.value.graphicsOffset.present : !model_.value.hasMemoryOffset)) return;
@@ -379,25 +390,27 @@ private:
         layingOut_ = true; RECT client{};
         for (int pass = 0; pass < 2; ++pass) {
             GetClientRect(window_, &client);
-            const int width = std::max((int)client.right, px(360)), height = std::max((int)client.bottom, px(capture_ ? 456 : 392));
+            const int width = std::max((int)client.right, px(360)), height = std::max((int)client.bottom, px(capture_ ? 456 : 426));
             SCROLLINFO x{sizeof(x), SIF_RANGE | SIF_PAGE | SIF_POS, 0, width - 1, (UINT)client.right, scrollX_, 0};
             SCROLLINFO y{sizeof(y), SIF_RANGE | SIF_PAGE | SIF_POS, 0, height - 1, (UINT)client.bottom, scrollY_, 0};
             SetScrollInfo(window_, SB_HORZ, &x, TRUE); SetScrollInfo(window_, SB_VERT, &y, TRUE);
         }
         SCROLLINFO info{}; info.cbSize = sizeof(info); info.fMask = SIF_POS;
         GetScrollInfo(window_, SB_HORZ, &info); scrollX_ = info.nPos; GetScrollInfo(window_, SB_VERT, &info); scrollY_ = info.nPos;
-        GetClientRect(window_, &client); const int w = std::max((int)client.right, px(360)), h = std::max((int)client.bottom, px(capture_ ? 456 : 392));
+        GetClientRect(window_, &client); const int w = std::max((int)client.right, px(360)), h = std::max((int)client.bottom, px(capture_ ? 456 : 426));
         const int m = px(12), row = px(28), gap = px(8);
         const auto place = [&](int id, int x, int y, int width, int height) { MoveWindow(control(id), x - scrollX_, y - scrollY_, width, height, TRUE); };
         place(TITLE, m, m, w - 2*m - px(104), px(22)); place(VIEW, w - m - px(96), m, px(96), px(24));
-        place(LIST, m, px(42), w - 2*m, h - px(308)); place(REPORT, m, px(42), w - 2*m, h - px(308));
-        place(GRAPHICS_TITLE, m, h - px(262), w/2 - m - px(6), px(22));
-        place(MEMORY_TITLE, w/2 + px(6), h - px(262), w/2 - m - px(6), px(22));
-        place(GRAPHICS_ROUTE, m, h - px(238), w/2 - m - px(6), px(180));
-        place(MEMORY_ROUTE, w/2 + px(6), h - px(238), w/2 - m - px(6), px(180));
-        place(USE_MAPPED, m, h - px(202), px(116), row);
-        place(CONVERSION_CHOICE, m + px(122), h - px(202), w - 2*m - px(214), px(180));
-        place(CONVERT_DOMAIN, w - m - px(86), h - px(202), px(86), row);
+        place(LIST, m, px(42), w - 2*m, h - px(342)); place(REPORT, m, px(42), w - 2*m, h - px(342));
+        place(GRAPHICS_TITLE, m, h - px(296), w/2 - m - px(6), px(22));
+        place(MEMORY_TITLE, w/2 + px(6), h - px(296), w/2 - m - px(6), px(22));
+        place(GRAPHICS_ROUTE, m, h - px(272), w/2 - m - px(6), px(180));
+        place(MEMORY_ROUTE, w/2 + px(6), h - px(272), w/2 - m - px(6), px(180));
+        place(USE_MAPPED, m, h - px(236), px(116), row);
+        place(CONVERSION_CHOICE, m + px(122), h - px(236), w - 2*m - px(214), px(180));
+        place(CONVERT_DOMAIN, w - m - px(86), h - px(236), px(86), row);
+        place(ASSIST_CHOICE, m, h - px(200), w - 2*m - px(108), px(180));
+        place(PREPARE_CURVE, w - m - px(100), h - px(200), px(100), row);
         place(HELP, m, h - px(166), w - 2*m, px(22));
         place(INPUT, m, h - px(138), w - 2*m - px(128) - gap, row); place(STAGE, w - m - px(128), h - px(138), px(128), row);
         place(SAVE, m, h - px(100), px(84), row); place(CHECK, m + px(90), h - px(100), px(54), row);
@@ -455,8 +468,10 @@ private:
         switch (id) {
             case LIST: return notification == LBN_SETFOCUS;
             case INPUT: case REPORT: case STATUS: return notification == EN_SETFOCUS;
-            case GRAPHICS_ROUTE: case MEMORY_ROUTE: case CAPTURE_REPRESENTATION: case CONVERSION_CHOICE: return notification == CBN_SETFOCUS;
-            case STAGE: case SAVE: case CLOSE: case CHECK: case VIEW: case USE_MAPPED: case CONVERT_DOMAIN: case RESTORE_EXACT:
+            case GRAPHICS_ROUTE: case MEMORY_ROUTE: case CAPTURE_REPRESENTATION: case CONVERSION_CHOICE: case ASSIST_CHOICE:
+                return notification == CBN_SETFOCUS;
+            case STAGE: case SAVE: case CLOSE: case CHECK: case VIEW: case USE_MAPPED:
+            case CONVERT_DOMAIN: case RESTORE_EXACT: case PREPARE_CURVE:
                 return notification == BN_SETFOCUS;
             case CAPTURE_READ: case CAPTURE_ACCEPT: case CAPTURE_ALLOW_OMISSIONS: case CAPTURE_DISCARD: return notification == BN_SETFOCUS;
             default: return id >= CAPTURE_DOMAIN_FIRST && id <= CAPTURE_DOMAIN_LAST && notification == BN_SETFOCUS;
@@ -544,7 +559,8 @@ private:
                 if (self->capture_command(LOWORD(w), HIWORD(w))) return 0;
                 if (self->capture_ && (LOWORD(w) == STAGE || LOWORD(w) == CHECK || LOWORD(w) == SAVE || LOWORD(w) == VIEW ||
                     LOWORD(w) == LIST || LOWORD(w) == USE_MAPPED || LOWORD(w) == CONVERSION_CHOICE ||
-                    LOWORD(w) == CONVERT_DOMAIN || LOWORD(w) == RESTORE_EXACT)) return 0;
+                    LOWORD(w) == CONVERT_DOMAIN || LOWORD(w) == RESTORE_EXACT ||
+                    LOWORD(w) == ASSIST_CHOICE || LOWORD(w) == PREPARE_CURVE)) return 0;
                 if (LOWORD(w) == LIST && HIWORD(w) == LBN_SELCHANGE) self->select(true);
                 else if (LOWORD(w) == INPUT && HIWORD(w) == EN_CHANGE && !self->updating_) {
                     self->pending_ = true; self->update_title();
@@ -571,6 +587,11 @@ private:
                 else if (LOWORD(w) == RESTORE_EXACT && HIWORD(w) == BN_CLICKED && !self->pending_ &&
                     self->model_.valid && self->callbacks_.restoreExact)
                     self->callbacks_.restoreExact(self->callbacks_.context);
+                else if (LOWORD(w) == PREPARE_CURVE && HIWORD(w) == BN_CLICKED && !self->pending_ &&
+                    self->assistReady_ && self->callbacks_.prepareCurve) {
+                    const int mode = (int)SendMessageW(self->control(ASSIST_CHOICE), CB_GETCURSEL, 0, 0);
+                    self->callbacks_.prepareCurve(self->callbacks_.context, mode >= 0 && mode <= 2 ? mode : 0);
+                }
                 else if ((LOWORD(w) == GRAPHICS_ROUTE || LOWORD(w) == MEMORY_ROUTE) && HIWORD(w) == CBN_SELCHANGE)
                     self->preview_choice(LOWORD(w));
                 else if (LOWORD(w) == VIEW && HIWORD(w) == BN_CLICKED && self->reportAvailable_) {

@@ -32,9 +32,11 @@ static inline void curve_prefix_repair_format_preview(const CurvePrefixRepair& r
     int shown = 0;
     for (int k = r.changedCount - 1; k >= 0 && shown < CURVE_PREFIX_REPAIR_PREVIEW_LINES; --k) {
         const CurvePrefixRepairPoint& p = r.points[k];
+        const char* note = p.wasAbsent ? " (stock now; becomes a typed value)"
+            : p.wasConverted ? " (projected; converts to typed value)"
+            : p.newKind == CURVE_PLAN_POINT_CAPTURED ? " (keeps captured offset)" : "";
         curve_plan_appendf(out, outSize, "  %u mV (point %d): %u -> %u MHz%s\n",
-            p.voltUv / 1000u, p.ci, p.oldMHz, p.newMHz,
-            p.wasAbsent ? " (stock now; becomes a typed value)" : "");
+            p.voltUv / 1000u, p.ci, p.oldMHz, p.newMHz, note);
         ++shown;
     }
     if (r.changedCount > shown)
