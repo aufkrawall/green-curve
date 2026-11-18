@@ -16,6 +16,13 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   floating `ubuntu-*` labels, with a self-test fixture for both forms. Details in
   `build.md`, "CI release gates".
 - Not changed: `windows-latest` (still green).
+- Follow-up from the first run on the pinned image: the Linux job had not run
+  past "Set up Python" since 2026-11-05, and its ASan step then failed to compile
+  `tests/tui_capture_proposals_tests.cpp` (`std::strcmp` without `<cstring>`;
+  only libc++ supplied it transitively). Fixed with explicit standard includes;
+  the full regression suite, fuzzing of the other targets and Linux packaging
+  pass in a WSL-native clone. The `profile_codec` fuzz abort seen there is
+  recorded as an open question in `testing.md` ("Host-clang libstdc++ parity").
 
 ## 2026-11-18: GPU support warning tiers judge the service snapshot
 

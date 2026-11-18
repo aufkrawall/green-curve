@@ -470,6 +470,42 @@ No GPU backend was initialized and no GPU write was requested. WSL execution
 does not establish the private NVIDIA driver ABI or workload stability. Native
 ARM64 execution remains separate from these x86-64 results.
 
+## Host-clang libstdc++ parity for the Linux ASan and fuzz steps (2026-11-18)
+
+Source anchors: `tools/security_gates.py` (`posix_test_compiler`,
+`host_fuzz_compiler`, `run_fuzz_targets`), `tools/regression_sources.py`,
+`.github/workflows/ci.yml` (`linux` job).
+
+Windows `--test` and the Zig-built Linux `--test` use libc++; the Linux
+`--test --asan` and `--fuzz` steps compile with the host `clang++` against
+libstdc++. A test that names `std::strcmp`, `std::snprintf` or
+`std::make_unique` without including `<cstring>`, `<cstdio>` or `<memory>` still
+compiles under libc++ and fails only in the Linux ASan step, which a Windows-only
+run never shows. Rule: every test translation unit includes the standard header
+for each `std::` facility it uses.
+
+Cheap parity check from a Windows host with a WSL distro that has `clang++`:
+compile each entry of `REGRESSION_SOURCES` plus `tests/regression_main.cpp` with
+`-fsyntax-only -std=c++17 -fno-exceptions -fno-rtti -Isource -include
+source/win32_compat.h`. A WSL-native clone with the pinned toolchain fetched can
+run `build.py --test --asan`, `--fuzz` and `--target linux` as CI does. Read the
+build script's own exit status, not a pipeline's: a `tee` in the pipe hides it.
+
+The `linux` and `release-packaging` jobs did not get past "Set up Python" from
+2026-11-05 until the runner image was pinned (see `build.md`, "CI release
+gates"), so Linux ASan, fuzz, tidy and packaging results for that window were
+never produced by CI.
+
+Open question (unverified on the CI toolchain): with a rolling host clang 22,
+`-fsanitize=address,fuzzer` reports `alloc-dealloc-mismatch (operator new vs
+free)` for any `new (std::nothrow) T` released with `delete`, reproduced with a
+ten-line program that contains no repository code (throwing `new` is fine). It
+aborts the `profile_codec` fuzz target on its first input in that environment.
+Whether the Ubuntu 24.04 clang 18 used by CI shows it is not established; if it
+does, the nothrow allocation in `profile_bank_decode` needs an allocation path
+that stays valid under that runtime while still returning a clean failure on
+out-of-memory (plain throwing `new` would terminate under `-fno-exceptions`).
+
 ## Linux agent sandbox execution
 
 Source anchors: `tests/posix_test_environment.h`,

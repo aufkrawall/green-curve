@@ -5,6 +5,14 @@
 #include "profile_editor_capture.h"
 #include "profile_review_fixture.h"
 #include "profile_capture_proposal_fixture.h"
+// Named explicitly: std::strcmp/std::snprintf/std::make_unique only arrived
+// transitively under Zig's libc++, so the host-clang libstdc++ ASan build
+// failed to compile this file.
+#include <cstdio>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace tui_capture_proposals_fixture {
 static void linux_debug_logf(const char *, ...) {}
