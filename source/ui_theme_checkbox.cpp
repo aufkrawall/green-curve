@@ -64,7 +64,7 @@ static void draw_themed_checkbox_control(
         // one caption came out foreign against the dark theme.
         SetTextColor(hdc, disabled ? COL_LABEL : COL_TEXT);
         DrawTextA(hdc, text, -1, &textRect,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
     if (focused) {
         RECT focus = rc;

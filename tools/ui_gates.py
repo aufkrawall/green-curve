@@ -7,6 +7,8 @@ here imports build.py, so the dependency runs one way only.
 `ctx` is any object exposing SOURCE_DIR.
 """
 import os
+import re
+import sys
 
 
 def _p(ctx, name):
@@ -1624,6 +1626,30 @@ def check_wndproc_stack_discipline(ctx, require_text, forbid_text):
                 "profile source reset clears g_app.guiSource in place")
 
 
+def check_owner_drawn_text_is_literal(ctx, require_text, forbid_text):
+    """Owner-drawn captions are literal text, never mnemonic markup.
+
+    DrawText without DT_NOPREFIX turns '&' into an underline marker, so a
+    caption such as "Profiles & tools..." rendered as "Profiles _tools...".
+    Every DrawText call in the shipped sources must pass DT_NOPREFIX.
+    """
+    pattern = re.compile(r"DrawText[AW]?\s*\(([^;]*?)\);", re.S)
+    failures = []
+    for name in sorted(os.listdir(ctx.SOURCE_DIR)):
+        if not name.endswith((".cpp", ".h")):
+            continue
+        with open(_p(ctx, name), "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        for match in pattern.finditer(text):
+            if "DT_NOPREFIX" not in match.group(1):
+                line = text.count("\n", 0, match.start()) + 1
+                failures.append(f"{name}:{line}")
+    if failures:
+        print("Regression source check FAILED: DrawText without DT_NOPREFIX "
+              "renders '&' as a mnemonic underline: " + ", ".join(failures[:8]))
+        sys.exit(1)
+
+
 def check_all(ctx, require_text, forbid_text):
     check_canonical_tui_documents(ctx, require_text, forbid_text)
     check_profile_draft_replacement(ctx, require_text)
@@ -1654,3 +1680,4 @@ def check_all(ctx, require_text, forbid_text):
     check_read_miss_is_not_a_disconnect(ctx, require_text, forbid_text)
     check_service_status_notices(ctx, require_text, forbid_text)
     check_wndproc_stack_discipline(ctx, require_text, forbid_text)
+    check_owner_drawn_text_is_literal(ctx, require_text, forbid_text)

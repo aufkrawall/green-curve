@@ -326,7 +326,7 @@ static void xbar_draw_button(const DRAWITEMSTRUCT* dis) {
     RECT textRc = rc;
     if (pressed) OffsetRect(&textRc, 0, 1);
     SetTextColor(hdc, disabled ? COL_LABEL : COL_BUTTON_LABEL);
-    DrawTextA(hdc, text, -1, &textRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawTextA(hdc, text, -1, &textRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     if (focused) {
         RECT focus = rc;
         InflateRect(&focus, -3, -3);

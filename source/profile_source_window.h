@@ -493,7 +493,7 @@ private:
         HBRUSH brush = CreateSolidBrush(color); FillRect(item.hDC, &item.rcItem, brush); DeleteObject(brush);
         SetBkMode(item.hDC, TRANSPARENT); SetTextColor(item.hDC, enabled ? COL_BUTTON_LABEL : COL_LABEL);
         HGDIOBJ old = font_ ? SelectObject(item.hDC, font_) : nullptr; wchar_t label[64]{}; GetWindowTextW(item.hwndItem, label, 64);
-        RECT text = item.rcItem; DrawTextW(item.hDC, label, -1, &text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        RECT text = item.rcItem; DrawTextW(item.hDC, label, -1, &text, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         if (old) SelectObject(item.hDC, old);
         if (item.itemState & ODS_FOCUS) { RECT focus = item.rcItem; InflateRect(&focus, -px(3), -px(3)); DrawFocusRect(item.hDC, &focus); }
     }

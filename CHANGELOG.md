@@ -54,6 +54,7 @@ Curve checks, profile transfer and capture improve.
 
 ### Fixed
 
+- **Button captions:** an ampersand shows as written instead of underlining the next letter.
 - **TUI numeric edits:** memory and power edits replace retained precise values.
 - **Unicode profile banks:** imports preserve existing text and encoding.
 - **Unsaved drafts:** profile loading asks before discarding edits, including invalid input.

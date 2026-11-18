@@ -191,7 +191,7 @@ static void draw_themed_button(const DRAWITEMSTRUCT* dis) {
     COLORREF labelColor = disabled ? COL_LABEL : COL_BUTTON_LABEL;
     if (pendingAccent) labelColor = disabled ? COL_PENDING_DIM : COL_PENDING;
     SetTextColor(hdc, labelColor);
-    DrawTextA(hdc, text, -1, &textRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawTextA(hdc, text, -1, &textRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     if (focused) {
         RECT focus = rc;

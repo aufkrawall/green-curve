@@ -162,7 +162,7 @@ static void gc_draw_text(HDC dc, HFONT font, COLORREF colour, const char* text,
     HFONT oldFont = (HFONT)SelectObject(dc, font);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, colour);
-    DrawTextW(dc, wide, -1, &rect, format);
+    DrawTextW(dc, wide, -1, &rect, format | DT_NOPREFIX);
     SelectObject(dc, oldFont);
 }
 

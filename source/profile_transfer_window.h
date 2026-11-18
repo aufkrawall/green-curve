@@ -418,7 +418,7 @@ class ProfileTransferWindow {
         wchar_t label[64]{};
         GetWindowTextW(item.hwndItem, label, 64);
         RECT text = item.rcItem;
-        DrawTextW(item.hDC, label, -1, &text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(item.hDC, label, -1, &text, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         if (old)
             SelectObject(item.hDC, old);
         if (item.itemState & ODS_FOCUS) {
