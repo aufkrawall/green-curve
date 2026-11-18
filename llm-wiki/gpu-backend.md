@@ -142,7 +142,7 @@ silencing one never silences another:
 |---|---|---|
 | Unrecognized family | `bestGuessOnly` backend | `[warnings] hide_unrecognized_gpu_warning` |
 | CMP mining board | confirmed CMP device id **or** an `NVIDIA CMP <n>HX` name | `[warnings] hide_cmp_board_warning` |
-| Reduced control surface | recognized family **and** (incomplete probe **or** unified memory) | `[warnings] hide_limited_control_warning` |
+| Reduced control surface | recognized family **and** (missing board-level domain **or** unified memory) | `[warnings] hide_limited_control_warning` |
 
 **CMP mining boards (2026-11-18).** `source/gpu_cmp_policy.h`,
 `show_cmp_board_warning()` in `source/main_capability_warning.cpp`,
@@ -157,14 +157,26 @@ user report) or the whole word `CMP <n>HX`; other CMP device ids are not
 listed until confirmed. The self-test prints a matching NOTE. Logs:
 `CMP board warning: gpu= device= pciValid= matchedBy=` and the user's choice.
 
-Open (stale-risk): the unrecognized-family and reduced-surface tiers key on
-`g_app.vfBackend`, which only the in-process NvAPI path sets; the GUI shows the
-warnings only while the service is available and does not run that path then,
-so whether those two tiers can fire in the GUI is unverified.
+**Tiers judge the service snapshot (2026-11-18).**
+`source/gpu_support_warning_policy.h`, `tests/gpu_support_warning_tests.cpp`.
+The GUI shows the tiers only while the service is available, and then never
+calls NvAPI: `g_app.vfBackend` stays null in the GUI process. The
+unrecognized-family and reduced-surface tiers used to start with a
+`g_app.vfBackend` check and so could never fire there (verified: GUI sessions log no backend selection). They now judge the
+snapshot's selected adapter (`valid`, `family`, `vfBestGuess`) and the decoded
+capability probe; a source gate forbids `g_app.vfBackend` in both predicates.
+The state line `GPU support warnings: selected valid= family= bestGuess=
+missingBoardDomains= topology=` logs on change.
 
-The second tier has **two** independent triggers, both positive-evidence-only:
+The reduced-surface tier has **two** independent triggers, both positive-evidence-only:
 
-1. A domain the driver actually refused.
+1. A board-level domain (GPU/memory offset, power, VF curve, lock, fan) the
+   driver actually refused or reported absent. The XBAR, SYS and VIDEO clock
+   domains do not count: a pinned ClkDomains schema decides them (only a
+   Blackwell row is pinned), and a board without one refuses all three (a
+   Turing snapshot carries `missingMask=0x380`; Pascal refuses likewise).
+   Counting them would have warned on such boards at every launch once the tier
+   could fire (`gpu_capability_board_domains()`).
 2. **A recognized *discrete* family reporting a UNIFIED memory pool.** That
    pairing is a contradiction — every validated GeForce card owns its VRAM — so
    it can only mean an integrated part wearing that family's architecture id.

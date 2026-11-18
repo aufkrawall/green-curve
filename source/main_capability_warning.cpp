@@ -19,7 +19,9 @@ static void show_limited_control_surface_warning(HWND parent) {
     if (!should_show_limited_control_warning()) return;
 
     const GpuCapabilityProbe* probe = &g_app.gpuCapability;
-    gc_u32 missing = gpu_capability_missing_domains(probe);
+    // Board-level domains only: a board without a pinned ClkDomains schema
+    // refuses the advanced clock domains by design (gpu_capability_policy.h).
+    gc_u32 missing = gpu_capability_missing_board_domains(probe);
 
     // Build the "what you lose" list from the probe rather than from any
     // assumption about which part this is.

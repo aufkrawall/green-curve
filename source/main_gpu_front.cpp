@@ -1,5 +1,6 @@
 #include "fan_runtime_policy.h"   // shared manual-fan write verification
 #include "vf_curve_units.h"
+#include "gpu_support_warning_policy.h" // GUI startup warning tiers
 static UINT fan_telemetry_interval_for_window_state() {
     if (!g_app.backgroundServiceAvailable) return 2000;
     return FAN_TELEMETRY_INTERVAL_MS;
@@ -713,8 +714,17 @@ static int gpu_offset_component_mhz_for_point(int pointIndex, int gpuOffsetMHz, 
 static bool vf_backend_is_best_guess(const VfBackendSpec* backend) {
     return backend && backend->bestGuessOnly && gpu_family_uses_best_guess_backend(backend->family);
 }
+// Both tiers judge the service snapshot's selected adapter, never
+// g_app.vfBackend, which the GUI process does not resolve
+// (gpu_support_warning_policy.h).
 static bool should_show_best_guess_warning() {
-    if (!g_app.vfBackend || !vf_backend_is_best_guess(g_app.vfBackend)) return false;
+    debug_log_on_change("GPU support warnings: selected valid=%d family=%d bestGuess=%d "
+                        "missingBoardDomains=0x%02X topology=%u\n",
+        g_app.selectedGpu.valid ? 1 : 0, (int)g_app.selectedGpu.family,
+        g_app.selectedGpu.vfBestGuess ? 1 : 0,
+        (unsigned)gpu_capability_missing_board_domains(&g_app.gpuCapability),
+        (unsigned)g_app.gpuCapability.memoryTopology);
+    if (!gpu_warning_unrecognized_family_applies(&g_app.selectedGpu)) return false;
     int hideWarning = get_config_int(g_app.configPath, "warnings", "hide_unrecognized_gpu_warning", 0);
     if (hideWarning != 0) {
         debug_log_on_change("unrecognized GPU warning suppressed by user config\n");
@@ -735,9 +745,7 @@ static bool should_show_best_guess_warning() {
 // config key is deliberately distinct from the unrecognized-family one:
 // silencing "this GPU is new" must not silence "this GPU cannot do X".
 static bool should_show_limited_control_warning() {
-    if (!g_app.vfBackend) return false;
-    if (!gpu_requires_limited_control_warning(g_app.vfBackend->family,
-                                              &g_app.gpuCapability)) {
+    if (!gpu_warning_limited_control_applies(&g_app.selectedGpu, &g_app.gpuCapability)) {
         return false;
     }
     int hideWarning = get_config_int(g_app.configPath, "warnings",

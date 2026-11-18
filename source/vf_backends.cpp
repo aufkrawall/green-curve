@@ -157,7 +157,9 @@ bool gpu_family_uses_best_guess_backend(GpuFamily family) {
 //
 // Two independent triggers, both positive-evidence-only:
 //
-//  1. A domain the driver actually refused (the probe is incomplete).
+//  1. A board-level domain the driver actually refused or reported absent.
+//     The schema-gated advanced clock domains do not count: every board
+//     without a pinned layout refuses them (gpu_capability_board_domains()).
 //  2. A recognized DISCRETE family reporting a UNIFIED memory pool — a
 //     contradiction that can only mean an integrated part wearing that family's
 //     architecture id.  Without this, a GB10-class board that reports Blackwell
@@ -165,13 +167,13 @@ bool gpu_family_uses_best_guess_backend(GpuFamily family) {
 //     discrete card and warn about nothing, which is the one way untested
 //     silicon could reach a user silently.
 //
-// Returns false whenever the surface is complete AND the topology is DEDICATED
-// or UNKNOWN — i.e. every validated discrete GPU, and every build where the
-// probe found nothing. So this still cannot fire on hardware Green Curve
-// already supports.
+// Returns false whenever every board-level domain answered AND the topology is
+// DEDICATED or UNKNOWN — i.e. every validated discrete GPU, and every build
+// where the probe found nothing. So this still cannot fire on hardware Green
+// Curve already supports.
 bool gpu_requires_limited_control_warning(GpuFamily family,
                                           const GpuCapabilityProbe* probe) {
     if (gpu_family_uses_best_guess_backend(family)) return false;
     if (gpu_capability_topology_contradicts_discrete(probe)) return true;
-    return !gpu_capability_is_complete(probe);
+    return gpu_capability_missing_board_domains(probe) != 0;
 }

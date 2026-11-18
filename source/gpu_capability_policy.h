@@ -194,6 +194,25 @@ constexpr gc_u32 gpu_capability_write_domains() {
            gpu_capability_mask_for_index(9);    // VIDEO_CLK
 }
 
+// The board-level domains every supported discrete card exposes, and the only
+// ones the reduced-control-surface warning is about.  The advanced clock
+// domains (XBAR, SYS, VIDEO) are left out: a pinned ClkDomains schema decides
+// them, and a board without one refuses all three by design (a Turing board
+// reports exactly missingMask=0x380), which is not a reduced surface.
+constexpr gc_u32 gpu_capability_board_domains() {
+    return gpu_capability_mask_for_index(1) |   // GPU_OFFSET
+           gpu_capability_mask_for_index(2) |   // MEM_OFFSET
+           gpu_capability_mask_for_index(3) |   // POWER
+           gpu_capability_mask_for_index(4) |   // VF_CURVE
+           gpu_capability_mask_for_index(5) |   // LOCK
+           gpu_capability_mask_for_index(6);    // FAN
+}
+
+constexpr gc_u32 gpu_capability_missing_board_domains(
+    const GpuCapabilityProbe* probe) {
+    return gpu_capability_missing_domains(probe) & gpu_capability_board_domains();
+}
+
 constexpr gc_u32 gpu_capability_surface_class(
     const GpuCapabilityProbe* probe) {
     gc_u32 writes = gpu_capability_write_domains();

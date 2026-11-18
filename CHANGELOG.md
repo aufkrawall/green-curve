@@ -68,6 +68,7 @@ Curve checks, profile transfer and capture improve.
 - **Flatten detection:** selects the true plateau start, including hidden low-voltage points.
 - **Minimize to tray:** minimizing after profile actions no longer crashes.
 - **Notebook GPUs:** undervolts and profiles apply when the system manages the fan or power limit.
+- **GPU support warnings:** warnings for unrecognized GPUs and boards with fewer controls now appear at startup when they apply.
 - **Curve reading on modified drivers:** the curve loads on drivers that refuse points past the editable range, such as the CMP 40HX's.
 
 ### Compatibility notes

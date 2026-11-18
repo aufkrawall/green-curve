@@ -1,5 +1,19 @@
 # Testing
 
+## GPU support warning tiers from the snapshot (2026-11-18)
+
+`tests/gpu_support_warning_tests.cpp` (12230-12237) decodes packed capability
+words taken from real service snapshots (a Turing CMP 40HX: `0xA9554`, XBAR/SYS/
+VIDEO refused; an RTX 5070: `0x55554`) and runs `gpu_support_warning_policy.h`
+on snapshot-shaped adapters: refusing only the advanced clock domains is not a
+reduced surface (12231 fails against the previous trigger), a refused power or
+absent fan still warns, unified memory warns with nothing missing, the
+unrecognized tier follows the snapshot best-guess flag, and nothing fires
+without an adopted identity. Source gates in `tools/gpu_support_gates.py`
+forbid `g_app.vfBackend` in both GUI predicates (they fail on the previous
+code). The dialogs were not shown on hardware: no unrecognized or
+reduced-surface board is available.
+
 ## CMP mining-board warning (2026-11-18)
 
 `tests/gpu_cmp_policy_tests.cpp` (12220-12227, run from

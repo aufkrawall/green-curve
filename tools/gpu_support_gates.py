@@ -10,7 +10,7 @@ never imports build.py.
 import os
 
 
-def check_source_gates(ctx, require_text, forbid_text):
+def check_source_gates(ctx, require_text, forbid_text, forbid_text_in_operation):
     src = ctx.SOURCE_DIR
     # Every VF STATUS reader sends only the points the 128-point table can hold
     # (vf_point_mask_policy.h).  The full advertised mask makes a driver that
@@ -40,3 +40,22 @@ def check_source_gates(ctx, require_text, forbid_text):
                  "the CMP warning can be skipped for good")
     require_text(os.path.join(src, "gpu_cmp_policy.h"), "0x1F0Bu",
                  "the confirmed CMP 40HX device id stays recognized")
+
+    # The GUI never resolves a VF backend (it reads the service snapshot), so a
+    # warning tier keyed on g_app.vfBackend can never fire there.
+    front = os.path.join(src, "main_gpu_front.cpp")
+    for anchor, policy in (
+            ("static bool should_show_best_guess_warning()",
+             "gpu_warning_unrecognized_family_applies(&g_app.selectedGpu)"),
+            ("static bool should_show_limited_control_warning()",
+             "gpu_warning_limited_control_applies(&g_app.selectedGpu, &g_app.gpuCapability)")):
+        forbid_text_in_operation(front, anchor, "g_app.vfBackend",
+                                 f"{anchor} judges the snapshot, not the GUI's unset VF backend")
+        require_text(front, policy, f"{anchor} uses the snapshot warning policy")
+    # Schema-gated advanced clock domains are refused on every board without a
+    # pinned layout; only board-level domains make a reduced surface.
+    require_text(os.path.join(src, "vf_backends.cpp"),
+                 "return gpu_capability_missing_board_domains(probe) != 0;",
+                 "the reduced-surface trigger ignores the advanced clock domains")
+    require_text(warning, "gc_u32 missing = gpu_capability_missing_board_domains(probe);",
+                 "the reduced-surface text lists only board-level domains")

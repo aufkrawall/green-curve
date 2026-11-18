@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-18: GPU support warning tiers judge the service snapshot
+
+- Found while adding the CMP tier: the unrecognized-family and reduced-surface
+  predicates began with `g_app.vfBackend`, which the GUI never sets while it
+  runs through the service, so neither could fire in the GUI (GUI sessions in
+  the local debug log show no backend selection).
+- Fixing only that would have warned every board without a pinned ClkDomains
+  schema: the CMP 40HX snapshot carries XBAR/SYS/VIDEO refused
+  (`missingMask=0x380`). The reduced-surface trigger and its text now consider
+  board-level domains only (`gpu_capability_board_domains()`).
+- `source/gpu_support_warning_policy.h`; tests 12230-12237; gates in
+  `tools/gpu_support_gates.py`.
+- Not changed: the self-test's surface class and verdict still count the
+  advanced domains, so such boards report `PARTIAL` there.
+
 ## 2026-11-18: Skippable startup warning for NVIDIA CMP mining boards
 
 - Requested with the CMP 40HX support (issue 13): guard it behind a warning the
@@ -13,9 +28,8 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 - Identity: confirmed id `0x1F0B` or the `CMP <n>HX` name
   (`source/gpu_cmp_policy.h`); reads the snapshot's adapter identity, not the
   VF backend. Self-test prints a NOTE. Tests 12220-12227.
-- Found while wiring it: the two older tiers key on `g_app.vfBackend`, which
-  the service-mode GUI does not set; recorded as an open question in
-  [gpu-backend.md](../gpu-backend.md), not changed here.
+- Found while wiring it: the two older tiers keyed on `g_app.vfBackend`, which
+  the service-mode GUI does not set; fixed in the entry above.
 
 ## 2026-11-18: VF status requests stop at the 128-point table
 
