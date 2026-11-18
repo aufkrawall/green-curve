@@ -29,6 +29,7 @@ struct ConfigStorageLockGuard {
 #include "config_profile_xbar_io.h"
 #include "profile_config_windows.h"
 #include "profile_desired_ini_ext.h"
+#include "config_profile_document_load.h"
 
 static void infer_profile_lock_from_curve(const DesiredSettings* desired, int* lockCiOut, unsigned int* lockMHzOut);
 static void resolve_profile_gpu_offset_state_for_save(const DesiredSettings* desired, int* gpuOffsetMHzOut, int* excludeLowCountOut);
@@ -63,10 +64,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
     const std::string documentSection = "profile" + std::to_string(slot);
     if (!profile_windows_document_section(path, documentSection.c_str(), documentBody, documentFound, err, errSize)) return false;
     if (!documentFound && slot == 1 && !profile_windows_document_section(path, "controls", documentBody, documentFound, err, errSize)) return false;
-    if (documentFound) {
-        set_message(err, errSize, "This profile retains portable source intent; review its destination mapping before Apply");
-        return false;
-    }
+    if (documentFound) return load_profile_document_slot(documentBody, slot, desired, mode, err, errSize);
 
     // Use slot-specific sections if they exist, else legacy sections for slot 1
     char controlsSection[32];

@@ -206,6 +206,7 @@ static bool load_fan_curve_config_from_section(const IniDocument* doc, const cha
 }
 
 #include "linux_fan_curve_profile_save.h"
+#include "linux_profile_document_load.h"
 
 static bool load_desired_settings_from_sections(const IniDocument* doc,
     const char* controlsSection,
@@ -216,10 +217,9 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
     char* err,
     size_t errSize) {
     if (!doc || !controlsSection || !curveSection || !fanCurveSection || !desired) return false;
-    for (const auto& s : doc->sections) if (s.name == controlsSection) for (const auto& e : s.entries)
-        if (profile_slot::ascii_equal(std::string_view(e.key).substr(0, 9), "document.")) {
-            set_message(err, errSize, "This profile retains portable source intent; review its destination mapping before Apply"); return false;
-        }
+    if (section_holds_profile_document(doc, controlsSection)) { // callers convert documents first
+        set_message(err, errSize, "%s is an imported profile this reader cannot convert", contextLabel ? contextLabel : "profile"); return false;
+    }
 
     initialize_desired_settings_defaults(desired);
     char fanBuffer[64] = {};
@@ -541,10 +541,10 @@ static int clamp_optional_slot(const IniDocument* doc, const char* key, int fall
     return (v < 0 || v > CONFIG_NUM_SLOTS) ? fallback : v;
 }
 
-static bool load_sections_normalized(const IniDocument* doc, const char* controls,
+static bool load_sections_normalized(const char* path, const IniDocument* doc, const char* controls,
     const char* curve, const char* fan, DesiredSettings* desired, const char* context,
     char* err, size_t errSize) {
-    if (!load_desired_settings_from_sections(doc, controls, curve, fan, desired, context, err, errSize)) return false;
+    if (!load_profile_sections_any(path, doc, controls, curve, fan, desired, context, err, errSize)) return false;
     normalize_desired_settings_for_ui(desired);
     return true;
 }
@@ -575,7 +575,7 @@ bool load_profile_from_config_path(const char* path, int slot, DesiredSettings* 
 
     char context[32] = {};
     snprintf(context, sizeof(context), "profile %d", slot);
-    if (!load_desired_settings_from_sections(&doc, controlsSection, curveSection, fanCurveSection, desired, context, err, errSize)) return false;
+    if (!load_profile_sections_any(path, &doc, controlsSection, curveSection, fanCurveSection, desired, context, err, errSize)) return false;
     normalize_desired_settings_for_ui(desired);
     return true;
 }
@@ -584,7 +584,7 @@ static bool load_legacy_config_path(const char* path, DesiredSettings* desired, 
     IniDocument doc;
     if (!load_ini_document(path, &doc, err, errSize)) return false;
     migrate_profile_bank_mem_units(path, &doc, "legacy-load");
-    if (!load_desired_settings_from_sections(&doc, "controls", "curve", "fan_curve", desired, path, err, errSize)) return false;
+    if (!load_profile_sections_any(path, &doc, "controls", "curve", "fan_curve", desired, path, err, errSize)) return false;
     normalize_desired_settings_for_ui(desired);
     return true;
 }
@@ -602,14 +602,14 @@ bool load_default_or_selected_profile(const char* path, int* slot, DesiredSettin
     if (hasSelectedSections) {
         char context[32] = {};
         snprintf(context, sizeof(context), "profile %d", selectedSlot);
-        if (!load_sections_normalized(&doc, controlsSection, curveSection, fanCurveSection, desired, context, err, errSize)) return false;
+        if (!load_sections_normalized(path, &doc, controlsSection, curveSection, fanCurveSection, desired, context, err, errSize)) return false;
         if (slot) *slot = selectedSlot;
         return true;
     }
 
     bool hasLegacySections = section_has_keys(&doc, "controls") || section_has_keys(&doc, "curve") || section_has_keys(&doc, "fan_curve");
     if (hasLegacySections) {
-        if (!load_sections_normalized(&doc, "controls", "curve", "fan_curve", desired, path, err, errSize)) return false;
+        if (!load_sections_normalized(path, &doc, "controls", "curve", "fan_curve", desired, path, err, errSize)) return false;
         if (slot) *slot = CONFIG_DEFAULT_SLOT;
         return true;
     }

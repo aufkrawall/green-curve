@@ -1116,7 +1116,7 @@ def check_mem_offset_migration(ctx, require_text, forbid_text, require_order):
     # sees post-conversion values (+5000 effective -> +2500 display survives).
     require_order(profiles_cpp,
                   "migrate_profile_bank_mem_units(path, &doc, \"load\");",
-                  "load_desired_settings_from_sections(&doc, controlsSection, "
+                  "load_profile_sections_any(path, &doc, controlsSection, "
                   "curveSection, fanCurveSection, desired, context, err, errSize)",
                   "the stored-unit conversion happens before any parse/clamp")
     # The unit conversion now rides inside the schema widening (size selects the

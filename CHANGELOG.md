@@ -54,6 +54,7 @@ Curve checks, profile transfer and capture improve.
 
 ### Fixed
 
+- **Imported profiles:** apply from the tray, hotkeys, auto-switch, app start and logon like any other slot.
 - **Button captions:** an ampersand shows as written instead of underlining the next letter.
 - **TUI numeric edits:** memory and power edits replace retained precise values.
 - **Unicode profile banks:** imports preserve existing text and encoding.

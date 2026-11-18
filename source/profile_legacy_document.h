@@ -18,7 +18,8 @@ static inline bool profile_document_from_legacy_desired(const DesiredSettings& i
     d.pointSetPolicy = in.applicationScope & DESIRED_SCOPE_REPLACE_VF_POINTS ? PROFILE_POINTS_REPLACE : PROFILE_POINTS_MERGE;
     if (in.hasGpuOffset) {
         d.domains |= PROFILE_DOMAIN_GRAPHICS_OFFSET; d.graphicsOffset.present = true;
-        d.graphicsOffset.offsetHz = (long long)in.gpuOffsetMHz * 1000000;
+        d.graphicsOffset.offsetHz = in.authoring.graphicsPrecise ? in.authoring.graphicsOffsetHz :
+            (long long)in.gpuOffsetMHz * 1000000;
         if (in.gpuOffsetExcludeLowCount) {
             d.graphicsOffset.exclusionPolicy = PROFILE_EXCLUDE_LEGACY_COUNT;
             d.graphicsOffset.excludeLowCount = in.gpuOffsetExcludeLowCount;
@@ -38,16 +39,24 @@ static inline bool profile_document_from_legacy_desired(const DesiredSettings& i
         } else if (kind == DESIRED_CURVE_PROJECTED) {
             if (!in.hasGpuOffset) return fail("legacy projected point requires an explicit baseline conversion");
             p.kind = PROFILE_POINT_PROJECTION;
+            // The saved MHz is what an ordinary slot shows for a projected
+            // point; it stays a labeled observation, never authority.
+            if (in.curvePointMHz[ci]) {
+                p.hasObservedFrequency = true;
+                p.observedFrequencyHz = (long long)in.curvePointMHz[ci] * 1000000;
+            }
         } else {
             p.kind = PROFILE_POINT_ABSOLUTE_FREQUENCY;
-            p.absoluteFrequencyHz = (long long)in.curvePointMHz[ci] * 1000000;
+            p.absoluteFrequencyHz = in.authoring.pointFrequencyPrecise[ci] ? in.authoring.pointFrequencyHz[ci] :
+                (long long)in.curvePointMHz[ci] * 1000000;
         }
     }
     d.legacyIndicesUnresolved = d.topologyCount != 0;
     if (in.hasLock) {
         d.domains |= PROFILE_DOMAIN_LOCK; d.lock.present = true;
         d.lock.mode = in.lockMode; d.lock.anchorTopologyId = in.lockCi;
-        d.lock.targetFrequencyHz = (long long)in.lockMHz * 1000000;
+        d.lock.targetFrequencyHz = in.authoring.lockPrecise ? in.authoring.lockFrequencyHz :
+            (long long)in.lockMHz * 1000000;
         d.lock.trackAnchor = in.lockTracksAnchor != 0;
     }
     if (in.hasMemOffset) {
