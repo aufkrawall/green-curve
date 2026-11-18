@@ -22,9 +22,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Linux jobs name their runner image explicitly instead of using ubuntu-latest.
+# The floating label moved to Ubuntu 26.04, for which actions/setup-python has no
+# build of the pinned Python 3.12.10, so every Linux job failed in "Set up
+# Python" without any change on our side.  The image is also what provides
+# clang-tidy-18 (the documented ratchet version).  Moving to a newer image is a
+# deliberate edit here and in release.yml / freshness.yml, verified against the
+# pinned Python and analyzer versions first; tools/security_gates.py rejects the
+# floating label.
 jobs:
   secrets:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -97,7 +105,7 @@ jobs:
           }
 
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -179,7 +187,7 @@ jobs:
   # no 7-Zip present at all, or its proof that the Linux .tar.xz needs no
   # external archiver stops proving anything.
   release-packaging:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       GREENCURVE_TOOLCHAIN_LOCAL_ONLY: "1"
     steps:

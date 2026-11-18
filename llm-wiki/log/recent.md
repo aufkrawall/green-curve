@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-18: CI Linux jobs pin the runner image
+
+- Every Linux job (`linux`, `release-packaging`, `secrets`) and the release and
+  freshness workflows used `ubuntu-latest`. It moved to Ubuntu 26.04, where
+  `actions/setup-python` has no 3.12.10, so each job died in "Set up Python"
+  and main went red with no repository change involved.
+- Fix: `ubuntu-24.04` everywhere, plus a source gate
+  (`_workflow_runner_errors()` in `tools/security_gates.py`) that rejects
+  floating `ubuntu-*` labels, with a self-test fixture for both forms. Details in
+  `build.md`, "CI release gates".
+- Not changed: `windows-latest` (still green).
+
 ## 2026-11-18: GPU support warning tiers judge the service snapshot
 
 - Found while adding the CMP tier: the unrecognized-family and reduced-surface

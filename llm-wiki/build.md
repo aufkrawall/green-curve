@@ -859,6 +859,22 @@ failure in the same multiline step.
 This closes the former gap where CI compiled but never exercised the exact
 release-package paths.
 
+**Linux runner image is explicit (2026-11-18).** Every Linux job in `ci.yml`,
+`release.yml` and `freshness.yml` runs on `ubuntu-24.04`, never `ubuntu-latest`.
+The floating label advanced to Ubuntu 26.04, for which `actions/setup-python`
+publishes no build of the pinned Python 3.12.10 (its manifest stops at 24.04 for
+that version), so every Linux job failed in "Set up Python" before any repository
+step ran. 24.04 also ships `clang-tidy-18`, the ratchet's analyzer version, and
+the pinned llvm-mingw Linux archive targets an older glibc, so it still runs.
+`_workflow_runner_errors()` in `tools/security_gates.py` (run by
+`check_workflow_structure()` in `--test`/`--gates`) rejects any `ubuntu-*` label
+that is not `ubuntu-NN.NN[-arm]`; its self-test covers both the floating and the
+pinned form. Moving to a newer image is a deliberate edit: first confirm the
+pinned Python exists for it and that `clang-tidy-18` installs. The Windows job
+still uses `windows-latest` (it currently resolves to a Windows Server 2025
+image and passes); the gate does not cover it. Stale-risk: unverified whether a
+pinned Windows label would be preferable.
+
 `python build.py --test` already enables UBSan, so CI runs it once. The former
 additional `--test --sanitizer` step was identical coverage, not a stronger
 gate; retaining ASan separately is meaningful because it selects a different
@@ -880,7 +896,7 @@ schedule, `persist-credentials: false` and no `secrets.`/write scopes. GitHub
 pauses scheduled workflows after 60 days without repository activity.
 
 `.github/workflows/release.yml` is the manual stable-release workflow
-(`workflow_dispatch` only). On one `ubuntu-latest` runner it:
+(`workflow_dispatch` only). On one `ubuntu-24.04` runner it:
 
 - cross-compiles the published Windows x64 artifacts with pinned llvm-mingw
   and the Windows ARM64 artifacts with pinned Zig/LLD. Native Windows CI proves

@@ -908,13 +908,40 @@ def _workflow_structure_errors(path, text):
     return errors
 
 
+_LINUX_RUNNER_PINNED = re.compile(r"^ubuntu-\d{2}\.\d{2}(-arm)?$")
+
+
+def _workflow_runner_errors(path, text):
+    """Return an error for every Linux job that does not name its image.
+
+    ubuntu-latest is a moving label.  When it advanced to Ubuntu 26.04, the
+    pinned Python 3.12.10 had no actions/setup-python build for it and every
+    Linux job failed before running a single repository step.  An explicit
+    image makes the next move a reviewed change, checked against the pinned
+    Python and analyzer versions, instead of an unrelated red main branch.
+    """
+    errors = []
+    for line_number, line in enumerate(text.splitlines(), 1):
+        match = re.match(r"^\s*runs-on:\s*([^\s#]+)", line)
+        if not match:
+            continue
+        label = match.group(1).strip("'\"")
+        if label.startswith("ubuntu") and not _LINUX_RUNNER_PINNED.match(label):
+            errors.append(
+                f"{path}:{line_number}: runner '{label}' must name an explicit "
+                "Ubuntu image such as ubuntu-24.04, not a floating label")
+    return errors
+
+
 def check_workflow_structure(ctx):
     """Keep the security/test merge workflows loadable."""
     all_errors = []
     for name in ("ci.yml", "release.yml", "freshness.yml"):
         path = os.path.join(ctx.SCRIPT_DIR, ".github", "workflows", name)
         with open(path, "r", encoding="utf-8") as handle:
-            all_errors.extend(_workflow_structure_errors(path, handle.read()))
+            workflow_text = handle.read()
+        all_errors.extend(_workflow_structure_errors(path, workflow_text))
+        all_errors.extend(_workflow_runner_errors(path, workflow_text))
     # The freshness reminder: a daily, read-only, secret-free check whose
     # failure is the maintainer's prompt to renew (tools/freshness_watch.py).
     freshness_path = os.path.join(ctx.SCRIPT_DIR, ".github", "workflows", "freshness.yml")
@@ -966,6 +993,16 @@ def check_workflow_structure(ctx):
                _workflow_structure_errors("fixture.yml", malformed)):
         print("Build-script regression FAILED: workflow indentation checker "
               "accepted a file-scope step")
+        sys.exit(1)
+
+    # The runner check must reject the floating label and accept pinned images.
+    floating = "jobs:\n  linux:\n    runs-on: ubuntu-latest\n"
+    pinned = ("jobs:\n  linux:\n    runs-on: ubuntu-24.04\n"
+              "  windows:\n    runs-on: windows-latest\n")
+    if len(_workflow_runner_errors("fixture.yml", floating)) != 1 or \
+            _workflow_runner_errors("fixture.yml", pinned):
+        print("Build-script regression FAILED: workflow runner checker must "
+              "reject ubuntu-latest and accept an explicit Ubuntu image")
         sys.exit(1)
 
     if all_errors:

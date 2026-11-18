@@ -178,7 +178,7 @@ inspect. Cost: ~0.8 MB of download (x64 clang-cl build: 1.52 MB -> 2.33 MB).
 
 Before this, Windows hosts compressed with `COMPRESS_ALGORITHM_XPRESS_HUFF`
 through cabinet.dll's Compression API (~58% payload) and Linux hosts stored.
-**Published releases are built by `release.yml` on `ubuntu-latest`, so every
+**Published releases are built by `release.yml` on a Linux runner, so every
 published setup file was already stored** — the change aligns local Windows
 builds with what users actually download. The setup stub now rejects the old
 XPRESS_HUFF method at footer validation and contains no decompressor. Its

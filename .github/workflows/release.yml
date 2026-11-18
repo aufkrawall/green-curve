@@ -25,7 +25,9 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    # Explicit image, same as ci.yml: the floating label's move to Ubuntu 26.04
+    # left the pinned Python 3.12.10 without a setup-python build.
+    runs-on: ubuntu-24.04
     env:
       # Refuse any toolchain that did not come out of compilers/.
       GREENCURVE_TOOLCHAIN_LOCAL_ONLY: "1"
