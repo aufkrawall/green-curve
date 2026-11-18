@@ -496,15 +496,17 @@ The `linux` and `release-packaging` jobs did not get past "Set up Python" from
 gates"), so Linux ASan, fuzz, tidy and packaging results for that window were
 never produced by CI.
 
-Open question (unverified on the CI toolchain): with a rolling host clang 22,
-`-fsanitize=address,fuzzer` reports `alloc-dealloc-mismatch (operator new vs
-free)` for any `new (std::nothrow) T` released with `delete`, reproduced with a
-ten-line program that contains no repository code (throwing `new` is fine). It
-aborts the `profile_codec` fuzz target on its first input in that environment.
-Whether the Ubuntu 24.04 clang 18 used by CI shows it is not established; if it
-does, the nothrow allocation in `profile_bank_decode` needs an allocation path
-that stays valid under that runtime while still returning a clean failure on
-out-of-memory (plain throwing `new` would terminate under `-fno-exceptions`).
+Toolchain caveat: a rolling host clang 22 (WSL) with `-fsanitize=address,fuzzer`
+reports `alloc-dealloc-mismatch (operator new vs free)` for any
+`new (std::nothrow) T` released with `delete`. A ten-line program with no
+repository code reproduces it (throwing `new` is fine), and it aborts the
+`profile_codec` fuzz target on its first input there. CI's Ubuntu 24.04 clang
+18.1.3 does not show it: the first full Linux run on that image passed every
+step, including that fuzz target. Treat the WSL abort as a runtime defect of that
+local clang, not a repository bug, and do not replace the nothrow allocation in
+`profile_bank_decode` (plain throwing `new` would terminate under
+`-fno-exceptions` instead of failing cleanly on out-of-memory). Re-check if CI's
+clang major version changes.
 
 ## Linux agent sandbox execution
 

@@ -21,8 +21,9 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   `tests/tui_capture_proposals_tests.cpp` (`std::strcmp` without `<cstring>`;
   only libc++ supplied it transitively). Fixed with explicit standard includes;
   the full regression suite, fuzzing of the other targets and Linux packaging
-  pass in a WSL-native clone. The `profile_codec` fuzz abort seen there is
-  recorded as an open question in `testing.md` ("Host-clang libstdc++ parity").
+  pass in a WSL-native clone. The `profile_codec` fuzz abort seen there came
+  from that machine's clang 22; CI's clang 18 passed every Linux step
+  (`testing.md`, "Host-clang libstdc++ parity").
 
 ## 2026-11-18: GPU support warning tiers judge the service snapshot
 
