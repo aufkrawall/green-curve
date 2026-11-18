@@ -1,5 +1,16 @@
 # Testing
 
+## CMP mining-board warning (2026-11-18)
+
+`tests/gpu_cmp_policy_tests.cpp` (12220-12227, run from
+`run_diagnostics_followup_tests()`) pins `gpu_cmp_policy.h`: the reported CMP
+40HX matches by packed id or name alone; other CMP names match without device
+ids; the id needs valid PCI data and the NVIDIA vendor word; a GeForce on the
+same TU106 die and an RTX 5070 never match; only the whole `CMP <n>HX` word
+matches. Gates in `tools/gpu_support_gates.py` pin the startup call site, the
+OK/Cancel buttons, the verification checkbox and the opt-out key. The dialog
+itself was not shown on hardware (no CMP board available).
+
 ## VF status point mask (2026-11-18)
 
 `tests/linux_vf_read_tests.cpp` pins `vf_point_mask_policy.h` (12200-12205)

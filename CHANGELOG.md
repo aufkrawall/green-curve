@@ -41,6 +41,7 @@ Curve checks, profile transfer and capture improve.
 - **Source profiles:** offline Windows/TUI editing survives GPU switches.
 - **Hardware capture:** Windows/TUI/CLI offer exact, flatten and pin drafts with labeled evidence, load-pin checks and omission review.
 - **Profile checks:** preview mapping, controls, releases, per-domain rounding conversions and captured-tail restores without changing source files.
+- **NVIDIA CMP mining cards (experimental):** a startup warning explains the modified-driver requirement; continue once, stop asking, or exit.
 
 ### Improved
 

@@ -5,6 +5,18 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-18: Skippable startup warning for NVIDIA CMP mining boards
+
+- Requested with the CMP 40HX support (issue 13): guard it behind a warning the
+  user can skip once or for good. New third GUI tier between the family and
+  reduced-surface tiers, abortable, opt-out `[warnings] hide_cmp_board_warning`.
+- Identity: confirmed id `0x1F0B` or the `CMP <n>HX` name
+  (`source/gpu_cmp_policy.h`); reads the snapshot's adapter identity, not the
+  VF backend. Self-test prints a NOTE. Tests 12220-12227.
+- Found while wiring it: the two older tiers key on `g_app.vfBackend`, which
+  the service-mode GUI does not set; recorded as an open question in
+  [gpu-backend.md](../gpu-backend.md), not changed here.
+
 ## 2026-11-18: VF status requests stop at the 128-point table
 
 - Report (issue 13): an NVIDIA CMP 40HX on a modified driver loaded no curve.

@@ -161,6 +161,8 @@ a warning or an error.
 
 Only unrecognized future NVIDIA GPU families use the best-effort fallback backend. Their VF write path remains enabled, but the GUI shows a warning that can be disabled by the user via `[warnings] hide_unrecognized_gpu_warning=1`.
 
+NVIDIA CMP mining boards use their family's backend; the GUI asks the user to accept an experimental-support warning first (continue once, never ask again via `[warnings] hide_cmp_board_warning=1`, or exit).
+
 ## GPU selection
 
 Windows builds expose a GPU selector in the main window. Linux exposes `--gpu DDDD:BB:DD.F` plus a TUI selector. Both persist stable PCI identity and pass it through protocol-v13's target field. Interactive mutations bind that target to the accepted service instance and GPU generation; VF-dependent mutations additionally bind to the topology signature. Linux multi-GPU writes fail closed unless BDF plus nonconflicting PCI device/subsystem identity resolves uniquely across NVML/NvAPI; a compatible sole-device fallback is single-GPU-only.

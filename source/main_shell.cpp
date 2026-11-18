@@ -629,7 +629,7 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
 // Must follow the NVML shard: the capability probe uses its file-static
 // nvml_ensure_ready() and the resolved g_nvml_api table.
 #include "gpu_capability_probe.cpp"
-// Both GPU support-warning tiers; must precede entry.cpp, which calls into it.
+// The GPU support-warning tiers; must precede entry.cpp, which calls into it.
 #include "main_capability_warning.cpp"
 // Read-only --self-test report; also consumed by entry.cpp.
 #include "main_self_test.cpp"

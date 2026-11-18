@@ -19,6 +19,7 @@
 
 static const char* self_test_yes_no(bool value) { return value ? "yes" : "NO"; }
 
+#include "gpu_cmp_policy.h"
 // VF point-mask evidence (bounded vs. driver status request).
 #include "vf_point_mask_policy.h"
 #include "main_self_test_vf_mask.cpp"
@@ -421,6 +422,10 @@ static int self_test_report(FILE* out) {
     if (g_app.vfBackend && g_app.vfBackend->bestGuessOnly) {
         fprintf(out, "NOTE: unrecognized GPU family; the fallback VF layout is a best-effort\n"
                      "guess. Writes stay enabled — verify applied clocks carefully.\n");
+    }
+    if (gpu_is_cmp_mining_board(g_app.gpuPciInfoValid, g_app.gpuDeviceId, g_app.gpuName)) {
+        fprintf(out, "NOTE: NVIDIA CMP mining card; tuning needs a modified driver and support\n"
+                     "is community-reported on a CMP 40HX only. Verify applied clocks carefully.\n");
     }
     return driver_self_test_exit_code(verdict);
 }

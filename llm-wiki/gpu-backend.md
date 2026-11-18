@@ -135,13 +135,32 @@ board that answers `min=1000 mW max=130000 mW` and refuses the limit itself
 drive. Reporting that `available` is what produced an editable-but-inert 0%
 field with no explanation. See the power-target section below.
 
-Two independent GUI warning tiers, each with its own persistent opt-out so
-silencing one never silences the other:
+Three independent GUI warning tiers, each with its own persistent opt-out so
+silencing one never silences another:
 
 | Tier | Condition | Config key |
 |---|---|---|
 | Unrecognized family | `bestGuessOnly` backend | `[warnings] hide_unrecognized_gpu_warning` |
+| CMP mining board | confirmed CMP device id **or** an `NVIDIA CMP <n>HX` name | `[warnings] hide_cmp_board_warning` |
 | Reduced control surface | recognized family **and** (incomplete probe **or** unified memory) | `[warnings] hide_limited_control_warning` |
+
+**CMP mining boards (2026-11-18).** `source/gpu_cmp_policy.h`,
+`show_cmp_board_warning()` in `source/main_capability_warning.cpp`,
+`tests/gpu_cmp_policy_tests.cpp`. A CMP board reports an ordinary architecture
+(the CMP 40HX is `TU100`), so the VF layout is the family's own; what is
+untested is the modified driver such a board needs for tuning. The tier is
+abortable like the family warning: OK continues this launch, the checkbox (No in
+the message-box fallback) continues and persists the opt-out, Cancel exits. It
+keys on the service snapshot's selected adapter identity and GPU name, never on
+`g_app.vfBackend`. Identity is the packed NvAPI id `0x1F0B10DE` (confirmed by a
+user report) or the whole word `CMP <n>HX`; other CMP device ids are not
+listed until confirmed. The self-test prints a matching NOTE. Logs:
+`CMP board warning: gpu= device= pciValid= matchedBy=` and the user's choice.
+
+Open (stale-risk): the unrecognized-family and reduced-surface tiers key on
+`g_app.vfBackend`, which only the in-process NvAPI path sets; the GUI shows the
+warnings only while the service is available and does not run that path then,
+so whether those two tiers can fire in the GUI is unverified.
 
 The second tier has **two** independent triggers, both positive-evidence-only:
 

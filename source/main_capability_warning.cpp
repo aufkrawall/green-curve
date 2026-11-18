@@ -7,6 +7,9 @@
 //
 // Included by main_shell.cpp after main_gpu_state.cpp defines the
 // unrecognized-family dialog and before entry.cpp calls into this file.
+// The CMP mining-board tier was added here too (gpu_cmp_policy.h).
+
+#include "gpu_cmp_policy.h"
 
 // Second warning tier.  Unlike the unrecognized-family dialog this one is
 // purely informational: the surface is known, it is simply smaller than a
@@ -152,12 +155,121 @@ static void show_limited_control_surface_warning(HWND parent) {
     g_limitedControlWarningShownThisSession = true;
 }
 
-// Single startup entry point for both tiers, so the GUI has one call site and
-// the ordering (abortable family warning first, informational surface warning
-// second) lives here rather than in entry.cpp.  Returns false only when the
-// user chose to exit at the family warning.
+// Third tier: an NVIDIA CMP mining board (gpu_cmp_policy.h).  The family is a
+// known one, so nothing about the VF layout is guessed; what is untested is
+// the modified driver such a board needs.  Abortable like the family warning:
+// OK continues this time, the checkbox (or No in the fallback box) continues
+// and stops asking, Cancel exits.  Its own config key, so silencing another
+// tier never silences this one.
+static bool s_cmpBoardWarningShownThisSession = false;
+
+static bool should_show_cmp_board_warning(bool* matchedByIdOut) {
+    const bool byId = gpu_cmp_device_id_confirmed(g_app.selectedGpu.pciInfoValid != 0,
+                                                  g_app.selectedGpu.deviceId);
+    const bool byName = gpu_cmp_name_matches(g_app.gpuName) ||
+                        gpu_cmp_name_matches(g_app.selectedGpu.name);
+    if (matchedByIdOut) *matchedByIdOut = byId;
+    if (!byId && !byName) return false;
+    if (get_config_int(g_app.configPath, "warnings", "hide_cmp_board_warning", 0) != 0) {
+        debug_log_on_change("CMP board warning suppressed by user config\n");
+        return false;
+    }
+    return !s_cmpBoardWarningShownThisSession;
+}
+
+static bool show_cmp_board_warning(HWND parent) {
+    bool matchedById = false;
+    if (!should_show_cmp_board_warning(&matchedById)) return true;
+    const char* gpuName = g_app.gpuName[0] ? g_app.gpuName
+        : (g_app.selectedGpu.name[0] ? g_app.selectedGpu.name : "NVIDIA GPU");
+    debug_log("CMP board warning: gpu=%s device=0x%08X pciValid=%d matchedBy=%s\n",
+              gpuName, g_app.selectedGpu.deviceId, g_app.selectedGpu.pciInfoValid ? 1 : 0,
+              matchedById ? "device id" : "name");
+
+    static const char kBody[] =
+        "%s is an NVIDIA CMP mining card. Green Curve can only tune it through a "
+        "modified NVIDIA driver, and its support is community-reported on a CMP 40HX "
+        "only.\n\n"
+        "Clocks, voltages, power and fan control may not behave like on a GeForce "
+        "card, and a profile that is stable on one driver build may not be on "
+        "another.\n\n"
+        "Check applied clocks and stability carefully after changes.";
+    bool handled = false;
+    bool suppressWarning = false;
+    HMODULE comctl = load_system_library_a("comctl32.dll");
+    if (comctl) {
+        typedef HRESULT (WINAPI *TaskDialogIndirect_t)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
+        auto taskDialogIndirect = (TaskDialogIndirect_t)GetProcAddress(comctl, "TaskDialogIndirect");
+        if (taskDialogIndirect) {
+            TASKDIALOGCONFIG config = {};
+            config.cbSize = sizeof(config);
+            config.hwndParent = parent;
+            config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+            config.dwCommonButtons = TDCBF_OK_BUTTON | TDCBF_CANCEL_BUTTON;
+            config.pszWindowTitle = L"Green Curve - CMP Mining Card";
+            config.pszMainIcon = TD_WARNING_ICON;
+            config.pszMainInstruction = L"Experimental support for an NVIDIA CMP mining card";
+            config.pszVerificationText = L"Do not show this warning again for CMP cards";
+            char body[1024] = {};
+            StringCchPrintfA(body, ARRAY_COUNT(body), kBody, gpuName);
+            WCHAR content[1024] = {};
+            utf8_to_wide(body, content, ARRAY_COUNT(content));
+            config.pszContent = content;
+
+            int button = 0;
+            BOOL verificationChecked = FALSE;
+            if (SUCCEEDED(taskDialogIndirect(&config, &button, nullptr, &verificationChecked))) {
+                handled = true;
+                if (button == IDCANCEL) {
+                    debug_log("CMP board warning: user chose to exit\n");
+                    FreeLibrary(comctl);
+                    remove_tray_icon();
+                    release_single_instance_mutex();
+                    return false;
+                }
+                suppressWarning = verificationChecked != FALSE;
+            }
+        }
+        FreeLibrary(comctl);
+    }
+
+    if (!handled) {
+        char message[1280] = {};
+        StringCchPrintfA(message, ARRAY_COUNT(message), kBody, gpuName);
+        StringCchCatA(message, ARRAY_COUNT(message),
+            "\n\nContinue with this GPU?\n- Yes: Continue this time\n"
+            "- No: Continue and do not show this warning again\n- Cancel: Exit");
+        int result = gc_message_box(parent, message, "Green Curve - CMP Mining Card",
+                                    MB_YESNOCANCEL | MB_ICONWARNING);
+        if (result == IDCANCEL || result == 0) {
+            debug_log("CMP board warning: user chose to exit\n");
+            remove_tray_icon();
+            release_single_instance_mutex();
+            return false;
+        }
+        suppressWarning = result == IDNO;
+    }
+
+    if (suppressWarning) {
+        if (set_config_int(g_app.configPath, "warnings", "hide_cmp_board_warning", 1)) {
+            debug_log("CMP board warning disabled by user\n");
+        } else {
+            debug_log("CMP board warning: failed to persist suppression flag\n");
+        }
+    } else {
+        debug_log("CMP board warning: continued for this session\n");
+    }
+    s_cmpBoardWarningShownThisSession = true;
+    return true;
+}
+
+// Single startup entry point for every tier, so the GUI has one call site and
+// the ordering (abortable warnings first, the informational surface warning
+// last) lives here rather than in entry.cpp.  Returns false only when the user
+// chose to exit at an abortable warning.
 static bool show_gpu_support_warnings(HWND parent) {
     if (!show_best_guess_support_warning(parent)) return false;
+    if (!show_cmp_board_warning(parent)) return false;
     // No-op unless the read-only probe actually found a domain missing, so
     // validated discrete GPUs never see this one.
     show_limited_control_surface_warning(parent);

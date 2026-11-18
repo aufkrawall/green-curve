@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 # SPDX-License-Identifier: MIT
-"""Source gates for VF status point masks.
+"""Source gates for VF status point masks and the CMP mining-board warning.
 
 Lives here rather than in build.py so the build script stays under its size
 ratchet; build.py passes its own require_text/forbid_text in, and this module
@@ -27,3 +27,16 @@ def check_source_gates(ctx, require_text, forbid_text):
                 "the Linux reader never sends the unbounded driver mask to status")
     require_text(os.path.join(src, "main_vf_info_cache.cpp"), "pastTable=",
                  "the VF-info cache logs how far the mask reaches past the table")
+
+    # CMP mining boards: an abortable startup tier with its own opt-out.
+    warning = os.path.join(src, "main_capability_warning.cpp")
+    require_text(warning, "if (!show_cmp_board_warning(parent)) return false;",
+                 "the CMP warning is reached through the single startup call site")
+    require_text(warning, "\"hide_cmp_board_warning\"",
+                 "the CMP warning has its own persistent opt-out")
+    require_text(warning, "TDCBF_OK_BUTTON | TDCBF_CANCEL_BUTTON",
+                 "the CMP warning can be continued once or exited")
+    require_text(warning, "pszVerificationText = L\"Do not show this warning again for CMP cards\"",
+                 "the CMP warning can be skipped for good")
+    require_text(os.path.join(src, "gpu_cmp_policy.h"), "0x1F0Bu",
+                 "the confirmed CMP 40HX device id stays recognized")
