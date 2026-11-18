@@ -65,7 +65,7 @@ static void apply_system_titlebar_theme(HWND hwnd) {
     FreeLibrary(d);
 }
 
-#include "gui_profile_source.cpp"
+#include "gui_profile_tools.cpp"
 
 // ============================================================================
 // GDI Graph Drawing

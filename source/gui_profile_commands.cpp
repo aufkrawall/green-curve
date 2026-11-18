@@ -10,7 +10,6 @@ GC_NOINLINE static void gui_profile_load_command() {
             set_profile_status_text("Slot %d is empty. Save a profile first.", slot);
             break;
         }
-        if (gui_profile_source_load(slot)) break;
         if (!maybe_confirm_profile_load_replace(slot)) break;
         auto desiredPtr = std::make_unique<DesiredSettings>();
         DesiredSettings& desired = *desiredPtr;
@@ -43,7 +42,6 @@ GC_NOINLINE static void gui_profile_save_command() {
         int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
         if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
         slot += 1;
-        if (gui_profile_source_save()) break;
         auto desiredPtr = std::make_unique<DesiredSettings>();
         DesiredSettings& desired = *desiredPtr;
         char err[256] = {};
@@ -126,7 +124,7 @@ GC_NOINLINE static void gui_profile_save_command() {
             set_profile_status_text("Saved the current GUI values to slot %d.", slot);
         invalidate_main_window();
         if (captureRequested) {
-            gui_profile_capture_begin();
+            gui_profile_capture_begin(slot);
         }
     } while (false);
 }

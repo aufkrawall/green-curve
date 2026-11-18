@@ -124,7 +124,7 @@ static void update_share_all_users_check_state() {
         changed = gui_set_window_enabled_if_changed(
             g_app.hSharedProfilesBtn,
             sharedCount > 0 && gui_service_capability_enabled(
-                &actionable, GUI_SERVICE_CAP_PROFILE_EDIT) && !g_app.guiSource.valid && !gui_profile_capture_active()) || changed;
+                &actionable, GUI_SERVICE_CAP_PROFILE_EDIT) && !gui_profile_capture_active()) || changed;
         if (!IsWindowVisible(g_app.hSharedProfilesBtn)) {
             ShowWindow(g_app.hSharedProfilesBtn, SW_SHOW);
             changed = true;

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "profile_capture_save.h"
 #include "linux_tui_layout_internal.h"
 #include "linux_tui_document_view.h"
 
@@ -218,8 +219,8 @@ void draw_profile_panel(TuiCanvas* c, const TuiRect& panel) {
     c->fill(x + 20, y, 12, 1, TUI_STYLE_FIELD);
     c->text(x + 20, y, 12, slot, TUI_STYLE_FIELD);
     c->button(TuiRect{x + 33, y, 4, 1}, ">", ACTION_SLOT_DELTA, 0, 1);
-    c->button({x + 40, y, 10, 1}, "CAPTURE", ACTION_CAPTURE_SOURCE);
-    c->button({x + 51, y, 10, 1}, "TRANSFER", ACTION_TRANSFER_BEGIN);
+    c->button({x + 40, y, 10, 1}, "FROM GPU", ACTION_CAPTURE_SOURCE);
+    c->button({x + 51, y, 10, 1}, "FILES", ACTION_TRANSFER_BEGIN);
     c->button(TuiRect{x, y + 2, 11, 1}, "LOAD", ACTION_LOAD);
     c->button(TuiRect{x + 12, y + 2, 11, 1}, "SAVE", ACTION_SAVE);
     c->button(TuiRect{x + 24, y + 2, 11, 1}, "CLEAR", ACTION_CLEAR_PROFILE);
@@ -539,69 +540,52 @@ void tui_draw_capture_dialog(TuiCanvas* canvas) {
     layout->actions.clear(); layout->captureVisible = true;
     const TuiRect panel{3, 2, layout->width - 6, layout->height - 4};
     canvas->fill(panel.x, panel.y, panel.width, panel.height, TUI_STYLE_PANEL);
-    const bool report = view.report && !view.report->empty();
-    canvas->box(panel, report ? "REVIEW CAPTURED SETTINGS" : "CAPTURE CURRENT GPU");
-    const int x = panel.x + 2, y = panel.y + 2, width = panel.width - 4;
-    if (!report) {
-        canvas->text(x, y, width, "Choose settings to read from the shown GPU", TUI_STYLE_TEXT);
-        const char* domains[] = {"VF curve", "Graphics offset", "Memory offset", "Power", "Clock pin", "Fans", "XBAR", "System clock", "Video clock"};
-        for (int i = 0; i < 9; ++i) {
-            const bool selected = (view.domains & (1u << i)) != 0;
-            const std::string label = std::string(selected ? "[x] " : "[ ] ") + domains[i];
-            canvas->button({x + (i % 3) * 20, y + 2 + (i / 3) * 2, 19, 1}, label.c_str(), ACTION_CAPTURE_DOMAIN, i, 0, selected);
-        }
-        if (view.domains) canvas->button({x, y + 9, 21, 1}, "READ SNAPSHOT", ACTION_CAPTURE_READ);
-        canvas->button({panel.x + panel.width - 16, y + 9, 14, 1}, "CANCEL", ACTION_CAPTURE_CANCEL);
-        canvas->text(x, y + 12, width, "Read performs no resets or hardware writes.", TUI_STYLE_MUTED);
-        canvas->text(x, y + 13, width, "Esc keeps the current draft and edit text.", TUI_STYLE_MUTED);
+    canvas->box(panel, "IMPORT CURRENT GPU SETTINGS");
+    const int x = panel.x + 2, width = panel.width - 4, buttons = panel.y + panel.height - 3;
+    int y = panel.y + 2;
+    canvas->text(x, y, width, "Copies the settings now on the GPU (for example from another tool) into a slot.", TUI_STYLE_TEXT);
+    canvas->text(x, y + 1, width, "Nothing on the GPU is changed.", TUI_STYLE_MUTED);
+    y += 3;
+    const bool rows = view.report && !view.report->empty();
+    if (!view.hasObservation) {
+        if (rows) for (const auto& line : *view.report) canvas->text(x, y++, width, line.c_str(), TUI_STYLE_TEXT);
+        canvas->button({x, buttons, 14, 1}, "READ AGAIN", ACTION_CAPTURE_READ);
+        canvas->button({panel.x + panel.width - 16, buttons, 14, 1}, "CANCEL", ACTION_CAPTURE_CANCEL);
         return;
     }
-    std::vector<TuiSourceLine> lines;
-    for (const auto& line : *view.report) lines.push_back({line});
-    tui_wrap_source_lines(lines, (size_t)std::max(8, width));
-    const int obsRows = view.pinObservable ? 1 : 0;
-    const int rows = std::max(1, panel.height - 9 - obsRows);
-    layout->captureVisibleRows = rows; layout->captureLineCount = (int)lines.size();
-    const int first = std::clamp(view.scroll, 0, std::max(0, (int)lines.size() - rows));
-    char meta[128]{};
-    std::snprintf(meta, sizeof(meta), "Snapshot rows %d-%d/%d | PgUp/PgDn scroll | draft unchanged", first + 1,
-        std::min((int)lines.size(), first + rows), (int)lines.size());
-    canvas->text(x, panel.y + 1, width, meta, TUI_STYLE_MUTED);
-    for (int row = 0; row < rows && first + row < (int)lines.size(); ++row)
-        canvas->text(x, panel.y + 3 + row, width, lines[first + row].text.c_str(), TUI_STYLE_TEXT);
-    const int choices = panel.y + panel.height - 5, buttons = panel.y + panel.height - 3;
-    const bool representationAvailable = (view.representations & profile_capture_representation_bit(view.representation)) != 0;
-    if (view.hasObservation) {
-        if (view.pinObservable) {
-            const int obsY = choices - 2;
-            canvas->button({x, obsY, 13, 1}, "OBSERVE PIN", ACTION_CAPTURE_OBSERVE_PIN);
-            if (view.pinSuspected && view.pinConfirmedHz > 0) {
-                canvas->button({x + 15, obsY, 5, 1}, "-10", ACTION_CAPTURE_PIN_STEP, 0, -10000000);
-                canvas->button({x + 21, obsY, 4, 1}, "-1", ACTION_CAPTURE_PIN_STEP, 0, -1000000);
-                char mhzLabel[16]{};
-                snprintf(mhzLabel, sizeof(mhzLabel), "%lldM", (long long)(view.pinConfirmedHz / 1000000LL));
-                canvas->text(x + 26, obsY, 7, mhzLabel, TUI_STYLE_CYAN, true);
-                canvas->button({x + 34, obsY, 4, 1}, "+1", ACTION_CAPTURE_PIN_STEP, 0, 1000000);
-                canvas->button({x + 39, obsY, 5, 1}, "+10", ACTION_CAPTURE_PIN_STEP, 0, 10000000);
-                canvas->button({x + 46, obsY, 13, 1}, "CONFIRM PIN", ACTION_CAPTURE_CONFIRM_PIN);
-            } else {
-                canvas->text(x + 15, obsY, width - 15, "User-started load sample (never auto-captured)", TUI_STYLE_MUTED);
-            }
-        }
-        const std::string label = std::string("Representation: ") + profile_capture_representation_name(view.representation);
-        canvas->button({x, choices - 1, 32, 1}, label.c_str(), ACTION_CAPTURE_REPRESENTATION);
-        canvas->text(x + 34, choices - 1, width - 34, representationAvailable ? "Review evidence above" : "Unavailable choice", TUI_STYLE_MUTED);
+    for (int g = 0; g < PROFILE_CAPTURE_GROUP_COUNT; ++g) {
+        if (!(view.shown & (1u << g))) continue;
+        const bool available = (view.available & (1u << g)) != 0, included = (view.included & (1u << g)) != 0;
+        char label[32]{};
+        std::snprintf(label, sizeof(label), "%s %s", included ? "[x]" : "[ ]", profile_capture_group_name(g));
+        if (available) canvas->button({x, y, 22, 1}, label, ACTION_CAPTURE_DOMAIN, g, 0, included);
+        else canvas->text(x, y, 22, label, TUI_STYLE_MUTED);
+        if (rows && g < (int)view.report->size())
+            canvas->text(x + 24, y, width - 24, (*view.report)[(size_t)g].c_str(), available ? TUI_STYLE_TEXT : TUI_STYLE_MUTED);
+        ++y;
     }
-    if (view.omissions) canvas->button({x, choices, 29, 1}, view.allowPartial ? "[x] Allow omitted settings" : "[ ] Allow omitted settings",
-        ACTION_CAPTURE_PARTIAL, 0, 0, view.allowPartial);
-    if (view.needsDiscard) canvas->button({x + 32, choices, 29, 1}, view.discardConfirmed ? "[x] Discard unsaved draft" : "[ ] Discard unsaved draft",
-        ACTION_CAPTURE_DISCARD, 0, 0, view.discardConfirmed);
-    if (view.hasObservation && representationAvailable && (!view.omissions || view.allowPartial) && (!view.needsDiscard || view.discardConfirmed))
-        canvas->button({x, buttons, 24, 1}, view.representation == PROFILE_CAPTURE_FLATTEN ? "USE FLATTEN" :
-            view.representation == PROFILE_CAPTURE_PIN ? "USE PIN" : "USE EXACT CONTROLS", ACTION_CAPTURE_ACCEPT);
-    else canvas->text(x, buttons, 24, view.hasObservation ? "Review choices required" : "Capture unavailable", TUI_STYLE_MUTED);
-    canvas->button({x + 27, buttons, 16, 1}, "READ AGAIN", ACTION_CAPTURE_READ);
+    ++y;
+    if (view.included & 1u) {
+        const int choices = __builtin_popcount(view.representations);
+        const std::string label = "Save curve as: " + view.choice;
+        if (choices > 1) canvas->button({x, y, std::min(width, (int)label.size() + 2), 1}, label.c_str(), ACTION_CAPTURE_REPRESENTATION);
+        else canvas->text(x, y, width, label.c_str(), TUI_STYLE_TEXT);
+        ++y;
+        if (view.pinObservable) {
+            canvas->button({x, y, 30, 1}, "DETECT CLOCK LOCK UNDER LOAD", ACTION_CAPTURE_OBSERVE_PIN);
+            canvas->text(x + 32, y, width - 32, "Only if another tool pins clocks; run a game first", TUI_STYLE_MUTED);
+            ++y;
+        }
+        ++y;
+    }
+    const std::string destination = "Save to: " + view.destination;
+    canvas->button({x, y, std::min(width, (int)destination.size() + 2), 1}, destination.c_str(), ACTION_CAPTURE_SLOT);
+    canvas->text(x, y + 1, width, "Saving does not change the GPU; apply the slot to let Green Curve manage it.", TUI_STYLE_MUTED);
+    if (view.included) canvas->button({x, buttons, 16, 1}, "SAVE PROFILE", ACTION_CAPTURE_ACCEPT);
+    else canvas->text(x, buttons, 24, "Include at least one setting", TUI_STYLE_MUTED);
+    canvas->button({x + 18, buttons, 14, 1}, "READ AGAIN", ACTION_CAPTURE_READ);
     canvas->button({panel.x + panel.width - 16, buttons, 14, 1}, "CANCEL", ACTION_CAPTURE_CANCEL);
+    layout->captureVisibleRows = 1; layout->captureLineCount = 1;
 }
 
 void tui_draw_advanced_tab(TuiCanvas* canvas, const TuiRect& content) {

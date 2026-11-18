@@ -1074,17 +1074,12 @@ int run_tui_profile_check_tests();
 int run_tui_source_edit_tests();
 int run_tui_review_session_tests();
 int run_scalar_editor_tests();
-int run_tui_capture_draft_tests();
-int run_tui_capture_proposals_tests();
 int run_profile_editor_transfer_tests();
-int run_tui_transfer_tests();
-int run_profile_source_window_tests();
 int run_profile_review_session_tests();
 int run_profile_mapped_draft_tests();
 int run_profile_slot_runtime_tests();
-int run_gui_profile_source_review_tests();
-int run_gui_profile_capture_tests();
-int run_gui_profile_transfer_tests();
+int run_profile_tools_tests();
+int run_tui_profile_tools_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -2855,20 +2850,8 @@ static int run_all_tests(int argc, char** argv) {
     if (int scalarEditFailure = run_scalar_editor_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", scalarEditFailure); return scalarEditFailure;
     }
-    if (int captureDraftFailure = run_tui_capture_draft_tests()) {
-        fprintf(stderr, "regression assertion failed: code %d\n", captureDraftFailure); return captureDraftFailure;
-    }
-    if (int captureChoicesFailure = run_tui_capture_proposals_tests()) {
-        fprintf(stderr, "regression assertion failed: code %d\n", captureChoicesFailure); return captureChoicesFailure;
-    }
     if (int transferFailure = run_profile_editor_transfer_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", transferFailure); return transferFailure;
-    }
-    if (int tuiTransferFailure = run_tui_transfer_tests()) {
-        fprintf(stderr, "regression assertion failed: code %d\n", tuiTransferFailure); return tuiTransferFailure;
-    }
-    if (int sourceWindowFailure = run_profile_source_window_tests()) {
-        fprintf(stderr, "regression assertion failed: code %d\n", sourceWindowFailure); return sourceWindowFailure;
     }
     if (int sourceReviewFailure = run_profile_review_session_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", sourceReviewFailure); return sourceReviewFailure;
@@ -2876,17 +2859,14 @@ static int run_all_tests(int argc, char** argv) {
     if (int mappedDraftFailure = run_profile_mapped_draft_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", mappedDraftFailure); return mappedDraftFailure;
     }
+    if (int tuiToolsFailure = run_tui_profile_tools_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", tuiToolsFailure); return tuiToolsFailure;
+    }
+    if (int toolsFailure = run_profile_tools_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", toolsFailure); return toolsFailure;
+    }
     if (int slotRuntimeFailure = run_profile_slot_runtime_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", slotRuntimeFailure); return slotRuntimeFailure;
-    }
-    if (int guiSourceReviewFailure = run_gui_profile_source_review_tests()) {
-        fprintf(stderr, "regression assertion failed: code %d\n", guiSourceReviewFailure); return guiSourceReviewFailure;
-    }
-    if (int guiCaptureFailure = run_gui_profile_capture_tests()) {
-        fprintf(stderr, "regression assertion failed: code %d\n", guiCaptureFailure); return guiCaptureFailure;
-    }
-    if (int guiTransferFailure = run_gui_profile_transfer_tests()) {
-        fprintf(stderr, "regression assertion failed: code %d\n", guiTransferFailure); return guiTransferFailure;
     }
 #if defined(_WIN32)
     // Win32 config storage: the named-mutex lock and the Unicode INI writer.

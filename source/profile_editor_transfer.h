@@ -8,7 +8,69 @@ struct ProfileEditorTransferOptions {
     bool importing = false, all = false;
     int slot = 1, sourceRecord = 1;
     ProfileLegacyOptions legacy{};
+    // Explicit selection, used when non-empty: export writes `slots`; import
+    // writes file record `sources[i]` (file order, or the old INI's slot
+    // number) into slot `slots[i]`.
+    std::vector<int> sources, slots;
 };
+// What an import file contains, read once before any destination is chosen.
+struct ProfileEditorTransferProbe {
+    std::vector<ProfileDocument> documents;
+    std::vector<int> sources;             // record number to pass back for each document
+    ProfileLegacyOptions legacy{};        // interpretation that decoded the file
+    bool ok = false, legacyFile = false, needsMemoryUnit = false, needsCurveMeaning = false;
+    std::string error;
+};
+static inline std::string profile_editor_transfer_list(const std::vector<int>& values) {
+    std::string text;
+    for (int value : values) { if (!text.empty()) text += ','; text += std::to_string(value); }
+    return text;
+}
+// Portable banks decode directly. Anything else is treated as an old Green
+// Curve INI with the given interpretation; a missing unit or curve meaning is
+// reported as a question instead of a failure.
+template<class IO> static inline bool profile_editor_transfer_probe(const std::string& file, ProfileLegacyOptions legacy,
+    IO& storage, ProfileEditorTransferProbe& probe) {
+    probe = {};
+    ProfileCodecError error{};
+    std::string bytes;
+    const size_t maximum = PROFILE_FILE_MAX_BYTES > profile_slot::MAX_CONFIG_BYTES ? PROFILE_FILE_MAX_BYTES : profile_slot::MAX_CONFIG_BYTES;
+    if (file.empty() || !storage.read(file, bytes, maximum, false, error)) {
+        probe.error = error.message[0] ? error.message : "could not read the file"; return false;
+    }
+    if (legacy.format == PROFILE_LEGACY_NONE) {
+        auto bank = std::make_unique<ProfileBank>();
+        if (bytes.size() <= PROFILE_FILE_MAX_BYTES && profile_command_decode_import(bytes, legacy, ProfileSourceSelection{}, *bank, error)) {
+            for (int i = 0; i < bank->count; ++i) { probe.documents.push_back(bank->documents[i]); probe.sources.push_back(i + 1); }
+            probe.ok = !probe.documents.empty();
+            if (!probe.ok) probe.error = "the file contains no profiles";
+            return probe.ok;
+        }
+        if (bytes.find("document.") != std::string::npos) {
+            probe.error = error.message[0] ? error.message : "the file is not a Green Curve profile file"; return false;
+        }
+        legacy.format = PROFILE_LEGACY_WINDOWS_INI;
+    }
+    probe.legacyFile = true; probe.legacy = legacy;
+    std::string firstError;
+    for (int slot = 1; slot <= PROFILE_BANK_CAPACITY; ++slot) {
+        ProfileSourceSelection one; one.all = false; one.count = 1; one.slots[0] = slot;
+        auto bank = std::make_unique<ProfileBank>();
+        ProfileCodecError slotError{};
+        if (profile_command_decode_import(bytes, legacy, one, *bank, slotError) && bank->count == 1) {
+            probe.documents.push_back(bank->documents[0]); probe.sources.push_back(slot); continue;
+        }
+        const std::string message = slotError.message;
+        if (message.find("slot is empty") != std::string::npos) continue;
+        if (message.find("source-unit choice") != std::string::npos) { probe.needsMemoryUnit = true; continue; }
+        if (message.find("curve-semantics choice") != std::string::npos) { probe.needsCurveMeaning = true; continue; }
+        if (firstError.empty()) firstError = message;
+    }
+    if (probe.needsMemoryUnit || probe.needsCurveMeaning) { probe.documents.clear(); probe.sources.clear(); return false; }
+    probe.ok = !probe.documents.empty();
+    if (!probe.ok) probe.error = !firstError.empty() ? firstError : "the file contains no Green Curve profiles";
+    return probe.ok;
+}
 struct ProfileEditorTransferPreview {
     ProfileCommand command{};
     ProfileBankEdit edit{};
@@ -80,13 +142,19 @@ template<class IO> static inline bool profile_editor_transfer_prepare(const Prof
         profile_codec::fail(&preview.error, preview.error.line, message.c_str()); preview.result = result;
         preview.lines.emplace_back(std::string("Profile transfer: ") + message); return false;
     };
-    if (options.slot < 1 || options.slot > 5 || options.sourceRecord < 1 || options.sourceRecord > 5 ||
+    if ((options.slots.empty() && (options.slot < 1 || options.slot > 5)) || options.sourceRecord < 1 || options.sourceRecord > 5 ||
         file.empty() || file.size() >= 4096 || !profile_utf8_valid(file.data(), file.size())) return fail("invalid profile path or record/slot selection");
+    const bool explicitSelection = !options.slots.empty();
+    if (explicitSelection && (options.slots.size() > PROFILE_BANK_CAPACITY ||
+        (options.importing && options.sources.size() != options.slots.size())))
+        return fail("invalid profile record/slot selection");
     std::vector<std::string> args{options.importing ? "--import-profiles" : "--export-profiles", file, "--slots",
+        explicitSelection ? profile_editor_transfer_list(options.slots) :
         options.all ? (options.importing ? "1,2,3,4,5" : "all") : std::to_string(options.slot)};
     if (options.importing) {
         args.emplace_back("--confirm-import");
-        if (!options.all) { args.emplace_back("--source-profiles"); args.emplace_back(std::to_string(options.sourceRecord)); }
+        if (explicitSelection) { args.emplace_back("--source-profiles"); args.emplace_back(profile_editor_transfer_list(options.sources)); }
+        else if (!options.all) { args.emplace_back("--source-profiles"); args.emplace_back(std::to_string(options.sourceRecord)); }
     }
     const auto& legacy = options.legacy;
     if (legacy.format != PROFILE_LEGACY_NONE) {
@@ -111,7 +179,7 @@ template<class IO> static inline bool profile_editor_transfer_prepare(const Prof
         auto bank = std::make_unique<ProfileBank>();
         if (!profile_command_decode_import(sourceBytes, legacy, preview.command.source, *bank, preview.error)) return fail(preview.error.message);
         if (!bank->count) return fail("no source profiles selected");
-        if (options.all) {
+        if (options.all && !explicitSelection) {
             std::string slots;
             for (int i = 0; i < bank->count; ++i) { if (i) slots += ','; slots += std::to_string(i + 1); }
             args[3] = slots;

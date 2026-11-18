@@ -10,19 +10,17 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
 static bool is_profile_slot_saved(const char* path, int slot);
 static void refresh_profile_controls_from_config();
 static void update_share_all_users_check_state();
-static void gui_profile_source_service_changed();
-static void gui_profile_source_observe_service(const ServiceResponse* response);
+static void gui_profile_tools_service_changed();
+static void gui_profile_tools_observe_service(const ServiceResponse* response);
 static void gui_profile_capture_service_changed();
 #ifdef GREEN_CURVE_SERVICE_BINARY
 static constexpr bool gui_profile_capture_active() { return false; }
-static constexpr bool gui_profile_source_mapped_ready() { return false; }
-static constexpr void gui_profile_capture_begin() {}
+static constexpr bool gui_profile_transfer_active() { return false; }
+static constexpr void gui_profile_capture_begin(int) {}
 #else
 static bool gui_profile_capture_active();
 static bool gui_profile_transfer_active();
-static bool gui_profile_source_mapped_ready();
-static void gui_profile_capture_begin();
-static bool gui_profile_source_prepare_apply(DesiredSettings&, gc_u64&, OcApplyBaseline&);
+static void gui_profile_capture_begin(int preferredSlot);
 #endif
 static void gui_profile_tools_append_menu(HMENU menu);
 static void migrate_legacy_config_if_needed(const char* path);

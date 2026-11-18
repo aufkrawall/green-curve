@@ -79,18 +79,6 @@ int run_profile_mapped_draft_tests() {
     if (service_control_review_matches(request, nullptr, read, why, sizeof(why)) || reads != 2)
         return 9648;
     live->capture = review.capture;
-    GuiServiceActionability action{};
-    action.installed = action.available = action.ready = action.loaded = true;
-    action.draftDetached = true;
-    if (gui_reviewed_source_apply_enabled(action, false) || !gui_reviewed_source_apply_enabled(action, true))
-        return 9649;
-    action.hardwareWriteInFlight = true;
-    if (gui_reviewed_source_apply_enabled(action, true))
-        return 9670;
-    action.hardwareWriteInFlight = false;
-    action.ready = false;
-    if (gui_reviewed_source_apply_enabled(action, true))
-        return 9671;
     TuiViewModel vm{};
     vm.desired = &desired;
     vm.sourceDocument = &source;

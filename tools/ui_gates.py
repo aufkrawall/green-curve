@@ -1534,8 +1534,8 @@ def check_profile_draft_replacement(ctx, require_text):
 
 def check_canonical_tui_documents(ctx, require_text, forbid_text):
     actions = _p(ctx, "linux_tui_actions.cpp")
-    require_text(actions, "profile_editor_source_candidate(*source, loaded)",
-                 "TUI source loading retains the canonical document separately from display values")
+    require_text(actions, "profile_slot_document_runtime(*source, haveLive ? live.get() : nullptr, loaded.settings",
+                 "TUI Load turns imported slots into the ordinary record every apply path uses")
     ctx.require_order_in_operation(actions, "case ACTION_SAVE:", "profile_document_slot_save(io,",
                                    "save_profile_to_config_path(", "canonical sources save before the legacy display writer")
     ctx.require_order_in_operation(_p(ctx, "linux_tui_mutation_actions.cpp"), "void apply_to_gpu(",
@@ -1578,8 +1578,8 @@ def check_canonical_tui_documents(ctx, require_text, forbid_text):
                  "typed memory replaces precise authority while keeping the named control")
     require_text(actions, "desired_power_edit_percent(&desired, clamp_power_limit_pct(value))",
                  "typed power replaces the previous rational authority")
-    require_text(actions, "case ACTION_CAPTURE_SOURCE: tui_capture_begin(*state);",
-                 "Capture enters an explicit source-draft workflow")
+    require_text(actions, "tui_capture_accept(*state, [&](int slot, const DesiredSettings& record",
+                 "Capture saves an ordinary slot record instead of replacing the editor draft")
     require_text(actions, "tui_capture_read(*state,", "Capture reads through the bounded passive adapter")
     require_text(actions, "state->document.unsaved = false;", "successful source Save clears the unsaved-capture marker")
     ctx.require_order_in_operation(_p(ctx, "linux_tui_render.cpp"), "void tui_handle_event(", "tui_capture_modal_event(*state, event,",
@@ -1622,8 +1622,6 @@ def check_wndproc_stack_discipline(ctx, require_text, forbid_text):
                  "editor document reset clears in place without stack temporaries")
     forbid_text(_p(ctx, "profile_editor_review_session.h"), "review = {};",
                 "review session clears review in place rather than allocating a 190 KB stack temporary")
-    forbid_text(_p(ctx, "gui_profile_source.cpp"), "g_app.guiSource = {};",
-                "profile source reset clears g_app.guiSource in place")
 
 
 def check_owner_drawn_text_is_literal(ctx, require_text, forbid_text):

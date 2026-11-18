@@ -116,26 +116,19 @@ enum ActionType {
     ACTION_CAPTURE_DOMAIN,
     ACTION_CAPTURE_READ,
     ACTION_CAPTURE_REPRESENTATION,
-    ACTION_CAPTURE_PARTIAL,
-    ACTION_CAPTURE_DISCARD,
+    ACTION_CAPTURE_SLOT,
     ACTION_CAPTURE_OBSERVE_PIN,
-    ACTION_CAPTURE_PIN_STEP,
-    ACTION_CAPTURE_CONFIRM_PIN,
     ACTION_CAPTURE_ACCEPT,
     ACTION_CAPTURE_CANCEL,
     ACTION_TRANSFER_BEGIN,
     ACTION_TRANSFER_PATH,
     ACTION_TRANSFER_MODE,
-    ACTION_TRANSFER_KIND,
     ACTION_TRANSFER_RECORD,
     ACTION_TRANSFER_SLOT,
     ACTION_TRANSFER_FORMAT,
     ACTION_TRANSFER_MEMORY,
     ACTION_TRANSFER_CURVE,
     ACTION_TRANSFER_PREVIEW,
-    ACTION_TRANSFER_BACK,
-    ACTION_TRANSFER_LOAD,
-    ACTION_TRANSFER_DISCARD,
     ACTION_TRANSFER_COMMIT,
     ACTION_TRANSFER_CANCEL,
     ACTION_SAVE,
@@ -194,21 +187,25 @@ struct TuiPointValues {
     TuiPointRule rule;
 };
 
+// "Import current GPU settings": report holds one value line per capture
+// group (profile_capture_save.h), then plain notes.
 struct TuiCaptureView {
-    bool active = false, hasObservation = false, allowPartial = false, discardConfirmed = false, needsDiscard = false;
-    bool pinObservable = false, pinSuspected = false;
-    gc_i64 pinConfirmedHz = 0;
-    gc_u32 domains = 31, omissions = 0;
-    unsigned int representations = 0;
+    bool active = false, hasObservation = false, failed = false, pinObservable = false;
+    unsigned int included = 0, available = 0, shown = 0, representations = 0;
     ProfileCaptureRepresentation representation = PROFILE_CAPTURE_EXACT;
-    int scroll = 0;
+    int slot = 1, scroll = 0;
+    std::string choice, destination;
     const std::vector<std::string>* report = nullptr;
 };
 
+// Export: rows are slots 1..5. Import: rows are the file's records, each with
+// a destination slot. report holds one summary line per row, then notes.
 struct TuiTransferView {
-    bool active = false, importing = false, all = false, reviewing = false, ready = false;
-    bool pathEditing = false, selectAll = false, loadAfterImport = false, needsDiscard = false, discardConfirmed = false;
-    int slot = 1, sourceRecord = 1, format = 0, memory = 0, curve = 0, scroll = 0;
+    bool active = false, importing = false, probed = false, pathEditing = false, selectAll = false;
+    bool legacyFile = false, askMemory = false, askCurve = false, confirmOverwrite = false, canRun = false;
+    int rows = 0, format = 0, memory = 0, curve = 0, scroll = 0;
+    bool rowEnabled[5]{}, rowAvailable[5]{};
+    int rowSlot[5]{1, 2, 3, 4, 5};
     std::string path;
     const std::vector<std::string>* report = nullptr;
 };

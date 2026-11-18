@@ -3,63 +3,63 @@
 #pragma once
 #include "linux_tui_layout_internal.h"
 #include "linux_tui_document_view.h"
+#include "profile_legacy_ini.h"
 
+// Export: one row per slot. Import: one row per record in the file, each with
+// its destination slot. report holds one summary per row, then a note line.
 static inline void tui_draw_transfer_dialog(TuiCanvas* canvas) {
     auto* layout = canvas->layout(); const auto& v = canvas->view().transfer;
     layout->actions.clear(); layout->transferVisible = true;
     const TuiRect panel{3, 2, layout->width - 6, layout->height - 4};
     canvas->fill(panel.x, panel.y, panel.width, panel.height, TUI_STYLE_PANEL);
-    canvas->box(panel, v.reviewing ? "REVIEW PROFILE TRANSFER" : "TRANSFER SAVED PROFILES");
-    const int x = panel.x + 2, y = panel.y + 2, width = panel.width - 4;
-    const int buttons = panel.y + panel.height - 3;
-    if (!v.reviewing) {
-        const std::string& path = v.path;
-        const int offset = tui_column_to_byte_offset(path, std::max(0, tui_display_columns(path) - width + 8));
-        canvas->text(x, y, width, (std::string(v.pathEditing ? "> " : "File: ") + path.substr((size_t)offset)).c_str(),
-            v.pathEditing ? (v.selectAll ? TUI_STYLE_FIELD_SELECTED : TUI_STYLE_FIELD_ACTIVE) : TUI_STYLE_FIELD);
-        canvas->register_action({x, y, width, 1}, ACTION_TRANSFER_PATH);
-        canvas->button({x, y + 2, 19, 1}, v.importing ? "IMPORT FROM FILE" : "EXPORT TO FILE", ACTION_TRANSFER_MODE);
-        canvas->button({x + 21, y + 2, 25, 1}, v.all ? "BANK (UP TO 5)" : "ONE PROFILE", ACTION_TRANSFER_KIND);
-        char label[48]{};
-        if (v.importing && !v.all) {
-            std::snprintf(label, sizeof(label), "Source record: %d", v.sourceRecord);
-            canvas->button({x, y + 4, 25, 1}, label, ACTION_TRANSFER_RECORD);
+    canvas->box(panel, v.importing ? "IMPORT PROFILES FROM FILE" : "EXPORT PROFILES TO FILE");
+    const int x = panel.x + 2, width = panel.width - 4, buttons = panel.y + panel.height - 3;
+    int y = panel.y + 2;
+    canvas->button({x, y, 20, 1}, v.importing ? "SWITCH TO EXPORT" : "SWITCH TO IMPORT", ACTION_TRANSFER_MODE);
+    canvas->text(x + 22, y, width - 22, v.importing ? "Adds profiles from a file to your slots." :
+        "Saves profiles to a file; no GPU needed.", TUI_STYLE_MUTED);
+    y += 2;
+    const std::string& path = v.path;
+    const int offset = tui_column_to_byte_offset(path, std::max(0, tui_display_columns(path) - width + 8));
+    canvas->text(x, y, width, (std::string(v.pathEditing ? "> " : "File: ") + path.substr((size_t)offset)).c_str(),
+        v.pathEditing ? (v.selectAll ? TUI_STYLE_FIELD_SELECTED : TUI_STYLE_FIELD_ACTIVE) : TUI_STYLE_FIELD);
+    canvas->register_action({x, y, width, 1}, ACTION_TRANSFER_PATH);
+    y += 2;
+    if (v.importing && v.legacyFile) {
+        canvas->button({x, y, 32, 1}, v.format == PROFILE_LEGACY_LINUX_INI ? "Saved on: Linux" : "Saved on: Windows", ACTION_TRANSFER_FORMAT);
+        canvas->text(x + 34, y, width - 34, "Older settings file", TUI_STYLE_MUTED);
+        ++y;
+        if (v.askMemory) {
+            const char* memory[] = {"Memory values: choose...", "Memory values: as shown in Green Curve", "Memory values: doubled (effective)"};
+            canvas->button({x, y, 44, 1}, memory[std::clamp(v.memory, 0, 2)], ACTION_TRANSFER_MEMORY); ++y;
         }
-        if (!v.all) {
-            if (!v.slot) std::snprintf(label, sizeof(label), "Choose destination slot");
-            else std::snprintf(label, sizeof(label), "%s slot: %d", v.importing ? "Destination" : "Saved", v.slot);
-            canvas->button({x + (v.importing ? 27 : 0), y + 4, 27, 1}, label, ACTION_TRANSFER_SLOT);
-        } else canvas->text(x, y + 4, width, v.importing ? "Records 1..N replace slots 1..N; other slots stay." : "Exports every occupied saved slot, in slot order.", TUI_STYLE_MUTED);
-        const char* formats[] = {"Format: portable / markers", "Format: Windows legacy INI", "Format: Linux legacy INI"};
-        canvas->button({x, y + 6, 36, 1}, formats[std::clamp(v.format, 0, 2)], ACTION_TRANSFER_FORMAT);
-        if (v.format) {
-            const char* memory[] = {"Memory: use markers", "Memory: physical MHz", "Memory: effective MHz"};
-            const char* curve[] = {"Curve: use markers", "Curve: absolute", "Curve: absolute + origin", "Curve: base + offset"};
-            canvas->button({x, y + 8, 32, 1}, memory[std::clamp(v.memory, 0, 2)], ACTION_TRANSFER_MEMORY);
-            canvas->button({x, y + 10, 36, 1}, curve[std::clamp(v.curve, 0, 3)], ACTION_TRANSFER_CURVE);
-        } else canvas->text(x, y + 8, width, "Transfers exact saved intent without reading the GPU.", TUI_STYLE_MUTED);
-        if (!v.pathEditing) canvas->button({x, buttons, 19, 1}, "PREVIEW", ACTION_TRANSFER_PREVIEW);
-        else canvas->text(x, buttons, width - 16, "Type path; Enter finishes; Esc cancels", TUI_STYLE_MUTED);
-    } else {
-        std::vector<TuiSourceLine> lines;
-        if (v.report) for (const auto& line : *v.report) lines.push_back({line});
-        tui_wrap_source_lines(lines, (size_t)std::max(8, width));
-        const int rows = std::max(1, panel.height - 10);
-        layout->transferVisibleRows = rows; layout->transferLineCount = (int)lines.size();
-        const int first = std::clamp(v.scroll, 0, std::max(0, (int)lines.size() - rows));
-        char meta[96]{}; std::snprintf(meta, sizeof(meta), "Rows %d-%d/%d | PgUp/PgDn scroll", first + 1,
-            std::min((int)lines.size(), first + rows), (int)lines.size());
-        canvas->text(x, y, width, meta, TUI_STYLE_MUTED);
-        for (int i = 0; i < rows && first + i < (int)lines.size(); ++i)
-            canvas->text(x, y + 1 + i, width, lines[first + i].text.c_str(), TUI_STYLE_TEXT);
-        if (v.importing) {
-            canvas->button({x, buttons - 4, 37, 1}, v.loadAfterImport ? "[x] Load first imported profile" : "[ ] Load first imported profile", ACTION_TRANSFER_LOAD);
-            if (v.loadAfterImport && v.needsDiscard)
-                canvas->button({x, buttons - 2, 37, 1}, v.discardConfirmed ? "[x] Discard unsaved draft" : "[ ] Discard unsaved draft", ACTION_TRANSFER_DISCARD);
+        if (v.askCurve) {
+            const char* curve[] = {"Curve points: choose...", "Curve points: final clocks", "Curve points: final, some follow core offset",
+                "Curve points: offsets from stock"};
+            canvas->button({x, y, 48, 1}, curve[std::clamp(v.curve, 0, 3)], ACTION_TRANSFER_CURVE); ++y;
         }
-        if (v.ready && (!v.importing || !v.loadAfterImport || !v.needsDiscard || v.discardConfirmed))
-            canvas->button({x, buttons, 20, 1}, v.importing ? "CONFIRM IMPORT" : "WRITE EXPORT", ACTION_TRANSFER_COMMIT);
-        canvas->button({x + 22, buttons, 14, 1}, "BACK", ACTION_TRANSFER_BACK);
+        ++y;
     }
+    const bool lines = v.report && !v.report->empty();
+    for (int i = 0; i < v.rows && i < 5 && y < buttons - 3; ++i, ++y) {
+        char label[24]{};
+        std::snprintf(label, sizeof(label), "%s %s %d", v.rowEnabled[i] ? "[x]" : "[ ]", v.importing ? "Profile" : "Slot", i + 1);
+        if (v.rowAvailable[i]) canvas->button({x, y, 14, 1}, label, ACTION_TRANSFER_RECORD, i, 0, v.rowEnabled[i]);
+        else canvas->text(x, y, 14, label, TUI_STYLE_MUTED);
+        int textWidth = width - 16;
+        if (v.importing) {
+            char slot[24]{};
+            std::snprintf(slot, sizeof(slot), "-> slot %d", v.rowSlot[i]);
+            canvas->button({x + width - 12, y, 12, 1}, slot, ACTION_TRANSFER_SLOT, i);
+            textWidth -= 14;
+        }
+        if (lines && i < (int)v.report->size())
+            canvas->text(x + 16, y, textWidth, (*v.report)[(size_t)i].c_str(), v.rowAvailable[i] ? TUI_STYLE_TEXT : TUI_STYLE_MUTED);
+    }
+    if (lines && !v.report->back().empty()) canvas->text(x, buttons - 2, width, v.report->back().c_str(), TUI_STYLE_CYAN);
+    if (v.importing && !v.probed && !v.pathEditing) canvas->button({x, buttons, 14, 1}, "READ FILE", ACTION_TRANSFER_PREVIEW);
+    if (v.pathEditing) canvas->text(x, buttons, width - 16, "Type the path; Enter finishes; Esc closes", TUI_STYLE_MUTED);
+    else if (v.canRun) canvas->button({x + (v.importing && !v.probed ? 16 : 0), buttons, 12, 1}, v.importing ? "IMPORT" : "EXPORT", ACTION_TRANSFER_COMMIT);
     canvas->button({panel.x + panel.width - 16, buttons, 14, 1}, "CANCEL", ACTION_TRANSFER_CANCEL);
+    layout->transferVisibleRows = 1; layout->transferLineCount = 1;
 }

@@ -452,18 +452,14 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
         return;
     }
     switch (action.type) {
-        case ACTION_CAPTURE_SOURCE: tui_capture_begin(*state); break;
+        case ACTION_CAPTURE_SOURCE:
+            tui_capture_begin(*state, [&](gc_u32 domains, HardwareCaptureObservation& out, ProfileCodecError& error) {
+                return tui_read_capture(*state, domains, out, error, state->captureReviewContext, &state->captureProposalContext);
+            }, transferStorage);
+            break;
         case ACTION_CAPTURE_CANCEL: tui_capture_cancel(*state); break;
-        case ACTION_CAPTURE_DOMAIN:
-            if (state->capturePresented && state->captureLines.empty() && action.index >= 0 && action.index < 9)
-                state->capture.domains ^= 1u << action.index;
-            break;
-        case ACTION_CAPTURE_PARTIAL:
-            if (state->capturePresented && state->capture.omissions) state->capture.allowPartial = !state->capture.allowPartial;
-            break;
-        case ACTION_CAPTURE_DISCARD:
-            if (state->capturePresented && state->capture.needsDiscard) state->capture.discardConfirmed = !state->capture.discardConfirmed;
-            break;
+        case ACTION_CAPTURE_DOMAIN: (void)tui_capture_toggle_group(*state, action.index); break;
+        case ACTION_CAPTURE_SLOT: (void)tui_capture_cycle_slot(*state, transferStorage); break;
         case ACTION_CAPTURE_READ:
             tui_capture_read(*state, [&](gc_u32 domains, HardwareCaptureObservation& out, ProfileCodecError& error) {
                 return tui_read_capture(*state, domains, out, error, state->captureReviewContext, &state->captureProposalContext);
@@ -481,14 +477,12 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
                     [](void* lib) { pl_lib_close((PlLib)lib); });
             });
             break;
-        case ACTION_CAPTURE_PIN_STEP:
-            (void)tui_capture_step_pin(*state, (gc_i64)action.value);
-            break;
-        case ACTION_CAPTURE_CONFIRM_PIN:
-            (void)tui_capture_confirm_pin(*state);
-            break;
         case ACTION_CAPTURE_ACCEPT:
-            (void)tui_capture_accept(*state, [](TuiState& draft) { bind_current_draft(&draft); tui_recompute_dirty(&draft); });
+            (void)tui_capture_accept(*state, [&](int slot, const DesiredSettings& record, char* error, size_t size) {
+                if (!save_profile_to_config_path(state->configPath, slot, &record, error, size)) return false;
+                sync_startup_snapshot_after_profile_write(state, slot, false);
+                return true;
+            });
             break;
         case ACTION_CHECK_SOURCE:
             tui_check_source(state);
@@ -643,8 +637,17 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
                 if (!profile_document_slot_load(io, state->configPath, slot, *source, found, error)) {
                     snprintf(why, size, "%s", error.message); return false;
                 }
-                if (found) { profile_editor_source_candidate(*source, loaded); return true; }
-                return load_profile_from_config_path(state->configPath, slot, &loaded.settings, why, size);
+                if (!found) return load_profile_from_config_path(state->configPath, slot, &loaded.settings, why, size);
+                // Imported profiles load like any other slot; captures bound to
+                // curve voltages map onto the shown GPU's live curve.
+                auto live = std::make_unique<ProfileDestinationTopology>();
+                const auto& snapshot = state->service.snapshot;
+                const bool haveLive = state->serviceOnline && profile_destination_from_vf_curve(snapshot.curve,
+                    vf_floor_topology_compute(snapshot.curve, snapshot.freqOffsets, VF_NUM_POINTS), *live);
+                if (!profile_slot_document_runtime(*source, haveLive ? live.get() : nullptr, loaded.settings, why, size)) return false;
+                normalize_desired_settings_for_ui(&loaded.settings);
+                linux_debug_logf("profile load: slot %d converted portable record live=%d", slot, haveLive ? 1 : 0);
+                return true;
             }, [](TuiState& draft) { bind_current_draft(&draft); tui_recompute_dirty(&draft); });
             break;
         }

@@ -801,7 +801,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     // Profiles/tools popup: slot application, auto-profile configuration and
     // explicit passive capture; the tray keeps its existing Profiles submenu.
     g_app.hAutoProfilesBtn = CreateWindowExA(
-        0, "BUTTON", "Profiles & tools...",
+        0, "BUTTON", "Profiles...",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
         0, 0, dp(160), dp(22),
         g_app.hMainWnd, (HMENU)(INT_PTR)AUTO_PROFILE_BTN_ID, hInstance, nullptr
@@ -873,7 +873,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     // Message loop
     MSG msg = {};
     while (GetMessageA(&msg, nullptr, 0, 0)) {
-        if (gui_profile_source_route_message(msg)) continue;
+        if (gui_profile_tools_route_message(msg)) continue;
         TranslateMessage(&msg);
         DispatchMessageA(&msg);
     }

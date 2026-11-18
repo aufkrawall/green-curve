@@ -26,10 +26,12 @@ static inline bool profile_transfer_choose_file(HWND owner, bool importing, std:
         DWORD flags = 0; status = dialog->GetOptions(&flags);
         if (SUCCEEDED(status)) status = dialog->SetOptions(flags | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST |
             (importing ? FOS_FILEMUSTEXIST : FOS_OVERWRITEPROMPT));
-        const COMDLG_FILTERSPEC types[] = {{L"Portable profiles", L"*.gcprofile"}, {L"Green Curve INI files", L"*.ini"}, {L"All files", L"*.*"}};
-        if (SUCCEEDED(status)) status = dialog->SetFileTypes(3, types);
+        const COMDLG_FILTERSPEC types[] = {{L"Green Curve profiles (*.gcprofile)", L"*.gcprofile"},
+            {L"Older Green Curve settings (*.ini)", L"*.ini"}, {L"All files", L"*.*"}};
+        if (SUCCEEDED(status)) status = dialog->SetFileTypes(importing ? 3 : 1, types);
         if (SUCCEEDED(status) && !importing) status = dialog->SetDefaultExtension(L"gcprofile");
-        if (SUCCEEDED(status)) status = dialog->SetTitle(importing ? L"Import saved profiles" : L"Export saved profiles");
+        if (SUCCEEDED(status) && !importing) status = dialog->SetFileName(L"Green Curve profiles.gcprofile");
+        if (SUCCEEDED(status)) status = dialog->SetTitle(importing ? L"Import profiles from file" : L"Export profiles to file");
         if (SUCCEEDED(status)) status = dialog->Show(owner);
         IShellItem* item = nullptr;
         if (SUCCEEDED(status)) status = dialog->GetResult(&item);

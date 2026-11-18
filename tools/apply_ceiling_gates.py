@@ -616,7 +616,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_order_in_operation(
         ui_apply_cpp,
         "static void apply_changes()",
-        "if (!mappedSource && gui_curve_prepare_intercept_apply(&desired)) return;",
+        "if (gui_curve_prepare_intercept_apply(&desired)) return;",
         "if (!gui_mutation_queue_apply(&desired, true, SERVICE_APPLY_ORIGIN_GUI,",
         "the GUI's prefix repair offer precedes queueing the apply")
     for writer in ("gui_mutation_queue_", "apply_desired_settings", "nvapi_",

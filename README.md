@@ -212,6 +212,30 @@ greencurve --startup-profile none    # leave GPU untouched at boot
 
 Linux writes are transactional: the daemon journals settings before applying, verifies curve readback, and automatically rolls back if applying fails.
 
+## Importing and exporting profiles
+
+The **Profiles...** button (Windows) and the **FROM GPU** / **FILES** buttons
+(Linux TUI) offer three tools. All of them end in ordinary profile slots, so
+the result works with Load, the tray, hotkeys, auto-switch, app start and logon
+like any other profile.
+
+- **Import current GPU settings** copies the settings now on the GPU, for
+  example ones another tool set, into a slot. It reads the GPU when it opens
+  and lists the curve, core clock, memory clock, power limit and (when present)
+  advanced clocks in plain words. Untick anything you want to leave out, pick
+  how the curve is saved (a flat curve at its plateau, a hard clock lock when
+  one is known, or every point exactly) and the slot. Saving never changes the
+  GPU; apply the slot when you want Green Curve to manage those settings. If
+  another tool pins the clock and the driver cannot report it, start a game or
+  benchmark and use **Detect clock lock under load**.
+- **Export profiles to file** saves the slots you tick to a `.gcprofile` file.
+  No GPU is needed.
+- **Import profiles from file** reads a `.gcprofile` file or an older Green
+  Curve settings file and lets you choose the slot for each profile (empty
+  slots first). It names the slots it will replace and asks how an older file
+  stored its values only when the file does not say. The editor is not
+  changed; Load a slot to edit it.
+
 ## CLI commands
 
 ```bash
@@ -257,43 +281,6 @@ controls remain a separate choice. Windows and the Linux TUI offer the same
 choices, with omission and unfinished-draft decisions kept separate. A changed
 GPU session or ownership expires the snapshot. Acceptance saves source intent
 and does not Apply it.
-
-The Linux TUI can Load portable slots as source documents. Profiles & Tools
-shows exact units and source point intent; Save preserves the complete document
-without a GPU. Select a source point to type absolute MHz, or an offset field
-to type physical MHz, with up to six decimal places. Untouched points retain
-their captured or projected intent. Destination mapping and control review
-are required before applying these sources.
-Transfer in Profiles & Tools imports or exports one saved profile or the bank
-without a GPU. Choose the file, source record, destination slot and any legacy
-format choices, then Preview before confirming. Import can keep the open draft,
-including unfinished edits; loading the first imported profile is a separate
-choice, with explicit discard when needed. A changed destination bank requires
-a fresh preview.
-Use Check in Profiles & Tools to inspect destination mapping and feasibility.
-The graphics and memory buttons change only this preview's control choices.
-Source drafts stay intact when choosing another GPU. Check names the shown
-GPU, and its cached result expires when the daemon/GPU session changes.
-Use mapped draft stages supported scalar settings for a separate Apply. The
-service rejects changed control reviews before writing. Exact graphics/curve
-source replay remains unavailable while transition integration is completed.
-Capture in Profiles & Tools lets you choose domains, read a snapshot, and
-review exact controls before replacing the draft. Omitted settings and
-discarding unsaved edits each require an explicit choice. Acceptance creates
-an unsaved source draft; Save stores it, and Apply remains separate.
-
-On Windows, Load opens portable slots in a source editor with precise values
-and offline Save. Check previews the selected GPU with explicit graphics and
-memory control choices. Use mapped draft stages supported scalar sources for
-Apply; the existing manual confirmations still apply. Profiles & tools ->
-Capture current GPU settings opens
-domain selection and snapshot review. Omitted settings and replacing unfinished
-work require separate choices; Use exact creates an unsaved source, then Save
-stores it. Captured graphics/curve replay still requires transition integration.
-Profiles & tools -> Import / export saved profiles also works offline. Use the
-native file picker or type a path, choose one record or the bank, and Preview
-before confirmation. Loading the first imported profile and discarding unfinished
-work are separate choices; cancelling keeps the previous editor input.
 
 To import an older Green Curve INI, select `--legacy-format windows-ini` or
 `--legacy-format linux-ini`. Select source slots with `--source-profiles 2,4`

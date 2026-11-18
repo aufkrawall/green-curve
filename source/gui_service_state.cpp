@@ -228,14 +228,14 @@ static void gui_draft_discard() {
 }
 
 static void gui_set_editor_enabled(bool ready) {
-    gui_profile_source_service_changed();
+    gui_profile_tools_service_changed();
     // `ready` is supplied by the caller rather than re-derived, because the
     // phase-only render path deliberately forces it false.
     GuiServiceActionability actionable = gui_service_actionability_from_app();
     actionable.ready = ready;
     const bool allowLive = gui_service_capability_enabled(
         &actionable, GUI_SERVICE_CAP_EDITOR);
-    const bool allowDraft = allowLive && !g_app.guiSource.valid && !gui_profile_capture_active();
+    const bool allowDraft = allowLive && !gui_profile_capture_active();
     for (int vi = 0; vi < g_app.numVisible; ++vi) {
         bool tailDisabled = g_app.lockedVi >= 0 && vi > g_app.lockedVi;
         if (g_app.hEditsMhz[vi])
@@ -258,7 +258,7 @@ static void gui_set_editor_enabled(bool ready) {
     // ungated: returning the GPU to stock is meaningful with a clean editor.
     if (g_app.hApplyBtn)
         EnableWindow(g_app.hApplyBtn,
-            (gui_reviewed_source_apply_enabled(actionable, gui_profile_source_mapped_ready()) || gui_pending_apply_button_enabled(allowDraft, gui_pending_summary()))
+            gui_pending_apply_button_enabled(allowDraft, gui_pending_summary())
                 ? TRUE : FALSE);
     // A detached draft must not make its recovery path unreachable.  Keep GPU
     // selection available for a coherent READY model so the user can reselect
@@ -668,7 +668,7 @@ static bool gui_service_accept_response_on_main_thread(
         return false;
     }
 
-    gui_profile_source_observe_service(response);
+    gui_profile_tools_observe_service(response);
 
     bool authorityChanged = previousInstance != 0 &&
         (previousInstance != response->state.serviceInstanceId ||

@@ -28,10 +28,9 @@ static inline bool tui_capture_binding_current(const TuiState &state) {
 static inline void tui_reconcile_capture(TuiState &state, const char *reason) {
     if (!state.capture.active || !state.capture.hasObservation || tui_capture_binding_current(state))
         return;
-    state.capture.hasObservation = state.capture.allowPartial = state.capture.discardConfirmed = false;
-    state.capture.pinObservable = state.capture.pinSuspected = false;
-    state.capture.pinConfirmedHz = 0;
-    state.capture.representations = 0;
+    state.capture.hasObservation = state.capture.pinObservable = false;
+    state.capture.failed = true;
+    state.capture.included = state.capture.available = state.capture.shown = state.capture.representations = 0;
     state.capture.scroll = 0;
     state.captureObservation.reset();
     state.captureProposals.reset();
@@ -40,8 +39,7 @@ static inline void tui_reconcile_capture(TuiState &state, const char *reason) {
     state.capturePinObservation.reset();
     state.capturePresented = false;
     state.focusIndex = -1;
-    state.captureLines = {std::string("Snapshot expired: ") + reason +
-                          ". Read again; the previous draft is preserved."};
-    snprintf(state.status, sizeof(state.status), "Capture expired: %s; Read again", reason);
+    state.captureLines = {std::string("The GPU settings changed: ") + reason + ". Read again."};
+    snprintf(state.status, sizeof(state.status), "GPU settings changed (%s); read again", reason);
     linux_debug_logf("profile-capture: expired=%s", reason);
 }

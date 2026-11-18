@@ -264,10 +264,6 @@ static GC_NOINLINE bool handle_main_window_service_enable_click() {
 }
 
 static GC_NOINLINE bool handle_main_window_profile_clear() {
-    if (gui_profile_capture_active()) {
-        set_profile_status_text("Cancel capture before changing saved profiles.");
-        return false;
-    }
     int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
     if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
     slot += 1;
@@ -576,13 +572,15 @@ static GC_NOINLINE bool handle_main_window_command(HWND hwnd, WPARAM wParam) {
     } else if (LOWORD(wParam) == TRAY_MENU_SHOW_ID) {
         show_main_window_from_tray();
     } else if (LOWORD(wParam) == TRAY_MENU_EXIT_ID) {
-        if (gui_profile_source_can_exit()) DestroyWindow(hwnd);
+        if (gui_profile_tools_can_exit()) DestroyWindow(hwnd);
     } else if (LOWORD(wParam) == AUTO_PROFILE_BTN_ID && HIWORD(wParam) == BN_CLICKED) {
         show_profiles_popup(hwnd);
     } else if (LOWORD(wParam) == PROFILE_CAPTURE_ID) {
-        gui_profile_capture_begin();
-    } else if (LOWORD(wParam) == PROFILE_TRANSFER_ID) {
-        gui_profile_transfer_begin();
+        gui_profile_capture_begin(selected_profile_slot_from_combo());
+    } else if (LOWORD(wParam) == PROFILE_IMPORT_ID) {
+        gui_profile_transfer_open(true);
+    } else if (LOWORD(wParam) == PROFILE_EXPORT_ID) {
+        gui_profile_transfer_open(false);
     } else if (LOWORD(wParam) == AUTO_PROFILE_MENU_TOGGLE_ID) {
         auto_profile_toggle_enabled(hwnd);
     } else if (LOWORD(wParam) == AUTO_PROFILE_MENU_CONFIGURE_ID) {
@@ -677,10 +675,11 @@ static GC_NOINLINE void handle_main_window_size_message(HWND hwnd, WPARAM wParam
 
 static GC_NOINLINE void handle_main_window_service_io_complete(WPARAM wParam, LPARAM lParam) {
     if (!lParam && wParam) {
-        if (!gui_profile_capture_allocation_failed((gc_u64)wParam)) gui_profile_source_check_allocation_failed((gc_u64)wParam);
+        (void)gui_profile_capture_allocation_failed((gc_u64)wParam);
     } else if (lParam && ((GuiServiceIoCompletion*)lParam)->kind == GUI_SERVICE_IO_CAPTURE) {
         auto* completion = (GuiServiceIoCompletion*)lParam;
-        if (!gui_profile_capture_handle_completion(completion)) gui_profile_source_handle_check(completion);
+        // An unmatched (stale) passive read has no owner left: free it here.
+        if (!gui_profile_capture_handle_completion(completion)) HeapFree(GetProcessHeap(), 0, completion);
     } else {
         handle_gui_service_io_completion((GuiServiceIoCompletion*)lParam);
     }
@@ -912,7 +911,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_CLOSE:
-            if (!gui_profile_source_can_exit()) return 0;
+            if (!gui_profile_tools_can_exit()) return 0;
             break;
 
         case WM_SYSCOMMAND:

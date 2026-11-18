@@ -138,7 +138,7 @@ void populate_view_model(const TuiState& state, TuiViewModel* vm,
     }
     vm->capture = state.capture; vm->capture.report = &state.captureLines;
     vm->transfer = state.transfer; vm->transfer.path = tui_transfer_path_display(state.transferPath);
-    vm->transfer.report = state.transferPreview ? &state.transferPreview->lines : nullptr;
+    vm->transfer.report = &state.transferLines;
     vm->serviceOnline = state.serviceOnline;
     vm->draftAttached = state.draftAttached || vm->sourceMappedAccepted;
     vm->editing = state.edit.active;

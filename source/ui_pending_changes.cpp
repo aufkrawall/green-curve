@@ -685,7 +685,6 @@ static void gui_pending_changes_refresh() {
     bool mutationReady = gui_service_capability_enabled(
         &actionable, GUI_SERVICE_CAP_HARDWARE_MUTATION);
     gui_set_window_enabled_if_changed(g_app.hApplyBtn,
-        gui_reviewed_source_apply_enabled(actionable, gui_profile_source_mapped_ready()) ||
-        gui_pending_apply_button_enabled(mutationReady && !g_app.guiSource.valid && !gui_profile_capture_active(),
+        gui_pending_apply_button_enabled(mutationReady && !gui_profile_capture_active(),
                                          &g_guiPendingChanges.summary));
 }

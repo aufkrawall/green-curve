@@ -272,8 +272,9 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
         LeaveCriticalSection(&g_guiMutationLock);
         if (transfer) {
             WindowsProfileSlotIO storage; gui_profile_transfer_execute(*transfer, storage);
-            debug_log("profile-import: completed token=%llu commit=%d code=%d\n", (unsigned long long)transfer->token,
-                transfer->committing ? 1 : 0, transfer->preview->result);
+            debug_log("profile-transfer: completed token=%llu kind=%s success=%d code=%d\n", (unsigned long long)transfer->token,
+                transfer->kind == GUI_PROFILE_TRANSFER_PROBE ? "probe" : transfer->options.importing ? "import" : "export",
+                transfer->success ? 1 : 0, transfer->preview ? transfer->preview->result : (transfer->success ? 0 : -1));
             EnterCriticalSection(&g_guiMutationLock);
             g_guiProfileTransferActive = g_guiWorkerBusy = false;
             HWND target = g_guiServiceNotifyWindow;
@@ -540,7 +541,7 @@ static bool gui_service_io_queue_telemetry(bool redrawControls) {
 // left showing a stale state by a path that forgot to refresh it.
 static void gui_apply_in_flight_presentation_changed(bool inFlight,
     const char* reason) {
-    gui_profile_source_service_changed();
+    gui_profile_tools_service_changed();
     debug_log("GUI apply presentation: changes-pending state -> %d (%s)\n",
         inFlight ? 1 : 0, reason && reason[0] ? reason : "queue transition");
     update_tray_icon();

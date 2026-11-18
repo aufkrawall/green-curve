@@ -207,13 +207,6 @@ static void set_profile_status_text(const char* fmt, ...) {
 
 static void update_profile_state_label() {
     if (!g_app.hProfileStateLabel || !g_app.hProfileCombo) return;
-    if (gui_profile_capture_active()) {
-        SetWindowTextA(g_app.hProfileStateLabel, "Capture review | previous draft kept"); return;
-    }
-    if (g_app.guiSource.valid) {
-        SetWindowTextA(g_app.hProfileStateLabel, "Source draft | destination review required");
-        return;
-    }
     refresh_machine_logon_slot_cache();
     int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
     if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
@@ -309,7 +302,7 @@ static void update_profile_action_buttons() {
         saved && localEdit);
     gui_set_window_enabled_if_changed(g_app.hProfileClearBtn,
         saved && profileEdit && !captureOpen);
-    gui_set_window_enabled_if_changed(g_app.hProfileSaveBtn, localEdit && (profileEdit || g_app.guiSource.valid));
+    gui_set_window_enabled_if_changed(g_app.hProfileSaveBtn, localEdit && profileEdit);
     gui_set_window_enabled_if_changed(g_app.hProfileCombo, localEdit);
     gui_set_window_enabled_if_changed(g_app.hAutoProfilesBtn, localEdit);
     // Re-asserted from the cached count with the SAME expression its owner
@@ -317,7 +310,7 @@ static void update_profile_action_buttons() {
     // one inside refresh_profile_controls_from_config(), and standalone from the
     // share toggle, so a different expression here would be silently overwritten.
     gui_set_window_enabled_if_changed(g_app.hSharedProfilesBtn,
-        g_app.sharedProfileCountCache > 0 && profileEdit && !g_app.guiSource.valid && !captureOpen);
+        g_app.sharedProfileCountCache > 0 && profileEdit && !captureOpen);
 
     // Assignments that persist and keep having effects: greyed at their default,
     // enabled while set so they can always be cleared.

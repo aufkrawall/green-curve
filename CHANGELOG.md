@@ -36,17 +36,16 @@ Curve checks, profile transfer and capture improve.
 - **Dialog text copying:** Ctrl+C copies confirmations, warnings and errors.
 - **Curve points below 700 mV:** writable points appear in the editor and graph.
 - **Prepare compatible curve:** preview lowering earlier points or searching the closest lower compatible lock frequency before Apply.
-- **Profile transfer:** Windows/CLI/TUI import/export five profiles offline, with assignment review.
-- **Legacy transfer:** preserve Windows/Linux units and tuning intent.
-- **Source profiles:** offline Windows/TUI editing survives GPU switches.
-- **Hardware capture:** Windows/TUI/CLI offer exact, flatten and pin drafts with labeled evidence, load-pin checks and omission review.
-- **Profile checks:** preview mapping, controls, releases, per-domain rounding conversions and captured-tail restores without changing source files.
+- **Profile files:** export chosen slots to a file and import them into chosen slots on Windows, the Linux TUI and the CLI, without a GPU.
+- **Older settings files:** import profiles from older Green Curve settings, asked only when a file does not say how values were saved.
+- **Import current GPU settings:** save settings another tool set into a slot, as a flat curve, a clock lock or every point exactly.
+- **Profile checks (CLI):** preview how a profile file maps onto this GPU without changing anything.
 - **NVIDIA CMP mining cards (experimental):** a startup warning explains the modified-driver requirement; continue once, stop asking, or exit.
 
 ### Improved
 
 - **Curve checks before Apply:** conflicts name frequency, voltage or range and guard transition peaks.
-- **Saving over another tool's curve:** Save and lock state ignore unowned curves and offer Capture.
+- **Saving over another tool's curve:** Save and lock state ignore unowned curves and offer to import the GPU's current settings.
 - **Profile storage:** saved profiles retain exact sub-MHz curve points, captured offsets, power ratios and domain scope across local slots.
 - **Linux profile switching:** replaced points clear first; flatten and lock readback are verified.
 - **Linux memory clocks:** curve-only changes preserve memory; failed preparation restores prior curves.
@@ -54,8 +53,6 @@ Curve checks, profile transfer and capture improve.
 
 ### Fixed
 
-- **Imported profiles:** apply from the tray, hotkeys, auto-switch, app start and logon like any other slot.
-- **Button captions:** an ampersand shows as written instead of underlining the next letter.
 - **TUI numeric edits:** memory and power edits replace retained precise values.
 - **Unicode profile banks:** imports preserve existing text and encoding.
 - **Unsaved drafts:** profile loading asks before discarding edits, including invalid input.

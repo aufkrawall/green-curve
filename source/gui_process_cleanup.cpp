@@ -5,7 +5,6 @@
 // unsupported-GPU warning exit. The latter runs before the I/O coordinator is
 // started, while normal shutdown gives it a bounded cancellation grace period.
 static void cleanup_gui_process_runtime(bool coordinatorStarted) {
-    g_profileSourceWindow.reset();
     bool coordinatorStopped =
         !coordinatorStarted || gui_mutation_shutdown();
     remove_tray_icon();

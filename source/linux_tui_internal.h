@@ -65,7 +65,8 @@ struct TuiState {
     TuiTransferView transfer;
     bool transferPresented = false;
     std::string transferPath;
-    std::unique_ptr<ProfileEditorTransferPreview> transferPreview;
+    std::unique_ptr<ProfileEditorTransferProbe> transferProbe;
+    std::vector<std::string> transferLines;
     int currentSlot;
     TuiTab tab;
     int selectedPoint;
