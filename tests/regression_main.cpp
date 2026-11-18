@@ -4998,7 +4998,7 @@ static int run_all_tests(int argc, char** argv) {
 
         // Notebook: zero fans reported, fan domain ABSENT.  A saved profile's
         // undervolt carries fan_mode=auto and used to stay detached here
-        // (service_fan_request_domains.h, fan_request_policy.h).
+        // (service_inert_request_domains.h, fan_request_policy.h).
         ServiceResponse notebook = response;
         notebook.snapshot.fanSupported = false;
         notebook.snapshot.fanCount = 0;
@@ -5039,6 +5039,49 @@ static int run_all_tests(int argc, char** argv) {
         if (linux_tui_bind_draft(&notebookBinding, &fanReported, &undervolt) ||
             service_snapshot_fan_request_disposition(&undervolt, &fanReported.snapshot) !=
                 FAN_REQUEST_HARDWARE) return 12154;
+
+        // Notebook whose driver exposes no power target either: the saved
+        // profile's mandatory power_limit_pct=100 is inert, exactly as in
+        // linux_power_request_is_inert(), so the undervolt still attaches.
+        DesiredSettings boardDefault = {};
+        boardDefault.hasPowerLimit = true;
+        boardDefault.powerLimitPct = 100;
+        if (!desired_power_request_is_board_default(boardDefault)) return 12155;
+        DesiredSettings lowered = boardDefault;
+        lowered.powerLimitPct = 80;
+        DesiredSettings unowned = boardDefault;
+        unowned.hasPowerLimit = false;
+        DesiredSettings exactDefault = boardDefault;
+        exactDefault.powerLimitRatio = true;
+        exactDefault.powerRatioNumerator = 250000;
+        exactDefault.powerRatioDenominator = 250000;
+        DesiredSettings emptyRatio = exactDefault;
+        emptyRatio.powerRatioNumerator = emptyRatio.powerRatioDenominator = 0;
+        if (desired_power_request_is_board_default(lowered) ||
+            desired_power_request_is_board_default(unowned) ||
+            !desired_power_request_is_board_default(exactDefault) ||
+            desired_power_request_is_board_default(emptyRatio)) return 12156;
+        ServiceResponse powerless = notebook;
+        powerless.snapshot.health.availableMutationDomains &=
+            ~(gc_u32)SERVICE_MUTATION_DOMAIN_POWER;
+        DesiredSettings notebookProfile = undervolt;
+        notebookProfile.hasPowerLimit = true;
+        notebookProfile.powerLimitPct = 100;
+        LinuxTuiDraftBinding powerlessBinding = {};
+        if (!linux_tui_bind_draft(&powerlessBinding, &powerless, &notebookProfile) ||
+            !linux_tui_draft_binding_matches(&powerlessBinding, &powerless, &notebookProfile) ||
+            service_snapshot_missing_mutation_domains(&notebookProfile, &powerless.snapshot) != 0)
+            return 12157;
+        // Any other target is a real request for a surface the board lacks.
+        DesiredSettings notebookLowered = notebookProfile;
+        notebookLowered.powerLimitPct = 80;
+        if (linux_tui_bind_draft(&powerlessBinding, &powerless, &notebookLowered) ||
+            service_snapshot_missing_mutation_domains(&notebookLowered, &powerless.snapshot) !=
+                SERVICE_MUTATION_DOMAIN_POWER) return 12158;
+        // With a power surface the request is ordinary, never inert.
+        if (service_snapshot_power_request_is_inert(&notebookProfile, &notebook.snapshot) ||
+            !service_snapshot_power_request_is_inert(&notebookProfile, &powerless.snapshot))
+            return 12159;
     }
 
     // The fixed prefix diagnoses old short peers before a version-sized body;

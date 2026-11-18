@@ -6,7 +6,7 @@
 #define GREEN_CURVE_LINUX_TUI_AUTHORITY_H
 
 #include "linux_gpu_selection.h"
-#include "service_fan_request_domains.h"
+#include "service_inert_request_domains.h"
 
 struct LinuxTuiDraftBinding {
     gc_u64 serviceInstanceId;
@@ -188,8 +188,8 @@ static inline const char* linux_tui_shown_gpu_write_name(
     return "invalid";
 }
 
-// An inert fan request (Auto on a GPU without a controllable fan) needs no
-// fan surface; see service_fan_request_domains.h.
+// An inert request (board-default power without a power surface, Auto fan
+// without a controllable fan) needs no surface; see service_inert_request_domains.h.
 static inline bool linux_tui_domains_available(
     const ServiceResponse* response, const DesiredSettings* desired) {
     return response && desired &&

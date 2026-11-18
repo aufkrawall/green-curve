@@ -279,6 +279,19 @@ def check_all(ctx, require_text, forbid_text):
     require_text(linux_mutation_cpp,
                  "if (d->hasPowerLimit && !linux_power_request_is_inert(d, &snapshot, g))",
                  "an inert power request schedules no Linux power write")
+    # The daemon precondition gate and the TUI gates judge the published
+    # snapshot; they must apply the same board-default rule as the backend or a
+    # saved profile stays detached on a board without a power surface.
+    require_text(linux_mutation_cpp,
+                 "return !surfaceAvailable && desired_power_request_is_board_default(*d);",
+                 "the backend inert-power rule uses the shared board-default predicate")
+    inert_domains_h = _p(ctx, "service_inert_request_domains.h")
+    require_text(inert_domains_h, "desired_power_request_is_board_default(*desired);",
+                 "the snapshot gates use the shared board-default predicate")
+    require_text(inert_domains_h,
+                 "service_snapshot_power_request_is_inert(desired, snapshot))\n"
+                 "        missing &= ~(gc_u32)SERVICE_MUTATION_DOMAIN_POWER;",
+                 "an inert power request is not a missing domain at the snapshot gates")
     # linux_backend_restore_snapshot() moved into its own shard under the
     # source-size ratchet; the guarantee follows the code.
     linux_rollback_h = _p(ctx, "linux_backend_rollback.h")

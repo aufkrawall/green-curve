@@ -303,8 +303,9 @@ static bool linux_power_request_is_inert(const DesiredSettings* d,
         snapshot->powerValid, g->powerLimitDefaultmW,
         (int)snapshot->powerLimitmW) &&
         g->nvml.setPowerLimit != nullptr;
-    const TuningPowerRatio ratio = desired_power_ratio(*d);
-    return !surfaceAvailable && ratio.numerator == ratio.denominator && ratio.numerator > 0;
+    // The same board-default predicate the daemon and TUI gates apply to the
+    // published snapshot (service_inert_request_domains.h).
+    return !surfaceAvailable && desired_power_request_is_board_default(*d);
 }
 
 #include "linux_backend_preflight.h"

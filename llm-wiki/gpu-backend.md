@@ -1123,6 +1123,21 @@ safely" — and since a saved profile always carries the mandatory
 `power_limit_pct` key, every profile apply was blocked there too.
 `linux_power_request_is_inert()` exempts a board-default request on a
 surfaceless board from both gates and from the write phase, keeping ownership.
+
+Two more gates sit in front of the backend and judge the published snapshot
+instead: the daemon precondition gate (`mutation_preconditions_match()` in
+`linux_daemon_snapshot_runtime.cpp`, for TUI/GUI applies that carry a state
+envelope) and the TUI's draft binding, edit staging, Apply and profile-load
+checks. Until 2026-11-18 neither applied the rule, so on such a board a saved
+profile stayed a detached TUI draft and a TUI Apply was refused as
+"requested GPU domains unavailable"; CLI and automatic restores were
+unaffected. Both now go through `service_snapshot_missing_mutation_domains()`
+(`source/service_inert_request_domains.h`): POWER missing from the published
+domains plus `desired_power_request_is_board_default()`
+(`source/desired_scalar_intent.h`), the same predicate the backend rule now
+uses. A non-default target there stays missing. Regressions 12155-12159;
+gates in `tools/readback_gates.py`. Not run on a surfaceless board.
+
 The fan domain follows the same rule on fanless (notebook) boards: an Auto
 request is inert on both platforms (`fan_request_policy.h`, F-FANLESS in
 [fan-control.md](fan-control.md)).

@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-18: Linux snapshot gates honour the inert power request
+
+- Follow-up to F-FANLESS: the Linux daemon precondition gate and the TUI gates
+  (draft binding, edit staging, Apply, profile-load status) never applied the
+  F-POWER-SURFACE inert rule, so on a board without a readable power target a
+  saved profile (mandatory `power_limit_pct=100`) stayed a detached TUI draft.
+  Found by code reading, not a report.
+- Fix: `service_snapshot_missing_mutation_domains()` exempts board-default
+  power when POWER is absent from the published domains; the predicate
+  `desired_power_request_is_board_default()` is shared with
+  `linux_power_request_is_inert()`. The helper header was renamed to
+  `source/service_inert_request_domains.h`.
+- Tests 12155-12159 (TUI binding on a powerless and fanless snapshot); gates
+  in `tools/readback_gates.py`. Not run on hardware.
+
 ## 2026-11-18: Apply works on GPUs without a controllable fan (F-FANLESS)
 
 - Report: on an RTX 4080 Laptop GPU the fan controls were disabled at Auto and
@@ -21,7 +36,7 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   GUI capture/profile-load paths, Linux preflight, transaction phase and daemon
   gate. Linux now classifies a reported zero-fan board ABSENT like Windows.
 - Linux TUI: draft binding, edit staging, Apply and profile-load status now use
-  `source/service_fan_request_domains.h`, the same snapshot-based missing-domain
+  `source/service_inert_request_domains.h`, the same snapshot-based missing-domain
   mask as the daemon gate; Auto stays selectable on a fanless GPU. The Linux fan
   setters moved to `source/linux_backend_fan_control.h` (size limit).
 - Tests: `tests/fan_request_apply_tests.cpp` (12100-12136, executes the Windows

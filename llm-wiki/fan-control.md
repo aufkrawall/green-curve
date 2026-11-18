@@ -10,7 +10,7 @@ capture), `source/config_profiles_gui_state.cpp` (profile load),
 `source/linux_backend.h` (`linux_fan_request_disposition()`,
 `LinuxHardwareSnapshot::fanCountReported`), `source/linux_backend_mutation.cpp`
 (capability derivation, fan phase), `source/linux_backend_preflight.h`,
-`source/service_fan_request_domains.h` (snapshot-based missing-domain mask
+`source/service_inert_request_domains.h` (snapshot-based missing-domain mask
 shared by the daemon precondition gate in
 `source/linux_daemon_snapshot_runtime.cpp` and the TUI gates in
 `source/linux_tui_authority.h`, `linux_tui_actions.cpp`,

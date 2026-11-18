@@ -29,7 +29,7 @@
 #include "vf_writable_point_policy.h"
 #include "fan_fixed_maintenance_policy.h"
 #include "fan_request_policy.h"
-#include "service_fan_request_domains.h"
+#include "service_inert_request_domains.h"
 #include "debug_log_steady_state_policy.h"
 #include "platform.h"
 

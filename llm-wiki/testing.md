@@ -11,7 +11,9 @@ refresh, and a GPU with fans keeps the hardware path.
 `tests/linux_scope_preflight_tests.cpp` 12140-12145 run the Linux preflight on
 a zero-fan snapshot; `tests/regression_main.cpp` 12150-12154 bind TUI drafts
 against a zero-fan snapshot (inert Auto attaches, Fixed/unprobed/reported-fan
-cases do not). Source gates: `tools/fan_gates.py`
+cases do not); 12155-12159 add a board without a power surface, where the
+saved profile's board-default power is inert and any other target stays
+missing. Source gates: `tools/fan_gates.py`
 (`check_fanless_request_rule()`). See [fan-control.md](fan-control.md).
 
 ## WndProc stack discipline & in-place resets (2026-11-16)

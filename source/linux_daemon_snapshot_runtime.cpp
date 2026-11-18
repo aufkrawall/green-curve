@@ -390,9 +390,10 @@ static bool mutation_preconditions_match(const ServiceRequest* req,
     // ClkDomains schema is unknown; when present, they are included and reset.
     if (req->command == SERVICE_CMD_RESET)
         requestedDomains = current.health.availableMutationDomains;
-    // service_fan_request_domains.h: an inert fan request (Auto on a GPU
-    // without a controllable fan) owns the fan domain without needing its
-    // surface.  The TUI's own gates use the same helper on the same snapshot.
+    // service_inert_request_domains.h: an inert request (board-default power
+    // on a board without a power surface, Auto fan without a controllable fan)
+    // owns its domain without needing the surface.  The TUI's own gates use
+    // the same helper on the same snapshot.
     gc_u32 unavailableDomains = req->command == SERVICE_CMD_APPLY
         ? service_snapshot_missing_mutation_domains(&req->desired, &current)
         : 0;
@@ -403,6 +404,11 @@ static bool mutation_preconditions_match(const ServiceRequest* req,
     if (fanDisposition == FAN_REQUEST_INERT_NO_FAN) {
         dlog("daemon mutation gate: fan Auto on a GPU without a controllable fan"
              " (count=%u) is inert; fan domain not required\n", current.fanCount);
+    }
+    if (req->command == SERVICE_CMD_APPLY &&
+        service_snapshot_power_request_is_inert(&req->desired, &current)) {
+        dlog("daemon mutation gate: board-default power on a board without a power"
+             " surface is inert; power domain not required\n");
     }
     if (fanDisposition == FAN_REQUEST_REFUSED_NO_FAN) {
         resp->status = SERVICE_STATUS_ERROR;

@@ -469,7 +469,7 @@ def check_fanless_request_rule(ctx, require_text, forbid_text, require_order):
                  "service_snapshot_missing_mutation_domains(&req->desired, &current)",
                  "the daemon precondition gate exempts an inert fan request")
     # The TUI judges drafts with the same snapshot helper as the daemon.
-    domains_h = _p(ctx, "service_fan_request_domains.h")
+    domains_h = _p(ctx, "service_inert_request_domains.h")
     require_text(domains_h,
                  "FAN_REQUEST_INERT_NO_FAN)\n        missing &= ~(gc_u32)SERVICE_MUTATION_DOMAIN_FAN;",
                  "only the inert fan shape is exempt from the missing-domain mask")

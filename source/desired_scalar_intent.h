@@ -11,6 +11,15 @@ template<class D> static inline TuningPowerRatio desired_power_ratio(const D& d)
         : tuning_power_ratio_from_percent(d.powerLimitPct);
 }
 
+// An owned power request for exactly the board default.  On a board with no
+// power control surface such a request is inert: owned, never written, never a
+// missing domain (gpu-backend.md, F-POWER-SURFACE).  Any other target is real.
+template<class D> static inline bool desired_power_request_is_board_default(const D& d) {
+    if (!d.hasPowerLimit) return false;
+    const TuningPowerRatio r = desired_power_ratio(d);
+    return r.numerator > 0 && r.numerator == r.denominator;
+}
+
 static inline bool desired_power_ratio_preview(TuningPowerRatio r, int* out) {
     long long pct = 0; bool exact = false;
     if (!out || !tuning_power_ratio_valid(r) ||

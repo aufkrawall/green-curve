@@ -66,7 +66,7 @@ Curve checks, profile transfer and capture improve.
 - **Flatten editing:** retyping a selected target preserves typing and caret position.
 - **Flatten detection:** selects the true plateau start, including hidden low-voltage points.
 - **Minimize to tray:** minimizing after profile actions no longer crashes.
-- **Notebook GPUs:** undervolts and profiles apply when the system manages the fan.
+- **Notebook GPUs:** undervolts and profiles apply when the system manages the fan or power limit.
 
 ### Compatibility notes
 
