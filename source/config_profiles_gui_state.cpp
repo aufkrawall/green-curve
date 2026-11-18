@@ -108,8 +108,13 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
                      projectedVideoClkKhz / 1000);
     // Fan
     if (desired->hasFan) {
-        g_app.guiFanMode = desired->fanMode;
-        if (desired->fanMode == FAN_MODE_FIXED) {
+        const bool fanControlAbsent = app_fan_control_known_absent();
+        g_app.guiFanMode = fan_editor_adoptable_mode(desired->fanMode, fanControlAbsent);
+        if (g_app.guiFanMode != desired->fanMode) {
+            debug_log("profile load: fan mode %d not adopted; GPU has no controllable fan,"
+                      " editor stays Auto\n", desired->fanMode);
+        }
+        if (g_app.guiFanMode == FAN_MODE_FIXED) {
             g_app.guiFanFixedPercent = clamp_percent(desired->fanPercent);
         } else {
             g_app.guiFanFixedPercent = current_displayed_fan_percent();

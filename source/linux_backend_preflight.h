@@ -36,6 +36,28 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
                "power control surface; not treating it as an unavailable domain\n",
                d->powerLimitPct);
     }
+    // fan_request_policy.h: on a GPU without a controllable fan, Auto is inert
+    // and anything else is refused here, by name, before any write.
+    const FanRequestDisposition fanDisposition =
+        linux_fan_request_disposition(d, snapshot->fanCount, &g->capability);
+    if (fanDisposition == FAN_REQUEST_REFUSED_NO_FAN) {
+        gc_snprintf(err, errSize, "fan mode %s cannot be applied: %s",
+            fan_request_mode_name(fan_request_effective_mode(d->fanMode, d->fanAuto != 0)),
+            fan_request_refusal_text());
+        lb_log("fan: REFUSED before any write -- mode %d on a GPU without a controllable"
+               " fan (count=%u reported=%d capability=%s)\n", d->fanMode,
+               snapshot->fanCount, snapshot->fanCountReported ? 1 : 0,
+               gpu_capability_name(gpu_capability_get(&g->capability, SERVICE_MUTATION_DOMAIN_FAN)));
+        return false;
+    }
+    if (fanDisposition == FAN_REQUEST_INERT_NO_FAN &&
+        (unavailableDomains & SERVICE_MUTATION_DOMAIN_FAN)) {
+        unavailableDomains &= ~(gc_u32)SERVICE_MUTATION_DOMAIN_FAN;
+        lb_log("fan: Auto on a GPU without a controllable fan (count=%u reported=%d"
+               " capability=%s) is inert; not treating it as an unavailable domain\n",
+               snapshot->fanCount, snapshot->fanCountReported ? 1 : 0,
+               gpu_capability_name(gpu_capability_get(&g->capability, SERVICE_MUTATION_DOMAIN_FAN)));
+    }
     if (unavailableDomains != 0) {
         gc_snprintf(err, errSize,
             "requested GPU domains are unavailable (requested=0x%02x available=0x%02x missing=0x%02x)",
@@ -88,7 +110,7 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
     if (hardLock && !g->nvml.setGpuLockedClocks) {
         gc_strlcpy(err, errSize, "hard clock locking is unavailable"); return false;
     }
-    if (d->hasFan && !snapshot->fanValid) {
+    if (fan_request_needs_fan_surface(fanDisposition) && !snapshot->fanValid) {
         gc_strlcpy(err, errSize, "fan state cannot be snapshotted safely"); return false;
     }
     if ((d->hasXbarOffsetKhz || d->hasXbarMsvddOffsetUv) &&

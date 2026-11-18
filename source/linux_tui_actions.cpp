@@ -256,9 +256,8 @@ void set_field_value(TuiState* state, TuiField field, int index, int value) {
             return;
     }
     if (state->serviceOnline) {
-        gc_u32 domains = service_desired_mutation_domains(&desired);
-        gc_u32 missing = domains &
-            ~state->service.snapshot.health.availableMutationDomains;
+        gc_u32 missing = service_snapshot_missing_mutation_domains(
+            &desired, &state->service.snapshot);
         if (missing != 0) {
             desired = previousSettings;
             snprintf(state->status, sizeof(state->status),
@@ -591,9 +590,15 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
                 state->vfScroll + action.value);
             break;
         case ACTION_FAN_MODE_SET:
+            // Auto stays selectable on a GPU without a controllable fan: it is
+            // the only fan state there, and a loaded Fixed/Curve profile would
+            // otherwise be stuck with no way back (fan_request_policy.h).
             if (state->serviceOnline &&
                 (state->service.snapshot.health.availableMutationDomains &
-                    SERVICE_MUTATION_DOMAIN_FAN) == 0) {
+                    SERVICE_MUTATION_DOMAIN_FAN) == 0 &&
+                !(action.value == FAN_MODE_AUTO &&
+                  service_snapshot_fan_control_known_absent(
+                      &state->service.snapshot))) {
                 set_gpu_health_status(state, "Fan editing disabled");
                 break;
             }

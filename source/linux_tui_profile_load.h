@@ -22,7 +22,7 @@ static inline void tui_install_profile_load(TuiState& state, const ProfileEditor
         snprintf(state.status, sizeof(state.status), "Loaded slot %d into the staged editor", slot);
     else if (state.serviceOnline) {
         const gc_u32 requested = service_desired_mutation_domains(&state.desired);
-        const gc_u32 missing = requested & ~state.service.snapshot.health.availableMutationDomains;
+        const gc_u32 missing = service_snapshot_missing_mutation_domains(&state.desired, &state.service.snapshot);
         snprintf(state.status, sizeof(state.status),
             "Loaded slot %d, but its draft is detached (requested=0x%02x missing=0x%02x); unavailable/mixed Apply remains blocked",
             slot, (unsigned)requested, (unsigned)missing);

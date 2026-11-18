@@ -132,6 +132,7 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
     unsigned int fans = 0;
     if (g->nvml.getNumFans && g->nvml.getNumFans(g->nvmlDevice, &fans) == NVML_SUCCESS) {
         if (fans > MAX_GPU_FANS) fans = MAX_GPU_FANS;
+        snapshot->fanCountReported = true;
         snapshot->fanCount = fans;
         snapshot->fanValid = fans > 0;
         for (unsigned int i = 0; i < fans; ++i) {
@@ -233,6 +234,12 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
             gc_u32 cap;
             if (snapshot->availableMutationDomains & domains[i].mask) {
                 cap = GPU_DOMAIN_CAP_AVAILABLE;
+            } else if (domains[i].mask == SERVICE_MUTATION_DOMAIN_FAN &&
+                       snapshot->fanCountReported && snapshot->fanCount == 0) {
+                // The driver answered and reported no fan: the platform owns
+                // cooling.  Same positive evidence the Windows probe classifies
+                // ABSENT (gpu_capability_probe.cpp), independent of setters.
+                cap = GPU_DOMAIN_CAP_ABSENT;
             } else if (!g->writeIdentityResolved || !domains[i].writable ||
                        (((domains[i].mask &
                           (SERVICE_MUTATION_DOMAIN_XBAR |
@@ -596,7 +603,14 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         requested |= LINUX_MUTATION_CURVE;
     if (d->hasLock || (requested & LINUX_MUTATION_LOCK_CEILING) || scalarReview.outgoingSurface || scalarReview.deferredModeledCheck)
         requested |= LINUX_MUTATION_LOCK;
-    if (d->hasFan) requested |= LINUX_MUTATION_FAN;
+    // An inert fan request (Auto on a GPU without a controllable fan) owns the
+    // domain but writes nothing; see fan_request_policy.h.  Preflight already
+    // refused every other request shape on such a GPU.
+    const FanRequestDisposition fanDisposition =
+        linux_fan_request_disposition(d, snapshot.fanCount, &g->capability);
+    if (fan_request_needs_fan_surface(fanDisposition)) requested |= LINUX_MUTATION_FAN;
+    else if (fanDisposition == FAN_REQUEST_INERT_NO_FAN)
+        lb_log("apply: fan Auto on a GPU without a controllable fan is inert; no fan phase\n");
     if (d->hasXbarOffsetKhz || d->hasXbarMsvddOffsetUv)
         requested |= LINUX_MUTATION_XBAR;
     if (d->hasSysClkOffsetKhz) requested |= LINUX_MUTATION_SYS_CLK;

@@ -1,5 +1,19 @@
 # Testing
 
+## Fan requests on fanless GPUs (2026-11-18)
+
+`tests/fan_request_apply_tests.cpp` pins `fan_request_policy.h` (12100-12114)
+and, on Windows, executes the production `main_fan_apply.h` step with a
+scripted driver (12120-12136): fanless Auto is inert with no fan-auto write and
+no failure (12123 fails on the pre-fix predicate), Fixed/Curve are refused by
+name before any write, an unprobed domain is refused after one read-only
+refresh, and a GPU with fans keeps the hardware path.
+`tests/linux_scope_preflight_tests.cpp` 12140-12145 run the Linux preflight on
+a zero-fan snapshot; `tests/regression_main.cpp` 12150-12154 bind TUI drafts
+against a zero-fan snapshot (inert Auto attaches, Fixed/unprobed/reported-fan
+cases do not). Source gates: `tools/fan_gates.py`
+(`check_fanless_request_rule()`). See [fan-control.md](fan-control.md).
+
 ## WndProc stack discipline & in-place resets (2026-11-16)
 
 `tests/profile_conversion_tests.cpp` (`8485-8491`) verifies that in-place reset helpers (`profile_document_reset()`, `profile_control_plan_reset()`, `profile_conversion_batch_reset()`, `profile_conversion_plan_reset()`, `profile_destination_review_reset()`, `profile_editor_document_reset()`, `profile_editor_candidate_reset()`) clear `0xA5`-poisoned structs to exact clean defaults without materializing large stack temporaries. `tests/profile_source_window_tests.cpp` exercises nested synchronous `ShowWindow` + `WM_SHOWWINDOW` + `WM_IME_SETCONTEXT` (`0x0281`) + `WM_IME_NOTIFY` (`0x0282`) + `WM_COMMAND` dispatch cycles on Windows, while `check_wndproc_stack_discipline()` in `tools/ui_gates.py` enforces `GC_NOINLINE` handler separation and in-place resets across Win32 message loops.

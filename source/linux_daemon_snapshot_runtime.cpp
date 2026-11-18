@@ -390,10 +390,31 @@ static bool mutation_preconditions_match(const ServiceRequest* req,
     // ClkDomains schema is unknown; when present, they are included and reset.
     if (req->command == SERVICE_CMD_RESET)
         requestedDomains = current.health.availableMutationDomains;
-    gc_u32 unavailableDomains = req->command == SERVICE_CMD_RESET ? 0 :
-        service_unavailable_mutation_domains(
-            req->command, &req->desired,
-            current.health.availableMutationDomains);
+    // service_fan_request_domains.h: an inert fan request (Auto on a GPU
+    // without a controllable fan) owns the fan domain without needing its
+    // surface.  The TUI's own gates use the same helper on the same snapshot.
+    gc_u32 unavailableDomains = req->command == SERVICE_CMD_APPLY
+        ? service_snapshot_missing_mutation_domains(&req->desired, &current)
+        : 0;
+    const FanRequestDisposition fanDisposition =
+        req->command == SERVICE_CMD_APPLY
+            ? service_snapshot_fan_request_disposition(&req->desired, &current)
+            : FAN_REQUEST_NOT_OWNED;
+    if (fanDisposition == FAN_REQUEST_INERT_NO_FAN) {
+        dlog("daemon mutation gate: fan Auto on a GPU without a controllable fan"
+             " (count=%u) is inert; fan domain not required\n", current.fanCount);
+    }
+    if (fanDisposition == FAN_REQUEST_REFUSED_NO_FAN) {
+        resp->status = SERVICE_STATUS_ERROR;
+        gc_snprintf(resp->message, sizeof(resp->message),
+            "fan mode %s cannot be applied: %s",
+            fan_request_mode_name(fan_request_effective_mode(
+                req->desired.fanMode, req->desired.fanAuto != 0)),
+            fan_request_refusal_text());
+        dlog("daemon mutation rejected before write: fan mode %d on a GPU without a"
+             " controllable fan (count=%u)\n", req->desired.fanMode, current.fanCount);
+        return false;
+    }
     if (unavailableDomains != 0) {
         resp->status = SERVICE_STATUS_ERROR;
         gc_snprintf(resp->message, sizeof(resp->message),

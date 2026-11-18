@@ -6,6 +6,7 @@
 #define GREEN_CURVE_LINUX_TUI_AUTHORITY_H
 
 #include "linux_gpu_selection.h"
+#include "service_fan_request_domains.h"
 
 struct LinuxTuiDraftBinding {
     gc_u64 serviceInstanceId;
@@ -187,11 +188,12 @@ static inline const char* linux_tui_shown_gpu_write_name(
     return "invalid";
 }
 
+// An inert fan request (Auto on a GPU without a controllable fan) needs no
+// fan surface; see service_fan_request_domains.h.
 static inline bool linux_tui_domains_available(
-    const ServiceResponse* response, gc_u32 requestedDomains) {
-    return response &&
-        (requestedDomains &
-         ~response->snapshot.health.availableMutationDomains) == 0;
+    const ServiceResponse* response, const DesiredSettings* desired) {
+    return response && desired &&
+        service_snapshot_missing_mutation_domains(desired, &response->snapshot) == 0;
 }
 
 static inline bool linux_tui_bind_draft(
@@ -204,7 +206,7 @@ static inline bool linux_tui_bind_draft(
         response->state.serviceInstanceId == 0 ||
         response->state.gpuGeneration == 0) return false;
     gc_u32 domains = service_desired_mutation_domains(desired);
-    if (!linux_tui_domains_available(response, domains)) return false;
+    if (!linux_tui_domains_available(response, desired)) return false;
     bool needsVf = service_mutation_domains_require_vf(domains);
     if (needsVf &&
         ((response->state.validSections &
@@ -231,7 +233,7 @@ static inline bool linux_tui_draft_binding_matches(
                     response->state.serviceInstanceId ||
         binding->gpuGeneration != response->state.gpuGeneration ||
         !linux_gpu_identity_matches(&binding->gpu, gpu) ||
-        !linux_tui_domains_available(response, currentDomains)) return false;
+        !linux_tui_domains_available(response, desired)) return false;
     if (service_mutation_domains_require_vf(currentDomains)) {
         return binding->topologySignature != 0 &&
             binding->topologySignature == response->state.topologySignature &&

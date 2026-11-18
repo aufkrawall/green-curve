@@ -964,6 +964,7 @@ int run_fan_runtime_followup_tests();
 int run_linux_fan_ownership_tests();
 int run_memory_recovery_tests();
 int run_power_recovery_tests();
+int run_fan_request_apply_tests();
 int run_debug_log_identity_tests();
 int run_service_client_identity_failure_child();
 int run_security_audit_tests();
@@ -1971,6 +1972,7 @@ int main(int argc, char** argv) {
     if (int ownershipFailure = run_linux_fan_ownership_tests()) return ownershipFailure;
     if (int memoryFailure = run_memory_recovery_tests()) return memoryFailure;
     if (int powerFailure = run_power_recovery_tests()) return powerFailure;
+    if (int fanRequestFailure = run_fan_request_apply_tests()) return fanRequestFailure;
     if (int logFailure = run_debug_log_identity_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", logFailure);
         return logFailure;
@@ -4993,6 +4995,50 @@ static int run_all_tests(int argc, char** argv) {
                    "recovering") != 0 ||
             strcmp(linux_tui_gpu_phase_name(SERVICE_GPU_PHASE_DEGRADED),
                    "degraded") != 0) return 1219;
+
+        // Notebook: zero fans reported, fan domain ABSENT.  A saved profile's
+        // undervolt carries fan_mode=auto and used to stay detached here
+        // (service_fan_request_domains.h, fan_request_policy.h).
+        ServiceResponse notebook = response;
+        notebook.snapshot.fanSupported = false;
+        notebook.snapshot.fanCount = 0;
+        notebook.snapshot.health.availableMutationDomains &=
+            ~(gc_u32)SERVICE_MUTATION_DOMAIN_FAN;
+        GpuCapabilityProbe notebookCapability = {};
+        gpu_capability_set(&notebookCapability, SERVICE_MUTATION_DOMAIN_FAN,
+                           GPU_DOMAIN_CAP_ABSENT);
+        notebook.snapshot.health.capabilityDomainsPacked =
+            gpu_capability_pack_domains(&notebookCapability);
+        DesiredSettings undervolt = vf;
+        undervolt.hasFan = true;
+        undervolt.fanMode = FAN_MODE_AUTO;
+        undervolt.fanAuto = true;
+        LinuxTuiDraftBinding notebookBinding = {};
+        if (!linux_tui_bind_draft(&notebookBinding, &notebook, &undervolt) ||
+            !linux_tui_draft_binding_matches(&notebookBinding, &notebook, &undervolt))
+            return 12150;
+        if (service_snapshot_missing_mutation_domains(&undervolt, &notebook.snapshot) != 0 ||
+            !service_snapshot_fan_control_known_absent(&notebook.snapshot)) return 12151;
+        DesiredSettings notebookFixed = undervolt;
+        notebookFixed.fanMode = FAN_MODE_FIXED;
+        notebookFixed.fanAuto = false;
+        notebookFixed.fanPercent = 50;
+        if (linux_tui_bind_draft(&notebookBinding, &notebook, &notebookFixed) ||
+            service_snapshot_fan_request_disposition(&notebookFixed, &notebook.snapshot) !=
+                FAN_REQUEST_REFUSED_NO_FAN ||
+            service_snapshot_missing_mutation_domains(&notebookFixed, &notebook.snapshot) !=
+                SERVICE_MUTATION_DOMAIN_FAN) return 12152;
+        // Without positive evidence of absence the fan domain stays required.
+        ServiceResponse unprobed = notebook;
+        unprobed.snapshot.health.capabilityDomainsPacked = 0;
+        if (linux_tui_bind_draft(&notebookBinding, &unprobed, &undervolt) ||
+            service_snapshot_fan_control_known_absent(&unprobed.snapshot)) return 12153;
+        // A reported fan is never inert, whatever the capability says.
+        ServiceResponse fanReported = notebook;
+        fanReported.snapshot.fanCount = 1;
+        if (linux_tui_bind_draft(&notebookBinding, &fanReported, &undervolt) ||
+            service_snapshot_fan_request_disposition(&undervolt, &fanReported.snapshot) !=
+                FAN_REQUEST_HARDWARE) return 12154;
     }
 
     // The fixed prefix diagnoses old short peers before a version-sized body;

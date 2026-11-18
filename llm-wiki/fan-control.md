@@ -1,5 +1,85 @@
 # Fan Control
 
+## GPUs without a controllable fan (F-FANLESS, 2026-11-18)
+
+Source anchors: `source/fan_request_policy.h` (the rule),
+`source/main_fan_apply.h` (`fan_setting_matches_current()`,
+`validate_desired_fan_settings_for_apply()`, `apply_fan_settings()`,
+`app_fan_control_known_absent()`), `source/main_runtime_control.cpp` (GUI
+capture), `source/config_profiles_gui_state.cpp` (profile load),
+`source/linux_backend.h` (`linux_fan_request_disposition()`,
+`LinuxHardwareSnapshot::fanCountReported`), `source/linux_backend_mutation.cpp`
+(capability derivation, fan phase), `source/linux_backend_preflight.h`,
+`source/service_fan_request_domains.h` (snapshot-based missing-domain mask
+shared by the daemon precondition gate in
+`source/linux_daemon_snapshot_runtime.cpp` and the TUI gates in
+`source/linux_tui_authority.h`, `linux_tui_actions.cpp`,
+`linux_tui_mutation_actions.cpp`, `linux_tui_profile_load.h`),
+`source/linux_backend_fan_control.h` (fan setters moved out of
+`linux_backend_mutation.cpp` to keep it under the size limit),
+`tests/fan_request_apply_tests.cpp` (12100-12136),
+`tests/linux_scope_preflight_tests.cpp` (12140-12145),
+`tests/regression_main.cpp` (TUI draft binding, 12150-12154),
+`tools/fan_gates.py` (`check_fanless_request_rule()`).
+
+Notebook boards leave cooling to the platform embedded controller, so the
+driver reports zero fans (or refuses the fan-count query) and the fan controls
+are disabled. The fan domain still travels in requests: the GUI selection
+defaults to Auto and every saved profile carries the mandatory fan keys.
+Reported against an RTX 4080 Laptop GPU: no undervolt could be applied.
+
+- **Windows root cause:** `fan_setting_matches_current()` answered "never
+  matches" whenever `fanSupported` was false, so GUI capture always attached a
+  fan-auto request and the apply path called `nvml_set_fan_auto()`, which
+  refuses without a fan ("Fan auto unsupported"). That counted as a core
+  failure and the whole transaction, VF curve included, rolled back.
+- **Linux root cause:** the TUI draft binding/edit/Apply checks, the daemon
+  precondition gate and `linux_backend_preflight()` all treated any `hasFan`
+  request as needing the fan domain, which a fanless board never advertises
+  ("requested GPU domains are unavailable", detached TUI drafts), so every
+  profile apply was refused. The TUI also blocked switching a loaded Fixed/Curve
+  profile back to Auto ("Fan editing disabled"); Auto now stays selectable when
+  fan control is known absent.
+
+**The rule** (fan counterpart of the inert power request, F-POWER-SURFACE in
+[gpu-backend.md](gpu-backend.md)): without a controllable fan, Auto is the only
+fan state that exists. An Auto request there is **inert**: it keeps fan
+ownership for profile equality and active intent, writes nothing, takes no part
+in the rollback decision and is never an unavailable domain. Fixed or Curve
+there is **refused by name before any write** (`fan_request_refusal_text()`).
+
+Invariants:
+
+- "No controllable fan" needs positive evidence: no fan reported this session
+  (`fanSupported` on Windows, the snapshot's fan count on Linux) **and** the
+  capability probe classifies the fan domain ABSENT or REFUSED. An UNPROBED
+  domain keeps the hardware path.
+- A reported fan is never inert, even with a stale "missing" capability.
+- Linux now classifies a reported zero-fan board ABSENT (was REFUSED), matching
+  the Windows probe. A reported fan whose policy read failed keeps the old
+  refusal "fan state cannot be snapshotted safely".
+- Windows prevalidation refreshes the fan read once (read-only) when no fan has
+  been reported; with still no fan and no evidence of absence it refuses the
+  fan request before any write instead of failing after the VF writes.
+- The Windows GUI never captures or adopts a non-Auto fan mode on a fanless GPU:
+  the controls are disabled, so such a mode could not be changed back.
+
+Diagnostics: `apply fan prevalidation: Auto on a GPU without a controllable
+fan ... is inert`, `apply fan prevalidation: REFUSED before any write`,
+`apply fan: Auto on a GPU without a controllable fan; nothing to write`,
+`capture_gui_desired_settings: GPU has no controllable fan`, `profile load: fan
+mode N not adopted`, Linux `fan: Auto on a GPU without a controllable fan ...
+is inert`, `fan: REFUSED before any write`, `apply: fan Auto ... no fan phase`
+and `daemon mutation gate: fan Auto ... is inert`.
+
+Open questions / stale-risk: not run on notebook hardware; whether a given
+notebook driver answers the fan-count query with zero or with NOT_SUPPORTED is
+unverified (both classify as missing). Linux intent readback still reports an
+inert fan request as unverifiable (`READBACK PARTIAL`), as it does for an inert
+power request.
+
+Last verified: 2026-11-18 (fixture and preflight cases; no hardware run).
+
 ## Uncertain state returns the owned fan (2026-10-27)
 
 Source anchors: `source/linux_fan_ownership.h`
@@ -367,6 +447,7 @@ state remains visible and the operation response re-proves service health.
 ## Apply safety
 
 - Fan settings are pre-validated before GPU clock, memory, power, or VF writes mutate hardware.
+- On a GPU without a controllable fan an Auto request is inert and Fixed/Curve is refused before any write (F-FANLESS, top of this page).
 - Fan runtime transitions are staged: the previous runtime state is preserved until the requested driver/runtime state verifies. Auto mode applies the driver write before stopping the runtime. Fixed mode validates the percent before stopping the runtime. Curve mode validates the curve before mutating `g_app.activeFanCurve`.
 - Multi-fan manual writes track which fans changed, require exact readback for success, and roll changed fans back to driver auto/default on partial failure. Rollback failures are tracked and logged individually (`rollbackFailures`). Pre-write fan policy is snapshotted for rollback.
 - If fan settings are applied together with OC/UV/power, OC reset/apply happens first and fan changes use the transactional fan path afterward. If fan apply fails after earlier hardware writes succeeded, rollback to safe defaults is triggered.
@@ -574,6 +655,10 @@ validates every byte of the summary as UTF-8 on Linux.
 
 ## Last Verified
 
+- 2026-11-18: Fanless-GPU fan requests (F-FANLESS, top of page). Windows fan
+  step executed against a scripted driver (12120-12136, 12123 fails on the
+  pre-fix predicate), Linux preflight cases 12140-12145, source gates and the
+  full build. No notebook hardware run.
 - 2026-10-27: State reads no longer perform deferred fan handback. Untargeted
   reads can rediscover a late backend, the worker runs pending recovery before
   maintenance, and automatic restore rechecks guard, uncertainty, ownership and

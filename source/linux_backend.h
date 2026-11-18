@@ -28,6 +28,8 @@
 #include "linux_vf_layout_summary.h"
 #include "vf_writable_point_policy.h"
 #include "fan_fixed_maintenance_policy.h"
+#include "fan_request_policy.h"
+#include "service_fan_request_domains.h"
 #include "debug_log_steady_state_policy.h"
 #include "platform.h"
 
@@ -203,6 +205,10 @@ struct LinuxHardwareSnapshot {
     bool curveOffsetsExact;
     bool curveMask[VF_NUM_POINTS];
     unsigned int fanCount;
+    // The driver answered nvmlDeviceGetNumFans (fanCount is its answer).  Zero
+    // fans with this set is positive evidence the platform owns cooling and
+    // classifies the fan domain ABSENT, exactly like the Windows probe.
+    bool fanCountReported;
     unsigned int fanPolicy[MAX_GPU_FANS];
     // The *intended* duty per fan, not the measured one.  Rollback has to
     // restore what the driver was told to hold; restoring a measured 0% from a
@@ -210,6 +216,20 @@ struct LinuxHardwareSnapshot {
     unsigned int fanTargetPercent[MAX_GPU_FANS];
     bool fanTargetKnown[MAX_GPU_FANS];
 };
+
+// fan_request_policy.h on Linux.  "Fans reported" is the driver's fan COUNT,
+// not fanValid: a fan whose policy read failed is still a fan and keeps the
+// ordinary refusal ("fan state cannot be snapshotted safely").  The capability
+// is the one capture derived alongside availableMutationDomains.
+static inline FanRequestDisposition linux_fan_request_disposition(
+    const DesiredSettings* d, unsigned int reportedFanCount,
+    const GpuCapabilityProbe* capability) {
+    if (!d) return FAN_REQUEST_NOT_OWNED;
+    return fan_request_disposition(d->hasFan != 0, d->fanMode, d->fanAuto != 0,
+        reportedFanCount > 0,
+        gpu_capability_domain_is_missing(
+            gpu_capability_get(capability, SERVICE_MUTATION_DOMAIN_FAN)));
+}
 
 struct LinuxBackendRefreshResult {
     bool nvmlReady;

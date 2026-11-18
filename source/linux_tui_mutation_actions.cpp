@@ -42,8 +42,19 @@ void apply_to_gpu(TuiState* state) {
     if (normalized.hasFan && normalized.fanMode == FAN_MODE_CURVE)
         fan_curve_normalize(&normalized.fanCurve);
     gc_u32 requestedDomains = service_desired_mutation_domains(&normalized);
-    gc_u32 missingDomains = requestedDomains &
-        ~state->service.snapshot.health.availableMutationDomains;
+    gc_u32 missingDomains = service_snapshot_missing_mutation_domains(
+        &normalized, &state->service.snapshot);
+    if (service_snapshot_fan_request_disposition(&normalized, &state->service.snapshot) ==
+            FAN_REQUEST_REFUSED_NO_FAN) {
+        snprintf(state->status, sizeof(state->status),
+            "Apply blocked before write: fan mode %s cannot be applied: %s",
+            fan_request_mode_name(fan_request_effective_mode(
+                normalized.fanMode, normalized.fanAuto != 0)),
+            fan_request_refusal_text());
+        linux_debug_logf("tui-apply: refused fan mode %d on a GPU without a controllable fan",
+            normalized.fanMode);
+        return;
+    }
     if (requestedDomains == 0 || missingDomains != 0) {
         snprintf(state->status, sizeof(state->status),
             requestedDomains == 0

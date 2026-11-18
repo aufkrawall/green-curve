@@ -1123,6 +1123,9 @@ safely" — and since a saved profile always carries the mandatory
 `power_limit_pct` key, every profile apply was blocked there too.
 `linux_power_request_is_inert()` exempts a board-default request on a
 surfaceless board from both gates and from the write phase, keeping ownership.
+The fan domain follows the same rule on fanless (notebook) boards: an Auto
+request is inert on both platforms (`fan_request_policy.h`, F-FANLESS in
+[fan-control.md](fan-control.md)).
 
 ### Diagnostics
 

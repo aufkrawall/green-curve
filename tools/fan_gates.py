@@ -411,7 +411,81 @@ def check_service_fan_worker_serialization(ctx, require_text, forbid_text):
                  "the watchdog checks fan worker health under a non-blocking runtime lock")
 
 
+def check_fanless_request_rule(ctx, require_text, forbid_text, require_order):
+    """F-FANLESS: Auto on a GPU without a controllable fan is inert.
+
+    Notebook boards leave cooling to the platform EC; the driver reports zero
+    fans or refuses the count.  The fan domain still travels in every GUI Apply
+    (default selection Auto) and every saved profile (mandatory fan keys).
+    Windows used to turn that Auto into a fan-auto write that could only fail,
+    rolling the whole Apply back (no undervolt possible); Linux refused it as an
+    unavailable domain.  fan_request_policy.h is the one rule both use;
+    tests/fan_request_apply_tests.cpp executes the Windows step and
+    tests/linux_scope_preflight_tests.cpp the Linux preflight.
+    """
+    policy_h = _p(ctx, "fan_request_policy.h")
+    apply_h = _p(ctx, "main_fan_apply.h")
+    require_text(policy_h, "static inline FanRequestDisposition fan_request_disposition(",
+                 "fan request disposition is one shared pure rule")
+    require_text(policy_h, "return disposition == FAN_REQUEST_HARDWARE;",
+                 "only a hardware fan request needs the fan control surface")
+    # Windows: the "does this selection hold?" predicate, prevalidation, apply.
+    require_text(apply_h, "if (!g_app.fanSupported) return fan_selection_holds_without_fans(wantMode);",
+                 "Auto needs no write on a GPU without a controllable fan")
+    forbid_text(apply_h, "if (!g_app.fanSupported) return false;",
+                "a fanless GPU must not report every fan selection as a pending change")
+    ctx.require_order_in_operation(
+        apply_h, "static bool validate_desired_fan_settings_for_apply(",
+        "disposition == FAN_REQUEST_REFUSED_NO_FAN", "fan_curve_validate(",
+        "non-Auto fan requests on a fanless GPU are refused before any write")
+    ctx.require_order_in_operation(
+        apply_h, "static void apply_fan_settings(",
+        "app_fan_request_disposition(desired) == FAN_REQUEST_INERT_NO_FAN",
+        'set_last_apply_phase("apply: fan auto write");',
+        "the inert fan step returns before the fan-auto write")
+    require_text(_p(ctx, "main_fan_runtime.cpp"), '#include "main_fan_apply.h"',
+                 "the fan apply shard is compiled into the Windows runtime")
+    require_text(_p(ctx, "main_runtime_control.cpp"), "app_fan_control_known_absent()",
+                 "GUI capture never sends a non-Auto fan mode the disabled controls cannot change")
+    require_text(_p(ctx, "config_profiles_gui_state.cpp"), "fan_editor_adoptable_mode(",
+                 "profile load never puts an unchangeable non-Auto fan mode into the editor")
+    # Linux: capability parity, preflight, transaction phase, daemon gate.
+    mutation_cpp = _p(ctx, "linux_backend_mutation.cpp")
+    require_text(mutation_cpp, "snapshot->fanCountReported && snapshot->fanCount == 0",
+                 "Linux classifies a reported zero-fan board ABSENT like the Windows probe")
+    require_text(mutation_cpp, "if (fan_request_needs_fan_surface(fanDisposition)) requested |= LINUX_MUTATION_FAN;",
+                 "an inert fan request schedules no Linux fan phase")
+    forbid_text(mutation_cpp, "if (d->hasFan) requested |= LINUX_MUTATION_FAN;",
+                "fan ownership alone must not schedule a fan write")
+    preflight_h = _p(ctx, "linux_backend_preflight.h")
+    require_text(preflight_h, "fanDisposition == FAN_REQUEST_REFUSED_NO_FAN",
+                 "Linux preflight refuses non-Auto fan requests on a fanless GPU by name")
+    require_order(preflight_h, "unavailableDomains &= ~(gc_u32)SERVICE_MUTATION_DOMAIN_FAN;",
+                  "if (unavailableDomains != 0) {",
+                  "an inert fan request is not an unavailable domain in preflight")
+    forbid_text(preflight_h, "if (d->hasFan && !snapshot->fanValid)",
+                "the fan snapshot gate applies only to hardware fan requests")
+    require_text(_p(ctx, "linux_daemon_snapshot_runtime.cpp"),
+                 "service_snapshot_missing_mutation_domains(&req->desired, &current)",
+                 "the daemon precondition gate exempts an inert fan request")
+    # The TUI judges drafts with the same snapshot helper as the daemon.
+    domains_h = _p(ctx, "service_fan_request_domains.h")
+    require_text(domains_h,
+                 "FAN_REQUEST_INERT_NO_FAN)\n        missing &= ~(gc_u32)SERVICE_MUTATION_DOMAIN_FAN;",
+                 "only the inert fan shape is exempt from the missing-domain mask")
+    require_text(_p(ctx, "linux_tui_authority.h"),
+                 "service_snapshot_missing_mutation_domains(desired, &response->snapshot) == 0",
+                 "TUI draft binding does not detach an inert fan request")
+    require_text(_p(ctx, "linux_tui_mutation_actions.cpp"),
+                 "service_snapshot_missing_mutation_domains(",
+                 "TUI Apply does not block an inert fan request")
+    require_text(_p(ctx, "linux_tui_actions.cpp"),
+                 "service_snapshot_fan_control_known_absent(",
+                 "TUI keeps Auto selectable on a GPU without a controllable fan")
+
+
 def check_all(ctx, require_text, forbid_text, require_order, backend_surface):
+    check_fanless_request_rule(ctx, require_text, forbid_text, require_order)
     check_manual_write_verification(ctx, require_text, forbid_text, backend_surface)
     check_service_fan_worker_serialization(ctx, require_text, forbid_text)
     check_runtime_failsafe(ctx, require_text, forbid_text, require_order)

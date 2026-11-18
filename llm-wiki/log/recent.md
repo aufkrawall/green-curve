@@ -5,6 +5,32 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-18: Apply works on GPUs without a controllable fan (F-FANLESS)
+
+- Report: on an RTX 4080 Laptop GPU the fan controls were disabled at Auto and
+  no undervolt could be applied.
+- Windows root cause: `fan_setting_matches_current()` returned false whenever no
+  fan was reported, so every GUI Apply carried a fan-auto request; the service
+  attempted `nvml_set_fan_auto()`, which refuses without a fan, and that core
+  failure rolled back the whole Apply. Linux refused any fan-owning request as
+  an unavailable domain, so saved profiles (always carrying `fan_mode`) failed.
+- Fix: shared pure rule `source/fan_request_policy.h` (Auto inert, Fixed/Curve
+  refused before writes, positive evidence required), wired into the new
+  Windows shard `source/main_fan_apply.h` (extracted from
+  `main_fan_runtime.cpp` / `main_runtime_nvml.cpp`, size ratchets lowered), the
+  GUI capture/profile-load paths, Linux preflight, transaction phase and daemon
+  gate. Linux now classifies a reported zero-fan board ABSENT like Windows.
+- Linux TUI: draft binding, edit staging, Apply and profile-load status now use
+  `source/service_fan_request_domains.h`, the same snapshot-based missing-domain
+  mask as the daemon gate; Auto stays selectable on a fanless GPU. The Linux fan
+  setters moved to `source/linux_backend_fan_control.h` (size limit).
+- Tests: `tests/fan_request_apply_tests.cpp` (12100-12136, executes the Windows
+  fan step with a scripted driver; mutation-checked: the pre-fix predicate
+  fails 12120), `tests/linux_scope_preflight_tests.cpp` (12140-12145),
+  `tests/regression_main.cpp` TUI binding (12150-12154), `tools/fan_gates.py`
+  `check_fanless_request_rule()`.
+- Unverified: no notebook hardware run.
+
 ## 2026-11-16: Fix Win32 `WndProc` stack overflow (`0xC00000FD`) under ThinLTO
 
 - Root cause: under release `-Oz -flto`, ThinLTO inlined single-caller UI/review helpers directly into `WndProc` (`ui_main_window.cpp`), where value-reset assignments (`review = {}`, `output = {}`, `g_app.guiSource = {}`) materialized ~180–192 KB stack temporaries for `ProfileDestinationReview`, `ProfileConversionPlan`, and `ProfileEditorDocument` (`WndProc` frame reached `0x31788` = 202,632 bytes per message). Minimizing to tray (`ShowWindow(SW_HIDE)`) triggered synchronous Win32 re-entrancy through `WndProc` (`WM_SYSCOMMAND` -> `WM_SHOWWINDOW` -> `WM_IME_SETCONTEXT` -> `WM_IME_NOTIFY`) and overflowed the 1 MiB UI thread stack.

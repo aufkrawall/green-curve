@@ -3,6 +3,7 @@
 // Execute the production preflight with no readable/writable memory surface.
 #include "linux_backend.h"
 #include "vf_backends.h"
+#include <cstring>
 
 static void lb_log(const char*, ...) {}
 static bool linux_clock_control_proven_absent(const LinuxGpuState*) { return false; }
@@ -79,5 +80,37 @@ int run_linux_scope_preflight_tests() {
     if (!linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8622;
     snapshot.curveMask[4] = true; snapshot.curveOffsetsHz[4] = 500;
     if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8623;
+    snapshot.curveMask[4] = false; snapshot.curveOffsetsHz[4] = 0;
+
+    // fan_request_policy.h: a notebook board answers the fan count with zero.
+    // Every saved profile carries fan_mode=auto, so this undervolt request used
+    // to be refused as "requested GPU domains are unavailable".
+    request = {};
+    request.hasCurvePoint[4] = 1; request.curvePointMHz[4] = 1700;
+    request.hasFan = true; request.fanMode = FAN_MODE_AUTO; request.fanAuto = true;
+    snapshot.fanValid = false; snapshot.fanCount = 0; snapshot.fanCountReported = true;
+    snapshot.availableMutationDomains &= ~(gc_u32)SERVICE_MUTATION_DOMAIN_FAN;
+    gpu_capability_set(&g.capability, SERVICE_MUTATION_DOMAIN_FAN, GPU_DOMAIN_CAP_ABSENT);
+    if (linux_fan_request_disposition(&request, snapshot.fanCount, &g.capability) !=
+            FAN_REQUEST_INERT_NO_FAN) return 12140;
+    if (!linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 12141;
+    // Fixed and Curve cannot exist there: refused by name, before any write.
+    request.fanMode = FAN_MODE_FIXED; request.fanAuto = false; request.fanPercent = 50;
+    why[0] = 0;
+    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes ||
+        !std::strstr(why, "fan mode Fixed")) return 12142;
+    request.fanMode = FAN_MODE_CURVE;
+    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 12143;
+    // No evidence of absence keeps the domain gate.
+    request.fanMode = FAN_MODE_AUTO; request.fanAuto = true;
+    gpu_capability_set(&g.capability, SERVICE_MUTATION_DOMAIN_FAN, GPU_DOMAIN_CAP_UNPROBED);
+    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 12144;
+    // A reported fan whose state could not be read is still a fan: never inert.
+    gpu_capability_set(&g.capability, SERVICE_MUTATION_DOMAIN_FAN, GPU_DOMAIN_CAP_REFUSED);
+    snapshot.fanCount = 2;
+    snapshot.availableMutationDomains |= SERVICE_MUTATION_DOMAIN_FAN;
+    why[0] = 0;
+    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes ||
+        !std::strstr(why, "cannot be snapshotted")) return 12145;
     return 0;
 }

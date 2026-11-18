@@ -171,6 +171,14 @@
     }
 
     int selectedFanMode = g_app.guiFanMode;
+    if (app_fan_control_known_absent() && selectedFanMode != FAN_MODE_AUTO) {
+        // The fan controls are disabled on this GPU, so this mode cannot be the
+        // user's choice here (fan_request_policy.h); capturing it would only
+        // get the whole Apply refused with no control left to change it.
+        debug_log("capture_gui_desired_settings: GPU has no controllable fan; editor fan"
+                  " mode %d captured as Auto\n", selectedFanMode);
+        selectedFanMode = fan_editor_adoptable_mode(selectedFanMode, true);
+    }
     int fanPercent = g_app.guiFanFixedPercent;
     if (selectedFanMode == FAN_MODE_FIXED) {
         if (gui_state_dirty() &&
