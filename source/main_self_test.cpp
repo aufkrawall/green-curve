@@ -19,6 +19,10 @@
 
 static const char* self_test_yes_no(bool value) { return value ? "yes" : "NO"; }
 
+// VF point-mask evidence (bounded vs. driver status request).
+#include "vf_point_mask_policy.h"
+#include "main_self_test_vf_mask.cpp"
+
 static const unsigned int CLK_PROBE_MAX_DOMAINS = 32;
 
 // Public NvAPI clock ids used to label measured physical domains.  Only
@@ -361,6 +365,7 @@ static int self_test_report(FILE* out) {
             curveOk ? "ok" : "FAILED", populated, VF_NUM_POINTS);
     fprintf(out, "NvAPI getControl       : %s (read-only; the struct writes use)\n",
             offsetsOk ? "ok" : "FAILED");
+    self_test_vf_mask_report(out);
 
     // Per-domain control surface, probed read-only here.  NVML is reported
     // after this call, not before: the probe is what brings NVML up, so reading

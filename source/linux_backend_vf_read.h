@@ -6,6 +6,8 @@
 #ifndef GREEN_CURVE_LINUX_BACKEND_VF_READ_H
 #define GREEN_CURVE_LINUX_BACKEND_VF_READ_H
 
+#include "vf_point_mask_policy.h"
+
 static const int LB_NVAPI_FUNCTION_MISSING = -100001;
 static const int LB_NVAPI_INVALID_DATA = -100002;
 static const int LB_NVAPI_NOT_ATTEMPTED = -100003;
@@ -77,8 +79,12 @@ static bool nvapi_get_vf_info(LinuxGpuState* g) {
         unsigned int graphicsCandidates = 0;
         for (int i = 0; i < VF_NUM_POINTS; ++i)
             if (mask[i / 8] & (1u << (i % 8))) ++graphicsCandidates;
-        lb_log("vf_info: validated point mask (graphicsCandidates=%u); "
-               "clock counts are not part of VF-info V1\n", graphicsCandidates);
+        lb_log("vf_info: validated point mask (graphicsCandidates=%u "
+               "advertised=%u pastTable=%u left out of status requests); "
+               "clock counts are not part of VF-info V1\n", graphicsCandidates,
+               vf_mask_point_count(mask, (unsigned int)sizeof(mask)),
+               vf_mask_points_past_table(mask, (unsigned int)sizeof(mask),
+                                         VF_NUM_POINTS));
     }
     memcpy(g->vfMask, mask, sizeof(mask));
     g->vfInfoCached = true;
@@ -113,7 +119,11 @@ static bool nvapi_read_curve_candidate(LinuxGpuState* g,
     }
     unsigned int ver = (b->statusVersion << 16) | b->statusBufferSize;
     memcpy(buf, &ver, sizeof(ver));
-    memcpy(buf + b->statusMaskOffset, g->vfMask, sizeof(g->vfMask));
+    // Only the points this table can hold (vf_point_mask_policy.h).
+    unsigned char request[sizeof(g->vfMask)] = {};
+    (void)vf_status_request_mask(g->vfMask, request,
+        (unsigned int)sizeof(request), VF_NUM_POINTS);
+    memcpy(buf + b->statusMaskOffset, request, sizeof(request));
     int status = getStatus(g->gpuHandle, buf);
     g->vfStatusStatus = status;
     bool ok = nvapi_ok(status);
@@ -128,7 +138,7 @@ static bool nvapi_read_curve_candidate(LinuxGpuState* g,
         }
         memcpy(returnedMask, buf + b->statusMaskOffset,
                sizeof(returnedMask));
-        if (ok && memcmp(returnedMask, g->vfMask, sizeof(returnedMask)) != 0) {
+        if (ok && memcmp(returnedMask, request, sizeof(returnedMask)) != 0) {
             g->vfStatusStatus = LB_NVAPI_INVALID_DATA;
             ok = false;
         }

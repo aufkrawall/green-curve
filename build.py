@@ -113,6 +113,7 @@ import update_gates  # noqa: E402  (same one-way dependency as security_gates)
 import icon_render  # noqa: E402  (same one-way dependency as security_gates)
 import crash_artifacts  # noqa: E402  (same one-way dependency as security_gates)
 import driver_inspect  # noqa: E402  (same one-way dependency as security_gates)
+import gpu_support_gates  # noqa: E402  (same one-way dependency as security_gates)
 import static_analysis  # noqa: E402  (same one-way dependency as security_gates)
 import build_scheduler  # noqa: E402  (same one-way dependency as security_gates)
 import build_variants
@@ -4180,6 +4181,7 @@ def run_source_regression_checks():
     # Driver-inspection gates (incl. the NvAPI entry-point id scan) live with
     # the module they check; see tools/driver_inspect.py.
     driver_inspect.check_source_gates(_gate_ctx(), require_text)
+    gpu_support_gates.check_source_gates(_gate_ctx(), require_text, forbid_text)
     require_text(linux_backend_cpp,
                  "info.pstate = nvml_configured_clock_offset_pstate()",
                  "Linux modern NVML offsets always target configured P0")

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include "nvapi_loader.cpp"
 #include "gpu_backend_apply.cpp"
+#include "vf_point_mask_policy.h"
 static bool apply_desired_settings(const DesiredSettings* desired, bool interactive,
     ServiceApplyOrigin origin, ServiceProfileSource profileSource, int profileSlot,
     char* result, size_t resultSize) {
@@ -311,6 +312,10 @@ static bool nvapi_read_curve() {
     if (!getStatus) return false;
     unsigned char mask[32] = {};
     if (!nvapi_get_vf_info_cached(mask)) return false;
+    // Only the points this table can hold (vf_point_mask_policy.h).
+    unsigned char statusMask[sizeof(mask)] = {};
+    const unsigned int leftOut = vf_status_request_mask(mask, statusMask,
+        (unsigned int)sizeof(mask), VF_NUM_POINTS);
     HeapBuffer buf(backend->statusBufferSize > 0 ? backend->statusBufferSize : 0x4000);
     if (!buf) return false;
     memset(buf, 0, backend->statusBufferSize);
@@ -318,10 +323,24 @@ static bool nvapi_read_curve() {
         const unsigned int version = (backend->statusVersion << 16) | backend->statusBufferSize;
         buf.write_at(0, &version, sizeof(version));
     }
-    if (backend->statusMaskOffset + sizeof(mask) > backend->statusBufferSize) return false;
-    buf.write_at(backend->statusMaskOffset, mask, sizeof(mask));
+    if (backend->statusMaskOffset + sizeof(statusMask) > backend->statusBufferSize) return false;
+    buf.write_at(backend->statusMaskOffset, statusMask, sizeof(statusMask));
     int ret = getStatus(g_app.gpuHandle, buf);
-    if (ret != 0) return false;
+    if (ret != 0) {
+        char errText[96] = {};
+        nvapi_get_error_message(ret, errText, sizeof(errText));
+        debug_log_on_change("nvapi_read_curve: GetStatus(0x%08X) refused ret=%d%s%s "
+                            "(requested %u points, %u advertised points past %d left out)\n",
+            backend->getStatusId, ret, errText[0] ? " " : "", errText,
+            vf_mask_point_count(statusMask, (unsigned int)sizeof(statusMask)),
+            leftOut, VF_NUM_POINTS - 1);
+        return false;
+    }
+    debug_log_on_change("nvapi_read_curve: GetStatus(0x%08X) ok (requested %u points, "
+                        "%u advertised points past %d left out)\n",
+        backend->getStatusId,
+        vf_mask_point_count(statusMask, (unsigned int)sizeof(statusMask)),
+        leftOut, VF_NUM_POINTS - 1);
     g_app.numPopulated = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         unsigned int freq = 0, volt = 0;

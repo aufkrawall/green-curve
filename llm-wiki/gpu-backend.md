@@ -1236,6 +1236,51 @@ existing at one of two identical call sites is what made it a defect rather than
 a style difference. Both now ask `linux_nvapi_enum_count_is_usable()`
 (assertions 5331-5336).
 
+### VF status requests stop at the point table (2026-11-18)
+
+Source anchors: `source/vf_point_mask_policy.h`, `source/gpu_backend.cpp`
+(`nvapi_read_curve`), `source/main_vf_info_cache.cpp`,
+`source/linux_backend_vf_read.h`, `source/linux_gpu.cpp`,
+`source/hardware_capture_getters.h`, `source/main_self_test_vf_mask.cpp`,
+`tests/linux_vf_read_tests.cpp`, `tools/gpu_support_gates.py`.
+
+VF-info advertises every point of every clock domain in the driver's status
+table; every reader keeps only `VF_NUM_POINTS` (128). Each VF STATUS request
+(Windows reader, Linux atomic reader and probe, passive capture, self-test)
+therefore names points 0..127 only, via `vf_status_request_mask()`. The cache
+still stores the full driver mask, and VF CONTROL plus the write path keep it:
+control accepts it on every board observed, and writes never name a point past
+127. Linux compares the echoed status mask with the bounded request.
+
+Why: a user report on an NVIDIA CMP 40HX (TU106, architecture `TU100`) running
+a modified driver. Its VF-info mask holds 131 points; status refused the
+request naming points 128..130, so no curve loaded at all. With the bounded
+request the reporter's build read the curve and applied undervolts at every
+logon. Nothing past 127 was ever read, so the bound loses nothing.
+
+Evidence on an RTX 5070 (read-only self-test, 2026-11-18): VF-info advertises
+132 points (highest 131, four past the table); the bounded and the full status
+reads both succeed, the driver echoes the bounded mask, and entries 0..127 are
+identical.
+
+Diagnostics: Windows logs `vf_info: GetInfo(..) ret= source=driver|default
+advertised= highest= pastTable=` once per cache fill and
+`nvapi_read_curve: GetStatus(..) ok|refused ..` on change. Linux extends
+`vf_info: validated point mask` with `advertised=` and `pastTable=`. When the
+mask reaches past 127, `--self-test` adds `VF status, bounded mask` and
+`VF status, driver mask` lines (two extra reads, no writes): a refused driver
+mask there is the CMP signature.
+
+Rejected: a PCI device-id to family fallback (the reporter's prototype). The
+architecture query answers `TU100` on the CMP 40HX, and unconfirmed device ids
+could map a board to the wrong layout. Also rejected: retrying a refused status
+read with the bounded mask, which keeps a request that is wrong by construction
+and doubles reads on the affected board.
+
+Open: this build has not run on a physical CMP 40HX; GeForce Turing, Ampere
+and Ada boards were not rerun (the change is a no-op where VF-info stays within
+0..127).
+
 ### Write verification and the `nvidia-smi` fallback (2026-10-27)
 
 An accepted write is verified by the limit NVML reports afterwards

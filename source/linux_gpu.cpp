@@ -25,6 +25,7 @@
 // with the live backend, so the probe cannot validate them differently.
 #include "linux_vf_validation.h"
 #include "linux_vf_layout_summary.h"
+#include "vf_point_mask_policy.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -243,8 +244,12 @@ int read_vf_curve(nvapi_QueryInterface_t qi, GPU_HANDLE handle,
     if (!buf) return -1;
     unsigned int ver = (b->statusVersion << 16) | b->statusBufferSize;
     memcpy(buf, &ver, sizeof(ver));
-    if (b->statusMaskOffset + sizeof(mask) <= b->statusBufferSize)
-        memcpy(buf + b->statusMaskOffset, mask, sizeof(mask));
+    // Only the points this table can hold (vf_point_mask_policy.h).
+    unsigned char request[sizeof(mask)] = {};
+    (void)vf_status_request_mask(mask, request, (unsigned int)sizeof(mask),
+                                 VF_NUM_POINTS);
+    if (b->statusMaskOffset + sizeof(request) <= b->statusBufferSize)
+        memcpy(buf + b->statusMaskOffset, request, sizeof(request));
     int populated = -1;
     if (getStatus(handle, buf) == 0) {
         populated = 0;

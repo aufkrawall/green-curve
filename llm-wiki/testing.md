@@ -1,5 +1,20 @@
 # Testing
 
+## VF status point mask (2026-11-18)
+
+`tests/linux_vf_read_tests.cpp` pins `vf_point_mask_policy.h` (12200-12205)
+and runs the production Linux atomic reader against a fake driver that refuses
+any status request naming a point past its table, with the reported CMP 40HX
+mask of points 0..130 (12206-12207). Compiled standalone against the previous
+reader, the fixture fails at 12206; it passes against the bounded reader. A
+driver that accepts the full mask yields the identical curve and offsets
+(12208). The fake driver now asserts that status receives the bounded mask and
+control the full one, and echoes the request like the real driver. Source
+gates: `tools/gpu_support_gates.py`. Hardware: the rebuilt Windows x64 binary's
+read-only self-test on an RTX 5070 reports 132 advertised points and identical
+bounded/full status entries. See
+[gpu-backend.md](gpu-backend.md#vf-status-requests-stop-at-the-point-table-2026-11-18).
+
 ## Fan requests on fanless GPUs (2026-11-18)
 
 `tests/fan_request_apply_tests.cpp` pins `fan_request_policy.h` (12100-12114)

@@ -5,6 +5,22 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-18: VF status requests stop at the 128-point table
+
+- Report (issue 13): an NVIDIA CMP 40HX on a modified driver loaded no curve.
+  The reporter's prototype source (based on 0.26.0) and debug log show the
+  architecture query answering `TU100` (so the backend was already Turing) and
+  a 131-point VF-info mask; status refused the request naming points 128..130.
+- Fix: `source/vf_point_mask_policy.h`; every VF status request names points
+  0..127 only (Windows, Linux reader/probe, capture, self-test). The VF-info
+  cache moved to `source/main_vf_info_cache.cpp` (NVML shard ratchet lowered to
+  827) and logs the mask extent; the self-test compares bounded and full status
+  reads.
+- Not adopted from the prototype: the PCI device-id family fallback (not
+  needed, unconfirmed ids) and a two-attempt status read.
+- Tests 12200-12208; gates `tools/gpu_support_gates.py`. RTX 5070 self-test:
+  132 advertised points, bounded and full reads identical. No CMP hardware run.
+
 ## 2026-11-18: Linux snapshot gates honour the inert power request
 
 - Follow-up to F-FANLESS: the Linux daemon precondition gate and the TUI gates

@@ -3,6 +3,7 @@
 #ifndef GREEN_CURVE_HARDWARE_CAPTURE_GETTERS_H
 #define GREEN_CURVE_HARDWARE_CAPTURE_GETTERS_H
 #include "hardware_capture.h"
+#include "vf_point_mask_policy.h"
 #include "nvml_clock_observation.h"
 #include "vf_curve_units.h"
 #include "vf_writable_point_policy.h"
@@ -90,12 +91,16 @@ static inline bool hardware_capture_read_vf(Query query, void* handle, const VfB
     if (driverStatus) return false;
     if (!returned(info.get(), sizes[0], backend->infoVersion)) { driverStatus = -100002; return false; }
     memcpy(mask, info.get() + backend->infoMaskOffset, sizeof(mask));
+    // Status names only the points this table can hold (vf_point_mask_policy.h);
+    // control keeps the driver's full mask.
+    unsigned char statusMask[sizeof(mask)]{};
+    (void)vf_status_request_mask(mask, statusMask, (unsigned int)sizeof(mask), VF_NUM_POINTS);
     initialize(status.get(), sizes[1], backend->statusVersion);
-    memcpy(status.get() + backend->statusMaskOffset, mask, sizeof(mask));
+    memcpy(status.get() + backend->statusMaskOffset, statusMask, sizeof(statusMask));
     driverStatus = getStatus(handle, status.get());
     if (driverStatus) return false;
     if (!returned(status.get(), sizes[1], backend->statusVersion) ||
-        memcmp(mask, status.get() + backend->statusMaskOffset, sizeof(mask))) { driverStatus = -100002; return false; }
+        memcmp(statusMask, status.get() + backend->statusMaskOffset, sizeof(statusMask))) { driverStatus = -100002; return false; }
     initialize(control.get(), sizes[2], backend->controlVersion);
     memcpy(control.get() + backend->controlMaskOffset, mask, sizeof(mask));
     driverStatus = getControl(handle, control.get());

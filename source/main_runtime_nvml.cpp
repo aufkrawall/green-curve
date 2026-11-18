@@ -4,6 +4,7 @@
 #include "xbar_telemetry.h"
 #include "memory_offset_units.h"
 #include "nvml_clock_observation.h"
+#include "vf_point_mask_policy.h"
 
 static bool nvml_resolve(void** out, const char* name) {
     if (!g_nvml) return false;
@@ -820,39 +821,7 @@ static bool refresh_global_state(char* detail, size_t detailSize) {
     return ok1 || ok2 || ok3 || ok4 || okXbar;
 }
 
-static bool nvapi_get_vf_info_cached(unsigned char* maskOut) {
-    const VfBackendSpec* backend = g_app.vfBackend;
-    if (!backend) return false;
-
-    if (!g_app.vfInfoCached) {
-        memset(g_app.vfMask, 0, sizeof(g_app.vfMask));
-        memset(g_app.vfMask, 0xFF, 16);
-
-        auto getInfo = (NvApiFunc)nvapi_qi(backend->getInfoId);
-        if (getInfo) {
-            size_t infoSize = backend->infoBufferSize > 0 ? backend->infoBufferSize : 0x4000;
-            if (infoSize > 0x4000) infoSize = 0x4000;
-            HeapBuffer ibuf(infoSize);
-            if (!ibuf) return false;
-            memset(ibuf, 0, infoSize);
-            if (backend->infoBufferSize > (unsigned int)infoSize) return false;
-            const unsigned int version = (backend->infoVersion << 16) | (unsigned int)infoSize;
-            memcpy(&ibuf[0], &version, sizeof(version));
-            if (backend->infoMaskOffset + sizeof(g_app.vfMask) <= (unsigned int)infoSize) {
-                memset(&ibuf[backend->infoMaskOffset], 0xFF, sizeof(g_app.vfMask));
-            }
-            if (getInfo(g_app.gpuHandle, ibuf) == 0) {
-                if (backend->infoMaskOffset + sizeof(g_app.vfMask) <= (unsigned int)infoSize) {
-                    memcpy(g_app.vfMask, &ibuf[backend->infoMaskOffset], sizeof(g_app.vfMask));
-                }
-            }
-        }
-        g_app.vfInfoCached = true;
-    }
-
-    if (maskOut) memcpy(maskOut, g_app.vfMask, sizeof(g_app.vfMask));
-    return true;
-}
+#include "main_vf_info_cache.cpp"
 
 // THE VF offset range for this GPU, plus the clamps derived from it.
 #include "vf_offset_range_runtime.h"

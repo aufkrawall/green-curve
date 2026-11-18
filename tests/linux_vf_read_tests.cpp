@@ -5,6 +5,7 @@
 #include "linux_backend.h"
 #include "linux_vf_validation.h"
 #include "vf_backends.h"
+#include "vf_point_mask_policy.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -32,6 +33,11 @@ struct VfDriver {
     bool reportedPascalSample;
     bool frequencyHalfStep;
     bool requestValid;
+    // Status refuses a request naming any point its table does not hold, the
+    // way the CMP 40HX driver answers its own 131-point VF-info mask.
+    bool statusRefusesPastTable;
+    unsigned char lastStatusRequest[32];
+    unsigned char lastControlRequest[32];
 };
 
 static void put_word(unsigned char* buffer, unsigned int offset,
@@ -53,19 +59,36 @@ static int read_table(void* handle, void* buffer, int call) {
     memcpy(&version, bytes, sizeof(version));
     driver->requestValid &= version == ((versions[call] << 16) | sizes[call]);
     ++driver->calls[call];
+    unsigned char request[sizeof(driver->mask)] = {};
+    memcpy(request, bytes + maskOffsets[call], sizeof(request));
     if (call != 0) {
-        driver->requestValid &=
-            memcmp(bytes + maskOffsets[call], driver->mask, sizeof(driver->mask)) == 0;
+        // Status names only the 128-point table; control keeps the full mask.
+        unsigned char expected[sizeof(driver->mask)] = {};
+        if (call == 1) {
+            for (int i = 0; i < VF_NUM_POINTS; ++i)
+                expected[i / 8] |= driver->mask[i / 8] & (unsigned char)(1u << (i % 8));
+        } else {
+            memcpy(expected, driver->mask, sizeof(expected));
+        }
+        driver->requestValid &= memcmp(request, expected, sizeof(expected)) == 0;
+        memcpy(call == 1 ? driver->lastStatusRequest : driver->lastControlRequest,
+               request, sizeof(request));
         // There is no clock-count input at 0x24: keep reserved words zero.
         unsigned int reserved = 0;
         memcpy(&reserved, bytes + 0x24, sizeof(reserved));
         driver->requestValid &= reserved == 0;
     }
     if (driver->refusedCall == call) return -9;
+    if (call == 1 && driver->statusRefusesPastTable) {
+        for (unsigned int byte = VF_NUM_POINTS / 8; byte < sizeof(request); ++byte)
+            if (request[byte]) return -9;
+    }
     memset(bytes, 0, sizes[call]);
     if (driver->malformedVersionCall == call) version ^= 1u << 16;
     put_word(bytes, 0, version);
-    memcpy(bytes + maskOffsets[call], driver->mask, sizeof(driver->mask));
+    // VF-info answers its mask; status and control echo the request.
+    memcpy(bytes + maskOffsets[call], call == 0 ? driver->mask : request,
+           sizeof(driver->mask));
     if (driver->changedMaskCall == call) bytes[maskOffsets[call]] ^= 1u;
     for (int i = 0; i < driver->points; ++i) {
         if (call == 1) {
@@ -233,11 +256,77 @@ static int run_vf_layout_cases() {
         return 7709;
     return 0;
 }
+
+// The status request names only the 128-point table (vf_point_mask_policy.h).
+static int run_vf_point_mask_cases() {
+    unsigned char full[32];
+    unsigned char request[32];
+    memset(full, 0xFF, sizeof(full));
+    memset(request, 0xAA, sizeof(request));
+    if (vf_status_request_mask(full, request, sizeof(full), VF_NUM_POINTS) != 128 ||
+        vf_mask_point_count(request, sizeof(request)) != 128 ||
+        vf_mask_highest_point(request, sizeof(request)) != 127 ||
+        request[15] != 0xFF || request[16] != 0) return 12200;
+    unsigned char empty[32] = {};
+    if (vf_status_request_mask(empty, request, sizeof(empty), VF_NUM_POINTS) != 0 ||
+        vf_mask_point_count(request, sizeof(request)) != 0 ||
+        vf_mask_highest_point(empty, sizeof(empty)) != -1) return 12201;
+    // A lone point past the table is left out, and only that point.
+    unsigned char lone[32] = {};
+    lone[0] = 0x01;
+    lone[25] = 0x01;  // point 200
+    if (vf_status_request_mask(lone, request, sizeof(lone), VF_NUM_POINTS) != 1 ||
+        request[0] != 0x01 || request[25] != 0 ||
+        vf_mask_highest_point(lone, sizeof(lone)) != 200 ||
+        vf_mask_points_past_table(lone, sizeof(lone), VF_NUM_POINTS) != 1) return 12202;
+    // The reported CMP 40HX mask: points 0..130.
+    unsigned char cmp[32] = {};
+    memset(cmp, 0xFF, 16);
+    cmp[16] = 0x07;
+    if (vf_mask_point_count(cmp, sizeof(cmp)) != 131 ||
+        vf_mask_points_past_table(cmp, sizeof(cmp), VF_NUM_POINTS) != 3 ||
+        vf_status_request_mask(cmp, request, sizeof(cmp), VF_NUM_POINTS) != 3 ||
+        memcmp(request, full, 16) != 0 || request[16] != 0) return 12203;
+    // A mask inside the table is sent unchanged; null inputs stay inert.
+    unsigned char inTable[32] = {};
+    memset(inTable, 0xFF, 10);
+    if (vf_status_request_mask(inTable, request, sizeof(inTable), VF_NUM_POINTS) != 0 ||
+        memcmp(request, inTable, sizeof(inTable)) != 0) return 12204;
+    if (vf_status_request_mask(nullptr, request, sizeof(request), VF_NUM_POINTS) != 0 ||
+        vf_mask_point_count(request, sizeof(request)) != 0 ||
+        vf_status_request_mask(full, nullptr, sizeof(full), VF_NUM_POINTS) != 0 ||
+        vf_mask_point_count(nullptr, 32) != 0 || vf_mask_highest_point(nullptr, 32) != -1)
+        return 12205;
+
+    // The production reader against a driver that refuses status for any
+    // point past its table: the full advertised mask returned no curve at all.
+    VfDriver driver = {};
+    LinuxGpuState gpu = {};
+    char why[160] = {};
+    initialize(&driver, &gpu, 128);
+    driver.mask[16] = 0x07;
+    driver.statusRefusesPastTable = true;
+    if (!nvapi_read_vf_snapshot(&gpu, why, sizeof(why)) || !gpu.vfSnapshotFresh ||
+        gpu.numPopulated != 128) return 12206;
+    if (!driver.requestValid || driver.lastStatusRequest[16] != 0 ||
+        driver.lastControlRequest[16] != 0x07 || gpu.vfMask[16] != 0x07) return 12207;
+    // A driver that accepts the full mask reads the same curve.
+    VfDriver accepting = {};
+    LinuxGpuState acceptingGpu = {};
+    initialize(&accepting, &acceptingGpu, 128);
+    accepting.mask[16] = 0x07;
+    if (!nvapi_read_vf_snapshot(&acceptingGpu, why, sizeof(why)) ||
+        memcmp(acceptingGpu.curve, gpu.curve, sizeof(gpu.curve)) != 0 ||
+        memcmp(acceptingGpu.freqOffsets, gpu.freqOffsets, sizeof(gpu.freqOffsets)) != 0)
+        return 12208;
+    return 0;
+}
 } // namespace
 
 #include "vf_frequency_precision_cases.h"
 int run_linux_vf_read_tests() {
     if (int failure = vf_frequency_precision_cases()) return failure;
+    if (int failure = run_vf_point_mask_cases()) return failure;
     VfDriver driver = {};
     LinuxGpuState gpu = {};
     char why[160] = {};
