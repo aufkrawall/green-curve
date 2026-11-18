@@ -38,10 +38,10 @@ SOURCE_SIZE_RATCHET = {
     "gpu_backend_apply.cpp": 1486,  # 1470 before the apply-clock witness sample points  # 1424 before F-APPLY-CEILING wired the transition clock clamp (the guard itself lives in gpu_backend_apply_ceiling.h)  # 1414 before power writes name a missing control surface instead of failing anonymously  # 1407 before the core/advanced rollback boundary was made explicit
     "gpu_core.h": 829,  # 910 before validate_desired_settings_for_ipc moved to desired_settings_ipc.h  # 896 before F-01-002 gave the IPC boundary the fan curve's own validity rule  # 881 before the NVML utilisation/power-usage load witnesses  # 862 before POWER_LIMIT_DEFAULT_PCT and the IPC unknown-power sentinel  # 842 before the mem effective/display parity helpers
     "gui_service_state.cpp": 827,  # 820 before the VIDEO draft projection
-    "main_fan_runtime.cpp": 913,  # 929 before the tray menu moved to gui_tray_menu.cpp
+    "main_fan_runtime.cpp": 700,  # 913 before the fan apply step moved to main_fan_apply.h  # 929 before the tray menu moved to gui_tray_menu.cpp
     "main_gpu_front.cpp": 845,
     "main_gpu_state.cpp": 932,  # 928 before VIDEO live-state ownership
-    "main_runtime_nvml.cpp": 907,  # 903 before resolving the NVML load witnesses  # 901 before the XBAR telemetry call moved to its own header
+    "main_runtime_nvml.cpp": 860,  # 907 before fan_setting_matches_current moved to main_fan_apply.h  # 903 before resolving the NVML load witnesses  # 901 before the XBAR telemetry call moved to its own header
     "linux_main.cpp": 812,  # 799 before F-03-003 made the generated .desktop/unit paths escape per format (the escapers live in linux_asset_escaping_policy.h)
     "main.cpp": 796,  # 801 before the wedge-watchdog heartbeats moved to service_gate_progress.h  # 800 before F-03-001 made the log tokenizers visible to every shard
     "main_service_persist.cpp": 908,

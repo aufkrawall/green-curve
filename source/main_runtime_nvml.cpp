@@ -564,23 +564,6 @@ static bool nvml_manual_fan_matches_target(int pct, bool* matches, char* detail,
     return true;
 }
 
-static bool fan_setting_matches_current(int wantMode, int wantPct, const FanCurveConfig* wantCurve) {
-    if (!g_app.fanSupported) return false;
-    if (wantMode != g_app.activeFanMode) return false;
-    if (wantMode == FAN_MODE_AUTO) return g_app.fanIsAuto;
-    if (wantMode == FAN_MODE_CURVE) {
-        return g_app.fanCurveRuntimeActive && wantCurve &&
-            fan_curve_equals(wantCurve, &g_app.activeFanCurve);
-    }
-    if (g_app.fanIsAuto || g_app.fanCount == 0) return false;
-    for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
-        int gotPct = (int)g_app.fanPercent[fan];
-        if (!manual_fan_readback_matches_target(wantPct, gotPct,
-                g_app.fanTargetPercent[fan], g_app.readback.fan.target[fan])) return false;
-    }
-    return true;
-}
-
 // Compares device IDs only. The low word of a packed ID is the vendor, which
 // every NVIDIA GPU shares; matching on it accepted any NVIDIA device.
 static bool nvml_pci_device_matches_nvapi(unsigned int nvapiDeviceId, unsigned int nvmlDeviceId) {

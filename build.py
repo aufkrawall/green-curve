@@ -2673,8 +2673,9 @@ def run_source_regression_checks():
         "runtime apply capture never scrapes HWND text")
 
     # F-02-001: Fan apply validates before mutating runtime state
-    require_text(main_fan_runtime_cpp, "fan auto write", "fan auto mode is applied before stopping runtime")
-    require_text(main_fan_runtime_cpp, "restored driver auto, runtime stopped", "fan auto apply logs successful restore before stopping runtime")
+    main_fan_apply_h = os.path.join(SOURCE_DIR, "main_fan_apply.h")
+    require_text(main_fan_apply_h, "fan auto write", "fan auto mode is applied before stopping runtime")
+    require_text(main_fan_apply_h, "restored driver auto, runtime stopped", "fan auto apply logs successful restore before stopping runtime")
 
     # F-15-002: Multi-fan rollback tracks failures
     require_text(runtime_nvml_cpp, "rollbackFailures", "multi-fan rollback tracks individual rollback failures")
@@ -3437,7 +3438,8 @@ def run_source_regression_checks():
     with open(_linux_backend_surface, "w", encoding="utf-8", errors="ignore") as _lf:
         for _cpp in ("linux_backend.cpp", "linux_backend_vf_read.h", "linux_backend_vf_write.h",
                      "linux_backend_nvml_write.cpp", "linux_backend_clock_offsets.h", "linux_backend_discovery.cpp",
-                     "linux_backend_preflight.h", "linux_backend_mutation.cpp"):
+                     "linux_backend_preflight.h", "linux_backend_mutation.cpp",
+                     "linux_backend_fan_control.h"):
             with open(os.path.join(SOURCE_DIR, _cpp), "r", encoding="utf-8", errors="ignore") as _source:
                 _lf.write(_source.read())
                 _lf.write("\n")
