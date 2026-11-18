@@ -5,6 +5,7 @@
 // Included by linux_port_profiles.cpp after the INI document helpers.
 #include "profile_slot_runtime.h"
 #include "profile_file_read.h"
+#include "profile_config_encoding.h"
 
 static bool section_holds_profile_document(const IniDocument* doc, const char* section) {
     for (const auto& s : doc->sections) if (s.name == section) for (const auto& e : s.entries)
