@@ -1,5 +1,91 @@
 # Config and Profiles
 
+## Profile tools: capture, import and export end in ordinary slots (2026-11-19)
+
+Source anchors: `source/profile_slot_runtime.h`, `source/config_profile_document_load.h`,
+`source/linux_profile_document_load.h`, `source/profile_capture_save.h`,
+`source/profile_summary.h`, `source/profile_editor_transfer.h` (probe and explicit
+selection), `source/gui_profile_tools.cpp`, `source/gui_profile_capture.cpp`,
+`source/gui_profile_transfer.cpp`, `source/gui_profile_dialog_kit.h`,
+`source/gui_profile_transfer_work.h`, `source/linux_tui_capture_draft.h`,
+`source/linux_tui_transfer.h`, `source/linux_tui_layout_transfer.h`,
+`tests/profile_slot_runtime_tests.cpp` (9950-9969), `tests/profile_tools_tests.cpp`
+(9970-9990), `tests/tui_profile_tools_tests.cpp` (9770-9791).
+
+This supersedes the source-editor workflow described in the 2026-11-14/15 sections
+below ("Windows capture into an unsaved source draft", "Windows canonical source
+editor", "Windows read-only destination checks", "Reviewed source submission",
+"Windows/TUI reviewed profile transfer"). Those sections remain as history of the
+engines that still exist (CLI `--check-profile`, the passive capture collector,
+the transfer engine); their Windows windows are gone.
+
+Why: import and capture stored portable documents in the bank, and every slot
+reader (editor Load, tray, hotkeys, auto-switch, app start, logon, sharing) refused
+them, so an imported profile could only be applied through a separate source window
+(Check, Use mapped, Apply, every time). The dialogs also exposed the engine's state
+machine (domain bits, representation names, consent checkboxes).
+
+Current behavior:
+
+- **Every slot reader converts documents.** `profile_slot_document_runtime()`
+  turns a slot document into the runtime record. Position-based records (exports
+  of ordinary profiles and old INI files; `legacyIndicesUnresolved`) reverse
+  `profile_document_from_legacy_desired()` without a GPU; a record with nothing
+  only an explicit scope can carry stays legacy-scoped, otherwise it keeps an
+  explicit scope (the service refuses precise/captured intent in legacy scope).
+  Voltage-bound records map by exact voltage onto the live curve
+  (`profile_destination_from_vf_curve()`, fixed floor points read-only) and refuse
+  the whole record with a plain reason otherwise (needs the GPU / different GPU /
+  fixed point). Windows uses `g_app.curve`; the TUI Load uses the shown snapshot;
+  the Linux file-level loader (daemon startup) has no live curve, so a
+  voltage-bound slot refuses there until loaded once in the TUI and saved.
+- **The legacy adapter is exact now.** Precise graphics/point/lock Hz export as
+  such, and projected points keep their saved MHz as a labeled observation, so an
+  export/import round trip reproduces the slot.
+- **Import current GPU settings** (Windows dialog, TUI modal) reads all groups except
+  fan on open (`PROFILE_CAPTURE_DEFAULT_DOMAINS`), reviews with partial allowed, and
+  shows one row per group (`profile_capture_summary()`). Unreadable groups cannot be
+  included; advanced clocks appear only when the GPU has them. The curve choice lists
+  only selectable representations, suggested first. Tier 3 pin detection is a
+  secondary button shown only when observable; a suspected pin is confirmed at the
+  sampled frequency and preselected. Save builds the record with
+  `profile_capture_record()` (left-out groups dropped from the document, mapped onto
+  the snapshot's own topology, legacy scope promoted to an explicit one so a slot
+  save cannot refill omitted groups from live values) and writes it with the
+  ordinary slot writer. It never touches the editor draft, the GPU or ownership,
+  so no discard decision exists. A changed GPU session rereads (Windows) or expires
+  the snapshot (TUI).
+- **Export** ticks saved slots (summaries via `profile_document_summary()`), then a
+  native Save As (Windows) or a typed path with overwrite confirmation (TUI); the
+  job prepares and commits in one worker run.
+- **Import** reads the file first (`profile_editor_transfer_probe()`): portable banks
+  list records in file order; anything else is tried as an old INI (Windows
+  interpretation by default, switchable), slot by slot, and a missing memory unit or
+  curve meaning becomes a question instead of a failure. Each record gets a
+  destination slot (empty slots first); duplicates block Import; replaced slots are
+  named. The job prepares the explicit `sources`/`slots` edit and commits it in one
+  run; the bank generation check still refuses a bank that changed meanwhile.
+  Records that will not fit this GPU are named before Import (Windows).
+- **Windows plumbing.** The three dialogs share `gui_profile_dialog_kit.h` (house
+  themed buttons/checkboxes/combos, DT_NOPREFIX, centered, main window disabled,
+  Esc/Enter/Tab routing). Transfer jobs are `GUI_PROFILE_TRANSFER_PROBE` or `_RUN`;
+  only a job that has not started can be cancelled, and the dialog cannot close
+  during a write. An unmatched passive-read completion is freed by the main window.
+  `g_app.guiSource`, the Profile source window and the mapped-source Apply path are
+  removed; Apply always submits the editor draft.
+
+Invariants: no dialog writes hardware; every saved result is an ordinary slot or a
+document every reader converts; a refusal names what the user can do; probe,
+capture and import diagnostics log one `profile-capture:` / `profile-transfer:` line
+per event without paths or document bodies.
+
+Open questions / stale-risk: the TUI still contains the source-document editing
+code (`linux_tui_source_edit.h`, `linux_tui_source_check.h`,
+`linux_tui_mapped_draft.h`); nothing sets `state.document.valid` any more, so it is
+unreachable and should be removed. The Windows dialogs were compiled and their
+engines tested; an interactive desktop pass and physical GPU replay of captured
+records are not recorded here.
+
 ## Capture lock proposals (2026-11-15)
 
 Source anchors: `source/profile_capture_proposals.h`,
@@ -55,6 +141,10 @@ Replacing missing pin evidence with a guessed value fails case 9680.
 
 ## Reviewed source submission (2026-11-15)
 
+> Superseded 2026-11-19 for the Windows and TUI frontends: see
+> [Profile tools](#profile-tools-capture-import-and-export-end-in-ordinary-slots-2026-11-19).
+> Kept as history of the engines that remain.
+
 Source anchors: `source/profile_mapped_draft.h`,
 `source/gui_profile_source_review.cpp`, `source/ui_main_apply_dispatch.h`,
 `source/gui_mutation_request_binding.h`, `source/linux_tui_mapped_draft.h`,
@@ -92,6 +182,10 @@ The mapped-source pane was rendered offscreen and inspected; its helper exited
 without leaving a window or process behind.
 
 ## Windows reviewed profile transfer (2026-11-15)
+
+> Superseded 2026-11-19 for the Windows and TUI frontends: see
+> [Profile tools](#profile-tools-capture-import-and-export-end-in-ordinary-slots-2026-11-19).
+> Kept as history of the engines that remain.
 
 Source anchors: `source/gui_profile_transfer.cpp`,
 `source/profile_transfer_window.h`, `source/profile_transfer_picker.h`,
@@ -146,6 +240,10 @@ Interactive picker use and physical GPU replay are separate verification gaps.
 
 ## TUI reviewed profile transfer (2026-11-15)
 
+> Superseded 2026-11-19 for the Windows and TUI frontends: see
+> [Profile tools](#profile-tools-capture-import-and-export-end-in-ordinary-slots-2026-11-19).
+> Kept as history of the engines that remain.
+
 Source anchors: `source/profile_editor_transfer.h`, `source/profile_commands.h`,
 `source/profile_slot_io_linux.h`, `source/profile_slot_io_windows.h`,
 `source/linux_tui_transfer.h`, `source/linux_tui_layout_transfer.h`,
@@ -191,6 +289,10 @@ Windows uses the reviewed transfer pane above. Destination acceptance remains
 separate pending work.
 
 ## Windows capture into an unsaved source draft (2026-11-14)
+
+> Superseded 2026-11-19 for the Windows and TUI frontends: see
+> [Profile tools](#profile-tools-capture-import-and-export-end-in-ordinary-slots-2026-11-19).
+> Kept as history of the engines that remain.
 
 Source anchors: `source/gui_profile_capture.cpp`,
 `source/profile_source_window.h`, `source/gui_passive_capture_queue.cpp`,
@@ -239,6 +341,10 @@ Diagnostics use bounded `profile-read:` queue/cancel and `profile-capture:`
 open/review/expire/accept events without paths or complete document bodies.
 
 ## Windows read-only destination checks (2026-11-14)
+
+> Superseded 2026-11-19 for the Windows and TUI frontends: see
+> [Profile tools](#profile-tools-capture-import-and-export-end-in-ordinary-slots-2026-11-19).
+> Kept as history of the engines that remain.
 
 Source anchors: `source/gui_profile_source_review.cpp`,
 `source/profile_editor_review_session.h`, `source/gui_passive_capture.h`,
@@ -290,6 +396,10 @@ claimed by these fixtures.
 
 ## Windows canonical source editor (2026-11-14)
 
+> Superseded 2026-11-19 for the Windows and TUI frontends: see
+> [Profile tools](#profile-tools-capture-import-and-export-end-in-ordinary-slots-2026-11-19).
+> Kept as history of the engines that remain.
+
 Source anchors: `source/gui_profile_source.cpp`,
 `source/profile_source_window.h`, `source/profile_editor_source_rows.h`,
 `source/profile_slot_io_windows.h`, `source/gui_profile_commands.cpp`,
@@ -330,6 +440,10 @@ build and existing slot/CLI tests cover the integration and shared writer;
 a production desktop interaction and physical GPU writes are not claimed.
 
 ## TUI capture into an unsaved source draft (2026-11-14)
+
+> Superseded 2026-11-19 for the Windows and TUI frontends: see
+> [Profile tools](#profile-tools-capture-import-and-export-end-in-ordinary-slots-2026-11-19).
+> Kept as history of the engines that remain.
 
 Source anchors: `source/linux_tui_capture_draft.h`,
 `source/linux_tui_capture_transport.h`, `source/profile_editor_capture.h`,

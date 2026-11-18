@@ -5,6 +5,22 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: Profile capture, import and export rebuilt around ordinary slots
+
+- Imported and captured profiles were stored as portable documents that every
+  slot reader refused, so they never worked from the tray, hotkeys, auto-switch,
+  app start or logon, and the dialogs exposed engine internals. Slot readers now
+  convert documents (`profile_slot_runtime.h`); capture saves an ordinary record;
+  import/export dialogs were rebuilt on a probe and explicit record/slot choices,
+  for Windows and the TUI. Details: `config-profiles.md`, "Profile tools".
+- `DrawText` without `DT_NOPREFIX` rendered "Profiles & tools..." with an
+  underline; a ui gate now requires the flag on every call.
+- Found by the Linux compile check, not the Windows suite: the Linux document
+  loader missed an include. Windows `--test` does not compile Linux-only `.cpp`
+  files, so run `--check --target linux` after touching them.
+- Open: the TUI source-document editing code is unreachable and should be
+  removed; the Windows dialogs still need an interactive desktop pass.
+
 ## 2026-11-18: CI Linux jobs pin the runner image
 
 - Every Linux job (`linux`, `release-packaging`, `secrets`) and the release and

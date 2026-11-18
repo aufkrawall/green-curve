@@ -41,6 +41,11 @@ remain unverified.
 
 ## Summary
 
+> 2026-11-19: Windows and the TUI no longer edit source documents; capture, import
+> and export end in ordinary slots and every slot reader converts documents
+> (`profile_slot_runtime.h`). See [config-profiles.md](config-profiles.md#profile-tools-capture-import-and-export-end-in-ordinary-slots-2026-11-19).
+> Statements below about GUI/TUI source editing describe the removed workflow.
+
 A new, platform-neutral authoring type, `ProfileDocument`, built 2026-11-12.
 It is the in-memory shape the wider plan calls "the durable authoring
 model": tuning intent that must survive capture, editing, slot storage,
