@@ -345,6 +345,11 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
                 desired->lockCi = inferredLockCi;
                 desired->lockMHz = inferredLockMHz;
                 desired->lockTracksAnchor = false;
+                const int clearedTail = desired_clear_explicit_lock_tail_projection_flags(desired);
+                if (clearedTail > 0) {
+                    debug_log("load_profile_from_config: cleared offset-projection provenance on %d inferred lock-tail point(s) (slot %d lockCi=%d lockMHz=%u)\n",
+                        clearedTail, slot, inferredLockCi, inferredLockMHz);
+                }
             }
         }
 

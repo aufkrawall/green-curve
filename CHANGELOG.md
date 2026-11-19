@@ -72,6 +72,7 @@ Curve checks, profile transfer and capture improve.
 - **Reset after changes by another tool:** memory and power settings changed elsewhere since the last refresh also return to default.
 - **Reset after another tool reset the GPU:** Reset finishes in about a second instead of stalling and reporting an unknown outcome.
 - **Curve reading on modified drivers:** the curve loads on drivers that refuse points past the editable range, such as the CMP 40HX's.
+- **Tray profile checkmark:** loading and applying an older locked profile from the main window now marks that slot active in the tray menu and tooltip.
 
 ### Compatibility notes
 

@@ -45,6 +45,8 @@ static bool curve_section_uses_base_plus_gpu_offset_semantics(const char* path, 
 static void restore_curve_points_from_base_plus_gpu_offset(DesiredSettings* desired) {
     if (!desired || !desired->hasGpuOffset || desired->gpuOffsetMHz == 0) return;
 
+    int projectedCount = 0;
+    int lockTailCount = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (!desired->hasCurvePoint[i]) continue;
         int offsetCompMHz = gpu_offset_component_mhz_for_point(i, desired->gpuOffsetMHz, desired->gpuOffsetExcludeLowCount);
@@ -56,10 +58,18 @@ static void restore_curve_points_from_base_plus_gpu_offset(DesiredSettings* desi
             continue;
         }
         desired->curvePointMHz[i] = (unsigned int)absoluteMHz;
-        // RECONSTRUCTED, not typed: the base came from this file, sampled when
-        // the profile was saved, so the absolute above is a preview of that
-        // moment and the offset is the intent.
-        desired->curvePointFromGpuOffset[i] = gc_bool8_from_bool(true);
+        // Pre-tail points are reconstructed GPU-offset projections; points at
+        // or above an explicit lock target that land on lockMHz are the locked
+        // tail (absolute lockMHz), matching editor capture and modern saves.
+        const bool projected = desired_base_plus_offset_point_is_projected(
+            desired, i, desired->curvePointMHz[i]);
+        desired->curvePointFromGpuOffset[i] = gc_bool8_from_bool(projected);
+        if (projected) projectedCount++;
+        else lockTailCount++;
+    }
+    if (projectedCount > 0 || lockTailCount > 0) {
+        debug_log("profile curve format: restored base_plus_gpu_offset; %d projected point(s), %d lock-tail point(s) kept absolute\n",
+            projectedCount, lockTailCount);
     }
 }
 

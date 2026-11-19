@@ -463,7 +463,7 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
                 }
                 desired->curvePointMHz[i] = (unsigned int)absoluteMHz;
                 // Same provenance rule as the Windows loader.
-                desired->curvePointFromGpuOffset[i] = gc_bool8_from_bool(true);
+                desired->curvePointFromGpuOffset[i] = gc_bool8_from_bool(desired_base_plus_offset_point_is_projected(desired, i, desired->curvePointMHz[i]));
             }
         } else if (legacyCurveSemantics && desired->hasGpuOffset && desired->gpuOffsetMHz != 0) {
             for (int i = 0; i < VF_NUM_POINTS; i++) {

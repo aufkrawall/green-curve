@@ -13,6 +13,54 @@ enum DesiredCurvePointKind {
     DESIRED_CURVE_CAPTURED, DESIRED_CURVE_INVALID,
 };
 
+static inline const char* desired_curve_point_kind_name(DesiredCurvePointKind kind) {
+    switch (kind) {
+        case DESIRED_CURVE_ABSENT:    return "absent";
+        case DESIRED_CURVE_ABSOLUTE:  return "absolute";
+        case DESIRED_CURVE_PROJECTED: return "projected";
+        case DESIRED_CURVE_CAPTURED:  return "captured";
+        default:                      return "invalid";
+    }
+}
+
+// True when `d` carries an explicit lock target covering point `ci`.
+// Points at or above an explicit lock target are owned by the lock at lockMHz,
+// never GPU-offset projections of the stock base.
+template <class Settings>
+static inline bool desired_curve_point_in_explicit_lock_tail(const Settings* d, int ci) {
+    return d && d->hasLock && d->lockCi >= 0 && d->lockCi < VF_NUM_POINTS &&
+        d->lockMHz > 0 && ci >= d->lockCi && ci < VF_NUM_POINTS;
+}
+
+// Legacy `base_plus_gpu_offset` reconstruction provenance: pre-tail points
+// (and points of an unlocked curve) are reconstructed GPU-offset projections;
+// points at or above an explicit lock target whose reconstructed frequency is
+// that lock target are the locked tail (absolute lockMHz), matching what the
+// editor and `absolute_with_origin` saves produce.
+template <class Settings>
+static inline bool desired_base_plus_offset_point_is_projected(
+    const Settings* d, int ci, unsigned int absoluteMHz) {
+    return !(desired_curve_point_in_explicit_lock_tail(d, ci) && absoluteMHz == d->lockMHz);
+}
+
+// Clear stale GPU-offset provenance on locked-tail points whose frequency
+// matches the lock target (for example after inferring a lock from a legacy
+// curve).
+template <class Settings>
+static inline int desired_clear_explicit_lock_tail_projection_flags(Settings* d) {
+    if (!d || !d->hasLock || d->lockCi < 0 || d->lockCi >= VF_NUM_POINTS || d->lockMHz == 0)
+        return 0;
+    int cleared = 0;
+    for (int ci = d->lockCi; ci < VF_NUM_POINTS; ++ci) {
+        if (d->hasCurvePoint[ci] && d->curvePointFromGpuOffset[ci] &&
+            d->curvePointMHz[ci] == d->lockMHz) {
+            d->curvePointFromGpuOffset[ci] = 0;
+            ++cleared;
+        }
+    }
+    return cleared;
+}
+
 template <class Settings>
 static inline DesiredCurvePointKind desired_curve_point_kind(const Settings* d, int ci) {
     if (!d || ci < 0 || ci >= VF_NUM_POINTS) return DESIRED_CURVE_INVALID;

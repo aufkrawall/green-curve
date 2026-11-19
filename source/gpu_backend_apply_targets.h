@@ -19,7 +19,8 @@ static bool apply_measure_provenance_scalar_shift(const DesiredSettings* desired
     int provenancePoints = 0;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         shiftOut[ci] = 0;
-        if (desired->hasCurvePoint[ci] && desired->curvePointFromGpuOffset[ci]) provenancePoints++;
+        if (desired->hasCurvePoint[ci] && desired->curvePointFromGpuOffset[ci] &&
+            !desired_curve_point_in_explicit_lock_tail(desired, ci)) provenancePoints++;
     }
     if (offsetInVfTable || provenancePoints == 0) return false;
     if (!curve_point_scalar_shift_measurable(offsetInVfTable, scalarWritten, scalarBeforeKnownZero)) {

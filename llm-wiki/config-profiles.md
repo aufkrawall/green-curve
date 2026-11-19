@@ -1431,6 +1431,38 @@ profile-silent domain that the active intent claims at exactly 0
 `source/profile_ownership_policy.h`). A non-zero active claim, or the reverse
 direction, still breaks the match; pre-write claims stay strict.
 
+### Lock-tail ownership relaxation and legacy provenance (2026-11-19)
+
+Source anchors: `source/desired_curve_intent.h` (`desired_curve_point_kind_name()`,
+`desired_curve_point_in_explicit_lock_tail()`,
+`desired_base_plus_offset_point_is_projected()`,
+`desired_clear_explicit_lock_tail_projection_flags()`),
+`source/config_profile_repair.cpp`, `source/config_profiles.cpp`,
+`source/linux_port_profiles.cpp`, `source/gpu_backend_apply_targets.h`,
+`source/profile_ownership_policy.h` (`profile_ownership_lock_tail_mismatch_allowed()`),
+`source/desired_settings_helpers.cpp`,
+`tests/profile_lock_tail_ownership_tests.cpp` (12400-12427),
+`tests/regression_main.cpp` (12428-12432), `tools/ui_gates.py`.
+
+A legacy `base_plus_gpu_offset` locked profile stored its flattened tail as
+`lockMHz - gpuOffsetMHz`. On load, `restore_curve_points_from_base_plus_gpu_offset()`
+(and Linux's matching loop) reconstructed `lockMHz` but marked every point
+`curvePointFromGpuOffset[ci] = 1`, including `ci >= lockCi`. GUI Load -> Apply
+expands the locked tail with `curvePointFromGpuOffset[ci] = 0` (absolute
+`lockMHz`), so both pre-write and post-write identity checks failed at the lock
+anchor (`curve intent differs at ci<lockCi>`) and recorded `AD_HOC`, leaving
+the tray menu unticked and the tooltip on "Manual settings". Both loaders now
+keep points at `ci >= lockCi` matching an explicit `lockMHz > 0` absolute (and
+clear stale projection flags if a legacy lock is inferred afterward), while
+leaving pre-tail points and interactive `lockMHz == 0` anchors projected. In
+addition, `relaxedOwnershipRead` accepts differing tail-point representations
+(`absent`, `absolute` at exact `lockHz`, or `projected` at `0`/`lockMHz`) on
+`ci >= lockCi` once both records agree on the explicit lock and authoring, so
+legacy/imported lock-only slots and pre-fix restart snapshots match too;
+pre-write claims, pre-tail points, captured points, and divergent tail
+frequencies remain strict. Mismatch diagnostics now report both sides' point
+kind and value.
+
 ## Curve semantics
 
 A saved VF point carries a number and, separately, what that number IS. The
@@ -1443,7 +1475,7 @@ used to spell the same test twice.
 |--------|---------|-----------|
 | (absent) | `PROFILE_CURVE_DECODE_UNMARKED` — pre-marker file; each platform applies its own compatibility rule | pre-`curve_semantics` builds |
 | `absolute_with_origin` | absolute MHz per point, plus `pointN_from_gpu_offset=1` on the projected ones | 0.26.0 onward, **every** save path |
-| `base_plus_gpu_offset` | whole-section: stored MHz are BASE, the GPU-offset component is added back on load, and every restored point becomes offset-derived | up to 0.25.2 — **read only** now |
+| `base_plus_gpu_offset` | whole-section: stored MHz are BASE, the GPU-offset component is added back on load; pre-tail/unlocked points become offset-derived, while explicit locked-tail points matching `lockMHz` stay absolute | up to 0.25.2 — **read only** now |
 | anything else | `PROFILE_CURVE_DECODE_ABSOLUTE` — a marker from a newer build; the numbers are read as absolute | future builds |
 
 **Why `absolute_with_origin` exists (F-CURVE-PROVENANCE).** `DesiredSettings`

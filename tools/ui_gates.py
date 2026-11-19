@@ -836,6 +836,22 @@ def check_service_profile_identity_survives_a_delta_apply(ctx, require_text,
                  "intent replacement follows the pure policy, not the "
                  "recorded source")
 
+    # Legacy base_plus_gpu_offset locked-tail points reconstruct as absolute
+    # lockMHz (matching GUI capture), and relaxed ownership treats lock-tail
+    # representations consistent with an agreed explicit lock as equivalent.
+    require_text(_p(ctx, "config_profile_repair.cpp"),
+                 "desired_base_plus_offset_point_is_projected(",
+                 "Windows base_plus_gpu_offset restore keeps explicit lock-tail points absolute")
+    require_text(_p(ctx, "linux_port_profiles.cpp"),
+                 "desired_base_plus_offset_point_is_projected(",
+                 "Linux base_plus_gpu_offset restore keeps explicit lock-tail points absolute")
+    require_text(_p(ctx, "config_profiles.cpp"),
+                 "desired_clear_explicit_lock_tail_projection_flags(",
+                 "inferred locks clear stale projection flags on the lock tail")
+    require_text(_p(ctx, "desired_settings_helpers.cpp"),
+                 "profile_ownership_lock_tail_mismatch_allowed(",
+                 "relaxed ownership checks use the shared lock-tail equivalence policy")
+
 
 def check_apply_in_flight_presentation(ctx, require_text, forbid_text):
     """An apply that is still running says so, on every surface.

@@ -46,7 +46,7 @@ static bool desired_bool_equal(gc_bool8 lhs, gc_bool8 rhs) {
 }
 
 // `relaxedOwnershipRead` is the post-write/indicator question "is this profile
-// what is now in force?"; see profile_ownership_policy.h for the two domain
+// what is now in force?"; see profile_ownership_policy.h for the domain
 // relaxations it permits.  Pre-write profile claims pass false.
 static bool desired_settings_match_active_service_intent(const DesiredSettings* profile, const DesiredSettings* active, char* detail, size_t detailSize, bool relaxedOwnershipRead) {
     if (!profile || !active) {
@@ -204,11 +204,53 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
         }
     }
 
+    const bool lockMatchesExplicit = profile->hasLock && active->hasLock &&
+        profile->lockCi >= 0 && profile->lockCi < VF_NUM_POINTS &&
+        profile->lockMHz > 0;
+    const long long lockHz = lockMatchesExplicit
+        ? (profile->authoring.lockPrecise ? profile->authoring.lockFrequencyHz
+                                          : (long long)profile->lockMHz * 1000000LL)
+        : 0;
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        if (!desired_curve_point_semantically_equal(profile, active, ci)) {
-            set_message(detail, detailSize, "curve intent differs at ci%d", ci);
-            return false;
+        if (desired_curve_point_semantically_equal(profile, active, ci)) continue;
+        const DesiredCurvePointKind profileKind = desired_curve_point_kind(profile, ci);
+        const DesiredCurvePointKind activeKind = desired_curve_point_kind(active, ci);
+        const long long profileHz = profile->authoring.pointFrequencyPrecise[ci]
+            ? profile->authoring.pointFrequencyHz[ci]
+            : (long long)profile->curvePointMHz[ci] * 1000000LL;
+        const long long activeHz = active->authoring.pointFrequencyPrecise[ci]
+            ? active->authoring.pointFrequencyHz[ci]
+            : (long long)active->curvePointMHz[ci] * 1000000LL;
+        if (profile_ownership_lock_tail_mismatch_allowed(
+                relaxedOwnershipRead, lockMatchesExplicit,
+                lockMatchesExplicit ? profile->lockCi : -1,
+                lockHz, lockMatchesExplicit ? profile->lockMHz : 0u, ci,
+                profileKind, profileHz, profile->curvePointMHz[ci],
+                activeKind, activeHz, active->curvePointMHz[ci])) {
+            continue;
         }
+        if (profileKind == DESIRED_CURVE_CAPTURED || activeKind == DESIRED_CURVE_CAPTURED) {
+            set_message(detail, detailSize,
+                "curve intent differs at ci%d (profile=%s/%lld active=%s/%lld)",
+                ci,
+                desired_curve_point_kind_name(profileKind),
+                profileKind == DESIRED_CURVE_CAPTURED
+                    ? profile->curvePointCapturedOffsetHz[ci]
+                    : (long long)profile->curvePointMHz[ci],
+                desired_curve_point_kind_name(activeKind),
+                activeKind == DESIRED_CURVE_CAPTURED
+                    ? active->curvePointCapturedOffsetHz[ci]
+                    : (long long)active->curvePointMHz[ci]);
+        } else {
+            set_message(detail, detailSize,
+                "curve intent differs at ci%d (profile=%s/%u active=%s/%u)",
+                ci,
+                desired_curve_point_kind_name(profileKind),
+                profile->curvePointMHz[ci],
+                desired_curve_point_kind_name(activeKind),
+                active->curvePointMHz[ci]);
+        }
+        return false;
     }
 
     set_message(detail, detailSize, "active service intent matches profile");

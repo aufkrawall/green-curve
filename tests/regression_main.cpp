@@ -1085,6 +1085,9 @@ int run_windows_vf_verified_write_tests();
 // Settings changed by another tool: Reset's live readback decision
 // (tests/external_oc_change_tests.cpp, 12380-12399).
 int run_external_oc_change_tests();
+// Legacy base_plus_gpu_offset locked-tail provenance and ownership matching
+// (tests/profile_lock_tail_ownership_tests.cpp, 12400-12427).
+int run_profile_lock_tail_ownership_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2835,6 +2838,10 @@ static int run_all_tests(int argc, char** argv) {
         fprintf(stderr, "External clock change regression failed: %d\n", externalChangeFailure);
         return externalChangeFailure;
     }
+    if (int lockTailOwnershipFailure = run_profile_lock_tail_ownership_tests()) {
+        fprintf(stderr, "Profile lock-tail ownership regression failed: %d\n", lockTailOwnershipFailure);
+        return lockTailOwnershipFailure;
+    }
     if (int captureFailure = run_hardware_capture_tests()) {
         fprintf(stderr, "hardware capture regression failed: %d\n", captureFailure);
         return captureFailure;
@@ -3152,6 +3159,32 @@ static int run_all_tests(int argc, char** argv) {
             return 5214;
         if (plain.curvePointMHz[70] != 2797u) return 5215;
         if (plain.curvePointFromGpuOffset[70]) return 5216;
+
+        // A legacy base_plus_gpu_offset profile WITH an explicit lock target
+        // stored its flattened tail as (lockMHz - gpuOffsetMHz).  Re-adding
+        // the offset restores lockMHz; pre-tail points remain projected, while
+        // the locked tail (ci >= lockCi matching lockMHz) is absolute so a GUI
+        // Load -> Apply matches the stored slot and ticks the tray menu.
+        DesiredSettings lockedLegacy = {};
+        lockedLegacy.hasGpuOffset = 1; lockedLegacy.gpuOffsetMHz = 475;
+        lockedLegacy.hasLock = 1; lockedLegacy.lockCi = 76; lockedLegacy.lockMHz = 2957;
+        lockedLegacy.lockMode = LOCK_MODE_FLATTEN;
+        lockedLegacy.hasCurvePoint[70] = 1; lockedLegacy.curvePointMHz[70] = 2322;
+        lockedLegacy.hasCurvePoint[75] = 1; lockedLegacy.curvePointMHz[75] = 2442;
+        lockedLegacy.hasCurvePoint[76] = 1; lockedLegacy.curvePointMHz[76] = 2482;
+        lockedLegacy.hasCurvePoint[77] = 1; lockedLegacy.curvePointMHz[77] = 2482;
+        restore_curve_points_from_base_plus_gpu_offset(&lockedLegacy);
+        if (lockedLegacy.curvePointMHz[70] != 2797u || !lockedLegacy.curvePointFromGpuOffset[70]) return 12428;
+        if (lockedLegacy.curvePointMHz[75] != 2917u || !lockedLegacy.curvePointFromGpuOffset[75]) return 12429;
+        if (lockedLegacy.curvePointMHz[76] != 2957u || lockedLegacy.curvePointFromGpuOffset[76]) return 12430;
+        if (lockedLegacy.curvePointMHz[77] != 2957u || lockedLegacy.curvePointFromGpuOffset[77]) return 12431;
+        // Interactive stored lock with lockMHz == 0 still preserves anchor provenance.
+        DesiredSettings noLockTarget = {};
+        noLockTarget.hasGpuOffset = 1; noLockTarget.gpuOffsetMHz = 475;
+        noLockTarget.hasLock = 1; noLockTarget.lockCi = 76; noLockTarget.lockMHz = 0;
+        noLockTarget.hasCurvePoint[76] = 1; noLockTarget.curvePointMHz[76] = 2482;
+        restore_curve_points_from_base_plus_gpu_offset(&noLockTarget);
+        if (noLockTarget.curvePointMHz[76] != 2957u || !noLockTarget.curvePointFromGpuOffset[76]) return 12432;
         gc_DeleteFileUtf8(argv[1]);
     }
 

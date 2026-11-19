@@ -1,5 +1,22 @@
 # Testing
 
+## Legacy locked-profile tail provenance and ownership matching (2026-11-19)
+
+`tests/profile_lock_tail_ownership_tests.cpp` (`12400-12427`) pins
+`desired_base_plus_offset_point_is_projected()`,
+`desired_clear_explicit_lock_tail_projection_flags()`,
+`profile_ownership_lock_tail_mismatch_allowed()`, and executes production
+`desired_settings_match_active_service_intent()` directly on a locked legacy
+slot (pre-write strict match, delta post-write match, lock-only profile without
+tail points, pre-fix active snapshot with projected tail flags, and pre-tail
+edits reporting both sides' kind/value). `tests/regression_main.cpp`
+(`12428-12432`) executes production `restore_curve_points_from_base_plus_gpu_offset()`
+on a locked `base_plus_gpu_offset` curve and on a `lockMHz == 0` interactive
+anchor. `tools/ui_gates.py` pins both Windows/Linux loaders, inferred-lock
+cleanup, and the relaxed ownership helper. Software-verified via fixtures and
+full builds; live GUI Load->Apply on hardware remains to be re-run with the
+updated binaries.
+
 ## Editor base record overlay (2026-11-19)
 
 `tests/gui_editor_base_tests.cpp` (12320-12333) pins

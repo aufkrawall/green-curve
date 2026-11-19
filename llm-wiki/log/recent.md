@@ -5,6 +5,41 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: GUI Load -> Apply of a legacy locked profile lost the tray slot tick
+
+- Reported: loading and applying a saved locked profile slot from the main
+  window succeeded, but the tray context menu showed no active-slot checkmark
+  and the tooltip reported "Manual settings".
+- Root cause: the slot was saved in the legacy `curve_semantics=base_plus_gpu_offset`
+  format with an explicit lock target. `restore_curve_points_from_base_plus_gpu_offset()`
+  (and Linux's matching loop) reconstructed the locked tail (`ci >= lockCi`)
+  back to `lockMHz` but marked every restored point `curvePointFromGpuOffset=1`
+  (`DESIRED_CURVE_PROJECTED`), whereas `capture_gui_desired_settings()` emits
+  locked-tail points as `DESIRED_CURVE_ABSOLUTE` (`curvePointFromGpuOffset=0`).
+  Both pre-write and post-write service identity checks rejected the slot at
+  the lock anchor (`curve intent differs at ci76`) and recorded `AD_HOC`.
+  Tray/logon applies had stayed unaffected because they sent the loaded record
+  verbatim without passing through GUI capture.
+- Fix: shared provenance helpers (`desired_base_plus_offset_point_is_projected()`,
+  `desired_clear_explicit_lock_tail_projection_flags()` in
+  `source/desired_curve_intent.h`) keep explicit locked-tail points matching
+  `lockMHz` absolute in Windows/Linux legacy restore and after inferred-lock
+  detection, while preserving pre-tail projections and `lockMHz == 0` anchor
+  provenance (`gpu_backend_apply_targets.h` also skips explicit lock-tail
+  points when counting provenance points). Relaxed ownership reads
+  (`profile_ownership_lock_tail_mismatch_allowed()` in
+  `source/profile_ownership_policy.h`, `source/desired_settings_helpers.cpp`)
+  also accept lock-consistent tail representations (`absent`, `absolute` at
+  `lockHz`, or `projected` at `0`/`lockMHz`) once both records agree on the
+  explicit lock and authoring, and curve-mismatch diagnostics now report both
+  sides' kind and value.
+- Coverage: `tests/profile_lock_tail_ownership_tests.cpp` (`12400-12427`,
+  executing production `desired_settings_match_active_service_intent()`),
+  `tests/regression_main.cpp` (`12428-12432`, executing production
+  `restore_curve_points_from_base_plus_gpu_offset()`), and gates in
+  `tools/ui_gates.py`. Hardware GUI re-test with installed updated binaries
+  remains pending.
+
 ## 2026-11-19: Reset after another tool's reset stalled for ~50 s
 
 - Reported: apply a profile in another tool, start the GUI, reset in that
