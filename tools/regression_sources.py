@@ -32,6 +32,7 @@ REGRESSION_SOURCES = (
     'crash_dump_notice_tests.cpp',
     'module_version_tests.cpp',
     'restart_snapshot_cleanup_tests.cpp',
+    'service_reset_lock_tests.cpp',
     'driver_recovery_sequence_tests.cpp',
     'peer_stall_tests.cpp',
     'gpu_location_role_tests.cpp',

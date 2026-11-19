@@ -546,6 +546,23 @@ static bool service_reset_all(char* result, size_t resultSize,
     EnterCriticalSection(&g_appLock);
     g_serviceActiveProfileSource = SERVICE_PROFILE_SOURCE_NONE;
     g_serviceActiveProfileSlot = 0;
+    // Dropping the intent above does not drop the lock markers: live detection
+    // no longer touches markers it does not own, and the snapshot reports them
+    // whenever no active desired lock exists.  Without this the RESET envelope
+    // carried the old lock and the GUI re-adopted it over a stock driver
+    // (service_reset_lock_policy.h).  A retained cap keeps them on purpose.
+    const bool lockMarkersClaimed = service_lock_markers_claim_lock(g_app);
+    const bool releaseLockMarkers =
+        service_reset_releases_lock_markers(recovery);
+    if (releaseLockMarkers) service_clear_lock_markers(&g_app);
+    debug_log("service_reset_all: lock markers %s (claimed=%d curveVerified=%d gpuOffsetVerified=%d restrictionReleased=%d transitionCap=%d)\n",
+        releaseLockMarkers
+            ? (lockMarkersClaimed ? "cleared" : "already clear")
+            : (lockMarkersClaimed ? "RETAINED with the clock restriction" : "clear; restriction not proven released"),
+        lockMarkersClaimed ? 1 : 0,
+        recovery.curve.verified ? 1 : 0, recovery.gpuOffset.verified ? 1 : 0,
+        recovery.restrictionReleased ? 1 : 0,
+        g_app.transitionClockCapActive ? 1 : 0);
     LeaveCriticalSection(&g_appLock);
 
     // Clear persisted runtime state BEFORE refreshing so the refresh sees the

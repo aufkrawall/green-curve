@@ -488,6 +488,7 @@ static void set_gui_state_dirty(bool dirty) {
 }
 
 #include "gpu_lock_ownership_policy.h"
+#include "service_reset_lock_policy.h"
 
 static bool gui_state_dirty() {
     return g_app.guiStateDirty;

@@ -934,6 +934,30 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(_p(ctx, "main_service_apply_runtime.cpp"),
                  "The clock lock could not be released because NVML is not ready",
                  "an unattempted lock release is a failed Reset when a lock may exist")
+    # A successful Reset drops the lock markers before the post-reset refresh
+    # and snapshot (service_reset_lock_policy.h): live detection never clears
+    # markers it does not own, so a Reset that left them made every later
+    # snapshot report the old lock over a stock driver.
+    reset_runtime_cpp = _p(ctx, "main_service_apply_runtime.cpp")
+    require_order_in_operation(
+        reset_runtime_cpp, "static bool service_reset_all(",
+        "g_serviceHasActiveDesired = false;",
+        "if (releaseLockMarkers) service_clear_lock_markers(&g_app);",
+        "Reset clears the lock markers together with the dropped intent")
+    require_order_in_operation(
+        reset_runtime_cpp, "static bool service_reset_all(",
+        "if (releaseLockMarkers) service_clear_lock_markers(&g_app);",
+        "if (!refresh_global_state(detail, sizeof(detail))) {",
+        "Reset clears the lock markers before the post-reset refresh and snapshot")
+    require_text(reset_runtime_cpp,
+                 "service_reset_releases_lock_markers(recovery);",
+                 "only a verified, released lock domain clears the Reset's lock markers")
+    require_text(_p(ctx, "main_state_sync.cpp"),
+                 "service_snapshot_lock_projection(snapshotLockFromActiveDesired,",
+                 "the service snapshot reports its lock through the tested projection")
+    require_text(_p(ctx, "gpu_backend_apply.cpp"),
+                 "service_clear_lock_markers(&g_app);",
+                 "a no-lock Apply and a Reset clear the same lock markers")
 
     # The VEH recognises every NVAPI/NVML image, not one literal spelling.
     crash_cpp = _p(ctx, "main_crash_artifacts.cpp")

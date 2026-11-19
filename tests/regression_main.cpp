@@ -1001,6 +1001,9 @@ int run_crash_dump_notice_tests();
 int run_module_version_tests();
 // Handle-bound restart snapshot cleanup (7190-7198, native Windows).
 int run_restart_snapshot_cleanup_tests();
+// What a Reset leaves of the service lock record and which lock the snapshot
+// reports from it (tests/service_reset_lock_tests.cpp, 12240-12252).
+int run_service_reset_lock_tests();
 // A driver update scripted through driver_recovery_flow.h with the real
 // reducer and recovery policies (tests/driver_recovery_sequence_tests.cpp,
 // 7210-7239).
@@ -1911,6 +1914,10 @@ int main(int argc, char** argv) {
     if (int cleanupFailure = run_restart_snapshot_cleanup_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", cleanupFailure);
         return cleanupFailure;
+    }
+    if (int resetLockFailure = run_service_reset_lock_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", resetLockFailure);
+        return resetLockFailure;
     }
     if (int sequenceFailure = run_driver_recovery_sequence_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", sequenceFailure);

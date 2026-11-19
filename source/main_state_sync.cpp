@@ -156,26 +156,35 @@ static void populate_service_snapshot_locked(ServiceSnapshot* snapshot,
         && g_serviceActiveDesired.lockCi < VF_NUM_POINTS
         && g_serviceActiveDesired.lockMHz > 0
         && !reapplyPending;
-    if (snapshotLockFromActiveDesired) {
-        snapshot->hasLock = true;
-        snapshot->lockCi = g_serviceActiveDesired.lockCi;
-        snapshot->lockMHz = g_serviceActiveDesired.lockMHz;
-        snapshot->lockMode = (int)g_serviceActiveDesired.lockMode;
-        snapshot->lockTracksAnchor = g_serviceActiveDesired.lockTracksAnchor;
-        if (snapshot->lockCi != g_app.lockedCi || snapshot->lockMHz != g_app.lockedFreq) {
-            debug_log("populate_service_snapshot: reporting active desired lock ci=%d mhz=%u mode=%s instead of live-detected ci=%d mhz=%u\n",
-                snapshot->lockCi,
-                snapshot->lockMHz,
-                lock_mode_name(g_serviceActiveDesired.lockMode),
-                g_app.lockedCi,
-                g_app.lockedFreq);
-        }
-    } else {
-        snapshot->hasLock = (g_app.lockedCi >= 0 && g_app.lockedFreq > 0);
-        snapshot->lockCi = g_app.lockedCi;
-        snapshot->lockMHz = g_app.lockedFreq;
-        snapshot->lockMode = (int)g_app.lockMode;
-        snapshot->lockTracksAnchor = g_app.guiLockTracksAnchor;
+    // Without an active desired lock the markers are the only source
+    // (service_reset_lock_policy.h), so whatever clears intent must clear them.
+    const ServiceSnapshotLockProjection lockProjection =
+        service_snapshot_lock_projection(snapshotLockFromActiveDesired,
+            g_serviceActiveDesired, g_app);
+    snapshot->hasLock = lockProjection.hasLock;
+    snapshot->lockCi = lockProjection.lockCi;
+    snapshot->lockMHz = lockProjection.lockMHz;
+    snapshot->lockMode = lockProjection.lockMode;
+    snapshot->lockTracksAnchor = lockProjection.lockTracksAnchor;
+    if (snapshotLockFromActiveDesired &&
+        (snapshot->lockCi != g_app.lockedCi || snapshot->lockMHz != g_app.lockedFreq)) {
+        debug_log("populate_service_snapshot: reporting active desired lock ci=%d mhz=%u mode=%s instead of live-detected ci=%d mhz=%u\n",
+            snapshot->lockCi,
+            snapshot->lockMHz,
+            lock_mode_name(g_serviceActiveDesired.lockMode),
+            g_app.lockedCi,
+            g_app.lockedFreq);
+    }
+    if (app_is_service_process() && !snapshotLockFromActiveDesired &&
+        snapshot->hasLock) {
+        // A lock reported without owning intent is either a retained cap after
+        // a failed Reset or a stale record; say which markers produced it.
+        debug_log_on_change("populate_service_snapshot: reporting lock markers without active desired lock ci=%d mhz=%u mode=%s applied=ci%d/%u activeDesired=%d reapplyPending=%d loaded=%d\n",
+            snapshot->lockCi, snapshot->lockMHz,
+            lock_mode_name((LockMode)snapshot->lockMode),
+            g_app.appliedLockCi, g_app.appliedLockFreq,
+            g_serviceHasActiveDesired ? 1 : 0, reapplyPending ? 1 : 0,
+            g_app.loaded ? 1 : 0);
     }
     int snapshotFanMode = current_green_curve_fan_intent_mode();
     int snapshotFanFixedPercent = current_green_curve_fan_intent_fixed_percent();

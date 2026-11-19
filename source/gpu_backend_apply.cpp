@@ -1459,15 +1459,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             lock_mode_name(lockMode),
             desired->lockTracksAnchor ? 1 : 0);
     } else if (app_is_service_process() && coreFailCount == 0 && (curveTouched || desired->hasGpuOffset || hasCurveEdits)) {
-        g_app.lockedVi = -1;
-        g_app.lockedCi = -1;
-        g_app.lockedFreq = 0;
-        g_app.lockMode = LOCK_MODE_NONE;
-        g_app.appliedLockVi = -1;
-        g_app.appliedLockCi = -1;
-        g_app.appliedLockFreq = 0;
-        g_app.appliedLockMode = LOCK_MODE_NONE;
-        g_app.guiLockTracksAnchor = true;
+        service_clear_lock_markers(&g_app);
         debug_log("post-apply lock clear: no lock requested; cleared stale service lock markers\n");
     }
     capture_last_operation_snapshot(g_lastOperationAfterSnapshot, sizeof(g_lastOperationAfterSnapshot));
