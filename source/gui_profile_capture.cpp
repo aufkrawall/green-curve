@@ -234,6 +234,11 @@ static GC_NOINLINE bool gui_profile_capture_handle_completion(GuiServiceIoComple
         (unsigned long long)completion->captureToken, (unsigned)response.capture.capturedDomains,
         (unsigned)response.capture.omittedDomains, profile_capture_available_representations(*g_profileCaptureProposals),
         profile_capture_representation_name(g_profileCaptureProposals->suggested));
+    char proposalLine[512];
+    profile_capture_proposal_log_line(g_profileCaptureProposals->flatten, "flatten", proposalLine, sizeof(proposalLine));
+    debug_log("%s\n", proposalLine);
+    profile_capture_proposal_log_line(g_profileCaptureProposals->pin, "pin", proposalLine, sizeof(proposalLine));
+    debug_log("%s\n", proposalLine);
     return true;
 }
 static bool gui_profile_capture_allocation_failed(gc_u64 token) {

@@ -10,8 +10,13 @@ static inline void hardware_capture_aux(const HardwareCaptureContext& c, Hardwar
     auto snap = std::make_unique<XbarControlSnapshot>();
     const bool ok = get && xbar_read_control_quiet(get, c.gpuHandle, snap.get());
     const int status = ok ? 0 : !get ? -100001 : snap->rejectedCount ? snap->rejectedStatus[0] : -100002;
-    const auto scalar = [](HardwareCaptureScalar& s, gc_i64 value, gc_i64 grid) {
-        s.valid = 1; s.value = value; s.grid = grid;
+    // Like the NVML scalars, "writable" names a resolvable setter entry point,
+    // not a capability proof; the apply still owns its own write checks. A
+    // missing flag made every advanced clock look unwritable to the control
+    // planner.
+    const bool settable = c.query && c.query(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL) != nullptr;
+    const auto scalar = [settable](HardwareCaptureScalar& s, gc_i64 value, gc_i64 grid) {
+        s.valid = 1; s.value = value; s.grid = grid; s.writable = gc_bool8_from_bool(settable);
     };
     if (ok) {
         if (out.requestedDomains & PROFILE_DOMAIN_XBAR) {

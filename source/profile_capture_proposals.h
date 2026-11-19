@@ -5,6 +5,7 @@
 #include "hardware_capture_runtime.h"
 #include "profile_capture_representation.h"
 #include "profile_control_feasibility.h"
+#include "profile_document_domains.h"
 #include "profile_pin_observation.h"
 #include "vf_flat_tail_recognition.h"
 #include "service_protocol.h"
@@ -78,16 +79,24 @@ static inline void profile_capture_proposal_reason(ProfileCaptureLockProposal &p
     proposal.controls.disposition = status;
     snprintf(proposal.reason, sizeof(proposal.reason), "%s", reason);
 }
+// Judges one curve representation. Exact, flatten and pin carry memory,
+// power, fan and the advanced clocks identically, and the user includes or
+// leaves out each of those as its own row, so their writability must not
+// decide which curve representation is offered. Only the curve, the core
+// offset it may follow and the lock are judged here; the saved document
+// itself keeps every captured domain.
 static inline void profile_capture_check_proposal(const HardwareCaptureObservation &observation,
                                                   ProfileCaptureLockProposal &proposal) {
     auto runtime = std::make_unique<DesiredSettings>();
     auto mapping = std::make_unique<ProfileMappingReport>();
     auto destination = std::make_unique<ProfileDestinationTopology>();
+    auto judged = std::make_unique<ProfileDocument>(proposal.document);
     ProfileRuntimeRoutes routes;
-    routes.graphics = proposal.document.graphicsOffset.present ? observation.graphics.surface : 0;
-    routes.memory = observation.memory.surface;
-    if (!profile_destination_from_capture(observation, *destination, proposal.reason, sizeof(proposal.reason)) ||
-        !profile_resolve_runtime(proposal.document, *destination, 1, routes, *runtime, *mapping, proposal.reason,
+    routes.graphics = judged->graphicsOffset.present ? observation.graphics.surface : 0;
+    if (!profile_document_drop_domains(*judged, PROFILE_DOCUMENT_NON_CURVE_DOMAINS, proposal.reason,
+                                       sizeof(proposal.reason)) ||
+        !profile_destination_from_capture(observation, *destination, proposal.reason, sizeof(proposal.reason)) ||
+        !profile_resolve_runtime(*judged, *destination, 1, routes, *runtime, *mapping, proposal.reason,
                                  sizeof(proposal.reason))) {
         proposal.controls.disposition = PROFILE_CONTROL_UNAVAILABLE;
         return;
@@ -331,6 +340,20 @@ static inline bool profile_capture_apply_pin_observation(const HardwareCaptureOb
         proposals.flatten.frequencyHz == pin.frequencyHz;
     proposals.conflictingTargets = proposals.flatten.recognized && pin.recognized && !proposals.sameTarget;
     return true;
+}
+// One bounded debug line per lock representation: whether it was recognized,
+// why it is or is not offered, and its anchor/target. Frontends log both
+// after every review so a missing choice can be explained from the log.
+static inline void profile_capture_proposal_log_line(const ProfileCaptureLockProposal& p, const char* name,
+    char* out, size_t size) {
+    if (!out || !size) return;
+    snprintf(out, size,
+        "profile-capture: proposal=%s recognized=%d offered=%d disposition=%s anchorUv=%lld hz=%lld tail=%d "
+        "maxDeviationHz=%lld provenance=%d reason=%s",
+        name ? name : "?", p.recognized ? 1 : 0, p.selectable() ? 1 : 0,
+        profile_control_disposition_name(p.controls.disposition), (long long)p.anchorVoltageUv,
+        (long long)p.frequencyHz, p.tailCount, (long long)p.maximumDeviationHz, (int)p.provenance,
+        p.reason[0] ? p.reason : "-");
 }
 template <class IO>
 static inline void profile_capture_report_observation_result(IO& io, const PinObservationResult& obs) {

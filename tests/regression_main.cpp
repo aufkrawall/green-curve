@@ -1048,6 +1048,11 @@ int run_profile_commands_tests();
 int run_profile_legacy_ini_tests();
 int run_profile_capture_commands_tests();
 int run_profile_capture_proposals_tests();
+// Curve representations judged on the curve alone, and the advanced-clock
+// setter flag (tests/capture_curve_choice_tests.cpp 12260-12264,
+// tests/capture_aux_writable_tests.cpp 12265-12267).
+int run_capture_curve_choice_tests();
+int run_capture_aux_writable_tests();
 int run_profile_pin_observation_tests();
 int run_profile_mapping_tests();
 int run_profile_conversion_tests();
@@ -2752,6 +2757,14 @@ static int run_all_tests(int argc, char** argv) {
     if (int captureProposalFailure = run_profile_capture_proposals_tests()) {
         fprintf(stderr, "capture proposal regression failed: %d\n", captureProposalFailure);
         return captureProposalFailure;
+    }
+    if (int curveChoiceFailure = run_capture_curve_choice_tests()) {
+        fprintf(stderr, "capture curve choice regression failed: %d\n", curveChoiceFailure);
+        return curveChoiceFailure;
+    }
+    if (int auxWritableFailure = run_capture_aux_writable_tests()) {
+        fprintf(stderr, "capture advanced-clock regression failed: %d\n", auxWritableFailure);
+        return auxWritableFailure;
     }
     if (int pinObservationFailure = run_profile_pin_observation_tests()) {
         fprintf(stderr, "pin observation regression failed: %d\n", pinObservationFailure);

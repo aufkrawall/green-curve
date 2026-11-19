@@ -88,6 +88,11 @@ static inline void tui_capture_read(TuiState& state, Read read) {
     std::snprintf(state.status, sizeof(state.status), "Choose what to include and the slot to save it to");
     linux_debug_logf("profile-capture: stage=review captured=0x%03x omitted=0x%03x choices=0x%x",
         (unsigned)captured.capturedDomains, (unsigned)captured.omittedDomains, state.capture.representations);
+    char proposalLine[512];
+    profile_capture_proposal_log_line(state.captureProposals->flatten, "flatten", proposalLine, sizeof(proposalLine));
+    linux_debug_logf("%s", proposalLine);
+    profile_capture_proposal_log_line(state.captureProposals->pin, "pin", proposalLine, sizeof(proposalLine));
+    linux_debug_logf("%s", proposalLine);
 }
 template<class Read, class IO>
 static inline void tui_capture_begin(TuiState& state, Read read, IO& storage) {
