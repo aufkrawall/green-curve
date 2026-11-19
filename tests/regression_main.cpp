@@ -1091,6 +1091,9 @@ int run_profile_lock_tail_ownership_tests();
 // Live VF selective/uniform GPU-offset detection under owned and external
 // programmed flat tails (tests/vf_live_offset_tests.cpp, 12450-12474).
 int run_vf_live_offset_tests();
+// Stock-base VF curve estimation for GUI/TUI previews under driver cross-talk
+// and monotonically clamped flat tails (tests/vf_stock_base_tests.cpp, 12520-12542).
+int run_vf_stock_base_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2848,6 +2851,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int vfLiveOffsetFailure = run_vf_live_offset_tests()) {
         fprintf(stderr, "Live VF offset detection regression failed: %d\n", vfLiveOffsetFailure);
         return vfLiveOffsetFailure;
+    }
+    if (int vfStockBaseFailure = run_vf_stock_base_tests()) {
+        fprintf(stderr, "VF stock-base preview regression failed: %d\n", vfStockBaseFailure);
+        return vfStockBaseFailure;
     }
     if (int captureFailure = run_hardware_capture_tests()) {
         fprintf(stderr, "hardware capture regression failed: %d\n", captureFailure);
@@ -8606,6 +8613,41 @@ static int run_all_tests(int argc, char** argv) {
             return 210;
         if (tail.rule != TUI_POINT_FLATTEN_TAIL || tail.targetMHz != 2957)
             return 211;
+
+        // 12543: Linux TUI preview under driver cross-talk at ci=75 before a
+        // +480 MHz flatten at ci=76 must interpolate ci=75's stock base rather
+        // than stacking +475 MHz onto the cross-talked live readback (3047 MHz).
+        {
+            auto ctService = tuiService;
+            for (int i = 0; i < VF_NUM_POINTS; ++i) {
+                ctService.snapshot.freqOffsets[i] = 0;
+                if (i < 69) {
+                    ctService.snapshot.curve[i].volt_uV = (540u + (unsigned)i * 5u) * 1000u;
+                    ctService.snapshot.curve[i].freq_kHz = (i < 45 ? 180u : 202u + (unsigned)(i - 45) * 85u) * 1000u;
+                } else if (i > 77) {
+                    ctService.snapshot.curve[i].volt_uV = (940u + (unsigned)(i - 78) * 5u) * 1000u;
+                }
+            }
+            ctService.snapshot.gpuClockOffsetkHz = 0;
+            const unsigned int ctMv[] = {885, 890, 895, 900, 910, 915, 920, 925, 935};
+            const unsigned int ctLive[] = {2295, 2332, 2362, 2385, 2407, 2430, 2572, 2962, 2962};
+            for (int k = 0; k < 9; ++k) {
+                ctService.snapshot.curve[69 + k].volt_uV = ctMv[k] * 1000u;
+                ctService.snapshot.curve[69 + k].freq_kHz = ctLive[k] * 1000u;
+            }
+            ctService.snapshot.freqOffsets[76] = 480000;
+            for (int i = 77; i < VF_NUM_POINTS; ++i) {
+                if (ctService.snapshot.curve[i].freq_kHz == 0) continue;
+                ctService.snapshot.curve[i].freq_kHz = 2962000u;
+                ctService.snapshot.freqOffsets[i] = -1000000;
+            }
+            TuiViewModel ctVm = vm;
+            ctVm.service = &ctService;
+            TuiPointValues pt75 = tui_point_values(ctVm, 75);
+            if (pt75.rule != TUI_POINT_GPU_OFFSET || pt75.baseMHz != 2456 ||
+                pt75.targetMHz != 2931)
+                return 12543;
+        }
 
         TuiLayout graphLayout;
         build_tui_layout(vm, 160, 48, &graphLayout);

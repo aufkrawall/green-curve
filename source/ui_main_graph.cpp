@@ -63,7 +63,7 @@ static unsigned int pending_curve_mhz_for_gui_point(int ci) {
         // Stock + the PENDING offset component. The point currently displays
         // stock + the APPLIED component, so reusing its displayed value would
         // silently miss every point a changed GPU offset is about to move.
-        long long targetkHz = (long long)curve_base_khz_for_point(ci)
+        long long targetkHz = (long long)curve_stock_base_khz_for_point(ci)
             + (long long)preview.offsetComponentMHz * 1000LL;
         if (targetkHz < 0) targetkHz = 0;
         if (targetkHz > UINT_MAX) targetkHz = UINT_MAX;

@@ -341,9 +341,9 @@ def check_pending_changes(ctx, require_text, forbid_text):
                  "offset, matching the curve batch")
     require_text(pending_cpp, "gui_pending_mark_gpu_offset_shift",
                  "the pending diff accounts for the global GPU offset")
-    require_text(graph_cpp, "curve_base_khz_for_point(ci)",
-                 "an offset-moved point is projected from stock, matching the "
-                 "apply path rather than its current displayed value")
+    require_text(graph_cpp, "curve_stock_base_khz_for_point(ci)",
+                 "an offset-moved point is projected from the crosstalk-safe stock base, "
+                 "matching the apply path rather than its current displayed value")
 
     # The graph repaint gate has to move when the plotted VALUE moves, not only
     # when the SET of pending points moves.  Retyping the global GPU offset from
@@ -1752,6 +1752,7 @@ def check_all(ctx, require_text, forbid_text):
     check_loaded_lock_reaches_the_draft(ctx, require_text, forbid_text)
     check_editor_builds_on_its_base_record(ctx, require_text, forbid_text)
     check_import_transfer_slots_and_runtime_check(ctx, require_text, forbid_text)
+    check_preview_stock_base_crosstalk_protection(ctx, require_text, forbid_text)
 
 
 def check_observed_editor_lock(ctx, require_text, forbid_text):
@@ -1869,3 +1870,26 @@ def check_import_transfer_slots_and_runtime_check(ctx, require_text, forbid_text
     forbid_text(_p(ctx, "gui_profile_transfer.cpp"),
                 "if (!profile_document_requires_destination(document)) continue;",
                 "Windows import note must not skip indexed records")
+
+
+def check_preview_stock_base_crosstalk_protection(ctx, require_text, forbid_text):
+    """GUI and TUI curve previews project offset-shifted points through the
+    shared stock-base estimator (vf_stock_base_policy.h) rather than raw
+    live-minus-offset, so driver cross-talk on untouched neighbors of a large
+    flatten step (or monotonically clamped tails) cannot inflate previews."""
+    sync = _p(ctx, "main_state_sync.cpp")
+    ctx.require_order_in_operation(
+        sync, "static void apply_service_snapshot_to_app(",
+        "rebuild_visible_map();",
+        "update_gui_stock_base_estimate();",
+        "snapshot adoption refreshes the cached stock-base estimate after rebuilding the floor topology")
+    require_text(_p(ctx, "main_runtime_gpu.cpp"), "vf_stock_curve_cache_observe(",
+                 "Windows GUI retains observed unshaped stock snapshots for preview alignment")
+    require_text(_p(ctx, "main_runtime_gpu.cpp"), "vf_estimate_stock_base(",
+                 "Windows GUI estimates stock bases through the shared crosstalk-safe policy")
+    require_text(_p(ctx, "ui_main_graph.cpp"), "curve_stock_base_khz_for_point(ci)",
+                 "Windows graph preview reads the crosstalk-safe stock base")
+    forbid_text(_p(ctx, "ui_main_graph.cpp"), "curve_base_khz_for_point(",
+                "Windows graph preview must not read raw live-minus-offset directly")
+    require_text(_p(ctx, "linux_tui_layout.cpp"), "vf_estimate_stock_base(",
+                 "Linux TUI preview estimates stock bases through the shared crosstalk-safe policy")

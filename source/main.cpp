@@ -605,6 +605,8 @@ static bool curve_section_uses_base_plus_gpu_offset_semantics(const char* path, 
 static void restore_curve_points_from_base_plus_gpu_offset(DesiredSettings* desired);
 static void repair_profile_locked_curve_readback_artifacts(const char* path, const char* section, int slot, DesiredSettings* desired, ProfileReadMode mode = PROFILE_READ_FOR_EDITOR);
 static int curve_base_khz_for_point(int pointIndex);
+static void update_gui_stock_base_estimate();
+static int curve_stock_base_khz_for_point(int pointIndex);
 static void persist_runtime_selective_gpu_offset_request(int gpuOffsetMHz, int excludeLowCount);
 static void clear_runtime_selective_gpu_offset_request();
 static void resolve_displayed_live_gpu_offset_state_for_gui(int* gpuOffsetMHzOut, int* excludeLowCountOut);

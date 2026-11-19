@@ -81,6 +81,49 @@ static int curve_base_khz_for_point(int pointIndex) {
     return (int)base;
 }
 
+// Refresh the cached stock-base estimate from the latest snapshot. Unshaped
+// snapshots refresh the topology-bound stock curve cache; shaped snapshots
+// correct cross-talked neighbors and monotonically clamped tails so GUI
+// previews never stack offsets onto driver cross-talk or clamped tail deltas.
+static void update_gui_stock_base_estimate() {
+    const bool hardPinned = g_app.appliedLockMode == LOCK_MODE_HARD &&
+        g_app.appliedLockFreq > 0;
+    const bool captured = vf_stock_curve_cache_observe(
+        &g_app.stockCurveCache, g_app.curve, g_app.freqOffsets,
+        g_app.vfFloorBinding.floor, g_app.gpuClockOffsetkHz, hardPinned);
+    if (captured) {
+        debug_log_on_change("gui stock base: captured unshaped stock snapshot topologyKey=0x%08X end=%d\n",
+            g_app.stockCurveCache.topologyKey, g_app.stockCurveCache.graphicsEnd);
+    }
+    g_app.stockBaseEstimate = vf_estimate_stock_base(
+        g_app.curve, g_app.freqOffsets, g_app.vfFloorBinding.floor,
+        &g_app.stockCurveCache, g_app.gpuClockOffsetkHz);
+    if (g_app.stockBaseEstimate.crosstalkCount > 0 ||
+        g_app.stockBaseEstimate.clampedTailCount > 0) {
+        debug_log_on_change(
+            "gui stock base: source=%s thermalDelta=%lld kHz refs=%d crosstalk=%d firstCi=%d raw=%lld->est=%lld kHz clampedTail=%d firstTailCi=%d\n",
+            g_app.stockBaseEstimate.usedCachedStock ? "cached-stock" : "shaped-interp",
+            g_app.stockBaseEstimate.thermalDeltaKHz,
+            g_app.stockBaseEstimate.referenceCount,
+            g_app.stockBaseEstimate.crosstalkCount,
+            g_app.stockBaseEstimate.firstCrosstalkCi,
+            g_app.stockBaseEstimate.firstCrosstalkRawKHz,
+            g_app.stockBaseEstimate.firstCrosstalkEstKHz,
+            g_app.stockBaseEstimate.clampedTailCount,
+            g_app.stockBaseEstimate.firstClampedTailCi);
+    }
+}
+
+static int curve_stock_base_khz_for_point(int pointIndex) {
+    if (pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return 0;
+    if (g_app.stockBaseEstimate.valid && g_app.stockBaseEstimate.baseKHz[pointIndex] > 0) {
+        long long base = g_app.stockBaseEstimate.baseKHz[pointIndex];
+        if (base > INT_MAX) base = INT_MAX;
+        return (int)base;
+    }
+    return curve_base_khz_for_point(pointIndex);
+}
+
 static int curve_delta_khz_for_target_display_mhz_unclamped(int pointIndex, unsigned int displayMHz) {
     long long target = (long long)raw_curve_khz_from_display_mhz(displayMHz);
     long long base = (long long)curve_base_khz_for_point(pointIndex);

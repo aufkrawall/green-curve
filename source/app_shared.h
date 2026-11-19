@@ -129,6 +129,7 @@
 #include "vf_point_visibility_policy.h"
 #include "vf_writable_point_policy.h"
 #include "vf_flat_tail_recognition.h"
+#include "vf_stock_base_policy.h"
 #include "vf_live_offset_policy.h"
 // OS-abstraction shim (dynamic loading, sleep, atomics, threads, bounded
 // strings, subprocess capture) used by the shared backend.
@@ -553,6 +554,10 @@ struct AppData {
     // Flat low-voltage floor, decided once per topology binding
     // (vf_writable_point_policy.h); visibleMap lists outside it below 700 mV.
     VfFloorBinding vfFloorBinding;
+    // Observed unshaped stock curve cache and derived stock-base estimate for
+    // GUI curve previews (vf_stock_base_policy.h).
+    VfStockCurveCache stockCurveCache;
+    VfStockBaseEstimate stockBaseEstimate;
 
     int lockedVi;
     int lockedCi;

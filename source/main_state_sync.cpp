@@ -440,6 +440,7 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot,
     g_app.backgroundServiceOwnerSessionId = snapshot->ownerSessionId;
     g_app.backgroundServiceOwnerUtcMs = snapshot->ownerUtcMs;
     rebuild_visible_map();
+    update_gui_stock_base_estimate();
     // A flatten another tool set is shown as the editor lock; the stale-lock
     // clear below must not withdraw that projection every second.
     const bool editorShowsObservedLock = project_observed_external_lock(snapshot);

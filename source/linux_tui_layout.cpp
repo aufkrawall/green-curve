@@ -5,6 +5,7 @@
 #include "linux_tui_layout_transfer.h"
 #include "linux_tui_authority.h"
 #include "vf_writable_point_policy.h"
+#include "vf_stock_base_policy.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -319,8 +320,15 @@ TuiPointValues tui_point_values(const TuiViewModel& vm, int pointIndex) {
     for (int i = 0; i < pointIndex; ++i)
         if (snapshot.curve[i].freq_kHz != 0) ++out.ordinal;
     out.voltageMv = snapshot.curve[pointIndex].volt_uV / 1000u;
-    long long baseKHz = (long long)snapshot.curve[pointIndex].freq_kHz -
-                        (long long)snapshot.freqOffsets[pointIndex];
+    const VfFloorTopology floor = vf_floor_topology_compute(
+        snapshot.curve, snapshot.freqOffsets, VF_NUM_POINTS);
+    const VfStockBaseEstimate stockBase = vf_estimate_stock_base(
+        snapshot.curve, snapshot.freqOffsets, floor, nullptr,
+        snapshot.gpuClockOffsetkHz);
+    long long baseKHz = stockBase.valid && stockBase.baseKHz[pointIndex] > 0
+        ? stockBase.baseKHz[pointIndex]
+        : (long long)snapshot.curve[pointIndex].freq_kHz -
+          (long long)snapshot.freqOffsets[pointIndex];
     out.baseMHz = (int)((baseKHz >= 0 ? baseKHz + 500 : baseKHz - 500) / 1000);
     out.liveMHz = (int)((snapshot.curve[pointIndex].freq_kHz + 500u) / 1000u);
     out.targetMHz = out.liveMHz;
