@@ -211,6 +211,10 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
         ? (profile->authoring.lockPrecise ? profile->authoring.lockFrequencyHz
                                           : (long long)profile->lockMHz * 1000000LL)
         : 0;
+    const bool bothHaveGpuOffset = profile->hasGpuOffset && active->hasGpuOffset;
+    const bool replacesCurvePoints =
+        profile_ownership_scope_replaces_curve_points(profile->applicationScope) &&
+        profile_ownership_scope_replaces_curve_points(active->applicationScope);
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (desired_curve_point_semantically_equal(profile, active, ci)) continue;
         const DesiredCurvePointKind profileKind = desired_curve_point_kind(profile, ci);
@@ -227,6 +231,11 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
                 lockHz, lockMatchesExplicit ? profile->lockMHz : 0u, ci,
                 profileKind, profileHz, profile->curvePointMHz[ci],
                 activeKind, activeHz, active->curvePointMHz[ci])) {
+            continue;
+        }
+        if (profile_ownership_projected_point_mismatch_allowed(
+                relaxedOwnershipRead, bothHaveGpuOffset, replacesCurvePoints,
+                profileKind, activeKind)) {
             continue;
         }
         if (profileKind == DESIRED_CURVE_CAPTURED || activeKind == DESIRED_CURVE_CAPTURED) {

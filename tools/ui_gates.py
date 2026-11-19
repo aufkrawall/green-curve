@@ -851,6 +851,9 @@ def check_service_profile_identity_survives_a_delta_apply(ctx, require_text,
     require_text(_p(ctx, "desired_settings_helpers.cpp"),
                  "profile_ownership_lock_tail_mismatch_allowed(",
                  "relaxed ownership checks use the shared lock-tail equivalence policy")
+    require_text(_p(ctx, "desired_settings_helpers.cpp"),
+                 "profile_ownership_projected_point_mismatch_allowed(",
+                 "relaxed ownership checks treat GPU-offset projected and absent points as equivalent on replacing scopes")
 
     # An ad-hoc active intent that uniquely describes one saved personal slot
     # resolves to that slot on both the service and GUI indicator sides, while

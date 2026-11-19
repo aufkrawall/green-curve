@@ -625,6 +625,9 @@ static void sync_applied_profile_from_service_metadata() {
             }
         } else if (g_app.serviceActiveProfileSource == SERVICE_PROFILE_SOURCE_AD_HOC &&
                    !restricted_to_shared_profiles()) {
+            int preferredSlot = get_config_int(g_app.configPath, "profiles", "selected_slot", 0);
+            char preferredMismatch[192] = {};
+            char firstMismatch[192] = {};
             for (int slot = 1; slot <= CONFIG_NUM_SLOTS; ++slot) {
                 if (!is_profile_slot_saved(g_app.configPath, slot)) continue;
                 memset(&savedProfile, 0, sizeof(savedProfile));
@@ -632,6 +635,15 @@ static void sync_applied_profile_from_service_metadata() {
                 if (!load_profile_from_config(g_app.configPath, slot,
                         &savedProfile, slotErr, sizeof(slotErr),
                         PROFILE_READ_FOR_OWNERSHIP)) {
+                    if (slotErr[0]) {
+                        if (slot == preferredSlot) {
+                            set_message(preferredMismatch, sizeof(preferredMismatch),
+                                "slot %d: %s", slot, slotErr);
+                        } else if (!firstMismatch[0]) {
+                            set_message(firstMismatch, sizeof(firstMismatch),
+                                "slot %d: %s", slot, slotErr);
+                        }
+                    }
                     continue;
                 }
                 char slotDetail[128] = {};
@@ -647,6 +659,20 @@ static void sync_applied_profile_from_service_metadata() {
                         set_message(matchDetail, sizeof(matchDetail),
                             "matches %d personal slots", decision.matchedUserSlotCount);
                     }
+                } else if (slotDetail[0]) {
+                    if (slot == preferredSlot) {
+                        set_message(preferredMismatch, sizeof(preferredMismatch),
+                            "slot %d: %s", slot, slotDetail);
+                    } else if (!firstMismatch[0]) {
+                        set_message(firstMismatch, sizeof(firstMismatch),
+                            "slot %d: %s", slot, slotDetail);
+                    }
+                }
+            }
+            if (decision.matchedUserSlotCount == 0) {
+                const char* diagnostic = preferredMismatch[0] ? preferredMismatch : firstMismatch;
+                if (diagnostic[0]) {
+                    StringCchCopyA(matchDetail, ARRAY_COUNT(matchDetail), diagnostic);
                 }
             }
         }

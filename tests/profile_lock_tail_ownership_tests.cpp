@@ -197,6 +197,89 @@ int production_matcher_cases() {
     if (!strstr(detail, "ci75") || !strstr(detail, "profile=projected/") || !strstr(detail, "active=absolute/2930"))
         return 12427;
 
+    // 12580-12587: Pure projected-vs-absent policy table.
+    if (profile_ownership_projected_point_mismatch_allowed(
+            false, true, true, DESIRED_CURVE_PROJECTED, DESIRED_CURVE_ABSENT)) return 12580;
+    if (!profile_ownership_projected_point_mismatch_allowed(
+            true, true, true, DESIRED_CURVE_PROJECTED, DESIRED_CURVE_ABSENT)) return 12581;
+    if (!profile_ownership_projected_point_mismatch_allowed(
+            true, true, true, DESIRED_CURVE_ABSENT, DESIRED_CURVE_PROJECTED)) return 12582;
+    if (profile_ownership_projected_point_mismatch_allowed(
+            true, false, true, DESIRED_CURVE_PROJECTED, DESIRED_CURVE_ABSENT)) return 12583;
+    if (profile_ownership_projected_point_mismatch_allowed(
+            true, true, false, DESIRED_CURVE_PROJECTED, DESIRED_CURVE_ABSENT)) return 12584;
+    if (profile_ownership_projected_point_mismatch_allowed(
+            true, true, true, DESIRED_CURVE_ABSOLUTE, DESIRED_CURVE_ABSENT)) return 12585;
+    if (profile_ownership_projected_point_mismatch_allowed(
+            true, true, true, DESIRED_CURVE_PROJECTED, DESIRED_CURVE_CAPTURED)) return 12586;
+    if (!profile_ownership_scope_replaces_curve_points(DESIRED_SCOPE_LEGACY) ||
+        !profile_ownership_scope_replaces_curve_points(DESIRED_SCOPE_REPLACE_PROFILE) ||
+        !profile_ownership_scope_replaces_curve_points(
+            DESIRED_SCOPE_UPDATE_INCLUDED | DESIRED_SCOPE_REPLACE_VF_POINTS) ||
+        profile_ownership_scope_replaces_curve_points(DESIRED_SCOPE_UPDATE_INCLUDED) ||
+        profile_ownership_scope_replaces_curve_points(DESIRED_SCOPE_EXPLICIT_RELEASE))
+        return 12587;
+
+    // 12588-12595: Upgrade-transfer scenario for an imported indexed profile
+    // carrying 57 zero-MHz projected points (ci 70..126) restored by an older
+    // installer export that dropped zero-MHz projected entries (active has 0
+    // curve points, identical globals/lock/fan/aux).
+    DesiredSettings importedSlot3 = make_locked_slot_base();
+    importedSlot3.hasXbarOffsetKhz = 1; importedSlot3.xbarOffsetKhz = 400000;
+    importedSlot3.hasXbarMsvddOffsetUv = 1; importedSlot3.xbarMsvddOffsetUv = 0;
+    importedSlot3.hasSysClkOffsetKhz = 1; importedSlot3.sysClkOffsetKhz = 400000;
+    importedSlot3.hasVideoClkOffsetKhz = 1; importedSlot3.videoClkOffsetKhz = 400000;
+    for (int ci = 70; ci <= 126; ++ci) {
+        importedSlot3.hasCurvePoint[ci] = 1;
+        importedSlot3.curvePointMHz[ci] = 0;
+        importedSlot3.curvePointFromGpuOffset[ci] = 1;
+    }
+    DesiredSettings preFixUpgradeActive = importedSlot3;
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        preFixUpgradeActive.hasCurvePoint[ci] = 0;
+        preFixUpgradeActive.curvePointMHz[ci] = 0;
+        preFixUpgradeActive.curvePointFromGpuOffset[ci] = 0;
+    }
+    // Strict pre-write replacement refuses; relaxed ownership confirms slot 3.
+    if (desired_settings_match_active_service_intent(
+            &importedSlot3, &preFixUpgradeActive, detail, sizeof(detail), false))
+        return 12588;
+    if (!strstr(detail, "ci70") || !strstr(detail, "profile=projected/0") ||
+        !strstr(detail, "active=absent/0"))
+        return 12589;
+    if (!desired_settings_match_active_service_intent(
+            &importedSlot3, &preFixUpgradeActive, detail, sizeof(detail), true))
+        return 12590;
+    // Reverse direction (profile omits projected points, active carries them).
+    if (!desired_settings_match_active_service_intent(
+            &preFixUpgradeActive, &importedSlot3, detail, sizeof(detail), true))
+        return 12591;
+    // Non-replacing partial-update scope must NOT relax projected vs absent.
+    DesiredSettings partialProfile = importedSlot3;
+    partialProfile.applicationScope = DESIRED_SCOPE_UPDATE_INCLUDED;
+    if (desired_settings_match_active_service_intent(
+            &partialProfile, &preFixUpgradeActive, detail, sizeof(detail), true))
+        return 12592;
+    // Partial-update scope WITH replace-VF-points may relax it.
+    partialProfile.applicationScope =
+        DESIRED_SCOPE_UPDATE_INCLUDED | DESIRED_SCOPE_REPLACE_VF_POINTS;
+    if (!desired_settings_match_active_service_intent(
+            &partialProfile, &preFixUpgradeActive, detail, sizeof(detail), true))
+        return 12593;
+    // Divergent GPU offset or exclusion count still breaks the match.
+    DesiredSettings diffOffset = preFixUpgradeActive;
+    diffOffset.gpuOffsetMHz = 450;
+    if (desired_settings_match_active_service_intent(
+            &importedSlot3, &diffOffset, detail, sizeof(detail), true))
+        return 12594;
+    // A captured pre-tail point on active still breaks the match.
+    DesiredSettings capturedActive = preFixUpgradeActive;
+    capturedActive.curvePointCaptured[75] = 1;
+    capturedActive.curvePointCapturedOffsetHz[75] = 475000000LL;
+    if (desired_settings_match_active_service_intent(
+            &importedSlot3, &capturedActive, detail, sizeof(detail), true))
+        return 12595;
+
     return 0;
 }
 

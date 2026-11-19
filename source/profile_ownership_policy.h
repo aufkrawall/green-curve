@@ -88,4 +88,41 @@ static inline bool profile_ownership_lock_tail_mismatch_allowed(
                activeKind, activePointHz, activeStoredMHz, lockHz, lockMHz);
 }
 
+// True when `scope` replaces the VF point set rather than merging only the
+// explicitly listed points onto prior curve state.
+static inline bool profile_ownership_scope_replaces_curve_points(gc_u32 scope) {
+    const gc_u32 kind = desired_application_scope_kind(scope);
+    return kind == DESIRED_SCOPE_LEGACY ||
+           kind == DESIRED_SCOPE_REPLACE_PROFILE ||
+           (scope & DESIRED_SCOPE_REPLACE_VF_POINTS) != 0;
+}
+
+// The fourth ownership-read relaxation, for GPU-offset projected points versus
+// absent points.
+//
+// A projected point (`DESIRED_CURVE_PROJECTED`) carries no independent clock
+// authority of its own: its target is purely the record's agreed GPU offset
+// component for `ci`.  Once both records already agree on `hasGpuOffset`,
+// `gpuOffsetMHz`, `gpuOffsetExcludeLowCount`, and graphics authoring (and both
+// scopes replace the VF point set rather than performing a partial merge that
+// leaves omitted points untouched), spelling a point as `PROJECTED` vs leaving
+// it `ABSENT` describes the exact same running curve intent at `ci` (for
+// example an imported indexed profile carrying zero-MHz projected points vs an
+// upgrade export written by an older build that dropped zero-MHz entries, or an
+// equivalent CLI apply).
+//
+// Strict pre-write profile claims still require exact semantic equality, and
+// any `ABSOLUTE` or `CAPTURED` point on either side still breaks the match.
+static inline bool profile_ownership_projected_point_mismatch_allowed(
+    bool relaxedOwnershipRead,
+    bool bothHaveGpuOffset,
+    bool replacesCurvePoints,
+    DesiredCurvePointKind profileKind,
+    DesiredCurvePointKind activeKind) {
+    if (!relaxedOwnershipRead || !bothHaveGpuOffset || !replacesCurvePoints)
+        return false;
+    return (profileKind == DESIRED_CURVE_PROJECTED && activeKind == DESIRED_CURVE_ABSENT) ||
+           (profileKind == DESIRED_CURVE_ABSENT && activeKind == DESIRED_CURVE_PROJECTED);
+}
+
 #endif  // GREEN_CURVE_PROFILE_OWNERSHIP_POLICY_H
