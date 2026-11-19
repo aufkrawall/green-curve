@@ -1697,6 +1697,7 @@ def check_all(ctx, require_text, forbid_text):
     check_wndproc_stack_discipline(ctx, require_text, forbid_text)
     check_owner_drawn_text_is_literal(ctx, require_text, forbid_text)
     check_observed_editor_lock(ctx, require_text, forbid_text)
+    check_loaded_lock_reaches_the_draft(ctx, require_text, forbid_text)
 
 
 def check_observed_editor_lock(ctx, require_text, forbid_text):
@@ -1723,3 +1724,23 @@ def check_observed_editor_lock(ctx, require_text, forbid_text):
                  "Save of the projection names the flatten and offers Import")
     forbid_text(_p(ctx, "gpu_backend.cpp"), "gui_observed_lock",
                 "the live lock detector keeps its ownership gate; the projection is editor-only")
+
+
+def check_loaded_lock_reaches_the_draft(ctx, require_text, forbid_text):
+    """Apply takes the lock target from the draft's anchor value, so every
+    profile-sourced draft copy must write the record's lock there; a copy of
+    explicit points alone sent the live anchor clock for a lock-only record
+    (a captured or imported flatten)."""
+    ctx.require_text_in_operation(
+        _p(ctx, "gui_service_state.cpp"),
+        "static void gui_draft_capture_desired(",
+        "gui_draft_desired_point_mhz(*desired, ci, &fromLock)",
+        "the draft copy of a loaded profile writes the lock target at its anchor")
+    forbid_text(_p(ctx, "gui_service_state.cpp"),
+                "if (!desired->hasCurvePoint[ci]) continue;",
+                "the draft copy must not be limited to explicit curve points")
+    ctx.require_text_in_operation(
+        _p(ctx, "main_runtime_control.cpp"),
+        "if (hasLock) {",
+        "(int)g_app.guiDraft.curveMHz[lockCi];",
+        "Apply's lock target is the draft anchor the copy above keeps in step")

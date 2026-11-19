@@ -1059,6 +1059,9 @@ int run_capture_client_lock_tests();
 // The editor's projection of a flatten another tool set, and its Save notice
 // (tests/gui_observed_lock_tests.cpp, 12290-12299).
 int run_gui_observed_lock_tests();
+// The editor draft a loaded profile declares: the lock anchor holds the lock
+// target (tests/gui_draft_desired_tests.cpp, 12300-12305).
+int run_gui_draft_desired_tests();
 int run_profile_pin_observation_tests();
 int run_profile_mapping_tests();
 int run_profile_conversion_tests();
@@ -2779,6 +2782,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int observedLockFailure = run_gui_observed_lock_tests()) {
         fprintf(stderr, "editor observed lock regression failed: %d\n", observedLockFailure);
         return observedLockFailure;
+    }
+    if (int draftDesiredFailure = run_gui_draft_desired_tests()) {
+        fprintf(stderr, "editor draft lock anchor regression failed: %d\n", draftDesiredFailure);
+        return draftDesiredFailure;
     }
     if (int pinObservationFailure = run_profile_pin_observation_tests()) {
         fprintf(stderr, "pin observation regression failed: %d\n", pinObservationFailure);

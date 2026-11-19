@@ -6,6 +6,7 @@
 // state.  The service-I/O worker above posts immutable completions here.
 
 #include "gui_draft_policy.h"
+#include "gui_draft_desired_policy.h"
 #include "gui_service_io_queue_policy.h"
 #include "gui_service_resync_policy.h"
 #include "gui_auto_restore_notice.h"
@@ -152,13 +153,21 @@ static void gui_draft_capture_desired(const DesiredSettings* desired) {
         g_app.guiDraft.pendingDesired = *desired;
         g_app.guiDraft.pendingDesiredValid = true;
     }
+    // Explicit points AND the lock anchor at the lock's target: Apply reads
+    // the lock target from the draft's anchor (gui_draft_desired_policy.h).
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
-        if (!desired->hasCurvePoint[ci]) continue;
-        g_app.guiDraft.curveValueValid[ci] = desired->curvePointMHz[ci] > 0;
-        g_app.guiDraft.curveMHz[ci] = desired->curvePointMHz[ci];
+        bool fromLock = false;
+        const unsigned int mhz = gui_draft_desired_point_mhz(*desired, ci, &fromLock);
+        if (!mhz && !desired->hasCurvePoint[ci]) continue;
+        if (fromLock && g_app.guiDraft.curveMHz[ci] != mhz) {
+            debug_log("GUI draft: lock anchor ci=%d set to the record's lock %u MHz (was %u%s)\n",
+                ci, mhz, g_app.guiDraft.curveMHz[ci],
+                desired->hasCurvePoint[ci] ? ", explicit point" : ", live/applied projection");
+        }
+        g_app.guiDraft.curveValueValid[ci] = mhz > 0;
+        g_app.guiDraft.curveMHz[ci] = mhz;
         StringCchPrintfA(g_app.guiDraft.curveText[ci],
-            ARRAY_COUNT(g_app.guiDraft.curveText[ci]), "%u",
-            desired->curvePointMHz[ci]);
+            ARRAY_COUNT(g_app.guiDraft.curveText[ci]), "%u", mhz);
     }
     if (desired->hasGpuOffset) {
         StringCchPrintfA(g_app.guiDraft.gpuOffsetText,
