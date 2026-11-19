@@ -1822,6 +1822,7 @@ Source anchors: `source/profile_save_policy.h`, `source/gpu_lock_ownership_polic
   tails into `g_app.locked*` or `g_app.appliedLock*` (`ownership=external`
   log once), and preserves Green Curve's own service/client lock intent while
   only refining `preferredCi = gpu_live_lock_preferred_ci()` when proven.
+  *(Reversed for the Windows editor only on 2026-11-19; see below.)*
 - Diagnostics: one `profile-save: slot=... source=... notice=...
   omittedProgrammedPoints=... firstOmitted=ci... inferredPreAnchor=...` line
   per Save (Windows); the TUI logs `profile-save: slot=...
@@ -1870,3 +1871,33 @@ Source anchors: `source/profile_pin_observation.h`,
   clock/power/thermal limit reasons alongside warnings, and distinguishes
   confirmed observations (`user_confirmed`) from edited targets (`user`); detailed
   rules and tests (`9900-9946`) live in `profile-document.md`.
+
+## Editor projection of another tool's flatten (2026-11-19)
+
+Source anchors: `source/gui_observed_lock_policy.h`, `source/main_observed_lock.cpp`,
+`source/main_state_sync.cpp`, `source/profile_save_policy.h`,
+`source/ui_profile_save_notice.cpp`, `source/gui_profile_commands.cpp`,
+`tests/gui_observed_lock_tests.cpp` (`12290-12299`), `tools/ui_gates.py`.
+
+- **Reverses the 2026-11-15 rule for the Windows editor only:** the service
+  still never adopts an external flatten (`gpu_lock_ownership_policy.h`), and
+  its snapshot still reports no lock for it.
+- **Display & recognition (`gui_observed_lock_recognize()`):** when the service
+  reports no lock, the editor projects a live external flatten into
+  `g_app.locked*` (checkbox on the anchor, greyed tail, plateau target) if the
+  anchor is listed with at least one listed point after it and at least one
+  tail point carries an offset different from the anchor's (a stock level top
+  or uniform VF-table offset is never shown as a lock).
+- **Safety & Apply rules (`gui_observed_lock_decide()`):** never touches an
+  editor with unsaved edits; withdraws the projection when the flatten leaves
+  the GPU; yields when Green Curve's own lock takes over. The projected lock is
+  mirrored into `g_app.appliedLock*`, so it is not a pending change (sparse
+  power/fan Applies leave the curve alone; a full Apply sends the lock like any
+  other).
+- **Save notice:** `PROFILE_SAVE_NOTICE_OBSERVED_FLATTEN` labels the saved slot
+  as a flatten another tool set, counts unsaved programmed points below the lock
+  (`profile_save_count_unsaved_pre_anchor_points()`), and offers
+  `Import current GPU settings` for a full copy.
+- **Diagnostics:** `lock observe: action=...` (`debug_log_on_change`), plus
+  `lock observe: showing...` / `withdrawn` and `profile-save: ... observedLock=...
+  unsavedBelowLock=... firstBelow=ci...`.

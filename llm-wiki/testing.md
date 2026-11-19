@@ -1,5 +1,19 @@
 # Testing
 
+## Editor projection of external flatten (2026-11-19)
+
+`tests/gui_observed_lock_tests.cpp` (`12290-12299`, run from
+`tests/regression_main.cpp`) pins `source/gui_observed_lock_policy.h` and the
+observed-flatten path of `source/profile_save_policy.h`: stock level top (12290)
+and uniform VF-table offset (12291) are not locks; the reported 925 mV /
+2962 MHz external flatten is recognized at its anchor (12292); unlisted-tail and
+null-input guards hold (12293); sub-700 mV jittered Pascal tails recognize at
+the true start (12294); adopt/keep/replace/clear/dirty/user-lock/service-lock
+decisions hold (12295-12297); and `PROFILE_SAVE_NOTICE_OBSERVED_FLATTEN` /
+`profile_save_count_unsaved_pre_anchor_points()` count lower programmed points
+(12298-12299). `tools/ui_gates.py` enforces the source gate. Software-verified
+via fixtures; live GPU/GUI verification pending hardware check.
+
 ## Capture curve choices and driver locks (2026-11-19)
 
 `tests/capture_curve_choice_tests.cpp` (12260-12264, 12268-12272) runs

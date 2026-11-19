@@ -5,6 +5,23 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: Editor projects another tool's flatten as its lock
+
+- Reversed the 2026-11-15 rule **for the Windows editor only** (`gui_observed_lock_policy.h`,
+  `main_observed_lock.cpp`, `main_state_sync.cpp`): when the service reports no
+  lock, the editor projects a live external flatten (anchor checkbox, greyed tail,
+  plateau target) and mirrors it into `g_app.appliedLock*` so it is not a
+  pending change. The service still never adopts external locks.
+- Stock level tops and uniform VF-table offsets are excluded by requiring a tail
+  point with an offset different from the anchor's. Unsaved drafts are never
+  overwritten, and the projection withdraws when the flatten leaves the GPU or
+  Green Curve's own lock takes over.
+- Save (`profile_save_policy.h`, `ui_profile_save_notice.cpp`,
+  `gui_profile_commands.cpp`) labels the slot as an external flatten, reports
+  unsaved lower points, and offers `Import current GPU settings`.
+- Coverage: `tests/gui_observed_lock_tests.cpp` (`12290-12299`) and a source
+  gate in `tools/ui_gates.py`; live GPU/GUI verification pending hardware check.
+
 ## 2026-11-19: Import current GPU settings missed another tool's flatten
 
 - Reported: a curve flattened at 925 mV / 2482 MHz by another tool was only

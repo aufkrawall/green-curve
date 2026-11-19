@@ -45,7 +45,7 @@ Curve checks, profile transfer and capture improve.
 ### Improved
 
 - **Curve checks before Apply:** conflicts name frequency, voltage or range and guard transition peaks.
-- **Saving over another tool's curve:** Save and lock state ignore unowned curves and offer to import the GPU's current settings.
+- **Curves set by another tool:** the editor shows an external flatten as its lock, keeps it unless changed, and offers to import the whole curve on Save.
 - **Profile storage:** saved profiles retain exact sub-MHz curve points, captured offsets, power ratios and domain scope across local slots.
 - **Linux profile switching:** replaced points clear first; flatten and lock readback are verified.
 - **Linux memory clocks:** curve-only changes preserve memory; failed preparation restores prior curves.
