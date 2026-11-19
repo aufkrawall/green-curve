@@ -188,13 +188,18 @@ static bool service_lifecycle_target_gpu_still_matches(
         g_app.adapterCount);
 }
 
+// `ownerRefusedOut` is set when the configured GPU is refused because another
+// GPU still owns the active intent. That does not resolve by waiting, so the
+// caller finishes the logon work instead of retrying it.
 static bool service_lifecycle_select_context_gpu(
     const ServiceSessionConfigContext* context,
     GpuAdapterInfo* targetOut,
     char* detail,
-    size_t detailSize)
+    size_t detailSize,
+    bool* ownerRefusedOut)
 {
     if (targetOut) memset(targetOut, 0, sizeof(*targetOut));
+    if (ownerRefusedOut) *ownerRefusedOut = false;
     if (!context) {
         set_message(detail, detailSize, "configured GPU context is missing");
         return false;
@@ -270,6 +275,13 @@ static bool service_lifecycle_select_context_gpu(
         g_app.selectedGpuIndex != target.nvapiIndex ||
         (target.pciInfoValid && g_app.selectedGpu.pciInfoValid &&
          !gpu_adapter_has_same_pci_identity(&g_app.selectedGpu, &target));
+    // An automatic logon write never abandons a GPU that still owns the
+    // active intent, present or not; only the owner's explicit Reset may.
+    if (!service_intent_owner_permits_target(&target, change, false,
+            "logon", detail, detailSize)) {
+        if (ownerRefusedOut) *ownerRefusedOut = true;
+        return false;
+    }
     if (change) {
         debug_log("lifecycle logon: selecting immutable context GPU nvapi=%u nvml=%u pci=%d name=%s\n",
             target.nvapiIndex, target.nvmlIndex,
@@ -420,6 +432,7 @@ static void service_lifecycle_attempt_logon() {
     bool writeAuthorized = false;
     bool writeAttempted = false;
     bool success = false;
+    bool ownerRefused = false;
     do {
         if (!service_lifecycle_logon_still_current(&identity, generation)) break;
         identityCheck = service_verify_active_session_identity(
@@ -435,7 +448,8 @@ static void service_lifecycle_attempt_logon() {
         }
         GpuAdapterInfo targetGpu = {};
         if (!service_lifecycle_select_context_gpu(&context, &targetGpu,
-                detail, sizeof(detail)) || g_app.deviceRemoved) {
+                detail, sizeof(detail), &ownerRefused) ||
+            g_app.deviceRemoved) {
             if (!detail[0]) {
                 set_message(detail, sizeof(detail), "selected GPU is not ready");
             }
@@ -525,6 +539,14 @@ static void service_lifecycle_attempt_logon() {
     } else if (identityCheck == SERVICE_SESSION_IDENTITY_SUPERSEDED) {
         service_lifecycle_finish_logon_without_write(&identity, generation, trigger,
             SERVICE_LIFECYCLE_RESULT_SUPERSEDED);
+    } else if (ownerRefused) {
+        // Waiting cannot resolve it: only the owner's explicit Reset (which
+        // supersedes automatic work) releases the intent. Finish without a
+        // write rather than retrying on every readiness signal.
+        service_lifecycle_finish_logon_without_write(&identity, generation, trigger,
+            SERVICE_LIFECYCLE_RESULT_FAILED);
+        debug_log("lifecycle logon: configured GPU refused without hardware mutation; another GPU owns the active intent: %s\n",
+            detail[0] ? detail : "owner conflict");
     } else {
         EnterCriticalSection(&g_appLock);
         service_lifecycle_set_result_locked(trigger,

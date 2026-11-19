@@ -421,11 +421,16 @@ static bool service_apply_shared_only_policy(ServiceRequest* request,
     return true;
 }
 
-static bool service_prepare_requested_gpu(const ServiceRequest* request, char* err, size_t errSize) {
+// `releasesIntent` is true for an explicit Reset, which drops the active
+// intent; see gpu_intent_owner_policy.h for what it may release.
+static bool service_prepare_requested_gpu(const ServiceRequest* request,
+    bool releasesIntent, char* err, size_t errSize) {
     if (!request) {
         set_message(err, errSize, "Missing service request");
         return false;
     }
+    const char* ownerOrigin = request->command == SERVICE_CMD_RESET
+        ? "reset" : "apply";
     if (request->expectedControlFingerprint &&
         (!request->targetGpu.valid || !g_app.gpuHandle || !g_app.loaded || !g_app.vfBackend)) {
         set_message(err, errSize, "Reviewed GPU session is unavailable; Refresh and review again before Apply");
@@ -439,7 +444,12 @@ static bool service_prepare_requested_gpu(const ServiceRequest* request, char* e
                 "Hardware initialization failed");
             return false;
         }
-        return true;
+        // No target: the request keeps the current runtime GPU. Not a
+        // retarget, so this only records a runtime that drifted from the
+        // intent owner.
+        const GpuAdapterInfo current = service_current_runtime_gpu();
+        return service_intent_owner_permits_target(&current, false,
+            releasesIntent, ownerOrigin, err, errSize);
     }
     if (request->targetGpu.nvapiIndex >= MAX_GPU_ADAPTERS) {
         set_message(err, errSize, "Requested GPU index is invalid");
@@ -491,6 +501,12 @@ static bool service_prepare_requested_gpu(const ServiceRequest* request, char* e
     bool change = !g_app.selectedGpuIdentityValid ||
         g_app.selectedGpuIndex != live.nvapiIndex ||
         (haveStrongIdentity && !gpu_adapter_has_same_pci_identity(&g_app.selectedGpu, &live));
+    // The single runtime may not leave a GPU that still owns the active
+    // intent: that would orphan its settings and lend them to `live`.
+    if (!service_intent_owner_permits_target(&live, change, releasesIntent,
+            ownerOrigin, err, errSize)) {
+        return false;
+    }
     if (request->expectedControlFingerprint && change) {
         set_message(err, errSize, "Reviewed GPU session changed; capture and review again before Apply");
         return false;

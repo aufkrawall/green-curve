@@ -1,5 +1,30 @@
 # Testing
 
+## Single-owner GPU retarget guard (2026-11-19)
+
+`tests/gpu_intent_owner_tests.cpp` (7060-7072) executes
+`source/gpu_adapter_identity.h` and `source/gpu_intent_owner_policy.h`:
+- 7060-7062: BDF strengthens PCI identity only when both sides carry it;
+  base-identity uniqueness with a twin; a weak ordinal write target only on
+  one adapter.
+- 7063-7066: no intent allows any target; Apply and Reset aimed at another
+  present GPU (different model, or an identical card at another location)
+  are refused; a retarget back to the owner is allowed.
+- 7067-7068: an owner that left the adapter list is released only by Reset;
+  an adapter without PCI identity on a multi-adapter list keeps the owner
+  present (fail closed), as does a missing adapter list.
+- 7069-7071: an intent with no recorded owner refuses every retarget while a
+  Reset of the current target still releases it; requests that keep the
+  current target are never refused; single-GPU systems are unaffected.
+- 7072: every verdict is named, and exactly the ALLOW_* verdicts allow.
+`tools/gpu_support_gates.py` pins the service integration: both retarget
+sites ask `service_intent_owner_permits_target()` before
+`reset_gpu_runtime_selection()`, only the Reset call site passes
+`releasesIntent=true`, a logon refusal finishes instead of retrying, and PCI
+identity has one definition. The guard's service wiring has no executing
+fixture (the orchestrators are not linked into the harness), and nothing has
+run on a multi-GPU Windows machine.
+
 ## Stock-base VF preview under cross-talk and projected profile drafts (2026-11-19)
 
 `tests/vf_stock_base_tests.cpp` (`12520-12542`, `12544-12550`) and

@@ -5,6 +5,35 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: Windows service could retarget away from the GPU that owns the active intent
+
+- Found while reviewing two community multi-GPU proposals (both Linux-only).
+  Linux already refuses a GPU switch while an intent belongs to another GPU
+  (`linux_gpu_switch_preserves_active_intent()`). The Windows service had no
+  equivalent check.
+- Root cause: `service_prepare_requested_gpu()` (Apply, Reset, reviewed and
+  shared-binding Apply) and `service_lifecycle_select_context_gpu()` (logon)
+  call `reset_gpu_runtime_selection()` and point `g_app.selectedGpu` at the
+  requested GPU whenever it differs. They do this without consulting
+  `g_serviceActiveDesiredGpu`. Consequences, from code reading:
+  - the owner's clocks and manual fan duty stay in hardware untracked;
+  - a non-replacing Apply merges the owner's remaining fields into the new
+    GPU's intent, so later restores write them to the wrong card;
+  - the fan runtime follows `g_app.nvmlDevice` with the owner's curve;
+  - Reset of the other GPU drops the owner's tracking.
+- Fix: the pure `gpu_intent_owner_policy.h` (on top of the PCI predicates
+  moved from `gpu_backend.cpp` into `gpu_adapter_identity.h`), bound in
+  `main_service_intent_owner.cpp` and asked by both sites before they
+  retarget. Absent owners can be released only by Reset. Logon refusal is
+  terminal (`FAILED`, no write, no retry).
+- Verified: regression 7060-7072 and source gates in `gpu_support_gates.py`.
+  Not run on multi-GPU Windows hardware.
+- Open: the GUI selector appears to snap back to the service's GPU on the
+  next full sync, because state reads carry no target. If so, GUI-only
+  switching does not reach the service until logon. Separately, the fan
+  runtime has no per-tick owner check. Both are recorded in gpu-backend.md,
+  "GPU identity and selection".
+
 ## 2026-11-19: Previewing an offset profile over a flatten spiked point 75 to 3047 MHz (driver cross-talk) and zero-MHz projected drafts failed capture
 
 - Reported: after applying Profile 5 (flatten at ci=76 / 925 mV -> 2962 MHz,

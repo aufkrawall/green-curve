@@ -179,7 +179,7 @@ switch (request->command) {
                 (service_resolve_configured_gpu_target(&publishedGpuBinding, &publishedTarget,
                     result, sizeof(result), true) &&
                  hardware_capture_target_matches(publishedTarget, request->targetGpu));
-            if (!bindingMatches || !service_prepare_requested_gpu(request, result, sizeof(result)) ||
+            if (!bindingMatches || !service_prepare_requested_gpu(request, false, result, sizeof(result)) ||
                 !service_control_preconditions_match_locked(request, result, sizeof(result))) {
                 response->status = SERVICE_STATUS_STALE_STATE;
                 StringCchCopyA(response->message, ARRAY_COUNT(response->message),
@@ -259,7 +259,7 @@ switch (request->command) {
             if (ok) request->targetGpu = publishedTarget;
         }
         if (ok) {
-            ok = service_prepare_requested_gpu(request, result,
+            ok = service_prepare_requested_gpu(request, false, result,
                 sizeof(result));
         }
         bool hadPreviousIntent = g_serviceHasActiveDesired;
@@ -457,7 +457,8 @@ switch (request->command) {
             unlock_service_runtime();
             break;
         }
-        bool ok = service_prepare_requested_gpu(request, result, sizeof(result));
+        bool ok = service_prepare_requested_gpu(request, true, result,
+            sizeof(result));
         if (ok) {
             GpuAdapterInfo resetTarget = g_app.selectedGpu;
             if (!resetTarget.valid &&

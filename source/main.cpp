@@ -12,6 +12,7 @@
 #include "startup_task_definition_policy.h"
 #include "gpu_selection_policy.h"
 #include "gpu_adapter_identity.h"
+#include "gpu_intent_owner_policy.h"
 #include "profile_persistence_policy.h"
 #include "profile_desired_ini_ext.h"
 #include "ui_theme_metrics.h"

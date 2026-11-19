@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 # SPDX-License-Identifier: MIT
-"""Source gates for VF status point masks and the CMP mining-board warning.
+"""Source gates for VF status point masks, the CMP mining-board warning and
+the Windows service single-owner GPU retarget guard.
 
 Lives here rather than in build.py so the build script stays under its size
 ratchet; build.py passes its own require_text/forbid_text in, and this module
@@ -59,3 +60,33 @@ def check_source_gates(ctx, require_text, forbid_text, forbid_text_in_operation)
                  "the reduced-surface trigger ignores the advanced clock domains")
     require_text(warning, "gc_u32 missing = gpu_capability_missing_board_domains(probe);",
                  "the reduced-surface text lists only board-level domains")
+
+    # Single-owner GPU retarget guard (gpu_intent_owner_policy.h, executed by
+    # tests/gpu_intent_owner_tests.cpp). Every service path that can move the
+    # one GPU runtime asks the owner policy before it resets the selection,
+    # so an active intent cannot be orphaned or lent to another GPU.
+    request_policy = os.path.join(src, "main_service_request_policy.cpp")
+    ctx.require_order_in_operation(
+        request_policy, "static bool service_prepare_requested_gpu(",
+        "service_intent_owner_permits_target(&live, change, releasesIntent,",
+        "reset_gpu_runtime_selection();",
+        "Apply/Reset asks the intent owner before retargeting the GPU runtime")
+    lifecycle = os.path.join(src, "main_service_lifecycle_apply.cpp")
+    ctx.require_order_in_operation(
+        lifecycle, "static bool service_lifecycle_select_context_gpu(",
+        "service_intent_owner_permits_target(&target, change, false,",
+        "reset_gpu_runtime_selection();",
+        "logon asks the intent owner before retargeting the GPU runtime")
+    require_text(lifecycle, "} else if (ownerRefused) {",
+                 "an owner refusal finishes the logon work instead of retrying it")
+    pipe_switch = os.path.join(src, "main_service_pipe_switch.cpp")
+    require_text(pipe_switch,
+                 "bool ok = service_prepare_requested_gpu(request, true, result,",
+                 "only the explicit Reset may release an absent owner's intent")
+    forbid_text(pipe_switch, "service_prepare_requested_gpu(request, result,",
+                "every Apply/Reset states whether it releases the intent")
+    require_text(os.path.join(src, "main.cpp"), '#include "gpu_intent_owner_policy.h"',
+                 "the unity build uses the tested owner and identity predicates")
+    forbid_text(os.path.join(src, "gpu_backend.cpp"),
+                "static bool gpu_adapter_has_same_pci_identity(",
+                "PCI identity has one tested definition (gpu_adapter_identity.h)")

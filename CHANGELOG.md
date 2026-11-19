@@ -76,6 +76,7 @@ Curve checks, profile transfer and capture improve.
 - **External flatten offset reading:** a tail flattened in another tool no longer reports a large negative GPU offset or excluded low-voltage points.
 - **Curve range errors:** targets just past the driver's offset limit now report the exact required adjustment and anchor estimate before changing hardware instead of falling back to a generic range error.
 - **Profile import slots and range warnings:** importing a multi-profile file into partially occupied slots no longer swaps profiles into another slot's empty position, and out-of-range offsets in imported profiles now warn before import with the exact value and allowed bounds.
+- **Multi-GPU Windows systems:** Apply, Reset and logon profiles no longer leave a GPU's settings and fan untracked by moving to another GPU; reset that GPU first.
 - **Curve preview and loaded profiles:** previewing an offset profile over a flattened curve no longer spikes points pulled up by driver cross-talk or clamped tails, and loading imported offset profiles keeps valid draft values for Apply and Save.
 
 ### Compatibility notes

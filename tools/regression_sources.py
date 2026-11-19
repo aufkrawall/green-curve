@@ -36,6 +36,7 @@ REGRESSION_SOURCES = (
     'driver_recovery_sequence_tests.cpp',
     'peer_stall_tests.cpp',
     'gpu_location_role_tests.cpp',
+    'gpu_intent_owner_tests.cpp',
     'linux_gpu_location_tests.cpp',
     'linux_restore_role_tests.cpp',
     'linux_gpu_uuid_tests.cpp',

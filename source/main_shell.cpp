@@ -346,6 +346,8 @@ static void unlock_all() {
 #include "main_service_sessions.cpp"
 #include "main_service_lifecycle_events.cpp"
 #include "main_service_dxgi_readiness.cpp"
+// Before the lifecycle and request-policy shards that ask it.
+#include "main_service_intent_owner.cpp"
 #include "main_service_lifecycle_apply.cpp"
 // The driver-recovery flow binding: after the write-failure latch above,
 // before the lifecycle worker that runs it.
