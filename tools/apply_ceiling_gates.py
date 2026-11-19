@@ -919,7 +919,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         require_text(apply_cpp, needle,
                      "the apply's curve batch and correction passes carry the "
                      "per-point fallback deadline")
-    require_text(_p(ctx, "main_runtime_gpu.cpp"),
+    require_text(_p(ctx, "gpu_backend_curve_write.h"),
                  "if (!apply_fallback_write_may_start(GetTickCount64(), fallbackDeadlineTickMs)) {",
                  "the ~1 s per-point fallback writes honour the apply deadline")
 

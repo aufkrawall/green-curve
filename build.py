@@ -4448,10 +4448,10 @@ def run_source_regression_checks():
     # F-DIAG-OFFSET: offset-convergence diagnostics so a driver that accepts a VF
     # offset write but reports back a different offset (forcing ~1s retry writes,
     # e.g. the +475 MHz boost tip at point 127) is visible in the debug log.
-    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend_curve_write.h"),
         "curve batch pass %d unconverged: ci=%d wroteOffset=%dkHz readbackOffset=%dkHz driverDelta=%dkHz",
         "F-DIAG-OFFSET: per-pass unconverged VF offset points log wrote-vs-readback offset gap")
-    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend_curve_write.h"),
         "curve offset unconverged (final): ci=%d wroteOffset=%dkHz readbackOffset=%dkHz",
         "F-DIAG-OFFSET: final unconverged VF offset summary logs the driver-honored offset")
 
@@ -4461,13 +4461,13 @@ def run_source_regression_checks():
     # (~1s NVAPI setControl each). This is what made a selective-offset+flatten apply
     # exceed 5s (the +475 boost tip at point 127 could never converge). Mirrors the
     # existing verify-time "hardware refused offset ... accepting actual" acceptance.
-    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend_curve_write.h"),
         "bool driverRefused[VF_NUM_POINTS] = {};",
         "F-OFFSET-REFUSAL: driver-refused VF points are tracked so they are not retried")
-    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend_curve_write.h"),
         "vf_offset_zero_readback_is_benign(desiredOffsets[i],",
         "F-OFFSET-REFUSAL: refusal detected when a non-zero offset write leaves readback pinned at 0")
-    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend_curve_write.h"),
         "accepting as non-offsettable placeholder",
         "F-OFFSET-REFUSAL: refused placeholder points are accepted (not retried) to keep apply fast")
 

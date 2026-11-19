@@ -98,6 +98,7 @@ a warning or an error.
 | `source/main_startup_task_runtime.cpp` | Per-user Windows scheduled-task creation, repair, and logon combo synchronization |
 | `source/main_runtime_nvml.cpp` | NVML loading, fan/power/clock telemetry, and GPU-state refresh helpers split out of `main.cpp` |
 | `source/main_runtime_gpu.cpp` | NVAPI curve/control helpers, apply/rollback verification, and live-state detection split out of `main.cpp` |
+| `source/gpu_backend_curve_write.h` | The Windows verified VF-curve writer (batch passes, per-point fallback) and control-table read; judges convergence only against a table read in the call |
 | `source/gui_mutation_worker.cpp`, `source/gui_service_state.cpp`, `source/ui_mutation_completion.cpp`, `source/gui_service_model.h`, `source/gui_draft_policy.h`, `source/gui_service_io_queue_policy.h` | Sole runtime GUI service-I/O coordinator, epoch/revision reducer, independent edit draft, read coalescing/mutation supersession, and GUI-thread-only state/render adoption |
 | `source/gui_tray_visibility.cpp`, `source/gui_window_redraw.cpp`, `source/gui_window_redraw_policy.h`, `source/gui_selected_gpu_pnp.cpp`, `source/gui_process_cleanup.cpp` | Durable tray-hidden postcondition, visibility-preserving coherent redraw transactions, presentation-only selected-device invalidation, and safe coordinator/process teardown |
 | `source/service_health_probe_policy.h`, `source/main_fan_telemetry.cpp` | Expected-busy service health policy and mutation-aware fan telemetry refresh |

@@ -896,6 +896,40 @@ The apply flow still proceeds in phases:
    - Fan settings when included
 6. Report per-phase success/failure with details
 
+### Verified VF writer judges only a fresh table (2026-11-19)
+
+Source anchors: `source/gpu_backend_curve_write.h`
+(`apply_curve_offsets_verified()`, `nvapi_read_control_table()`, split out of
+`main_runtime_gpu.cpp` at the same amalgamation position),
+`source/vf_control_offsets_decode.h` (the one control-table decoder, also used
+by `nvapi_read_offsets()`), `tests/windows_vf_verified_write_tests.cpp`
+(12350-12366, the production writer against a fake control table).
+
+- **Invariant:** convergence is judged only against a control table read
+  inside the call. The writer decodes its entry table into
+  `g_app.freqOffsets`/`freqOffsetsHz`/`vfOffsetsHzValid` before any check. If
+  that changes a targeted point it logs
+  `apply_curve_offsets_verified: entry readback replaced N stale cached offset(s) (first ci=... cached=... live=...)`
+  once and re-reads the curve even when nothing is written, so the caller never
+  holds a curve that disagrees with its offsets.
+- **Failure it closes:** the batch loop compared targets with a fresh table, but
+  the per-point fallback compared them with the cached snapshot. After another
+  tool reset the GPU, the fresh table already matched the Reset's zero
+  targets, so the batch wrote and read nothing, and every point the stale
+  cache disagreed with (51 points of an external flatten on a 5070) took a
+  ~1 s single-point write. The 52 s Reset outlasted the GUI's 20 s response
+  deadline and the outcome query that follows it; the GUI reported "outcome
+  is unknown after transport timeout" while the service went on to succeed.
+- **Linux parity:** `linux_backend_vf_write.h` returns success straight from
+  the fresh table when nothing needs writing and never consulted the cache,
+  so it never had the stall. Its cache is not refreshed by a no-op call
+  (low-impact parity gap, callers re-read afterwards).
+- **Open / stale-risk:** Reset and rollback still pass an unbounded fallback
+  deadline (see the 2026-09-23 budget note in
+  [clock-transition-audit.md](clock-transition-audit.md)). A board whose batch
+  write genuinely fails for many points still costs ~1 s per point and can
+  outlast the client deadline; only the stale-cache trigger is gone.
+
 ### F-APPLY-CEILING: the transition clock ceiling
 
 **Invariant:** an Apply never raises the VF curve, and never lets a
@@ -1439,7 +1473,7 @@ the power-target section (no laptop GPU available locally).
 
 ### vfMask editability check
 
-`nvapi_set_point()` in `source/gpu_backend.cpp:362` and `apply_curve_offsets_verified()` in `source/main_runtime_gpu.cpp:20` now check `g_app.vfMask` before writing each point. Points whose bit is not set in the vfMask (i.e., points that don't exist on this GPU) are silently skipped with a debug log. This prevents writing to phantom points.
+`nvapi_set_point()` in `source/gpu_backend.cpp` and `apply_curve_offsets_verified()` in `source/gpu_backend_curve_write.h` now check `g_app.vfMask` before writing each point. Points whose bit is not set in the vfMask (i.e., points that don't exist on this GPU) are silently skipped with a debug log. This prevents writing to phantom points.
 
 ## Tail drift: graduated versus uniform tail offsets (2026-05-19)
 

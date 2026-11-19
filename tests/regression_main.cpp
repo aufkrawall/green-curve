@@ -1079,6 +1079,9 @@ int run_scalar_curve_submission_tests();
 int run_modeled_curve_transition_tests();
 int run_modeled_curve_factory_tests();
 int run_windows_vf_exact_tests();
+// A stale cached VF table never forces per-point writes
+// (tests/windows_vf_verified_write_tests.cpp, 12350-12366).
+int run_windows_vf_verified_write_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2820,6 +2823,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int exactVfFailure = run_windows_vf_exact_tests()) {
         fprintf(stderr, "Windows exact VF regression failed: %d\n", exactVfFailure);
         return exactVfFailure;
+    }
+    if (int verifiedWriteFailure = run_windows_vf_verified_write_tests()) {
+        fprintf(stderr, "Windows verified VF writer regression failed: %d\n", verifiedWriteFailure);
+        return verifiedWriteFailure;
     }
     if (int captureFailure = run_hardware_capture_tests()) {
         fprintf(stderr, "hardware capture regression failed: %d\n", captureFailure);

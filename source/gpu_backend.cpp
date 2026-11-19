@@ -4,6 +4,7 @@
 #include "gpu_backend_apply.cpp"
 #include "vf_point_mask_policy.h"
 #include "memory_clock_evidence.h"
+#include "vf_control_offsets_decode.h"
 static bool apply_desired_settings(const DesiredSettings* desired, bool interactive,
     ServiceApplyOrigin origin, ServiceProfileSource profileSource, int profileSlot,
     char* result, size_t resultSize) {
@@ -491,20 +492,9 @@ static bool nvapi_read_offsets() {
     memset(buf, 0, backend->controlBufferSize);
     if (backend->controlBufferSize > 0x4000) return false;
     if (!nvapi_read_control_table(buf, backend->controlBufferSize)) return false;
-    bool exact = true;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        int delta = 0;
-        unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)i * backend->controlEntryStride + backend->controlEntryDeltaOffset;
-        if (deltaOffset + sizeof(delta) > backend->controlBufferSize || !buf.read_at(deltaOffset, &delta, sizeof(delta))) {
-            g_app.freqOffsets[i] = 0;
-            g_app.freqOffsetsHz[i] = 0;
-            exact = false;
-            continue;
-        }
-        g_app.freqOffsets[i] = vf_graphics_offset_khz(backend, delta);
-        if (!vf_graphics_offset_hz(backend, delta, &g_app.freqOffsetsHz[i])) exact = false;
-    }
-    g_app.vfOffsetsHzValid = exact;
+    // Same decoder the verified writer adopts its entry table with.
+    g_app.vfOffsetsHzValid = vf_control_offsets_decode(backend, buf,
+        backend->controlBufferSize, g_app.freqOffsets, g_app.freqOffsetsHz);
     return true;
 }
 static bool nvapi_set_point(int pointIndex, int freqDelta_kHz) {

@@ -58,14 +58,24 @@ def check_all(ctx, require_text, forbid_text):
                  "main_probe_config.cpp"):
         require_text(_p(ctx, name), "vf_normalize_graphics_status(",
                      "every VF status reader normalizes the graphics domain")
-    for name in ("gpu_backend.cpp", "main_runtime_gpu.cpp", "linux_backend_vf_write.h"):
+    for name in ("gpu_backend.cpp", "gpu_backend_curve_write.h", "linux_backend_vf_write.h"):
         require_text(_p(ctx, name), "vf_graphics_offset_driver_units(",
                      "single and batch VF writes encode physical offsets")
-    for name in ("gpu_backend.cpp", "linux_backend_vf_read.h"):
+    for name in ("vf_control_offsets_decode.h", "linux_backend_vf_read.h"):
         require_text(_p(ctx, name), "vf_graphics_offset_khz(",
                      "VF control readbacks normalize driver deltas")
+    # The Windows reader and the verified writer share one control-table
+    # decoder, and the writer adopts its entry table before any convergence
+    # check: a cached snapshot another tool has invalidated since (an external
+    # reset) must never send converged points through ~1 s per-point writes.
+    require_text(_p(ctx, "gpu_backend.cpp"),
+                 "g_app.vfOffsetsHzValid = vf_control_offsets_decode(backend, buf,",
+                 "the VF offset reader decodes through the shared control-table decoder")
+    require_text(_p(ctx, "gpu_backend_curve_write.h"),
+                 "g_app.vfOffsetsHzValid = vf_control_offsets_decode(backend, baseControl,",
+                 "the verified VF writer adopts its entry control table before judging convergence")
     for name, old_copy in (
-            ("main_runtime_gpu.cpp", "memcpy(&baseControl[deltaOffset], &g_app.freqOffsets[i]"),
+            ("gpu_backend_curve_write.h", "memcpy(&baseControl[deltaOffset], &g_app.freqOffsets[i]"),
             ("linux_backend_vf_write.h", "memcpy(baseControl + off, &g->freqOffsets[i]")):
         forbid_text(_p(ctx, name), old_copy,
                     "a raw control preimage never receives a normalized cache")

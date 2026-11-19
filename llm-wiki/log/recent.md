@@ -5,6 +5,25 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: Reset after another tool's reset stalled for ~50 s
+
+- Reported: apply a profile in another tool, start the GUI, reset in that
+  tool, then Reset in Green Curve: the Reset stalled and the GUI reported
+  "outcome is unknown after transport timeout". The debug log showed 51
+  single-point VF writes at ~1 s each (52 s total) for points whose
+  `batch left readback` was the other tool's old flatten, while the hardware
+  was already at stock; the batch pass had written nothing.
+- Root cause: `apply_curve_offsets_verified()` compared targets with a fresh
+  control table for the batch, but judged leftovers against the service's
+  cached snapshot, which the external reset had invalidated. Fix: the writer
+  adopts its entry table into the cache before any convergence check
+  (`gpu_backend_curve_write.h`, `vf_control_offsets_decode.h`) and logs how
+  many cached offsets were stale. Coverage 12350-12366 runs the production
+  writer against a fake control table.
+- Lesson: a convergence check must read the same moment it compares against;
+  a cache that only this process updates is not evidence about hardware other
+  tools can also write.
+
 ## 2026-11-19: Editor Load->Apply/Save keep an imported record's intent
 
 - The editor rebuilt Apply/Save requests from its whole-MHz fields, dropping
