@@ -558,6 +558,11 @@ struct AppData {
     unsigned int lockedFreq;
     LockMode lockMode;
     bool guiLockTracksAnchor;
+    // The editor lock last projected from a flatten another tool set
+    // (gui_observed_lock_policy.h); only meaningful while observedLockValid.
+    bool observedLockValid;
+    int observedLockCi;
+    unsigned int observedLockMHz;
 
     int gpuClockOffsetkHz;
     int memClockOffsetkHz;

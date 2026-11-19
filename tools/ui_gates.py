@@ -1696,3 +1696,30 @@ def check_all(ctx, require_text, forbid_text):
     check_service_status_notices(ctx, require_text, forbid_text)
     check_wndproc_stack_discipline(ctx, require_text, forbid_text)
     check_owner_drawn_text_is_literal(ctx, require_text, forbid_text)
+    check_observed_editor_lock(ctx, require_text, forbid_text)
+
+
+def check_observed_editor_lock(ctx, require_text, forbid_text):
+    """A flatten another tool set is shown as the editor lock without ever
+    becoming service ownership, and the stale-adopted-lock clear must not
+    withdraw that projection on every snapshot."""
+    sync = _p(ctx, "main_state_sync.cpp")
+    ctx.require_order_in_operation(
+        sync, "static void apply_service_snapshot_to_app(",
+        "rebuild_visible_map();",
+        "const bool editorShowsObservedLock = project_observed_external_lock(snapshot);",
+        "the editor projection runs on the adopted curve and visible map")
+    ctx.require_order_in_operation(
+        sync, "static void apply_service_snapshot_to_app(",
+        "project_observed_external_lock(snapshot);",
+        "&& !editorShowsObservedLock",
+        "the stale-adopted-lock clear leaves the projection alone")
+    require_text(_p(ctx, "main_observed_lock.cpp"),
+                 "if (app_is_service_process() || !g_app.usingBackgroundService) return false;",
+                 "only the service-backed GUI projects another tool's flatten")
+    require_text(_p(ctx, "gui_observed_lock_policy.h"), "programmed = offsetsKHz[j] != offsetsKHz[rec.anchorCi];",
+                 "a level stock top (no programmed tail offsets) is never shown as a lock")
+    require_text(_p(ctx, "ui_profile_save_notice.cpp"), "PROFILE_SAVE_NOTICE_OBSERVED_FLATTEN",
+                 "Save of the projection names the flatten and offers Import")
+    forbid_text(_p(ctx, "gpu_backend.cpp"), "gui_observed_lock",
+                "the live lock detector keeps its ownership gate; the projection is editor-only")

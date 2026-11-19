@@ -118,6 +118,8 @@ GC_NOINLINE static void gui_profile_save_command() {
         refresh_profile_controls_from_config();
         if (saveNotice == PROFILE_SAVE_NOTICE_OMITTED_EXTERNAL_CURVE)
             set_profile_status_text("Saved slot %d without the GPU's current VF curve (not set by Green Curve).", slot);
+        else if (saveNotice == PROFILE_SAVE_NOTICE_OBSERVED_FLATTEN)
+            set_profile_status_text("Saved slot %d with the flatten another tool set.", slot);
         else if (saveNotice == PROFILE_SAVE_NOTICE_DETECTED_APPROXIMATION)
             set_profile_status_text("Saved slot %d with a flatten detected from the GPU's curve.", slot);
         else

@@ -320,6 +320,8 @@ static void populate_control_state(ControlState* state) {
 
 #include "main_service_state_envelope.cpp"
 
+#include "main_observed_lock.cpp"
+
 static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot,
     bool activeDesiredValid, const DesiredSettings* activeDesired) {
     if (!snapshot) return;
@@ -438,6 +440,9 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot,
     g_app.backgroundServiceOwnerSessionId = snapshot->ownerSessionId;
     g_app.backgroundServiceOwnerUtcMs = snapshot->ownerUtcMs;
     rebuild_visible_map();
+    // A flatten another tool set is shown as the editor lock; the stale-lock
+    // clear below must not withdraw that projection every second.
+    const bool editorShowsObservedLock = project_observed_external_lock(snapshot);
     // F-REL-2e: clear a stale ADOPTED GUI lock when the service has authoritatively
     // reset to no-lock (e.g. reset-to-defaults after an out-of-band restart) and the
     // user has no unsaved edits.  This runs OUTSIDE should_accept_service_curve_lock_
@@ -449,6 +454,7 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot,
     // current GUI lock matches the last applied/adopted lock (never a fresh,
     // unapplied user edit).
     if (snapshot->loaded && !snapshot->hasLock && !gui_state_dirty()
+        && !editorShowsObservedLock
         && g_app.lockedCi >= 0
         && g_app.lockedCi == g_app.appliedLockCi
         && g_app.lockedFreq == g_app.appliedLockFreq) {

@@ -64,6 +64,28 @@ static inline int profile_save_count_inferred_pre_anchor_points(
     return count;
 }
 
+// Programmed points below a saved lock that the saved request does not carry
+// (no typed, projected or captured point there): what a Save of a flatten
+// another tool set leaves on the GPU.
+static inline int profile_save_count_unsaved_pre_anchor_points(
+    const VFCurvePoint* curve, const int* offsetsKHz, const int* savedComponentKHz,
+    const DesiredSettings* saved, int* firstCiOut) {
+    if (firstCiOut) *firstCiOut = -1;
+    if (!curve || !offsetsKHz || !saved || !saved->hasLock || saved->lockCi <= 0 ||
+        saved->lockCi >= VF_NUM_POINTS)
+        return 0;
+    int count = 0;
+    for (int ci = 0; ci < saved->lockCi; ++ci) {
+        if (curve[ci].freq_kHz == 0) continue;
+        if (saved->hasCurvePoint[ci] || saved->curvePointCaptured[ci]) continue;
+        const int component = savedComponentKHz ? savedComponentKHz[ci] : 0;
+        if (offsetsKHz[ci] == 0 || offsetsKHz[ci] == component) continue;
+        if (count == 0 && firstCiOut) *firstCiOut = ci;
+        ++count;
+    }
+    return count;
+}
+
 enum ProfileSaveNotice {
     PROFILE_SAVE_NOTICE_NONE = 0,
     // No-edit save over a curve Green Curve did not set: the slot omits it.
@@ -72,16 +94,25 @@ enum ProfileSaveNotice {
     // Curve does not own, with pre-anchor offsets inferred from the GPU: a
     // detected approximation, not a reviewed capture.
     PROFILE_SAVE_NOTICE_DETECTED_APPROXIMATION = 2,
+    // The saved lock is the editor's projection of a flatten another tool set
+    // (gui_observed_lock_policy.h); its lower points stay with that tool.
+    PROFILE_SAVE_NOTICE_OBSERVED_FLATTEN = 3,
 };
 
 // `lockOwnedByGreenCurve`: the service's active intent holds this lock.
-// `lockFromUserEdit`: the lock is a pending editor change.
+// `lockFromUserEdit`: the editor holds a lock (any editor lock counts).
+// `lockObservedExternal`: the saved lock is the editor's projection of a
+// flatten another tool set, which the editor also holds, so it is checked
+// before `lockFromUserEdit`.
 static inline ProfileSaveNotice profile_save_notice(bool usedGuiCapture,
     int unsavedProgrammedPoints, const DesiredSettings* saved,
-    bool lockOwnedByGreenCurve, bool lockFromUserEdit, int inferredPreAnchorPoints) {
+    bool lockOwnedByGreenCurve, bool lockFromUserEdit, int inferredPreAnchorPoints,
+    bool lockObservedExternal = false) {
     if (!usedGuiCapture)
         return unsavedProgrammedPoints > 0 ? PROFILE_SAVE_NOTICE_OMITTED_EXTERNAL_CURVE
                                            : PROFILE_SAVE_NOTICE_NONE;
+    if (saved && saved->hasLock && lockObservedExternal && !lockOwnedByGreenCurve)
+        return PROFILE_SAVE_NOTICE_OBSERVED_FLATTEN;
     if (saved && saved->hasLock && !lockOwnedByGreenCurve && !lockFromUserEdit &&
         inferredPreAnchorPoints > 0)
         return PROFILE_SAVE_NOTICE_DETECTED_APPROXIMATION;
@@ -93,6 +124,7 @@ static inline const char* profile_save_notice_name(ProfileSaveNotice notice) {
         case PROFILE_SAVE_NOTICE_NONE: return "none";
         case PROFILE_SAVE_NOTICE_OMITTED_EXTERNAL_CURVE: return "omitted-external-curve";
         case PROFILE_SAVE_NOTICE_DETECTED_APPROXIMATION: return "detected-approximation";
+        case PROFILE_SAVE_NOTICE_OBSERVED_FLATTEN: return "observed-flatten";
         default: return "unknown";
     }
 }

@@ -611,7 +611,7 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
             if (omitted > 0) {
                 snprintf(state->status, sizeof(state->status),
                     "Saved slot %d without the GPU's current VF curve: it was not set by"
-                    " Green Curve (%d programmed points); use Capture current GPU settings",
+                    " Green Curve (%d programmed points); use Import current GPU settings",
                     state->currentSlot, omitted);
             } else {
                 snprintf(state->status, sizeof(state->status),

@@ -24,7 +24,7 @@ static void show_live_gpu_state_for_disabled_app_launch() {
 
     ControlState control = {};
     bool haveControl = get_effective_control_state(&control);
-    debug_log("startup live editor: snapshot=%d selectedSlot=%d saved=%d (saved slot deliberately not loaded) loaded=%d activeSource=%d activeSlot=%d gpu=%d mem=%d power=%d fanMode=%d lockCi=%d lockMHz=%u detail=%s\n",
+    debug_log("startup live editor: snapshot=%d selectedSlot=%d saved=%d (saved slot deliberately not loaded) loaded=%d activeSource=%d activeSlot=%d gpu=%d mem=%d power=%d fanMode=%d lockCi=%d lockMHz=%u observedLock=%d detail=%s\n",
         gui_service_model_ready(&g_app.guiServiceModel) ? 1 : 0,
         selectedSlot,
         selectedSlotSaved ? 1 : 0,
@@ -37,6 +37,7 @@ static void show_live_gpu_state_for_disabled_app_launch() {
         haveControl && control.hasFan ? control.fanMode : -1,
         g_app.lockedCi,
         g_app.lockedFreq,
+        gui_editor_lock_is_observed() ? 1 : 0,
         "accepted READY envelope");
 
     if (selectedSlotSaved) {
