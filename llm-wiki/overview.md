@@ -166,7 +166,7 @@ NVIDIA CMP mining boards use their family's backend; the GUI asks the user to ac
 
 ## GPU selection
 
-Windows builds expose a GPU selector in the main window. Linux exposes `--gpu DDDD:BB:DD.F` plus a TUI selector. Both persist stable PCI identity and pass it through protocol-v13's target field. Interactive mutations bind that target to the accepted service instance and GPU generation; VF-dependent mutations additionally bind to the topology signature. Linux multi-GPU writes fail closed unless BDF plus nonconflicting PCI device/subsystem identity resolves uniquely across NVML/NvAPI; a compatible sole-device fallback is single-GPU-only.
+Windows builds expose a GPU selector in the main window. Linux exposes `--gpu DDDD:BB:DD.F` plus a TUI selector. Both persist stable PCI identity and pass it through protocol-v13's target field, on mutations and on full state reads (the service shows the requested GPU when the single-owner rule allows; Windows since 2026-11-19). Interactive mutations bind that target to the accepted service instance and GPU generation; VF-dependent mutations additionally bind to the topology signature. Linux multi-GPU writes fail closed unless BDF plus nonconflicting PCI device/subsystem identity resolves uniquely across NVML/NvAPI; a compatible sole-device fallback is single-GPU-only.
 
 ## Window title
 

@@ -232,34 +232,16 @@ static void populate_gpu_selector() {
     end_programmatic_edit_update();
 }
 
+// After populate_gpu_selector(), which it calls to put a refused choice back.
+#include "gui_gpu_selection_sync.cpp"
+
+// The choice is only a request: the service must show the GPU before it is
+// saved (gui_gpu_selection_sync.cpp, gpu_selection_sync_policy.h).
 static void apply_gpu_selection_from_ui() {
     if (!g_app.hGpuSelectCombo || programmatic_edit_update_active()) return;
     LRESULT selection = SendMessageA(g_app.hGpuSelectCombo, CB_GETCURSEL, 0, 0);
     if (selection < 0 || selection >= MAX_GPU_ADAPTERS) return;
-    unsigned int newIndex = (unsigned int)selection;
-    if (newIndex == g_app.selectedGpuIndex && g_app.selectedGpuExplicit &&
-        !g_app.configuredGpuSelectionUnresolved) return;
-    char persistErr[256] = {};
-    if (!save_configured_gpu_selection_atomic(newIndex,
-            persistErr, sizeof(persistErr))) {
-        debug_log("gpu selection: persistence failed for index=%u: %s\n",
-            newIndex, persistErr[0] ? persistErr : "unknown error");
-        gc_message_box(g_app.hMainWnd,
-            persistErr[0] ? persistErr : "Failed to save the selected GPU.",
-            "Green Curve", MB_OK | MB_ICONERROR);
-        populate_gpu_selector();
-        return;
-    }
-    g_app.selectedGpuIndex = newIndex;
-    g_app.selectedNvmlIndex = newIndex;
-    g_app.selectedGpuExplicit = true;
-    g_app.configuredGpuSelectionUnresolved = false;
-    gui_mutation_advance_gpu_epoch("GPU selector");
-    reset_gpu_runtime_selection();
-    gui_service_begin_full_sync("GPU selection changed");
-    set_profile_status_text("Selected GPU %u. Synchronizing live state...", newIndex);
-    debug_log("gpu selection changed through GUI: index=%u; asynchronous full sync queued\n",
-        newIndex);
+    gui_gpu_selection_choose((unsigned int)selection);
 }
 
 static void set_edit_value(HWND hEdit, unsigned int value) {

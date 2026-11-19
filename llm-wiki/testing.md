@@ -1,5 +1,30 @@
 # Testing
 
+## Client/service GPU selection agreement (2026-11-19)
+
+`tests/gpu_selection_sync_tests.cpp` (7090-7099) executes
+`source/gpu_selection_sync_policy.h`:
+- 7090: a targeted read counts as honoured only when the service shows the
+  exact requested adapter, by index and identity.
+- 7091-7094: the selector verdict. The shown, saved GPU is a no-op; the
+  shown GPU with a differing or unresolved saved GPU is requested, so the
+  choice gets saved. Another GPU is requested, or refused up front while
+  the shown GPU holds the intent; an index outside the list is invalid.
+- 7095-7097: saved-selection reconciliation. Nothing happens on one
+  adapter, without a stable saved GPU, or when saved and shown agree. An
+  unshown saved GPU is requested once and held after a refusal of the same
+  attempt key; a changed instance, generation, intent or target retries.
+- 7098-7099: config-driven actions refuse an unshown saved GPU on
+  multi-adapter systems with authoritative state; single-GPU systems and
+  non-authoritative state keep the old rule.
+`tools/gpu_support_gates.py` pins the wiring: the snapshot handler selects
+before its refresh, restricted callers are refused before the owner guard
+runs, the GUI full read carries the target, the selector handler never
+saves, a choice is saved only after acceptance, the client validation
+compares before it mutates, and the CLI uses its selection step. The GUI
+and service flows themselves have no executing fixture, and nothing has
+run on a multi-GPU Windows machine.
+
 ## Single-owner GPU retarget guard (2026-11-19)
 
 `tests/gpu_intent_owner_tests.cpp` (7060-7072) executes

@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 # SPDX-License-Identifier: MIT
-"""Source gates for VF status point masks, the CMP mining-board warning and
-the Windows service single-owner GPU retarget guard.
+"""Source gates for VF status point masks, the CMP mining-board warning, the
+Windows service single-owner GPU retarget guard and the client/service GPU
+selection agreement.
 
 Lives here rather than in build.py so the build script stays under its size
 ratchet; build.py passes its own require_text/forbid_text in, and this module
@@ -90,3 +91,51 @@ def check_source_gates(ctx, require_text, forbid_text, forbid_text_in_operation)
     forbid_text(os.path.join(src, "gpu_backend.cpp"),
                 "static bool gpu_adapter_has_same_pci_identity(",
                 "PCI identity has one tested definition (gpu_adapter_identity.h)")
+
+    # Client/service GPU selection agreement (gpu_selection_sync_policy.h,
+    # executed by tests/gpu_selection_sync_tests.cpp). A full state read names
+    # the GPU the client wants; the service switches only through the owner
+    # guard and the shared-only policy; a selector choice is saved only after
+    # the service shows it; config-driven actions refuse an unshown saved GPU.
+    snapshot_cpp = os.path.join(src, "main_service_snapshot_request.cpp")
+    ctx.require_order_in_operation(
+        snapshot_cpp, "static void service_handle_snapshot_request(",
+        "service_snapshot_select_requested_gpu(",
+        "bool initialized = hardware_initialize(",
+        "a targeted snapshot selects its GPU before the refresh it reports")
+    ctx.require_order_in_operation(
+        snapshot_cpp, "static bool service_snapshot_select_requested_gpu(",
+        "get_machine_restrict_policy(&restrictShared)",
+        "service_prepare_requested_gpu(request, false, err, errSize)",
+        "a restricted caller cannot choose the GPU; others go through the owner guard")
+    require_text(pipe_switch,
+                 "service_handle_snapshot_request(request, caller->isAdmin, response);",
+                 "the snapshot handler sees the request target and caller tier")
+    require_text(os.path.join(src, "gui_mutation_worker.cpp"),
+                 "if (kind == GUI_SERVICE_IO_FULL_SYNC && target && target->valid)",
+                 "the GUI full state read carries the requested GPU")
+    ui_main = os.path.join(src, "ui_main.cpp")
+    forbid_text_in_operation(ui_main, "static void apply_gpu_selection_from_ui()",
+                             "save_configured_gpu_selection_atomic(",
+                             "a selector choice is not saved before the service shows it")
+    ctx.require_order_in_operation(
+        os.path.join(src, "gui_gpu_selection_sync.cpp"),
+        "static void gui_gpu_selection_finish_choice(",
+        "gpu_selection_sync_accepted(&completion->requestedTarget, shown,",
+        "save_configured_gpu_selection_atomic(",
+        "a selector choice is saved only once the service shows that GPU")
+    ctx.require_order_in_operation(
+        os.path.join(src, "gpu_selection_config.cpp"),
+        "static bool validate_configured_gpu_selection_for_client(",
+        "gpu_selection_saved_matches_shown(",
+        "g_app.selectedGpuIndex = target.nvapiIndex;",
+        "config-driven actions refuse a saved GPU that is not shown")
+    require_text(os.path.join(src, "entry.cpp"),
+                 "if (!validate_configured_gpu_selection_for_cli(",
+                 "the CLI asks the service to show the saved GPU before acting")
+    ctx.require_order_in_operation(
+        os.path.join(src, "main_startup_profiles.cpp"),
+        "static void maybe_load_app_launch_profile_to_gui(",
+        "if (gui_gpu_selection_switch_expected()) {",
+        "validate_configured_gpu_selection_for_client(",
+        "the app-start profile waits for the saved GPU instead of refusing early")

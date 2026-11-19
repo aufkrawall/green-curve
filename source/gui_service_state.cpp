@@ -818,9 +818,10 @@ static void handle_gui_service_io_completion(
         gui_service_handle_read_miss(completion);
     } else {
         gui_service_note_read_answered();
-        gui_service_accept_response_on_main_thread(&completion->response,
-            completion->connectionEpoch, completion->kind,
-            completion->redrawControls, completion->reason);
+        gui_gpu_selection_after_read(completion,
+            gui_service_accept_response_on_main_thread(&completion->response,
+                completion->connectionEpoch, completion->kind,
+                completion->redrawControls, completion->reason));
     }
     HeapFree(GetProcessHeap(), 0, completion);
 }

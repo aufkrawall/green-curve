@@ -38,6 +38,9 @@ struct GuiMutationCompletion {
 
 struct GuiServiceIoCompletion {
     GuiServiceIoKind kind;
+    // The GPU a full sync asked the service to show (invalid when none), so
+    // the completion can tell an honoured selection from a refused one.
+    GpuAdapterInfo requestedTarget;
     gc_u64 captureToken;
     ServiceResponse response;
     bool transportSuccess;

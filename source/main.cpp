@@ -13,6 +13,7 @@
 #include "gpu_selection_policy.h"
 #include "gpu_adapter_identity.h"
 #include "gpu_intent_owner_policy.h"
+#include "gpu_selection_sync_policy.h"
 #include "profile_persistence_policy.h"
 #include "profile_desired_ini_ext.h"
 #include "ui_theme_metrics.h"
@@ -728,6 +729,7 @@ static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
 
 #ifndef GREEN_CURVE_SERVICE_BINARY
 #include "ui_main.cpp"
+#include "cli_gpu_selection.cpp"
 #include "entry.cpp"
 // Auto-profile subsystem (GUI only).  Pure cores first, then Win32 detection,
 // hotkeys, the driver (which calls the profile-apply/UI statics defined above),

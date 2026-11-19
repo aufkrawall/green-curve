@@ -215,7 +215,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
         desired_has_any_action(&opts.desired) || opts.reset || opts.saveConfig;
     if (cliNeedsStableGpu) {
         char gpuSelectionErr[256] = {};
-        if (!validate_configured_gpu_selection_for_client(
+        if (!validate_configured_gpu_selection_for_cli(
                 gpuSelectionErr, sizeof(gpuSelectionErr))) {
             CLI_LOG("ERROR: %s\n", gpuSelectionErr[0] ? gpuSelectionErr :
                 "Configured GPU identity is unavailable");

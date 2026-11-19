@@ -135,6 +135,19 @@ static bool validate_configured_gpu_selection_for_client(
                 : "The configured GPU identity is missing or ambiguous; select the intended GPU again");
         return false;
     }
+    // The saved GPU must be the GPU whose live state the client shows: a
+    // config-driven action would otherwise bind or apply values read from
+    // another GPU (gpu_selection_sync_policy.h).
+    if (!app_is_service_process() &&
+        !gpu_selection_saved_matches_shown(g_app.serviceSnapshotAuthoritative,
+            g_app.adapterCount, resolved, g_app.selectedGpuIndex)) {
+        debug_log("gpu selection: client validation refused; saved nvapi=%u is not the shown nvapi=%u (adapters=%u)\n",
+            resolved, g_app.selectedGpuIndex, g_app.adapterCount);
+        set_message(err, errSize,
+            "The saved GPU (GPU %u) is not the GPU Green Curve is showing (GPU %u). Select the GPU again.",
+            resolved, g_app.selectedGpuIndex);
+        return false;
+    }
     const GpuAdapterInfo& target = g_app.adapters[resolved];
     g_app.selectedGpuIndex = target.nvapiIndex;
     g_app.selectedNvmlIndex = target.nvmlIndex;

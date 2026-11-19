@@ -66,13 +66,22 @@ static void maybe_load_app_launch_profile_to_gui() {
         show_live_gpu_state_for_disabled_app_launch();
         return;
     }
+    // The saved GPU is about to be shown (gui_gpu_selection_sync.cpp): wait
+    // for that READY envelope rather than refusing one sync too early.
+    if (gui_gpu_selection_switch_expected()) {
+        g_app.appLaunchEvaluationPending = true;
+        set_profile_status_text("Switching to the saved GPU before the app-start profile...");
+        debug_log("app-start profile: deferred until the service shows the saved GPU\n");
+        return;
+    }
     char gpuSelectionErr[256] = {};
     if (!validate_configured_gpu_selection_for_client(
             gpuSelectionErr, sizeof(gpuSelectionErr))) {
-        debug_log("app-start profile: blocked because the durable GPU identity is unresolved: %s\n",
+        debug_log("app-start profile: blocked by the GPU selection: %s\n",
             gpuSelectionErr[0] ? gpuSelectionErr : "unknown error");
-        set_profile_status_text(
-            "App-start apply was blocked because the previously selected GPU is missing or ambiguous. Select the intended GPU again.");
+        set_profile_status_text("App-start apply was blocked: %s",
+            gpuSelectionErr[0] ? gpuSelectionErr :
+            "the previously selected GPU is missing or ambiguous. Select the intended GPU again.");
         return;
     }
     if (!is_profile_slot_saved(g_app.configPath, appLaunchSlot)) {

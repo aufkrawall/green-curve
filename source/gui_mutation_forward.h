@@ -26,6 +26,13 @@ static void gui_mutation_advance_gpu_epoch(const char* reason);
 static void gui_pending_changes_refresh();
 static gc_u64 gui_service_io_connection_epoch();
 static bool gui_service_io_queue_full_sync(const char* reason);
+// GPU selection agreement with the service (gui_gpu_selection_sync.cpp).
+struct GuiServiceIoCompletion;
+static void gui_service_io_set_full_sync_target(const GpuAdapterInfo* target);
+static void gui_gpu_selection_after_read(
+    const GuiServiceIoCompletion* completion, bool accepted);
+static void gui_gpu_selection_choose(unsigned int index);
+static bool gui_gpu_selection_switch_expected();
 static bool gui_service_io_queue_telemetry(bool redrawControls);
 static bool gui_service_io_queue_admin_toggle(bool enable, bool repair,
     const char* configPath, char* status, size_t statusSize);

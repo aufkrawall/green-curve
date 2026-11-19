@@ -42,7 +42,7 @@ switch (request->command) {
         populate_service_snapshot(&response->snapshot);
         break;
     case SERVICE_CMD_GET_SNAPSHOT: {
-        service_handle_snapshot_request(response);
+        service_handle_snapshot_request(request, caller->isAdmin, response);
         break;
     }
     case SERVICE_CMD_GET_TELEMETRY:

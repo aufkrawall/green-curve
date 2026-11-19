@@ -5,6 +5,27 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: Windows GPU selector snapped back to the service's GPU
+
+- Confirmed from code (deterministic, not timing): Windows state reads
+  named no GPU, the service ignored a target on them, and snapshot adoption
+  took the service's `selectedAdapterIndex`. A selector choice was saved
+  to `[gpu]` and then replaced on screen by the service's GPU.
+- Config-driven actions resolve the saved GPU through
+  `validate_configured_gpu_selection_for_client()`. Auto-profile and
+  app-start Applies were therefore stamped with the shown GPU's
+  generation but targeted the saved one, and were refused as stale every
+  time. Shared-profile publication bound slots to the saved GPU, although
+  their values came from the shown one.
+- Fix: Linux's existing rule. A full state read names the GPU the client
+  wants, and the service switches under the retarget guard and the
+  shared-only policy. A choice is saved only once shown, a refused saved
+  GPU is held per attempt key, and client validation refuses an unshown
+  saved GPU. The CLI asks once, synchronously, before acting.
+- Verified: regression 7090-7099 and source gates. Not run on multi-GPU
+  Windows hardware; this is also the per-request GPU routing a future
+  per-GPU controller design needs.
+
 ## 2026-11-19: Windows service could retarget away from the GPU that owns the active intent
 
 - Found while reviewing two community multi-GPU proposals (both Linux-only).
@@ -28,11 +49,9 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   terminal (`FAILED`, no write, no retry).
 - Verified: regression 7060-7072 and source gates in `gpu_support_gates.py`.
   Not run on multi-GPU Windows hardware.
-- Open: the GUI selector appears to snap back to the service's GPU on the
-  next full sync, because state reads carry no target. If so, GUI-only
-  switching does not reach the service until logon. Separately, the fan
-  runtime has no per-tick owner check. Both are recorded in gpu-backend.md,
-  "GPU identity and selection".
+- Open: the fan runtime has no per-tick owner check (gpu-backend.md, "GPU
+  identity and selection"). The suspected selector snap-back was confirmed
+  and fixed in the entry above.
 
 ## 2026-11-19: Previewing an offset profile over a flatten spiked point 75 to 3047 MHz (driver cross-talk) and zero-MHz projected drafts failed capture
 

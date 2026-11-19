@@ -43,6 +43,9 @@ static bool g_guiMutationShuttingDown = false;
 static GuiMutationWork g_guiMutationActiveWork = {};
 static GuiMutationWork g_guiMutationPendingWork = {};
 static char g_guiFullSyncReason[96] = {};
+// The GPU every full state read asks the service to show while set
+// (gui_gpu_selection_sync.cpp owns it; gpu_selection_sync_policy.h).
+static GpuAdapterInfo g_guiFullSyncTarget = {};
 static volatile LONG g_guiMutationGpuEpoch = 1;
 static volatile LONGLONG g_guiServiceConnectionEpoch = 1;
 static volatile LONG g_guiServicePresentationEpoch = 1;
@@ -159,8 +162,8 @@ static gc_u64 gui_worker_record_connection_result(
 }
 
 static bool gui_worker_send_state_request(GuiServiceIoKind kind,
-    ServiceResponse* response, char* err, size_t errSize,
-    ServiceClientSendOutcome* outcome) {
+    const GpuAdapterInfo* target, ServiceResponse* response,
+    char* err, size_t errSize, ServiceClientSendOutcome* outcome) {
     ServiceRequest request = {};
     request.magic = SERVICE_PROTOCOL_MAGIC;
     request.version = SERVICE_PROTOCOL_VERSION;
@@ -168,6 +171,8 @@ static bool gui_worker_send_state_request(GuiServiceIoKind kind,
         ? SERVICE_CMD_GET_SNAPSHOT : SERVICE_CMD_GET_TELEMETRY;
     request.callerPid = GetCurrentProcessId();
     ProcessIdToSessionId(request.callerPid, &request.callerSessionId);
+    if (kind == GUI_SERVICE_IO_FULL_SYNC && target && target->valid)
+        request.targetGpu = *target;
     StringCchCopyA(request.source, ARRAY_COUNT(request.source),
         kind == GUI_SERVICE_IO_FULL_SYNC
             ? "GUI async full sync" : "GUI async telemetry");
@@ -207,6 +212,7 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
         GuiPassiveCaptureWork capture{};
         std::unique_ptr<GuiProfileTransferWork> transfer;
         GuiServiceIoKind ioKind = GUI_SERVICE_IO_FULL_SYNC;
+        GpuAdapterInfo readTarget = {};
         bool executeMutation = false;
         bool executeRead = false;
         bool redrawControls = false;
@@ -246,6 +252,7 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
             StringCchCopyA(reason, ARRAY_COUNT(reason),
                 g_guiFullSyncReason[0] ? g_guiFullSyncReason : "full sync");
             g_guiFullSyncReason[0] = '\0';
+            readTarget = g_guiFullSyncTarget;
             g_guiWorkerBusy = true;
             ioKind = GUI_SERVICE_IO_FULL_SYNC;
             executeRead = true;
@@ -346,6 +353,7 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
             continue;
         }
         completion->kind = ioKind;
+        completion->requestedTarget = readTarget;
         completion->captureToken = capture.token;
         completion->redrawControls = redrawControls;
         completion->presentationEpoch = presentationEpoch;
@@ -391,7 +399,7 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
                     &completion->response, true, completion->error, sizeof(completion->error), &completion->sendOutcome);
             } else {
                 completion->transportSuccess = gui_worker_send_state_request(ioKind,
-                    &completion->response, completion->error,
+                    &readTarget, &completion->response, completion->error,
                     sizeof(completion->error), &completion->sendOutcome);
             }
             completion->connectionEpoch = gui_worker_record_connection_result(
@@ -442,6 +450,14 @@ static bool gui_mutation_initialize(char* err, size_t errSize) {
 
 #include "gui_passive_capture_queue.cpp"
 #include "gui_profile_transfer_queue.cpp"
+
+static void gui_service_io_set_full_sync_target(const GpuAdapterInfo* target) {
+    char err[192] = {};
+    if (!gui_mutation_initialize(err, sizeof(err))) return;
+    EnterCriticalSection(&g_guiMutationLock);
+    g_guiFullSyncTarget = target && target->valid ? *target : GpuAdapterInfo{};
+    LeaveCriticalSection(&g_guiMutationLock);
+}
 
 static bool gui_service_io_queue_full_sync(const char* reason) {
     char err[192] = {};

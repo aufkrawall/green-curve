@@ -1016,6 +1016,9 @@ int run_gpu_location_role_tests(const char* scratchConfigPath);
 // Windows single-owner GPU retargeting and PCI identity predicates
 // (tests/gpu_intent_owner_tests.cpp, 7060-7079).
 int run_gpu_intent_owner_tests();
+// Windows client/service GPU selection agreement
+// (tests/gpu_selection_sync_tests.cpp, 7090-7099).
+int run_gpu_selection_sync_tests();
 // The Linux stored-target rule for the same renumbering
 // (tests/linux_gpu_location_tests.cpp, 7340-7379 and 7410-7419).
 int run_linux_gpu_location_tests();
@@ -2760,6 +2763,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int ownerFailure = run_gpu_intent_owner_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", ownerFailure);
         return ownerFailure;
+    }
+    if (int syncFailure = run_gpu_selection_sync_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", syncFailure);
+        return syncFailure;
     }
     if (int restoreRoleFailure = run_linux_restore_role_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", restoreRoleFailure);
