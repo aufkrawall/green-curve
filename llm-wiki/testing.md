@@ -1,5 +1,33 @@
 # Testing
 
+## Profile import default slot assignment and indexed pre-check (2026-11-19)
+
+`tests/profile_tools_tests.cpp` (`9992-9996`), `tests/profile_slot_runtime_tests.cpp`
+(`12500-12504`), and `tests/tui_profile_tools_tests.cpp` (`9792-9793`) pin
+`source/profile_transfer_slot_policy.h`, `source/profile_slot_runtime.h`,
+`source/gui_profile_transfer.cpp`, and `source/linux_tui_transfer.h`:
+- `9992-9993`: 5-profile import with only slot 5 empty and exhaustively across
+  all 32 slot-occupancy masks always assigns `{1, 2, 3, 4, 5}` (never swaps
+  Profile 1 into empty slot 5 and Profile 5 into slot 1).
+- `9994`: partial imports keep zero overwrites when empty slots suffice, retain
+  distinct empty preferred slots, stay monotonic, and handle duplicate/invalid
+  preferred hints.
+- `9995-9996`: end-to-end 5-slot export -> delete slot 5 -> probe -> default
+  slot assignment -> import restores a voltage-bound captured flatten into
+  slot 5 cleanly while slot 1's legacy out-of-range `-1927 MHz` record stays in
+  slot 1 and reports `-1927 MHz` / `-1000..1000 MHz`.
+- `12500-12504`: out-of-range graphics (`-1927 MHz`, `+1000.5 MHz`) and
+  legacy-scope memory (`+3500 MHz`, `-3250 MHz`) offsets report exact MHz and
+  bounds; captured voltage-bound flatten (`driver_offset=0` pre-tail, flatten
+  lock, precise P0 memory, `17/20` power) round-trips through portable file
+  encoding and `profile_slot_document_runtime()`.
+- `9792-9793`: TUI 5-profile import with only slot 5 empty assigns `{1..5}` and
+  surfaces the `-1927 MHz` indexed-record warning in the import note before
+  commit.
+- `tools/ui_gates.py` (`check_import_transfer_slots_and_runtime_check()`) pins
+  both Windows GUI and Linux TUI to `profile_transfer_default_slots()` and
+  indexed pre-checking via `profile_slot_document_runtime()`.
+
 ## Curve offset-range diagnostics within one VF bin (2026-11-19)
 
 `tests/curve_plan_tests.cpp` (`12480-12494`), `tests/curve_plan_precision_cases.h`

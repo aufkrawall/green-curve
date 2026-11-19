@@ -7,6 +7,7 @@
 #include "profile_capture_save.h"
 #include "profile_capture_proposal_fixture.h"
 #include "gui_profile_transfer_work.h"
+#include "profile_transfer_slot_policy.h"
 #include "profile_legacy_document.h"
 #include "profile_ini_slot.h"
 #include <map>
@@ -189,6 +190,161 @@ int run_profile_tools_tests() {
         unresolvedSummary.core.text != "+475 MHz, cannot be saved separately on this GPU") {
         fprintf(stderr, "9991: %s\n", unresolvedSummary.core.text.c_str());
         return 9991;
+    }
+
+    // 9992: importing a 5-profile export when only slot 5 is empty must keep
+    // each profile in its matching slot (1..5), never swap profile 1 into slot 5
+    // and profile 5 into slot 1.
+    {
+        const int five[5] = {1, 2, 3, 4, 5};
+        const bool onlySlot5Empty[6] = {false, true, true, true, true, false};
+        int assigned[5]{};
+        profile_transfer_default_slots(5, five, onlySlot5Empty, assigned);
+        for (int i = 0; i < 5; ++i) if (assigned[i] != i + 1) return 9992;
+    }
+    // 9993: for all 32 occupancy masks, a 5-profile import keeps slots 1..5.
+    {
+        const int five[5] = {1, 2, 3, 4, 5};
+        for (int mask = 0; mask < 32; ++mask) {
+            bool saved[6]{};
+            for (int s = 1; s <= 5; ++s) saved[s] = ((mask >> (s - 1)) & 1) != 0;
+            int assigned[5]{};
+            profile_transfer_default_slots(5, five, saved, assigned);
+            for (int i = 0; i < 5; ++i) if (assigned[i] != i + 1) return 9993;
+        }
+    }
+    // 9994: partial imports avoid overwriting saved slots when empty slots
+    // suffice, preserve preferred slots when possible, and stay monotonic.
+    {
+        int assigned[5]{};
+        const bool saved14[6] = {false, true, false, false, true, false};
+        const int p12[2] = {1, 2};
+        profile_transfer_default_slots(2, p12, saved14, assigned);
+        if (assigned[0] != 2 || assigned[1] != 3) return 9994;
+
+        const int p25[2] = {2, 5};
+        profile_transfer_default_slots(2, p25, saved14, assigned);
+        if (assigned[0] != 2 || assigned[1] != 5) return 9994;
+
+        const bool saved1234[6] = {false, true, true, true, true, false};
+        const int p1[1] = {1};
+        profile_transfer_default_slots(1, p1, saved1234, assigned);
+        if (assigned[0] != 5) return 9994;
+
+        const int p1234[4] = {1, 2, 3, 4};
+        profile_transfer_default_slots(4, p1234, saved1234, assigned);
+        if (assigned[0] != 1 || assigned[1] != 2 || assigned[2] != 3 || assigned[3] != 5) return 9994;
+
+        const int p135[3] = {1, 3, 5};
+        profile_transfer_default_slots(3, p135, saved1234, assigned);
+        if (assigned[0] != 1 || assigned[1] != 3 || assigned[2] != 5) return 9994;
+
+        const bool saved123[6] = {false, true, true, true, false, false};
+        const int p123[3] = {1, 2, 3};
+        profile_transfer_default_slots(3, p123, saved123, assigned);
+        if (assigned[0] != 1 || assigned[1] != 4 || assigned[2] != 5) return 9994;
+
+        const bool saved2345[6] = {false, false, true, true, true, true};
+        const int p2345[4] = {2, 3, 4, 5};
+        profile_transfer_default_slots(4, p2345, saved2345, assigned);
+        if (assigned[0] != 1 || assigned[1] != 3 || assigned[2] != 4 || assigned[3] != 5) return 9994;
+
+        const bool allSaved[6] = {false, true, true, true, true, true};
+        profile_transfer_default_slots(2, p12, allSaved, assigned);
+        if (assigned[0] != 1 || assigned[1] != 2) return 9994;
+
+        const int dupes[3] = {2, 2, 99};
+        profile_transfer_default_slots(3, dupes, saved1234, assigned);
+        bool seen[6]{};
+        for (int i = 0; i < 3; ++i) {
+            if (assigned[i] < 1 || assigned[i] > 5 || seen[assigned[i]]) return 9994;
+            seen[assigned[i]] = true;
+        }
+    }
+    // 9995: end-to-end 5-slot round trip where slot 1 holds an out-of-range
+    // legacy graphics offset (-1927 MHz) and slot 5 holds a voltage-bound
+    // captured flatten: deleting slot 5 and re-importing the 5-profile export
+    // using default slots restores slot 5 cleanly without swapping slot 1 in.
+    {
+        ToolsIO roundtrip;
+        auto fiveBank = std::make_unique<ProfileBank>();
+        fiveBank->count = 5;
+        fiveBank->documents[0] = memory_profile(3000000000LL, "Slot 1");
+        fiveBank->documents[0].domains |= PROFILE_DOMAIN_GRAPHICS_OFFSET;
+        fiveBank->documents[0].graphicsOffset.present = true;
+        fiveBank->documents[0].graphicsOffset.offsetHz = -1927000000LL;
+        fiveBank->documents[0].graphicsOffset.exclusionPolicy = PROFILE_EXCLUDE_LEGACY_COUNT;
+        fiveBank->documents[0].graphicsOffset.excludeLowCount = 76;
+        fiveBank->documents[0].legacyIndicesUnresolved = true;
+        for (int i = 1; i <= 3; ++i)
+            fiveBank->documents[i] = memory_profile(500000000LL * i, "Middle");
+        auto captured = profile_document_make_empty();
+        snprintf(captured.displayName, sizeof(captured.displayName), "Captured 5");
+        captured.applicationScope = PROFILE_SCOPE_UPDATE_INCLUDED;
+        captured.pointSetPolicy = PROFILE_POINTS_REPLACE;
+        captured.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK | PROFILE_DOMAIN_MEMORY | PROFILE_DOMAIN_POWER;
+        captured.topologyCount = 2;
+        captured.topology[0] = {75, 75, 920000LL, 1};
+        captured.points[0].kind = PROFILE_POINT_CAPTURED_OFFSET;
+        captured.points[0].capturedOffsetHz = 0;
+        captured.topology[1] = {76, 76, 925000LL, 1};
+        captured.lock.present = true;
+        captured.lock.mode = LOCK_MODE_FLATTEN;
+        captured.lock.anchorTopologyId = 76;
+        captured.lock.targetFrequencyHz = 2962000000LL;
+        captured.lock.trackAnchor = false;
+        captured.hasMemoryOffset = true;
+        captured.memoryOffsetHz = 3000000000LL;
+        captured.memorySurface = CLOCK_OFFSET_SURFACE_P0;
+        captured.power.present = true;
+        captured.power.ratio = {17, 20};
+        fiveBank->documents[4] = captured;
+        for (int i = 0; i < 5; ++i) fiveBank->documents[i].documentId = (gc_u32)(i + 1);
+        if (!profile_bank_encode(*fiveBank, roundtrip.files["all5.gcprofile"], &error)) return 9995;
+        roundtrip.files["bank.ini"] =
+            "[profile1]\nmem_offset_mhz=100\n[profile2]\nmem_offset_mhz=200\n"
+            "[profile3]\nmem_offset_mhz=300\n[profile4]\nmem_offset_mhz=400\n";
+        auto probe5 = std::make_unique<ProfileEditorTransferProbe>();
+        if (!profile_editor_transfer_probe("all5.gcprofile", {}, roundtrip, *probe5) || probe5->documents.size() != 5)
+            return 9995;
+        const bool saved1234[6] = {false, true, true, true, true, false};
+        int assigned[5]{};
+        profile_transfer_default_slots(5, probe5->sources.data(), saved1234, assigned);
+        auto runWork = std::make_unique<GuiProfileTransferWork>();
+        runWork->kind = GUI_PROFILE_TRANSFER_RUN;
+        runWork->options.importing = true;
+        runWork->file = "all5.gcprofile";
+        runWork->config = "bank.ini";
+        for (int i = 0; i < 5; ++i) {
+            runWork->options.sources.push_back(probe5->sources[(size_t)i]);
+            runWork->options.slots.push_back(assigned[i]);
+        }
+        gui_profile_transfer_execute(*runWork, roundtrip);
+        if (!runWork->success) return 9995;
+        std::string bankText;
+        auto slot5Doc = std::make_unique<ProfileDocument>();
+        auto slot1Doc = std::make_unique<ProfileDocument>();
+        bool found5 = false, found1 = false;
+        if (!profile_config::decode(roundtrip.files["bank.ini"], bankText, &error) ||
+            !profile_document_slot_decode(bankText, 5, *slot5Doc, found5, error) || !found5 ||
+            !profile_document_slot_decode(bankText, 1, *slot1Doc, found1, error) || !found1)
+            return 9995;
+        ProfileDestinationTopology live{};
+        live.available = true; live.complete = true; live.count = 2;
+        live.points[0] = {75, 920000LL, true, true};
+        live.points[1] = {76, 925000LL, true, true};
+        auto slot5Runtime = std::make_unique<DesiredSettings>();
+        auto slot1Runtime = std::make_unique<DesiredSettings>();
+        why[0] = 0;
+        if (!profile_slot_document_runtime(*slot5Doc, &live, *slot5Runtime, why, sizeof(why)) ||
+            !slot5Runtime->hasLock || slot5Runtime->lockCi != 76 || slot5Runtime->lockMHz != 2962 ||
+            slot5Runtime->memOffsetHz != 3000000000LL || slot5Runtime->powerRatioNumerator != 17 ||
+            slot5Runtime->powerRatioDenominator != 20)
+            return 9996;
+        why[0] = 0;
+        if (profile_slot_document_runtime(*slot1Doc, nullptr, *slot1Runtime, why, sizeof(why)) ||
+            !strstr(why, "-1927 MHz") || !strstr(why, "-1000..1000 MHz"))
+            return 9996;
     }
     return 0;
 }

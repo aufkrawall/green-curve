@@ -5,13 +5,14 @@
 Source anchors: `source/profile_slot_runtime.h`, `source/config_profile_document_load.h`,
 `source/linux_profile_document_load.h`, `source/profile_capture_save.h`,
 `source/profile_summary.h`, `source/profile_editor_transfer.h` (probe and explicit
-selection), `source/gui_profile_tools.cpp`, `source/gui_profile_capture.cpp`,
-`source/gui_profile_transfer.cpp`, `source/gui_profile_dialog_kit.h`,
-`source/gui_profile_transfer_work.h`, `source/profile_ini_slot.h`, `source/linux_tui_capture_draft.h`,
+selection), `source/profile_transfer_slot_policy.h`, `source/gui_profile_tools.cpp`,
+`source/gui_profile_capture.cpp`, `source/gui_profile_transfer.cpp`,
+`source/gui_profile_dialog_kit.h`, `source/gui_profile_transfer_work.h`,
+`source/profile_ini_slot.h`, `source/linux_tui_capture_draft.h`,
 `source/linux_tui_transfer.h`, `source/linux_tui_layout_transfer.h`,
-`tests/profile_slot_runtime_tests.cpp` (9950-9969), `tests/profile_tools_tests.cpp`
-(9970-9991), `tests/tui_profile_tools_tests.cpp` (9770-9791), `tests/profile_ini_slot_tests.cpp`
-(9930-9948).
+`tests/profile_slot_runtime_tests.cpp` (9950-9969, 12500-12504),
+`tests/profile_tools_tests.cpp` (9970-9996), `tests/tui_profile_tools_tests.cpp`
+(9770-9793), `tests/profile_ini_slot_tests.cpp` (9930-9948).
 
 This supersedes the source-editor workflow described in the 2026-11-14/15 sections
 below ("Windows capture into an unsaved source draft", "Windows canonical source
@@ -77,11 +78,23 @@ Current behavior:
 - **Import** reads the file first (`profile_editor_transfer_probe()`): portable banks
   list records in file order; anything else is tried as an old INI (Windows
   interpretation by default, switchable), slot by slot, and a missing memory unit or
-  curve meaning becomes a question instead of a failure. Each record gets a
-  destination slot (empty slots first); duplicates block Import; replaced slots are
-  named. The job prepares the explicit `sources`/`slots` edit and commits it in one
-  run; the bank generation check still refuses a bank that changed meanwhile.
-  Records that will not fit this GPU are named before Import (Windows).
+  curve meaning becomes a question instead of a failure. Default destination slots
+  come from the shared `profile_transfer_default_slots()` policy
+  (`source/profile_transfer_slot_policy.h`, used by both Windows GUI and Linux TUI):
+  when all records fit in empty slots no saved slot is overwritten (keeping distinct
+  empty preferred slots or assigning ascending empty slots); when some saved slots
+  must be replaced, each record first claims its own empty preferred slot so a
+  multi-profile import (e.g. 5 profiles with only slot 5 empty) never swaps Profile 1
+  into slot 5 and Profile 5 into slot 1, and any remaining empty slots are matched
+  monotonically to the closest unassigned rows. Duplicates block Import; replaced
+  slots are named. Both Windows (`gui_transfer_import_note()`) and Linux TUI
+  (`tui_transfer_refresh()`) pre-check every checked record (both indexed and
+  voltage-bound) via `profile_slot_document_runtime()` before committing, so records
+  with out-of-range offsets (e.g. a legacy `-1927 MHz` offset outside
+  `-1000..1000 MHz`) or destination mismatches are named before Import with exact
+  MHz and bounds. The job prepares the explicit `sources`/`slots` edit and commits
+  it in one run; the bank generation check still refuses a bank that changed
+  meanwhile.
 - **Windows plumbing.** The three dialogs share `gui_profile_dialog_kit.h` (house
   themed buttons/checkboxes/combos, DT_NOPREFIX, centered, main window disabled,
   Esc/Enter/Tab routing). Transfer jobs are `GUI_PROFILE_TRANSFER_PROBE` or `_RUN`;

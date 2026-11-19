@@ -5,6 +5,47 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: Importing a 5-profile export with slot 5 empty swapped Profile 1 into Slot 5 ("graphics offset is out of range")
+
+- Reported: after exporting all 5 slots to a `.gcprofile` file, clearing slot 5
+  (a captured flatten + memory + power profile), and re-importing the file,
+  loading Slot 5 failed with `Profile 5: graphics offset is out of range`.
+- Root cause (two interacting defects):
+  1. Both `gui_transfer_fill_import_rows()` (`source/gui_profile_transfer.cpp`)
+     and `tui_transfer_probe()` (`source/linux_tui_transfer.h`) assigned default
+     import slots greedily in row order (`empty slots first`). When slots 1..4
+     were occupied and only slot 5 was empty, Profile 1 (`i=0`) claimed empty
+     Slot 5, and Profile 5 (`i=4`) wrapped around to Slot 1 -- silently swapping
+     Profile 1 and Profile 5.
+  2. Profile 1 carried a legacy `-1927 MHz` selective graphics offset saved
+     before the flat-tail offset-detection fix (`vf_live_offset_policy.h`). The
+     ordinary INI loader had silently clamped it via
+     `validate_desired_settings_for_ipc()`, whereas portable document loading
+     (`profile_desired_from_indexed_document()`) properly refuses offsets
+     outside `-1000..1000 MHz`. Because `gui_transfer_import_note()` skipped
+     indexed records (`!profile_document_requires_destination(document)`), the
+     Import dialog gave no warning before committing, and `profile_slot_runtime.h`
+     also lacked a range check on legacy-scope memory offsets and omitted the
+     offending MHz value and bounds from the error message.
+- Fix: extracted pure `profile_transfer_default_slots()` in
+  `source/profile_transfer_slot_policy.h` (shared by Windows GUI and Linux TUI):
+  when all records fit in empty slots, no saved slot is overwritten; when saved
+  slots must be replaced, records first claim their own empty preferred slots
+  (so a 5-profile import always maps `1..5 -> 1..5` across all 32 occupancy
+  masks) and remaining empty slots match monotonically to the closest unassigned
+  rows. Wired both `gui_transfer_import_note()` (enlarging import note height to
+  54 dp) and `tui_transfer_refresh()` to pre-check both indexed and
+  voltage-bound checked records via `profile_slot_document_runtime()`, added
+  exact MHz/bounds wording plus legacy-scope memory bounds in
+  `source/profile_slot_runtime.h`, and logged default/queued `sources` and
+  `slots` mappings on both platforms.
+- Coverage: `tests/profile_tools_tests.cpp` (`9992-9996`),
+  `tests/profile_slot_runtime_tests.cpp` (`12500-12504`),
+  `tests/tui_profile_tools_tests.cpp` (`9792-9793`), and
+  `check_import_transfer_slots_and_runtime_check()` in `tools/ui_gates.py`.
+  Software-verified via fixtures and full Windows deliverable build; live GUI
+  re-import check pending rebuilt install.
+
 ## 2026-11-19: Near-limit flatten target (2450 MHz @ 820 mV) gave generic range error instead of planner diagnostic
 
 - Reported: with a 1425 MHz stock base at 820 mV and `+1000` MHz offset limit,

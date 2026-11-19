@@ -3,7 +3,9 @@
 #pragma once
 #include "linux_tui_profile_load.h"
 #include "linux_tui_slot_state.h"
+#include "profile_slot_runtime.h"
 #include "profile_summary.h"
+#include "profile_transfer_slot_policy.h"
 #include <cstdlib>
 #include <algorithm>
 
@@ -71,6 +73,26 @@ template<class IO> static inline void tui_transfer_refresh(TuiState& state, IO& 
     }
     if (duplicate) note = "Two profiles go to the same slot; choose another slot for one of them.";
     else if (!replaced.empty()) note = "Replaces the profile saved in slot " + replaced + ".";
+    if (v.importing && !duplicate && state.transferProbe && state.transferProbe->ok) {
+        auto live = std::make_unique<ProfileDestinationTopology>();
+        const auto& snapshot = state.service.snapshot;
+        const bool haveLive = state.serviceOnline && profile_destination_from_vf_curve(snapshot.curve,
+            vf_floor_topology_compute(snapshot.curve, snapshot.freqOffsets, VF_NUM_POINTS), *live);
+        auto converted = std::make_unique<DesiredSettings>();
+        for (int i = 0; i < v.rows; ++i) {
+            if (!v.rowEnabled[i] || !v.rowAvailable[i]) continue;
+            const auto& document = state.transferProbe->documents[(size_t)i];
+            const bool needsGpu = profile_document_requires_destination(document);
+            char why[192]{};
+            if (needsGpu && !haveLive) {
+                if (!note.empty()) note += " ";
+                note += "Profile " + std::to_string(i + 1) + " needs this GPU to be ready before it can be applied.";
+            } else if (!profile_slot_document_runtime(document, needsGpu ? live.get() : nullptr, *converted, why, sizeof(why))) {
+                if (!note.empty()) note += " ";
+                note += "Profile " + std::to_string(i + 1) + ": " + why + ".";
+            }
+        }
+    }
     if (v.importing && state.transferProbe && !state.transferProbe->ok) {
         if (state.transferProbe->needsMemoryUnit || state.transferProbe->needsCurveMeaning)
             note = "This older file does not say how some values were saved; answer the question above.";
@@ -97,20 +119,20 @@ template<class IO> static inline void tui_transfer_probe(TuiState& state, IO& st
     v.askCurve = probe.needsCurveMeaning || (probe.legacyFile && v.curve);
     bool saved[6];
     tui_profile_slots_saved(storage, state.configPath, saved);
-    bool taken[6]{};
+    const int count = probe.ok ? (int)std::min<size_t>(probe.documents.size(), 5) : 0;
+    int defaultSlots[5]{1, 2, 3, 4, 5};
+    const int* preferred = probe.ok && probe.sources.size() >= (size_t)count ? probe.sources.data() : nullptr;
+    profile_transfer_default_slots(count, preferred, saved, defaultSlots);
     for (int i = 0; i < 5; ++i) {
-        v.rowEnabled[i] = probe.ok && i < (int)probe.documents.size();
-        int slot = 0;
-        for (int s = 1; s <= 5 && !slot; ++s) if (!taken[s] && !saved[s]) slot = s;
-        for (int s = i + 1; s <= 5 && !slot; ++s) if (!taken[s]) slot = s;
-        for (int s = 1; s <= 5 && !slot; ++s) if (!taken[s]) slot = s;
-        if (slot) taken[slot] = true;
-        v.rowSlot[i] = slot ? slot : i + 1;
+        v.rowEnabled[i] = probe.ok && i < count;
+        v.rowSlot[i] = defaultSlots[i];
     }
     std::snprintf(state.status, sizeof(state.status), "%s", probe.ok ? "Choose where each profile goes, then IMPORT" :
         "The file could not be imported as it is; see the note");
-    linux_debug_logf("profile-transfer: probe ok=%d legacy=%d records=%u askMemory=%d askCurve=%d", probe.ok ? 1 : 0,
-        probe.legacyFile ? 1 : 0, (unsigned)probe.documents.size(), probe.needsMemoryUnit ? 1 : 0, probe.needsCurveMeaning ? 1 : 0);
+    std::vector<int> assignedSlots(defaultSlots, defaultSlots + count);
+    linux_debug_logf("profile-transfer: probe ok=%d legacy=%d records=%u askMemory=%d askCurve=%d slots=%s", probe.ok ? 1 : 0,
+        probe.legacyFile ? 1 : 0, (unsigned)probe.documents.size(), probe.needsMemoryUnit ? 1 : 0, probe.needsCurveMeaning ? 1 : 0,
+        profile_editor_transfer_list(assignedSlots).c_str());
     tui_transfer_refresh(state, storage);
 }
 static inline void tui_transfer_cancel(TuiState& state) {
@@ -141,8 +163,9 @@ template<class IO> static inline bool tui_transfer_run(TuiState& state, IO& stor
     auto preview = std::make_unique<ProfileEditorTransferPreview>();
     const bool success = profile_editor_transfer_prepare(options, state.transferPath, state.configPath, storage, *preview) &&
         profile_editor_transfer_commit(storage, *preview);
-    linux_debug_logf("profile-transfer: run import=%d records=%u success=%d code=%d", v.importing ? 1 : 0,
-        (unsigned)options.slots.size(), success ? 1 : 0, preview->result);
+    linux_debug_logf("profile-transfer: run import=%d records=%u sources=%s slots=%s success=%d code=%d", v.importing ? 1 : 0,
+        (unsigned)options.slots.size(), profile_editor_transfer_list(options.sources).c_str(),
+        profile_editor_transfer_list(options.slots).c_str(), success ? 1 : 0, preview->result);
     if (!success) {
         std::snprintf(state.status, sizeof(state.status), "%s failed: %s; nothing was changed", v.importing ? "Import" : "Export",
             preview->error.message[0] ? preview->error.message : "unknown error");

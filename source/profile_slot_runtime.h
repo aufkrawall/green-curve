@@ -52,6 +52,24 @@ static inline bool profile_slot_runtime_fail(char* why, size_t whySize, const ch
     return false;
 }
 
+static inline void profile_slot_runtime_format_mhz(long long hz, char* out, size_t outSize) {
+    if (!out || !outSize) return;
+    const bool negative = hz < 0;
+    const unsigned long long magnitude = negative ? (0ULL - (unsigned long long)hz) : (unsigned long long)hz;
+    unsigned long long whole = magnitude / 1000000ULL;
+    unsigned long long fraction = (magnitude % 1000000ULL + 500ULL) / 1000ULL;
+    if (fraction >= 1000ULL) { ++whole; fraction = 0; }
+    const char* sign = negative ? "-" : (magnitude ? "+" : "");
+    if (fraction) {
+        char digits[8]{};
+        snprintf(digits, sizeof(digits), "%03llu", fraction);
+        for (int i = 2; i > 0 && digits[i] == '0'; --i) digits[i] = 0;
+        snprintf(out, outSize, "%s%llu.%s", sign, whole, digits);
+    } else {
+        snprintf(out, outSize, "%s%llu", sign, whole);
+    }
+}
+
 static inline bool profile_power_ratio_is_whole_percent(TuningPowerRatio ratio, int* percent) {
     int preview = 0;
     if (!desired_power_ratio_preview(ratio, &preview)) return false;
@@ -106,7 +124,12 @@ static inline bool profile_desired_from_indexed_document(const ProfileDocument& 
     const bool legacyScope = next.applicationScope == DESIRED_SCOPE_LEGACY;
     if (s.graphicsOffset.present) {
         const auto& g = s.graphicsOffset;
-        if (g.offsetHz < -1000000000LL || g.offsetHz > 1000000000LL) return fail("graphics offset is out of range");
+        if (g.offsetHz < -1000000000LL || g.offsetHz > 1000000000LL) {
+            char mhz[32]{}, detail[128]{};
+            profile_slot_runtime_format_mhz(g.offsetHz, mhz, sizeof(mhz));
+            snprintf(detail, sizeof(detail), "graphics offset (%s MHz) is out of range (-1000..1000 MHz)", mhz);
+            return fail(detail);
+        }
         if (g.exclusionPolicy == PROFILE_EXCLUDE_IDENTITIES) return fail("this profile needs the GPU it will run on");
         next.hasGpuOffset = 1; next.gpuOffsetMHz = (int)(g.offsetHz / 1000000);
         if (g.exclusionPolicy == PROFILE_EXCLUDE_LEGACY_COUNT) next.gpuOffsetExcludeLowCount = g.excludeLowCount;
@@ -146,6 +169,12 @@ static inline bool profile_desired_from_indexed_document(const ProfileDocument& 
         }
     }
     if (s.hasMemoryOffset) {
+        if (s.memoryOffsetHz < -3000000000LL || s.memoryOffsetHz > 3000000000LL) {
+            char mhz[32]{}, detail[128]{};
+            profile_slot_runtime_format_mhz(s.memoryOffsetHz, mhz, sizeof(mhz));
+            snprintf(detail, sizeof(detail), "memory offset (%s MHz) is out of range (-3000..3000 MHz)", mhz);
+            return fail(detail);
+        }
         if (legacyScope) {
             next.hasMemOffset = 1; next.memOffsetMHz = (int)(s.memoryOffsetHz / 1000000);
         } else if (!desired_memory_set_precise(&next, s.memoryOffsetHz, s.memorySurface)) {

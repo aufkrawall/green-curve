@@ -170,5 +170,71 @@ int run_profile_slot_runtime_tests() {
     if (!profile_document_from_legacy_desired(original, *doc, why, sizeof(why))) return 9968;
     doc->topology[1].sourceIndex = doc->topology[0].sourceIndex;
     if (profile_slot_document_runtime(*doc, nullptr, *back, why, sizeof(why))) return 9969;
+
+    // 12500-12501: out-of-range graphics offset reports exact MHz and valid bounds.
+    if (!profile_document_from_legacy_desired(original, *doc, why, sizeof(why))) return 12500;
+    doc->graphicsOffset.offsetHz = -1927000000LL;
+    why[0] = 0;
+    if (profile_slot_document_runtime(*doc, nullptr, *back, why, sizeof(why)) ||
+        !strstr(why, "-1927 MHz") || !strstr(why, "-1000..1000 MHz"))
+        return 12500;
+    doc->graphicsOffset.offsetHz = 1000500000LL;
+    why[0] = 0;
+    if (profile_slot_document_runtime(*doc, nullptr, *back, why, sizeof(why)) ||
+        !strstr(why, "+1000.5 MHz") || !strstr(why, "-1000..1000 MHz"))
+        return 12501;
+
+    // 12502-12503: legacy-scope memory offset out of range is refused with MHz and bounds.
+    auto memDoc = std::make_unique<ProfileDocument>(profile_document_make_empty());
+    memDoc->applicationScope = PROFILE_SCOPE_REPLACE_PROFILE;
+    memDoc->domains = PROFILE_DOMAIN_MEMORY;
+    memDoc->hasMemoryOffset = true;
+    memDoc->memoryOffsetHz = 3500000000LL;
+    why[0] = 0;
+    if (profile_slot_document_runtime(*memDoc, nullptr, *back, why, sizeof(why)) ||
+        !strstr(why, "+3500 MHz") || !strstr(why, "-3000..3000 MHz"))
+        return 12502;
+    memDoc->memoryOffsetHz = -3250000000LL;
+    why[0] = 0;
+    if (profile_slot_document_runtime(*memDoc, nullptr, *back, why, sizeof(why)) ||
+        !strstr(why, "-3250 MHz") || !strstr(why, "-3000..3000 MHz"))
+        return 12503;
+
+    // 12504: captured voltage-bound flatten (driver_offset=0 pre-tail, flatten
+    // lock, precise P0 memory, fractional power ratio) survives file encoding
+    // and maps onto the live curve cleanly.
+    auto capFlat = std::make_unique<ProfileDocument>(profile_document_make_empty());
+    capFlat->applicationScope = PROFILE_SCOPE_UPDATE_INCLUDED;
+    capFlat->pointSetPolicy = PROFILE_POINTS_REPLACE;
+    capFlat->domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK | PROFILE_DOMAIN_MEMORY | PROFILE_DOMAIN_POWER;
+    capFlat->topologyCount = 3;
+    capFlat->topology[0] = {60, 60, 600000LL + 60 * 6250LL, 1};
+    capFlat->points[0].kind = PROFILE_POINT_CAPTURED_OFFSET;
+    capFlat->points[0].capturedOffsetHz = 0;
+    capFlat->topology[1] = {61, 61, 600000LL + 61 * 6250LL, 1};
+    capFlat->points[1].kind = PROFILE_POINT_CAPTURED_OFFSET;
+    capFlat->points[1].capturedOffsetHz = 0;
+    capFlat->topology[2] = {62, 62, 600000LL + 62 * 6250LL, 1};
+    capFlat->lock.present = true;
+    capFlat->lock.mode = LOCK_MODE_FLATTEN;
+    capFlat->lock.anchorTopologyId = 62;
+    capFlat->lock.targetFrequencyHz = 2962000000LL;
+    capFlat->lock.trackAnchor = false;
+    capFlat->hasMemoryOffset = true;
+    capFlat->memoryOffsetHz = 3000000000LL;
+    capFlat->memorySurface = CLOCK_OFFSET_SURFACE_P0;
+    capFlat->power.present = true;
+    capFlat->power.ratio = {17, 20};
+    for (int i = 0; i < live->count; ++i) if (live->points[i].index == 61) live->points[i].writable = true;
+    bank->count = 1; bank->documents[0] = *capFlat;
+    bytes.clear();
+    why[0] = 0;
+    if (!profile_bank_encode(*bank, bytes) || !profile_bank_decode(bytes, *decoded) || decoded->count != 1 ||
+        !profile_slot_document_runtime(decoded->documents[0], live.get(), *back, why, sizeof(why)) ||
+        !back->curvePointCaptured[60] || back->curvePointCapturedOffsetHz[60] != 0 ||
+        !back->hasLock || back->lockCi != 62 || back->lockMode != LOCK_MODE_FLATTEN || back->lockMHz != 2962 ||
+        !back->memOffsetPrecise || back->memOffsetHz != 3000000000LL || back->memOffsetSurface != CLOCK_OFFSET_SURFACE_P0 ||
+        !back->powerLimitRatio || back->powerRatioNumerator != 17 || back->powerRatioDenominator != 20)
+        return 12504;
     return 0;
 }

@@ -163,6 +163,37 @@ static int run() {
     if (!s.transfer.probed || !s.transferProbe || s.transferProbe->documents[0].memoryOffsetHz != 700000000LL) return 9790;
     tui_transfer_cancel(s);
     if (s.transfer.active || s.transferProbe) return 9791;
+
+    // 9792: importing a 5-profile file when only slot 5 is empty keeps slots
+    // 1..5 in order (never swaps profile 1 into empty slot 5), and 9793: warns
+    // in the note before import when an indexed profile has an out-of-range
+    // graphics offset.
+    io.files["bank.ini"] = "[meta]\nlinux_mem_migrated=1\n"
+        "[profile1]\nmem_offset_mhz=10\n[profile2]\nmem_offset_mhz=20\n"
+        "[profile3]\nmem_offset_mhz=30\n[profile4]\nmem_offset_mhz=40\n";
+    auto bank5 = std::make_unique<ProfileBank>();
+    bank5->count = 5;
+    for (int i = 0; i < 5; ++i) {
+        auto& d = bank5->documents[i];
+        d = profile_document_make_empty();
+        d.documentId = (gc_u32)(i + 1);
+        d.applicationScope = PROFILE_SCOPE_REPLACE_PROFILE;
+        d.domains = PROFILE_DOMAIN_MEMORY;
+        d.hasMemoryOffset = true;
+        d.memoryOffsetHz = (long long)(i + 1) * 100000000LL;
+    }
+    bank5->documents[0].domains |= PROFILE_DOMAIN_GRAPHICS_OFFSET;
+    bank5->documents[0].graphicsOffset.present = true;
+    bank5->documents[0].graphicsOffset.offsetHz = -1927000000LL;
+    if (!profile_bank_encode(*bank5, io.files["five.gcprofile"])) return 9792;
+    act(ACTION_TRANSFER_BEGIN); s.transferPresented = true; act(ACTION_TRANSFER_MODE);
+    s.transferPath = "five.gcprofile"; act(ACTION_TRANSFER_PREVIEW);
+    if (!s.transfer.probed || s.transfer.rows != 5) return 9792;
+    for (int i = 0; i < 5; ++i) if (s.transfer.rowSlot[i] != i + 1) return 9792;
+    if (s.transferLines.empty() ||
+        s.transferLines.back().find("Profile 1: graphics offset (-1927 MHz) is out of range") == std::string::npos)
+        return 9793;
+    tui_transfer_cancel(s);
     return 0;
 }
 }  // namespace tui_profile_tools_fixture

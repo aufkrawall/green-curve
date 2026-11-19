@@ -1751,6 +1751,7 @@ def check_all(ctx, require_text, forbid_text):
     check_live_offset_excludes_programmed_flat_tail(ctx, require_text, forbid_text)
     check_loaded_lock_reaches_the_draft(ctx, require_text, forbid_text)
     check_editor_builds_on_its_base_record(ctx, require_text, forbid_text)
+    check_import_transfer_slots_and_runtime_check(ctx, require_text, forbid_text)
 
 
 def check_observed_editor_lock(ctx, require_text, forbid_text):
@@ -1852,3 +1853,19 @@ def check_editor_builds_on_its_base_record(ctx, require_text, forbid_text):
         "an unapplied loaded record keeps Apply enabled")
     require_text(_p(ctx, "ui_main_window.cpp"), "g_app.guiCurvePointTyped[ci] = true;",
                  "only typing marks a point as an edit over the base record")
+
+
+def check_import_transfer_slots_and_runtime_check(ctx, require_text, forbid_text):
+    """Both Windows GUI and Linux TUI import dialogs share the pure default-slot
+    policy so a multi-profile import never steals another record's empty slot
+    (swapping Profile 1 and Profile 5), and both pre-check indexed records with
+    profile_slot_document_runtime() before committing."""
+    for filename in ("gui_profile_transfer.cpp", "linux_tui_transfer.h"):
+        path = _p(ctx, filename)
+        require_text(path, "profile_transfer_default_slots(",
+                     "%s uses the shared default import slot assignment policy" % filename)
+        require_text(path, "profile_slot_document_runtime(document, needsGpu ? live.get() : nullptr,",
+                     "%s validates both indexed and voltage-bound import records before import" % filename)
+    forbid_text(_p(ctx, "gui_profile_transfer.cpp"),
+                "if (!profile_document_requires_destination(document)) continue;",
+                "Windows import note must not skip indexed records")

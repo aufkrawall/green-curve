@@ -4,6 +4,7 @@
 // a GPU. File reads and writes run on the coordinator worker; the dialogs only
 // show choices and results. Importing never changes the editor draft.
 #include "profile_transfer_picker.h"
+#include "profile_transfer_slot_policy.h"
 #include "profile_summary.h"
 #include "profile_ini_slot.h"
 
@@ -87,7 +88,8 @@ static void gui_transfer_layout() {
         if (shown) { fit_themed_checkbox_to_label(d.rowCheck[i]); y += 30; }
     }
     y += 6;
-    gui_profile_dialog_place(d.note, 16, y, w - 32, 36); y += 42;
+    const int noteH = d.importing ? 54 : 36;
+    gui_profile_dialog_place(d.note, 16, y, w - 32, noteH); y += noteH + 6;
     gui_profile_dialog_place(d.status, 16, y, w - 32, 36); y += 44;
     gui_profile_dialog_place(d.run, w - 16 - 100 - 10 - 120, y, 120, 28);
     gui_profile_dialog_place(d.cancel, w - 16 - 100, y, 100, 28);
@@ -118,12 +120,12 @@ static bool gui_transfer_import_note(std::string& note) {
     auto converted = std::make_unique<DesiredSettings>();
     for (int row : gui_transfer_checked_rows()) {
         const auto& document = d.probe->documents[(size_t)row];
-        if (!profile_document_requires_destination(document)) continue;
+        const bool needsGpu = profile_document_requires_destination(document);
         char why[192]{};
-        if (!haveLive) {
+        if (needsGpu && !haveLive) {
             if (!note.empty()) note += " ";
             note += "Profile " + std::to_string(row + 1) + " needs this GPU to be ready before it can be applied.";
-        } else if (!profile_slot_document_runtime(document, live.get(), *converted, why, sizeof(why))) {
+        } else if (!profile_slot_document_runtime(document, needsGpu ? live.get() : nullptr, *converted, why, sizeof(why))) {
             if (!note.empty()) note += " ";
             note += "Profile " + std::to_string(row + 1) + ": " + why + ".";
         }
@@ -161,8 +163,12 @@ static void gui_transfer_fill_export_rows() {
 static void gui_transfer_fill_import_rows() {
     auto& d = g_transferDialog;
     d.rows = d.probe && d.probe->ok ? (int)std::min<size_t>(d.probe->documents.size(), TRANSFER_ROWS) : 0;
-    // Records go to empty slots first, then to the slot of the same number.
-    bool taken[TRANSFER_ROWS + 1]{};
+    bool saved[TRANSFER_ROWS + 1]{};
+    for (int s = 1; s <= TRANSFER_ROWS; ++s) saved[s] = is_profile_slot_saved(g_app.configPath, s);
+    int defaultSlots[TRANSFER_ROWS]{};
+    const int* preferred = d.probe && d.probe->sources.size() >= (size_t)d.rows ? d.probe->sources.data() : nullptr;
+    profile_transfer_default_slots(d.rows, preferred, saved, defaultSlots);
+    std::vector<int> assignedSlots;
     for (int i = 0; i < d.rows; ++i) {
         const auto& document = d.probe->documents[(size_t)i];
         std::string caption = "Profile " + std::to_string(i + 1);
@@ -175,15 +181,17 @@ static void gui_transfer_fill_import_rows() {
         HWND combo = d.rowSlot[i];
         SendMessageW(combo, CB_RESETCONTENT, 0, 0);
         for (int s = 1; s <= TRANSFER_ROWS; ++s) {
-            std::string label = "Into slot " + std::to_string(s) + (is_profile_slot_saved(g_app.configPath, s) ? " (replace)" : " (empty)");
+            std::string label = "Into slot " + std::to_string(s) + (saved[s] ? " (replace)" : " (empty)");
             gui_profile_dialog_combo_add(combo, label.c_str(), s);
         }
-        int slot = 0;
-        for (int s = 1; s <= TRANSFER_ROWS && !slot; ++s) if (!taken[s] && !is_profile_slot_saved(g_app.configPath, s)) slot = s;
-        for (int s = i + 1; s <= TRANSFER_ROWS && !slot; ++s) if (!taken[s]) slot = s;
-        for (int s = 1; s <= TRANSFER_ROWS && !slot; ++s) if (!taken[s]) slot = s;
-        if (slot) taken[slot] = true;
-        gui_profile_dialog_combo_select(combo, slot ? slot : i + 1);
+        gui_profile_dialog_combo_select(combo, defaultSlots[i]);
+        assignedSlots.push_back(defaultSlots[i]);
+    }
+    if (d.rows > 0) {
+        debug_log("profile-transfer: default import slots count=%d saved=%d%d%d%d%d sources=%s slots=%s\n",
+            d.rows, saved[1] ? 1 : 0, saved[2] ? 1 : 0, saved[3] ? 1 : 0, saved[4] ? 1 : 0, saved[5] ? 1 : 0,
+            d.probe ? profile_editor_transfer_list(d.probe->sources).c_str() : "",
+            profile_editor_transfer_list(assignedSlots).c_str());
     }
 }
 
@@ -239,11 +247,14 @@ static void gui_transfer_run() {
         work->file = path;
     }
     const size_t count = rows.size();
+    const std::string sourcesList = profile_editor_transfer_list(work->options.sources);
+    const std::string slotsList = profile_editor_transfer_list(work->options.slots);
     if (!gui_transfer_queue(std::move(work))) return;
     d.writing = true;
     gui_transfer_status(d.importing ? "Importing..." : "Writing the file...");
     gui_transfer_project();
-    debug_log("profile-transfer: run queued import=%d records=%u\n", d.importing ? 1 : 0, (unsigned)count);
+    debug_log("profile-transfer: run queued import=%d records=%u sources=%s slots=%s\n", d.importing ? 1 : 0,
+        (unsigned)count, sourcesList.c_str(), slotsList.c_str());
 }
 static void gui_transfer_completed(std::unique_ptr<GuiProfileTransferWork> work) {
     auto& d = g_transferDialog;
