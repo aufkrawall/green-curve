@@ -23,6 +23,15 @@ static inline int curve_plan_signed_mhz(long long kHz) {
     return (int)r;
 }
 
+// Floor an upper-bound kHz figure so an integer-MHz ceiling estimate never
+// rounds up past what the offset range can actually express.
+static inline unsigned int curve_plan_floor_mhz(long long kHz) {
+    if (kHz <= 0) return 0;
+    const long long mhz = kHz / 1000;
+    if (mhz > INT_MAX) return (unsigned int)INT_MAX;
+    return (unsigned int)mhz;
+}
+
 [[gnu::format(printf, 3, 4)]]
 static inline void curve_plan_appendf(char* out, size_t outSize, const char* fmt, ...) {
     if (!out || outSize == 0) return;
@@ -73,7 +82,7 @@ static inline void curve_plan_describe_issue(const CurvePlanResult& r,
                 " also needs validation.",
                 i.targetMHz, mv, curve_plan_signed_mhz(i.adjustmentKHz),
                 curve_plan_signed_mhz(i.limitKHz), source,
-                curve_plan_display_mhz(r.anchorOnlyMaxKHz));
+                curve_plan_floor_mhz(r.anchorOnlyMaxKHz));
             break;
         case CURVE_PLAN_REASON_ANCHOR_BELOW_RANGE:
             curve_plan_appendf(out, outSize,
@@ -159,7 +168,14 @@ static inline void curve_plan_describe_issue(const CurvePlanResult& r,
             curve_plan_appendf(out, outSize, "The VF curve could not be read.");
             break;
     }
-    if (i.targetHz % 1000000 || i.adjustmentHz % 1000 || i.limitHz % 1000)
+    const bool rangeDisplayCollides =
+        (i.reason == CURVE_PLAN_REASON_ANCHOR_ABOVE_RANGE ||
+         i.reason == CURVE_PLAN_REASON_ANCHOR_BELOW_RANGE ||
+         i.reason == CURVE_PLAN_REASON_POINT_OUT_OF_RANGE ||
+         i.reason == CURVE_PLAN_REASON_TAIL_UNREACHABLE) &&
+        i.adjustmentHz != i.limitHz &&
+        curve_plan_signed_mhz(i.adjustmentKHz) == curve_plan_signed_mhz(i.limitKHz);
+    if (i.targetHz % 1000000 || i.adjustmentHz % 1000 || i.limitHz % 1000 || rangeDisplayCollides)
         curve_plan_appendf(out, outSize, " Exact values: target %lld Hz, adjustment %+lld Hz, bound/grid %lld Hz.",
             i.targetHz, i.adjustmentHz, i.limitHz);
 }
@@ -185,6 +201,60 @@ static inline void curve_plan_format_message(const CurvePlanResult& r,
             " This is an estimate from a curve that still carries programmed offsets;"
             " full validation requires the normal protected Apply.");
     if (nothingChanged) curve_plan_appendf(out, outSize, " Nothing was changed.");
+}
+
+// Synthesize a single-issue CurvePlanResult when a target builder rejects a
+// point after pre-write planning (e.g. a non-reset delta apply or after a
+// separate scalar write refreshed the live curve) so the user still gets the
+// same physical voltage/clock/range wording instead of a generic error.
+static inline bool curve_plan_format_target_failure(
+    CurvePlanReason reason, int ci, unsigned int voltUv, unsigned int targetMHz,
+    long long baseKHz, long long adjustmentKHz, long long adjustmentHz,
+    CurvePlanPointKind kind, CurvePlanRange range, bool nothingChanged,
+    char* out, size_t outSize) {
+    if (!out || outSize == 0 || reason == CURVE_PLAN_REASON_NONE) return false;
+    CurvePlanResult r = {};
+    r.disposition = CURVE_PLAN_REFUSED;
+    r.evidence = CURVE_PLAN_EVIDENCE_TRANSACTION_BASELINE;
+    r.range = range;
+    r.lockCi = (reason == CURVE_PLAN_REASON_ANCHOR_ABOVE_RANGE ||
+                reason == CURVE_PLAN_REASON_ANCHOR_BELOW_RANGE) ? ci : -1;
+    r.lockMHz = r.lockCi >= 0 ? targetMHz : 0u;
+    r.lockVoltUv = r.lockCi >= 0 ? voltUv : 0u;
+    if (reason == CURVE_PLAN_REASON_ANCHOR_ABOVE_RANGE) {
+        r.anchorOnlyMaxKHz = baseKHz + (long long)range.maxKHz;
+        r.anchorOnlyMaxHz = r.anchorOnlyMaxKHz * 1000LL;
+    }
+    CurvePlanIssue issue = {};
+    issue.reason = reason;
+    issue.proven = true;
+    issue.ci = ci;
+    issue.worstCi = ci;
+    issue.voltUv = voltUv;
+    issue.worstVoltUv = voltUv;
+    issue.targetMHz = targetMHz;
+    issue.worstMHz = targetMHz;
+    issue.targetHz = (long long)targetMHz * 1000000LL;
+    issue.worstHz = issue.targetHz;
+    issue.baseKHz = baseKHz;
+    issue.baseHz = baseKHz * 1000LL;
+    issue.adjustmentKHz = adjustmentKHz;
+    issue.adjustmentHz = adjustmentHz;
+    if (reason == CURVE_PLAN_REASON_ANCHOR_ABOVE_RANGE ||
+        (reason == CURVE_PLAN_REASON_POINT_OUT_OF_RANGE &&
+         adjustmentHz > (long long)range.maxKHz * 1000LL)) {
+        issue.limitKHz = range.maxKHz;
+    } else if (reason == CURVE_PLAN_REASON_ANCHOR_BELOW_RANGE ||
+               reason == CURVE_PLAN_REASON_POINT_OUT_OF_RANGE ||
+               reason == CURVE_PLAN_REASON_FLATTEN_UNSUPPORTED) {
+        issue.limitKHz = range.minKHz;
+    }
+    issue.limitHz = issue.limitKHz * 1000LL;
+    issue.affectedCount = 1;
+    issue.kind = kind;
+    curve_plan_add_issue(&r, issue);
+    curve_plan_format_message(r, nothingChanged, out, outSize);
+    return out[0] != 0;
 }
 
 // One bounded summary line plus one line per issue (at most

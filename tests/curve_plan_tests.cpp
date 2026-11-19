@@ -360,6 +360,101 @@ int run_planner_cases() {
     CurvePlanIssue filler = {};
     for (int i = 0; i < CURVE_PLAN_MAX_ISSUES + 3; ++i) curve_plan_add_issue(&many, filler);
     if (many.issueCount != CURVE_PLAN_MAX_ISSUES || many.omittedIssues != 3) return 7872;
+
+    // 12480-12494: Hard offset-range bounds are never hidden behind one-bin
+    // frequency quantization.  Reproduces the reported 820 mV / 1425 MHz base
+    // with 30 MHz neighbour step: 2450 MHz (+1025 MHz, excess +25 MHz <= 30 MHz)
+    // must produce the same anchor-range diagnostic as 2600 MHz (+1175 MHz)
+    // instead of slipping past the planner into the generic target error.
+    Table nearCap;
+    linear_table(&nearCap, 80, 700000, 5000);  // point 24 = 820 mV
+    for (int i = 0; i < 80; ++i) nearCap.curve[i].freq_kHz = 705000u + (unsigned int)i * 30000u;
+    if (nearCap.curve[24].volt_uV != 820000u || nearCap.curve[24].freq_kHz != 1425000u) return 12480;
+    r = plan_windows(nearCap, flatten_request(24, 2450), CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE,
+                     nvml_range(-1000, 1000));
+    anchor = find_issue(r, CURVE_PLAN_REASON_ANCHOR_ABOVE_RANGE);
+    if (r.disposition != CURVE_PLAN_REFUSED || !anchor || !anchor->proven ||
+        anchor->adjustmentKHz != 1025000 || anchor->limitKHz != 1000000) return 12481;
+    curve_plan_format_message(r, true, message, sizeof(message));
+    if (!strstr(message, "2450 MHz at 820 mV requires a +1025 MHz point adjustment") ||
+        !strstr(message, "+1000 MHz (driver graphics offset range)") ||
+        !strstr(message, "anchor-only estimate is 2425 MHz") ||
+        !strstr(message, "Nothing was changed.")) return 12482;
+    // Post-reset transaction baseline also proves it (no fall-through to generic target error).
+    r = plan_windows(nearCap, flatten_request(24, 2450), CURVE_PLAN_EVIDENCE_TRANSACTION_BASELINE,
+                     nvml_range(-1000, 1000));
+    anchor = find_issue(r, CURVE_PLAN_REASON_ANCHOR_ABOVE_RANGE);
+    if (r.disposition != CURVE_PLAN_REFUSED || !anchor || !anchor->proven) return 12483;
+    // Shaped estimate still defers until the post-reset baseline.
+    r = plan_windows(nearCap, flatten_request(24, 2450), CURVE_PLAN_EVIDENCE_LIVE_SHAPED_ESTIMATE,
+                     nvml_range(-1000, 1000));
+    anchor = find_issue(r, CURVE_PLAN_REASON_ANCHOR_ABOVE_RANGE);
+    if (r.disposition != CURVE_PLAN_NEEDS_FRESH_BASELINE || !anchor || anchor->proven) return 12484;
+    // Anchor below range by less than one bin step (400 MHz -> -1025 MHz vs -1000 MHz).
+    r = plan_windows(nearCap, flatten_request(24, 400), CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE,
+                     nvml_range(-1000, 1000));
+    anchor = find_issue(r, CURVE_PLAN_REASON_ANCHOR_BELOW_RANGE);
+    if (r.disposition != CURVE_PLAN_REFUSED || !anchor || !anchor->proven ||
+        anchor->adjustmentKHz != -1025000) return 12485;
+    // Explicit non-tail point above range by less than one bin step (+1010 MHz vs +1000 MHz).
+    DesiredSettings explicitNear = {};
+    explicitNear.hasCurvePoint[24] = true;
+    explicitNear.curvePointMHz[24] = 2435;
+    r = plan_windows(nearCap, explicitNear, CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE, nvml_range(-1000, 1000));
+    point = find_issue(r, CURVE_PLAN_REASON_POINT_OUT_OF_RANGE);
+    if (r.disposition != CURVE_PLAN_REFUSED || !point || !point->proven ||
+        point->adjustmentKHz != 1010000) return 12486;
+    // Linux absolute-target tail out of range by less than one bin step is also proven.
+    CurvePlanInput linuxHard = plan_input_windows(nearCap, flatten_request(24, 2400),
+                                                  CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE,
+                                                  nvml_range(-1000, 1000));
+    linuxHard.lockMode = LOCK_MODE_HARD;
+    linuxHard.tailStrategy = CURVE_PLAN_TAIL_ABSOLUTE_TARGET;
+    // Point 79 base = 705 + 79*30 = 3075 MHz; adjust = -675 MHz (in range). Raise point 79 to 3410 MHz -> -1010 MHz.
+    nearCap.curve[79].freq_kHz = 3410000u;
+    r = curve_plan_evaluate(linuxHard);
+    tail = find_issue(r, CURVE_PLAN_REASON_TAIL_UNREACHABLE);
+    if (r.disposition != CURVE_PLAN_REFUSED || !tail || !tail->proven || tail->ci != 79) return 12487;
+    nearCap.curve[79].freq_kHz = 705000u + 79u * 30000u;
+    // Frequency-vs-plateau checks (prefix & uniform-min flatten tail) STILL keep the one-bin gate.
+    // Point 23 base = 1395 MHz; flatten at 1385 MHz (excess 10 MHz <= 30 MHz step) stays conditional.
+    r = plan_windows(nearCap, flatten_request(24, 1385), CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE,
+                     nvml_range(-1000, 1000));
+    prefix = find_issue(r, CURVE_PLAN_REASON_PREFIX_ABOVE_PLATEAU);
+    if (!prefix || prefix->proven) return 12488;
+    // Uniform-min flatten tail exceeding plateau by 10 MHz (<= 30 MHz step) stays conditional.
+    Table nearTail = nearCap;
+    for (int i = 25; i < 80; ++i) nearTail.curve[i].freq_kHz = 2300000u;
+    nearTail.curve[79].freq_kHz = 2410000u;  // 2410 - 1000 = 1410 MHz vs 1400 MHz plateau (excess 10 <= step)
+    nearTail.curve[78].freq_kHz = 2380000u;  // neighbour step = 30 MHz
+    r = plan_windows(nearTail, flatten_request(24, 1400), CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE,
+                     nvml_range(-1000, 1000));
+    tail = find_issue(r, CURVE_PLAN_REASON_TAIL_UNREACHABLE);
+    if (r.disposition != CURVE_PLAN_NEEDS_FRESH_BASELINE || !tail || tail->proven) return 12489;
+    // Fractional base (1424.5 MHz): 2425 MHz requires +1000.5 MHz (refused) and
+    // anchor-only estimate floors to 2424 MHz rather than rounding up to 2425 MHz.
+    Table fracBase = nearCap;
+    fracBase.curve[24].freq_kHz = 1424500u;
+    r = plan_windows(fracBase, flatten_request(24, 2425), CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE,
+                     nvml_range(-1000, 1000));
+    if (r.disposition != CURVE_PLAN_REFUSED) return 12490;
+    curve_plan_format_message(r, true, message, sizeof(message));
+    if (!strstr(message, "anchor-only estimate is 2424 MHz")) return 12491;
+    // Sub-MHz collision (1424.6 MHz base vs 2425 MHz -> +1000.4 MHz rounds to +1000 MHz):
+    // appends exact Hz so the message never looks like "+1000 MHz > +1000 MHz".
+    fracBase.curve[24].freq_kHz = 1424600u;
+    r = plan_windows(fracBase, flatten_request(24, 2425), CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE,
+                     nvml_range(-1000, 1000));
+    if (r.disposition != CURVE_PLAN_REFUSED) return 12492;
+    curve_plan_format_message(r, true, message, sizeof(message));
+    if (!strstr(message, "+1000400000 Hz") || !strstr(message, "1000000000 Hz")) return 12493;
+    // Target-builder failure formatter produces the exact same physical wording.
+    if (!curve_plan_format_target_failure(CURVE_PLAN_REASON_ANCHOR_ABOVE_RANGE, 24, 820000u,
+            2450u, 1425000LL, 1025000LL, 1025000000LL, CURVE_PLAN_POINT_ABSOLUTE,
+            nvml_range(-1000, 1000), false, message, sizeof(message)) ||
+        !strstr(message, "2450 MHz at 820 mV requires a +1025 MHz point adjustment") ||
+        !strstr(message, "anchor-only estimate is 2425 MHz") ||
+        strstr(message, "Nothing was changed.")) return 12494;
     return 0;
 }
 

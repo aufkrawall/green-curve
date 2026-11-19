@@ -27,7 +27,13 @@ static int curve_plan_precision_cases() {
     in.range = nvml_range(0, 0); d.authoring.pointFrequencyHz[2] = 800000000;
     r = curve_plan_evaluate(in);
     const CurvePlanIssue* range = find_issue(r, CURVE_PLAN_REASON_POINT_OUT_OF_RANGE);
-    if (r.disposition != CURVE_PLAN_NEEDS_FRESH_BASELINE || !range || range->adjustmentHz != -500) return 8765;
+    // Transaction baseline proves any out-of-range offset even below one VF bin.
+    if (r.disposition != CURVE_PLAN_REFUSED || !range || !range->proven || range->adjustmentHz != -500) return 8765;
+    in.evidence = CURVE_PLAN_EVIDENCE_LIVE_SHAPED_ESTIMATE;
+    r = curve_plan_evaluate(in);
+    range = find_issue(r, CURVE_PLAN_REASON_POINT_OUT_OF_RANGE);
+    if (r.disposition != CURVE_PLAN_NEEDS_FRESH_BASELINE || !range || range->proven || range->adjustmentHz != -500) return 8765;
+    in.evidence = CURVE_PLAN_EVIDENCE_TRANSACTION_BASELINE;
     in.range = nvml_range(-1000, 1000);
     d = {}; d.hasGpuOffset = 1; d.authoring.graphicsPrecise = 1; d.authoring.graphicsOffsetHz = 500;
     d.hasCurvePoint[2] = d.curvePointFromGpuOffset[2] = 1;

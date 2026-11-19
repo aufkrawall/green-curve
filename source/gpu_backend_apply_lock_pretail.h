@@ -273,4 +273,56 @@ static CurvePlanResult apply_curve_plan_backstop(const DesiredSettings* resolved
         resolved->resetOcBeforeApply ? "post-reset" : "pre-first-write", originalFrequencyHz, originalOffsetsHz);
 }
 
+static void apply_format_curve_target_build_failure(
+    const CurveTargetBuildFailure& failure, const unsigned int* originalCurveVoltUv,
+    char* out, size_t outSize) {
+    if (!out || outSize == 0) return;
+    const CurvePlanRange range = apply_curve_plan_range();
+    const unsigned int voltUv =
+        (originalCurveVoltUv && failure.ci >= 0 && failure.ci < VF_NUM_POINTS)
+        ? originalCurveVoltUv[failure.ci] : 0u;
+    CurvePlanReason reason = CURVE_PLAN_REASON_NONE;
+    CurvePlanPointKind kind = CURVE_PLAN_POINT_ABSOLUTE;
+    unsigned int targetMHz = failure.targetMHz;
+    switch (failure.reason) {
+        case CURVE_TARGET_BUILD_OFFSET_OUT_OF_RANGE: {
+            const bool above = failure.offsetKHz > range.maxKHz;
+            reason = failure.isAnchor
+                ? (above ? CURVE_PLAN_REASON_ANCHOR_ABOVE_RANGE
+                         : CURVE_PLAN_REASON_ANCHOR_BELOW_RANGE)
+                : CURVE_PLAN_REASON_POINT_OUT_OF_RANGE;
+            if (!failure.isAnchor && targetMHz == 0) {
+                const long long effKHz = failure.baseKHz + failure.offsetKHz;
+                targetMHz = effKHz > 0 ? curve_plan_display_mhz(effKHz) : 0u;
+            }
+            break;
+        }
+        case CURVE_TARGET_BUILD_CAPTURED_OUT_OF_RANGE:
+            reason = CURVE_PLAN_REASON_POINT_OUT_OF_RANGE;
+            kind = CURVE_PLAN_POINT_CAPTURED;
+            break;
+        case CURVE_TARGET_BUILD_UNPOPULATED_POINT:
+            reason = CURVE_PLAN_REASON_MISSING_POINT;
+            break;
+        case CURVE_TARGET_BUILD_FLATTEN_UNSUPPORTED:
+            reason = CURVE_PLAN_REASON_FLATTEN_UNSUPPORTED;
+            break;
+        case CURVE_TARGET_BUILD_OFFSET_OVERFLOW:
+            reason = CURVE_PLAN_REASON_ARITHMETIC_OVERFLOW;
+            break;
+        case CURVE_TARGET_BUILD_INVALID_INTENT:
+            if (failure.ci >= 0) reason = CURVE_PLAN_REASON_POINT_INTENT_CONFLICT;
+            break;
+        case CURVE_TARGET_BUILD_OK:
+        default:
+            break;
+    }
+    if (curve_plan_format_target_failure(reason, failure.ci, voltUv, targetMHz,
+            failure.baseKHz, failure.offsetKHz, failure.offsetHz, kind, range,
+            false, out, outSize)) {
+        return;
+    }
+    set_message(out, outSize, "A requested curve target is missing or outside the driver range");
+}
+
 #endif

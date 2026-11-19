@@ -1,5 +1,29 @@
 # Testing
 
+## Curve offset-range diagnostics within one VF bin (2026-11-19)
+
+`tests/curve_plan_tests.cpp` (`12480-12494`), `tests/curve_plan_precision_cases.h`
+(`8765`), and `tests/clock_transition_tests.cpp` (`CurveTargetBuildFailure`)
+pin the hard offset-range proof rule in `source/curve_feasibility_plan.h`,
+`source/curve_feasibility_message.h`, and `source/gpu_backend_apply_targets.h`:
+- `12480-12484`: reported 820 mV / 1425 MHz base with 30 MHz neighbour step,
+  flatten at 2450 MHz (+1025 MHz, excess +25 MHz <= 30 MHz) refuses with the
+  full anchor-range message on `UNSHAPED_LIVE` and `TRANSACTION_BASELINE` and
+  stays `CURVE_PLAN_NEEDS_FRESH_BASELINE` on `LIVE_SHAPED_ESTIMATE`.
+- `12485-12487`: anchor below range, explicit non-tail point above range, and
+  Linux `CURVE_PLAN_TAIL_ABSOLUTE_TARGET` tail point out of range by less than
+  one bin step are all proven on trusted baselines.
+- `12488-12489`: non-absolute `PREFIX_ABOVE_PLATEAU` and uniform-min FLATTEN
+  `TAIL_UNREACHABLE` retain the one-bin gate.
+- `12490-12494`: `curve_plan_floor_mhz()` floors fractional anchor-only
+  ceilings, sub-MHz rounded collisions append exact Hz, and
+  `curve_plan_format_target_failure()` formats target-builder failures using
+  the planner's physical wording.
+- `tools/apply_ceiling_gates.py` pins the un-binned range proof in
+  `curve_feasibility_plan.h` and `apply_format_curve_target_build_failure()` in
+  `gpu_backend_apply.cpp`. Software-verified via fixtures and builds; live GPU
+  GUI check pending rebuilt installer.
+
 ## Live VF GPU-offset detection under external flattens (2026-11-19)
 
 `tests/vf_live_offset_tests.cpp` (`12450-12474`, run from

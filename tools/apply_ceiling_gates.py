@@ -439,7 +439,8 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # bounded so a positive offset can never be raised.
     require_text(apply_cpp, "const bool scalarBeforeKnownZero = desired->resetOcBeforeApply && desired->hasGpuOffset &&",
                  "the NVML-free sample is trusted only after a reset that owned the GPU-offset domain")
-    require_text(apply_cpp, "provenanceShiftMeasured ? provenanceScalarShiftKHz : nullptr))",
+    require_text(apply_cpp, "provenanceShiftMeasured ? provenanceScalarShiftKHz : nullptr,\n"
+                 "            &targetBuildFailure)) {",
                  "the target build receives the measured shift only when it was measurable")
     require_text(targets_h, "if (projected && provenanceScalarShiftKHz)",
                  "only provenance points are compensated by the measured shift")
@@ -512,6 +513,12 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "the planner's pre-tail check reads per-point provenance")
     require_text(plan_h, "baseHz[ci] = curve_plan_base_hz(in, ci);",
                  "the planner derives each physical baseline from its matching sample")
+    require_text(plan_h, "const bool proven = offsetIntent || baselineProves;",
+                 "explicit point range bounds are never hidden behind one-bin frequency quantization")
+    require_text(plan_h, "issue.proven = baselineProves;",
+                 "anchor range bounds are never hidden behind one-bin frequency quantization")
+    require_text(apply_cpp, "apply_format_curve_target_build_failure(targetBuildFailure, originalCurveVoltUv,",
+                 "target-builder failures format physical range diagnostics instead of a generic error")
     precision_h = _p(ctx, "curve_plan_precision.h")
     require_text(precision_h, "in.frequencyHz[ci] - in.programmedOffsetsHz[ci]",
                  "the exact baseline subtracts exact programmed offsets")

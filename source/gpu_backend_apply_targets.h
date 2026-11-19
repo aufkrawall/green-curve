@@ -52,6 +52,28 @@ static bool apply_measure_provenance_scalar_shift(const DesiredSettings* desired
     return true;
 }
 
+enum CurveTargetBuildFailureReason {
+    CURVE_TARGET_BUILD_OK = 0,
+    CURVE_TARGET_BUILD_INVALID_INTENT = 1,
+    CURVE_TARGET_BUILD_FLATTEN_UNSUPPORTED = 2,
+    CURVE_TARGET_BUILD_UNPOPULATED_POINT = 3,
+    CURVE_TARGET_BUILD_CAPTURED_OUT_OF_RANGE = 4,
+    CURVE_TARGET_BUILD_OFFSET_OVERFLOW = 5,
+    CURVE_TARGET_BUILD_OFFSET_OUT_OF_RANGE = 6,
+};
+
+struct CurveTargetBuildFailure {
+    CurveTargetBuildFailureReason reason;
+    int ci;
+    bool isAnchor;
+    unsigned int targetMHz;
+    long long baseKHz;
+    long long offsetKHz;
+    long long offsetHz;
+    int rangeMinKHz;
+    int rangeMaxKHz;
+};
+
 // Offset-derived points remain delta-based across temperature changes. Explicit
 // points own their absolute target and override the generic offset policy.
 static bool apply_build_curve_targets(
@@ -70,8 +92,33 @@ static bool apply_build_curve_targets(
     // (curve_point_bounded_scalar_shift_khz()), freshly measured or retained
     // for the same GPU session/scalar/topology, or null when no separate
     // scalar needs compensation. Subtracted from provenance points only.
-    const int* provenanceScalarShiftKHz) {
-    if (!desired_curve_intent_valid(desired)) return false;
+    const int* provenanceScalarShiftKHz,
+    CurveTargetBuildFailure* failureOut = nullptr) {
+    if (failureOut) {
+        *failureOut = {};
+        failureOut->ci = -1;
+    }
+    auto recordFailure = [&](CurveTargetBuildFailureReason reason, int ci, bool isAnchor,
+                             unsigned int targetMHz, long long baseKHz,
+                             long long offsetKHz, long long offsetHz,
+                             const VfOffsetRange& range) {
+        if (!failureOut) return;
+        failureOut->reason = reason;
+        failureOut->ci = ci;
+        failureOut->isAnchor = isAnchor;
+        failureOut->targetMHz = targetMHz;
+        failureOut->baseKHz = baseKHz;
+        failureOut->offsetKHz = offsetKHz;
+        failureOut->offsetHz = offsetHz;
+        failureOut->rangeMinKHz = range.minKHz;
+        failureOut->rangeMaxKHz = range.maxKHz;
+    };
+    const VfOffsetRange range = vf_offset_range_current();
+    if (!desired_curve_intent_valid(desired)) {
+        recordFailure(CURVE_TARGET_BUILD_INVALID_INTENT, -1, false, 0, 0, 0, 0, range);
+        debug_log("curve target refused: invalid curve intent\n");
+        return false;
+    }
     int capturedCount = 0, fractionalCount = 0;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
         if (desired->curvePointCaptured[ci]) {
@@ -80,16 +127,28 @@ static bool apply_build_curve_targets(
         }
     if (capturedCount) debug_log("curve target intent: captured=%d subKHz=%d; programmed Hz offsets own the targets\n",
         capturedCount, fractionalCount);
-    const VfOffsetRange range = vf_offset_range_current();
     if (hasLock && lockMode == LOCK_MODE_FLATTEN &&
-        !vf_offset_range_supports_flatten(range)) return false;
+        !vf_offset_range_supports_flatten(range)) {
+        recordFailure(CURVE_TARGET_BUILD_FLATTEN_UNSUPPORTED, lockCi, true, lockMhz, 0,
+            0, 0, range);
+        debug_log("curve target refused: flatten unsupported by range=%d..%d\n",
+            range.minKHz, range.maxKHz);
+        return false;
+    }
     if (!curveRequest && !preserveCurveAcrossMem) return true;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         if (!originalCurvePopulated[ci]) {
-            if (desired_curve_point_present(desired, ci)) return false;
+            if (desired_curve_point_present(desired, ci)) {
+                recordFailure(CURVE_TARGET_BUILD_UNPOPULATED_POINT, ci, false,
+                    desired->curvePointMHz[ci], 0, 0, 0, range);
+                debug_log("curve target refused: ci=%d requested but unpopulated\n", ci);
+                return false;
+            }
             continue;
         }
         long long offset = originalCurveOffsets[ci];
+        long long pointBase = curve_point_stock_base_khz(originalCurveFreqkHz[ci], originalCurveOffsets[ci]);
+        unsigned int pointTargetMHz = desired->curvePointMHz[ci];
         bool write = preserveCurveAcrossMem;
         if (gpuPolicyViaCurveBatch) {
             bool detected = currentAppliedGpuOffsetMHz != 0 ||
@@ -119,23 +178,38 @@ static bool apply_build_curve_targets(
             if (desired->curvePointCaptured[ci]) {
                 long long hz = 0;
                 if (!desired_curve_point_offset_hz(desired, ci, 0, 0, &hz) ||
-                    hz < (long long)range.minKHz * 1000 || hz > (long long)range.maxKHz * 1000) return false;
+                    hz < (long long)range.minKHz * 1000 || hz > (long long)range.maxKHz * 1000) {
+                    recordFailure(CURVE_TARGET_BUILD_CAPTURED_OUT_OF_RANGE, ci, false,
+                        0, pointBase, hz / 1000, hz, range);
+                    debug_log("curve target refused: ci=%d captured offsetHz=%lld range=%d..%d kHz\n",
+                        ci, hz, range.minKHz, range.maxKHz);
+                    return false;
+                }
                 // This array is the legacy correction/display projection. The
                 // exact writer takes captured authority from DesiredSettings.
                 offset = hz / 1000;
             } else if (!desired_curve_point_offset_khz(desired, ci,
-                    curve_point_stock_base_khz(originalCurveFreqkHz[ci], originalCurveOffsets[ci]),
+                    pointBase,
                     gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz,
-                        desiredActiveGpuOffsetExcludeLowCount) * 1000, &offset)) return false;
+                        desiredActiveGpuOffsetExcludeLowCount) * 1000, &offset)) {
+                recordFailure(CURVE_TARGET_BUILD_OFFSET_OVERFLOW, ci, false,
+                    pointTargetMHz, pointBase, 0, 0, range);
+                debug_log("curve target refused: ci=%d offset computation overflow (target=%u MHz base=%lld kHz)\n",
+                    ci, pointTargetMHz, pointBase);
+                return false;
+            }
             // Measured, not assumed: the part of the component this apply's
             // NVML write already moved the point by (zero when it did not).
             if (projected && provenanceScalarShiftKHz)
                 offset -= provenanceScalarShiftKHz[ci];
             write = true;
         }
-        if (tail && ci == lockCi) {
+        const bool isAnchor = tail && ci == lockCi;
+        if (isAnchor) {
             long long base = (long long)originalCurveFreqkHz[ci] - originalCurveOffsets[ci];
             if (base < 0) base = 0;
+            pointBase = base;
+            pointTargetMHz = lockMhz;
             offset = (long long)lockMhz * 1000 - base;
             write = true;
         } else if (tail && lockMode == LOCK_MODE_FLATTEN) {
@@ -144,8 +218,12 @@ static bool apply_build_curve_targets(
         }
         if (write && (offset < INT_MIN || offset > INT_MAX ||
                       !vf_offset_range_permits_khz(range, (int)offset))) {
-            debug_log("curve target refused: ci=%d offset=%lld range=%d..%d\n",
-                ci, offset, range.minKHz, range.maxKHz);
+            const long long offsetHz = (offset > LLONG_MAX / 1000 || offset < LLONG_MIN / 1000)
+                ? (offset > 0 ? LLONG_MAX : LLONG_MIN) : offset * 1000LL;
+            recordFailure(CURVE_TARGET_BUILD_OFFSET_OUT_OF_RANGE, ci, isAnchor,
+                pointTargetMHz, pointBase, offset, offsetHz, range);
+            debug_log("curve target refused: ci=%d anchor=%d target=%u MHz base=%lld kHz offset=%lld range=%d..%d\n",
+                ci, isAnchor ? 1 : 0, pointTargetMHz, pointBase, offset, range.minKHz, range.maxKHz);
             return false;
         }
         targetCurveOffsets[ci] = (int)offset;

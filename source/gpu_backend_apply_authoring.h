@@ -60,7 +60,9 @@ static bool apply_build_authoring_curve_targets(const DesiredSettings& desired,
     CurveAuthoringTargets next;
     if (!windows_build_authoring_curve_targets(in, g_app.vfBackend, g_app.vfMask,
             composeGraphics, preserveUnowned, original, next, issue)) {
-        set_message(why, whySize, "Exact curve target unavailable at point %d", issue.ci);
+        if (issue.status == CURVE_AUTHORING_TARGET_UNREPRESENTABLE && curve_plan_lead_issue(plan))
+            curve_plan_format_message(plan, false, why, whySize);
+        else set_message(why, whySize, "Exact curve target unavailable at point %d", issue.ci);
         debug_log("curve-authoring: target compile refused status=%d ci=%d requestedHz=%lld\n",
             (int)issue.status, issue.ci, issue.requestedHz);
         return false;
@@ -138,7 +140,9 @@ static bool apply_authoring_precheck_before_writes(const DesiredSettings* d, boo
         apply_plan_mem_offset_write(g_app, (int)(desired_memory_hz(*d) / 1000));
     if (!windows_build_authoring_curve_targets(in, g_app.vfBackend, g_app.vfMask, composeGraphics,
             preserve, nullptr, preview, issue, d->resetOcBeforeApply != 0)) {
-        set_message(why, whySize, "Exact curve preflight could not resolve point %d. Review its voltage, writable state and exact target. Nothing was changed.", issue.ci);
+        if (issue.status == CURVE_AUTHORING_TARGET_UNREPRESENTABLE && curve_plan_lead_issue(plan))
+            curve_plan_format_message(plan, true, why, whySize);
+        else set_message(why, whySize, "Exact curve preflight could not resolve point %d. Review its voltage, writable state and exact target. Nothing was changed.", issue.ci);
         debug_log("curve-authoring: pre-write target refusal status=%d ci=%d targetHz=%lld\n",
             (int)issue.status, issue.ci, issue.requestedHz); return false;
     }

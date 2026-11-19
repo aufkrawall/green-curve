@@ -494,7 +494,15 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     context.plannedBuild = curveBuild;
     if (curveBuild.failed) {
         LinuxMutationResult mutation{};
-        if (result) gc_strlcpy(result, resultSize, "Exact VF targets could not be resolved. Nothing was changed.");
+        const DesiredSettings* planned = context.transitionBuild ? committedIntent : d;
+        const CurvePlanResult plan = linux_backend_curve_plan(g, planned,
+            &snapshot, context.curveTargets, context.curveMask);
+        if (result) {
+            if (curve_plan_lead_issue(plan))
+                curve_plan_format_message(plan, true, result, resultSize);
+            else
+                gc_strlcpy(result, resultSize, "Exact VF targets could not be resolved. Nothing was changed.");
+        }
         return mutation;
     }
     // A curve request the shared planner PROVES infeasible (a flatten below a

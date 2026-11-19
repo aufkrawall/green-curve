@@ -527,8 +527,31 @@ static int run(){
      LOCK_MODE_NONE,tail,0,detail,sizeof(detail)));
    g_app.freqOffsets[1]=0;g_app.freqOffsets[2]=0;
    d.hasCurvePoint[1]=true;
+   CurveTargetBuildFailure buildFailure{};
    CHECK(!apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,-1,0,false,0,0,0,
-     populated,offsets,freq,tail,target,mask,0,nullptr));
+     populated,offsets,freq,tail,target,mask,0,nullptr,&buildFailure));
+   CHECK(buildFailure.reason==CURVE_TARGET_BUILD_INVALID_INTENT);
+   // Anchor and explicit point out-of-range failures capture physical detail for recovery diagnostics.
+   {
+     DesiredSettings over{}; over.hasLock=true; over.lockMode=LOCK_MODE_FLATTEN;
+     over.lockCi=2; over.lockMHz=2450;
+     bool pop2[VF_NUM_POINTS]{}, tail2[VF_NUM_POINTS]{}, mask2[VF_NUM_POINTS]{};
+     int off2[VF_NUM_POINTS]{}, freq2[VF_NUM_POINTS]{}, tgt2[VF_NUM_POINTS]{};
+     for(int i=0;i<5;++i){pop2[i]=true;freq2[i]=1365000+i*30000;tail2[i]=i>=2;}
+     CurveTargetBuildFailure anchorFail{};
+     CHECK(!apply_build_curve_targets(&over,true,false,true,LOCK_MODE_FLATTEN,2,2450,false,0,0,0,
+       pop2,off2,freq2,tail2,tgt2,mask2,0,nullptr,&anchorFail));
+     CHECK(anchorFail.reason==CURVE_TARGET_BUILD_OFFSET_OUT_OF_RANGE&&anchorFail.isAnchor&&
+       anchorFail.ci==2&&anchorFail.targetMHz==2450&&anchorFail.baseKHz==1425000&&
+       anchorFail.offsetKHz==1025000);
+     DesiredSettings ptOver{}; ptOver.hasCurvePoint[1]=true; ptOver.curvePointMHz[1]=2410;
+     CurveTargetBuildFailure ptFail{};
+     CHECK(!apply_build_curve_targets(&ptOver,true,false,false,LOCK_MODE_NONE,-1,0,false,0,0,0,
+       pop2,off2,freq2,tail2,tgt2,mask2,0,nullptr,&ptFail));
+     CHECK(ptFail.reason==CURVE_TARGET_BUILD_OFFSET_OUT_OF_RANGE&&!ptFail.isAnchor&&
+       ptFail.ci==1&&ptFail.targetMHz==2410&&ptFail.baseKHz==1395000&&
+       ptFail.offsetKHz==1015000);
+   }
  }
  // Exact explicit targets override selective policy for every lock mode.
  for(int mode=0;mode<3;++mode){

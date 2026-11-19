@@ -5,6 +5,39 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: Near-limit flatten target (2450 MHz @ 820 mV) gave generic range error instead of planner diagnostic
+
+- Reported: with a 1425 MHz stock base at 820 mV and `+1000` MHz offset limit,
+  applying a 2600 MHz flatten (+1175 MHz) refused before touching hardware with
+  the full planner message (`2600 MHz at 820 mV requires a +1175 MHz point
+  adjustment... Nothing was changed.`), whereas 2450 MHz (+1025 MHz) reset to
+  stock and reported `"A requested curve target is missing or outside the driver
+  range. Recovery verified core defaults"`.
+- Root cause: `curve_plan_evaluate()` (`source/curve_feasibility_plan.h`) gated
+  hard offset-range bounds (`ANCHOR_ABOVE_RANGE`, `ANCHOR_BELOW_RANGE`,
+  `POINT_OUT_OF_RANGE`, `TAIL_ABSOLUTE_TARGET`) behind `beyondBin()` (the local
+  neighbouring-point frequency spacing, ~30 MHz at 820 mV). The +25 MHz overrun
+  stayed `CURVE_PLAN_NEEDS_FRESH_BASELINE` on both `UNSHAPED_LIVE` and the
+  post-reset `TRANSACTION_BASELINE`, so both pre-check and backstop skipped the
+  refusal and fell through to `apply_build_curve_targets()`, which strictly
+  rejects any offset outside `[min, max]` and returned the generic range error.
+- Fix: removed `beyondBin()` from hard offset-range checks so any out-of-range
+  offset is proven whenever `baselineProves` is true (`UNSHAPED_LIVE` or
+  `TRANSACTION_BASELINE`), while keeping `beyondBin()` for frequency-vs-plateau
+  comparisons (`PREFIX_ABOVE_PLATEAU` and uniform-min FLATTEN
+  `TAIL_UNREACHABLE`) and keeping `LIVE_SHAPED_ESTIMATE` conditional. Also
+  floored `anchorOnlyMaxKHz` display (`curve_plan_floor_mhz()`), appended exact
+  Hz on sub-MHz rounded range collisions, added `CurveTargetBuildFailure` +
+  `curve_plan_format_target_failure()` / `apply_format_curve_target_build_failure()`
+  so post-plan target-builder rejections (e.g. non-reset delta applies or
+  post-scalar curve shifts) emit the same physical wording instead of the
+  generic range string, and wired planner lead-issue formatting into authoring
+  and Linux target-build failure fallbacks.
+- Coverage: `tests/curve_plan_tests.cpp` (`12480-12494`),
+  `tests/curve_plan_precision_cases.h` (`8765`),
+  `tests/clock_transition_tests.cpp` (`CurveTargetBuildFailure`), and
+  `tools/apply_ceiling_gates.py`. Hardware GUI re-test pending rebuilt install.
+
 ## 2026-11-19: External flatten tail detected as -1927 MHz selective GPU offset (exclude 76)
 
 - Reported: applying a tail flatten at point 76 (925 mV -> 2962 MHz) in another

@@ -253,11 +253,16 @@ static inline CurvePlanEvidence curve_plan_classify_pre_write_evidence(
     return CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE;
 }
 
-// The driver quantizes VF frequencies to bins.  A baseline-derived excess no
-// larger than the local bin spacing (the distance to the nearest distinct
-// neighbouring base) cannot be told apart from where the anchor itself will
-// land, so it is left to the protected Apply's verification instead of being
-// called proven.  Not a tolerance: the issue is still reported.
+// The driver quantizes VF frequencies to bins.  For frequency-vs-plateau
+// comparisons whose written offsets stay in range (non-absolute prefix points
+// and uniform-minimum flatten tails), a baseline-derived excess no larger than
+// the local bin spacing (the distance to the nearest distinct neighbouring
+// base) cannot be told apart from where the anchor itself will land, so it is
+// left to the protected Apply's verification instead of being called proven.
+// Hard offset-range bounds (anchor/point/absolute-tail adjustments outside
+// [min, max]) are never gated by this: the target builders refuse any
+// out-of-range offset before writing to the driver.  Not a tolerance: the
+// issue is still reported.
 static inline long long curve_plan_quant_step_khz(const long long* baseKHz,
                                                   const VFCurvePoint* curve, int ci,
                                                   int end) {
@@ -535,7 +540,9 @@ static inline CurvePlanResult curve_plan_evaluate(const CurvePlanInput& in) {
         if (adjustmentHz > maximumHz) { excessHz = adjustmentHz - maximumHz; limitHz = maximumHz; }
         else if (adjustmentHz < minimumHz) { excessHz = minimumHz - adjustmentHz; limitHz = minimumHz; }
         else continue;
-        const bool proven = offsetIntent || (baselineProves && beyondBin(ci, excessHz));
+        // Offset-range bounds are hard target-builder limits, never quantized
+        // away by the driver: proven whenever the baseline itself is trusted.
+        const bool proven = offsetIntent || baselineProves;
         curve_plan_aggregate_note_hz(&pointRange, CURVE_PLAN_REASON_POINT_OUT_OF_RANGE,
             proven, ci, in.curve, targetHz, baseHz[ci], adjustmentHz, limitHz,
             excessHz, d->curvePointCaptured[ci] ? CURVE_PLAN_POINT_CAPTURED :
@@ -574,8 +581,9 @@ static inline CurvePlanResult curve_plan_evaluate(const CurvePlanInput& in) {
             CurvePlanIssue issue = {};
             const bool above = adjustmentHz > maximumHz;
             issue.reason = above ? CURVE_PLAN_REASON_ANCHOR_ABOVE_RANGE : CURVE_PLAN_REASON_ANCHOR_BELOW_RANGE;
-            const long long excessHz = above ? adjustmentHz - maximumHz : minimumHz - adjustmentHz;
-            issue.proven = baselineProves && beyondBin(a, excessHz);
+            // Anchor offset range is enforced strictly by the target builders;
+            // a trusted baseline proves the refusal regardless of bin step.
+            issue.proven = baselineProves;
             issue.ci = issue.worstCi = a;
             issue.voltUv = issue.worstVoltUv = r.lockVoltUv;
             issue.targetMHz = issue.worstMHz = curve_plan_display_hz(plateauHz);
@@ -610,7 +618,7 @@ static inline CurvePlanResult curve_plan_evaluate(const CurvePlanInput& in) {
                 else if (targetAdjustmentHz < minimumHz) { excessHz = minimumHz - targetAdjustmentHz; limitHz = minimumHz; }
                 else continue;
                 curve_plan_aggregate_note_hz(&tail, CURVE_PLAN_REASON_TAIL_UNREACHABLE,
-                    baselineProves && beyondBin(ci, excessHz), ci, in.curve, plateauHz,
+                    baselineProves, ci, in.curve, plateauHz,
                     baseHz[ci], targetAdjustmentHz, limitHz, excessHz, CURVE_PLAN_POINT_ABSENT, false);
             }
         }

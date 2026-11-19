@@ -649,15 +649,22 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             targetCurveOffsets[ci] = (int)(authoringTargets.offsetHz[ci] / 1000);
             exactCurveTargetsHz[ci] = authoringTargets.offsetHz[ci];
         }
-    } else if (!apply_build_curve_targets(desired, curveRequest, preserveCurveAcrossMem,
-        hasLock, lockMode, lockCi, lockMhz, gpuPolicyViaCurveBatch,
-        desiredActiveGpuOffsetExcludeLowCount, currentAppliedGpuOffsetMHz,
-        currentActiveGpuOffsetExcludeLowCount, originalCurvePopulated,
-        originalCurveOffsets, originalCurveFreqkHz, lockedTailMask,
-        targetCurveOffsets, targetCurveMask, offsetRouting.curveBatchGpuOffsetMHz,
-        provenanceShiftMeasured ? provenanceScalarShiftKHz : nullptr))
-        return apply_recover_clock_failure(clockCeiling,
-            "A requested curve target is missing or outside the driver range", result, resultSize);
+    } else {
+        CurveTargetBuildFailure targetBuildFailure = {};
+        if (!apply_build_curve_targets(desired, curveRequest, preserveCurveAcrossMem,
+            hasLock, lockMode, lockCi, lockMhz, gpuPolicyViaCurveBatch,
+            desiredActiveGpuOffsetExcludeLowCount, currentAppliedGpuOffsetMHz,
+            currentActiveGpuOffsetExcludeLowCount, originalCurvePopulated,
+            originalCurveOffsets, originalCurveFreqkHz, lockedTailMask,
+            targetCurveOffsets, targetCurveMask, offsetRouting.curveBatchGpuOffsetMHz,
+            provenanceShiftMeasured ? provenanceScalarShiftKHz : nullptr,
+            &targetBuildFailure)) {
+            char targetDetail[512] = {};
+            apply_format_curve_target_build_failure(targetBuildFailure, originalCurveVoltUv,
+                targetDetail, sizeof(targetDetail));
+            return apply_recover_clock_failure(clockCeiling, targetDetail, result, resultSize);
+        }
+    }
     bool exactCurveWrite = preserveCurveAcrossMem || authoringCurveWrite;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         exactCurveWrite |= desired->curvePointCaptured[ci] != 0;

@@ -792,11 +792,15 @@ Source anchors: `source/curve_feasibility_plan.h`,
 - **Evidence decides what is proven.** UNSHAPED_LIVE (every graphics offset
   zero and the scalar known to be zero) and TRANSACTION_BASELINE (the
   post-reset readback inside the apply) prove baseline-derived failures;
-  LIVE_SHAPED_ESTIMATE makes them conditional. A baseline-derived excess is
-  proven only beyond one VF bin (the distance to the nearest distinct
-  neighbouring base); a typed MHz is exact. Unowned prefix points under a
-  shaped outgoing curve are conditional (the old check refused them); the
-  post-reset backstop decides.
+  LIVE_SHAPED_ESTIMATE makes them conditional. Hard offset-range bounds
+  (`ANCHOR_ABOVE_RANGE`, `ANCHOR_BELOW_RANGE`, `POINT_OUT_OF_RANGE`, and
+  `TAIL_ABSOLUTE_TARGET`) are proven whenever the baseline is trusted (updated
+  2026-11-19: the one-bin `beyondBin` gate applies only to frequency-vs-plateau
+  comparisons whose written offsets stay in range — non-absolute
+  `PREFIX_ABOVE_PLATEAU` and uniform-min FLATTEN `TAIL_UNREACHABLE` — because
+  the target builders refuse any out-of-range offset strictly before writing to
+  the driver). Unowned prefix points under a shaped outgoing curve remain
+  conditional; the post-reset backstop decides.
 - **Every populated graphics point counts**, listed or not: the prefix scan
   covers hidden sub-700 mV points (message: "Points below 700 mV are listed
   at the start of the curve."). Per-point prefix values come from
@@ -827,10 +831,19 @@ Source anchors: `source/curve_feasibility_plan.h`,
 - **Messages lead with physical values** ("%u MHz at %u mV requires a %+d MHz
   point adjustment. The current permitted maximum is ... (driver graphics
   offset range)"), always name the range source (NVML graphics range, P-state
-  range, or the application's +/-1000 MHz fallback), and append "Nothing was
-  changed." only when no setter ran. Diagnostics: one `curve-plan: phase=...
-  disposition=... evidence=...` line plus one `curve-plan: issue=...` line
-  per issue.
+  range, or the application's +/-1000 MHz fallback), floor the integer-MHz
+  `anchor-only estimate` (`curve_plan_floor_mhz()`), append exact Hz when a
+  sub-MHz range overrun rounds to the same integer MHz as the limit, and append
+  "Nothing was changed." only when no setter ran. If `apply_build_curve_targets()`
+  still rejects a point after pre-write planning (e.g. a non-reset delta apply
+  or after a separate NVML scalar refreshed the live curve),
+  `CurveTargetBuildFailure` + `apply_format_curve_target_build_failure()` /
+  `curve_plan_format_target_failure()` format the same physical wording instead
+  of falling back to the generic range error; Windows authoring and Linux
+  target-build refusals also format the planner's lead issue when available.
+  Diagnostics: one `curve-plan: phase=... disposition=... evidence=...` line
+  plus one `curve-plan: issue=...` line per issue, plus `curve target refused:
+  ci=... anchor=... target=... base=... offset=... range=...`.
 - **Live flatten detection** (`vf_recognize_flat_tail()` in
   `source/vf_flat_tail_recognition.h`, used by
   `detect_locked_tail_from_curve()`, gated together with `should_auto_detect_locked_tail_from_live_curve()` by `gpu_live_lock_ownership_proven()` in `source/gpu_lock_ownership_policy.h`): candidates in ascending index over
