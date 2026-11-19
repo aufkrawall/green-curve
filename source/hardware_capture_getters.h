@@ -8,6 +8,7 @@
 #include "vf_curve_units.h"
 #include "vf_writable_point_policy.h"
 #include "nvapi_client_lock_table.h"
+#include "memory_clock_evidence.h"
 
 // Only getters are resolved/called here. API setup, backend refresh, cache
 // publication, ownership changes and recovery remain outside passive capture.
@@ -167,7 +168,44 @@ struct HardwareCaptureContext {
     NvapiClientLocks (*lockReader)(void* gpuHandle) = nullptr;
     // Optional diagnostics sink for each reading (the platform logger).
     void (*lockObserved)(const NvapiClientLocks& locks) = nullptr;
+    // Running-clock memory evidence beside the NVML getter
+    // (memory_clock_evidence.h). Null keeps the getter alone; Windows sets
+    // hardware_capture_memory_clock so capture reports what its live state
+    // shows. A fixture may substitute the reading.
+    MemoryClockReading (*memoryClockReader)(const HardwareCaptureContext& context) = nullptr;
+    // Optional diagnostics sink: the reading, the getter's value before the
+    // decision, and the observation after it.
+    void (*memoryObserved)(const MemoryClockReading& reading, gc_i64 getterHz,
+                           const HardwareCaptureObservation& out) = nullptr;
 };
+
+// The production running-clock reader: Pstates20 and NVML's board maximum.
+static inline MemoryClockReading hardware_capture_memory_clock(const HardwareCaptureContext& c) {
+    return memory_clock_read(c.query, c.gpuHandle, c.nvmlUsable ? c.nvml : nullptr, c.nvmlDevice);
+}
+
+// The memory value capture reports. The running clock wins when it disagrees
+// with the getter by a whole MHz (its resolution), as in the live state; a
+// getter within that resolution keeps its finer value. Without a usable
+// getter reading the domain stays unread: the getter's surface is the one
+// replay writes.
+static inline void hardware_capture_apply_memory_clock(const MemoryClockReading& reading,
+                                                       HardwareCaptureObservation& out) {
+    out.memoryEvidence = CAPTURE_MEMORY_EVIDENCE_GETTER;
+    gc_i64 runningHz = 0;
+    if (!out.memory.valid || !memory_clock_reading_offset_hz(reading, &runningHz)) return;
+    const gc_i64 delta = out.memory.value - runningHz;
+    if (delta > -1000000 && delta < 1000000) {
+        out.memoryEvidence = CAPTURE_MEMORY_EVIDENCE_AGREES;
+        return;
+    }
+    out.memory.value = runningHz;
+    out.memoryEvidence = CAPTURE_MEMORY_EVIDENCE_RUNNING_CLOCK;
+}
+static inline const char* hardware_capture_memory_evidence_name(gc_u32 evidence) {
+    return evidence == CAPTURE_MEMORY_EVIDENCE_AGREES ? "agrees" :
+        evidence == CAPTURE_MEMORY_EVIDENCE_RUNNING_CLOCK ? "running-clock" : "getter";
+}
 
 // The lock fields of an observation from one decoded table reading.
 static inline void hardware_capture_apply_client_locks(const NvapiClientLocks& locks, HardwareCaptureObservation& out) {
@@ -233,6 +271,12 @@ static inline bool hardware_capture_collect(const HardwareCaptureContext& contex
         if (requested & PROFILE_DOMAIN_MEMORY)
             hardware_capture_nvml_clock_pair(*context.nvml, context.nvmlDevice, NVML_CLOCK_MEM, out.memory, out.memoryAlternate);
         if (requested & PROFILE_DOMAIN_POWER) out.power = hardware_capture_nvml_power(*context.nvml, context.nvmlDevice);
+        if ((requested & PROFILE_DOMAIN_MEMORY) && context.memoryClockReader) {
+            const gc_i64 getterHz = out.memory.value;
+            const MemoryClockReading reading = context.memoryClockReader(context);
+            hardware_capture_apply_memory_clock(reading, out);
+            if (context.memoryObserved) context.memoryObserved(reading, getterHz, out);
+        }
     } else {
         out.graphics.status = out.memory.status = NVML_ERROR_NOT_SUPPORTED;
         out.power.currentStatus = out.power.defaultStatus = NVML_ERROR_NOT_SUPPORTED;

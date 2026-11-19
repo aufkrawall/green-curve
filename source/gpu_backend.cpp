@@ -3,6 +3,7 @@
 #include "nvapi_loader.cpp"
 #include "gpu_backend_apply.cpp"
 #include "vf_point_mask_policy.h"
+#include "memory_clock_evidence.h"
 static bool apply_desired_settings(const DesiredSettings* desired, bool interactive,
     ServiceApplyOrigin origin, ServiceProfileSource profileSource, int profileSlot,
     char* result, size_t resultSize) {
@@ -469,8 +470,9 @@ static void detect_clock_offsets() {
     // scalar's protocol-v14 provenance; see control_readback_policy.h.
     g_app.readback.gpuOffset = gpu_offset_readback_after_detection(
         globalOffsetBackend, g_app.numPopulated, g_app.readback.pstate, nvmlGpuRead);
-    if (g_app.pstateMemMaxMHz > 0 && g_app.nvmlMemMaxMHz > 0) {
-        int memOffsetkHz = ((int)g_app.pstateMemMaxMHz - (int)g_app.nvmlMemMaxMHz) * 1000;
+    // Same running-clock rule passive capture uses (memory_clock_evidence.h).
+    int memOffsetkHz = 0;
+    if (memory_clock_effective_offset_khz(g_app.pstateMemMaxMHz, g_app.nvmlMemMaxMHz, &memOffsetkHz)) {
         g_app.memClockOffsetkHz = memOffsetkHz;
         g_app.readback.memOffset = true;  // upgrade only; NVML's read survives
         if (!g_app.memOffsetRangeKnown && memOffsetkHz != 0) {
@@ -583,12 +585,6 @@ static bool nvapi_read_pstates() {
         const nvapiPstate20Entry_t* pstate = &info.pstates[pi];
         for (unsigned int ci = 0; ci < numClocks; ci++) {
             const nvapiPstate20ClockEntry_t* clock = &pstate->clocks[ci];
-            unsigned int maxFreq_kHz = 0;
-            if (clock->typeId == NVAPI_GPU_PERF_PSTATE20_CLOCK_TYPE_SINGLE) {
-                maxFreq_kHz = clock->data.single.freq_kHz;
-            } else if (clock->typeId == NVAPI_GPU_PERF_PSTATE20_CLOCK_TYPE_RANGE) {
-                maxFreq_kHz = clock->data.range.maxFreq_kHz;
-            }
             if (clock->domainId == NVAPI_GPU_PUBLIC_CLOCK_GRAPHICS) {
                 if (abs(clock->freqDelta_kHz.value) > abs(g_app.pstateGpuOffsetkHz)) {
                     g_app.pstateGpuOffsetkHz = clock->freqDelta_kHz.value;
@@ -602,12 +598,10 @@ static bool nvapi_read_pstates() {
                             clock->freqDelta_kHz.valueRange.min, clock->freqDelta_kHz.valueRange.max);
                     }
                 }
-            } else if (clock->domainId == NVAPI_GPU_PUBLIC_CLOCK_MEMORY) {
-                unsigned int mhz = maxFreq_kHz / 1000;
-                if (mhz > g_app.pstateMemMaxMHz) g_app.pstateMemMaxMHz = mhz;
             }
         }
     }
+    g_app.pstateMemMaxMHz = pstates20_memory_max_mhz(info);
     if (curveRangeP0Found) set_curve_offset_range_khz(curveRangeP0MinkHz, curveRangeP0MaxkHz);
     else if (curveRangeAnyFound) set_curve_offset_range_khz(curveRangeAnyMinkHz, curveRangeAnyMaxkHz);
     return true;

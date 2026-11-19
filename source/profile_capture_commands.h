@@ -120,12 +120,15 @@ static inline bool profile_capture_commands_run(const std::vector<std::string>& 
     if (!capture->valid || !hardware_capture_observation_valid(*capture) || capture->requestedDomains != command.domains) {
         profile_codec::fail(&error, 0, "service returned an invalid or different capture"); return reject(PROFILE_COMMAND_IO);
     }
-    char summary[320]{}; hardware_capture_summary(*capture, summary, sizeof(summary));
+    char summary[512]{}; hardware_capture_summary(*capture, summary, sizeof(summary));
     io.message(std::string(summary) + "\n");
     if (command.domains & (PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_GRAPHICS_OFFSET))
         profile_capture_report_clocks(io, "Graphics", capture->graphics, capture->graphicsAlternate);
-    if (command.domains & PROFILE_DOMAIN_MEMORY)
+    if (command.domains & PROFILE_DOMAIN_MEMORY) {
         profile_capture_report_clocks(io, "Memory", capture->memory, capture->memoryAlternate);
+        if (capture->memoryEvidence == CAPTURE_MEMORY_EVIDENCE_RUNNING_CLOCK)
+            io.message("  Memory offset read from the running memory clock; the offset getter disagreed.\n");
+    }
     const char* statuses[] = {"not requested", "captured", "unsupported", "read failed", "state changed", "composition unresolved", "partial"};
     for (int i = 0; i < 9; ++i) if (command.domains & (1u << i))
         io.message("  " + profile_command_domains(1 << i) + ": " + statuses[capture->domainStatus[i]] +

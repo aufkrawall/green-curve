@@ -56,6 +56,7 @@ REGRESSION_SOURCES = (
     'capture_client_lock_tests.cpp',
     'gui_observed_lock_tests.cpp',
     'gui_draft_desired_tests.cpp',
+    'capture_memory_clock_tests.cpp',
     'profile_pin_observation_tests.cpp',
     'profile_mapping_tests.cpp',
     'profile_conversion_tests.cpp',

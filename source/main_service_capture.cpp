@@ -13,6 +13,24 @@ static void service_log_client_locks(const NvapiClientLocks& locks) {
     debug_log("%s\n", line);
 }
 
+// Called under the runtime lock by every passive capture read that includes
+// memory: what the offset getter said, what the running clock said, and which
+// one the capture reports. Logged once per changed reading.
+static void service_log_memory_clock(const MemoryClockReading& reading, gc_i64 getterHz,
+                                     const HardwareCaptureObservation& out) {
+    static char last[256]{};
+    char line[256];
+    snprintf(line, sizeof(line),
+        "capture memory: getter=%lldHz (valid=%d surface=%s) running=%u MHz (pstates=%d) board=%u MHz (nvml=%d)"
+        " -> %lldHz evidence=%s",
+        (long long)getterHz, out.memory.valid ? 1 : 0, hardware_capture_clock_surface_name(out.memory.surface),
+        reading.runningMaxMHz, reading.pstatesStatus, reading.boardMaxMHz, reading.boardStatus,
+        (long long)out.memory.value, hardware_capture_memory_evidence_name(out.memoryEvidence));
+    if (!strcmp(line, last)) return;
+    StringCchCopyA(last, ARRAY_COUNT(last), line);
+    debug_log("%s\n", line);
+}
+
 // Caller holds the runtime lock. Reuse the passive collector at the mutation
 // boundary without acquiring that lock recursively or waking recovery.
 static bool service_collect_capture_locked(const GpuAdapterInfo& target, gc_u32 domains,
@@ -35,6 +53,10 @@ static bool service_collect_capture_locked(const GpuAdapterInfo& target, gc_u32 
         memcpy(c.driverVersion, driver.text, sizeof(driver.text));
         c.ownedFanIntent = g_serviceHasActiveDesired ? &g_serviceActiveDesired : nullptr;
         c.lockObserved = service_log_client_locks;
+        // The live state reads memory from the running clock; capture must
+        // report the same value (memory_clock_evidence.h).
+        c.memoryClockReader = hardware_capture_memory_clock;
+        c.memoryObserved = service_log_memory_clock;
         LeaveCriticalSection(&g_appLock);
         return hardware_capture_collect(c, domains, hardware_capture_aux, out, why, size);
     };

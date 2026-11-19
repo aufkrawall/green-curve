@@ -32,6 +32,11 @@ static inline void hardware_capture_summary(const HardwareCaptureObservation& o,
             (int)o.pinStatus, (long long)o.pinMaximumHz, (long long)o.pinMinimumHz, (unsigned)o.pinVoltageUv);
         used = strlen(text);
     }
+    if ((o.requestedDomains & PROFILE_DOMAIN_MEMORY) && used < size) {
+        snprintf(text + used, size - used, " memory=%lldHz(%s)", (long long)o.memory.value,
+            hardware_capture_memory_evidence_name(o.memoryEvidence));
+        used = strlen(text);
+    }
     if (o.vfLimits.valid && used < size) snprintf(text + used, size - used,
         "; VF offsets=%lld..%lld Hz (%s), grid=%lld Hz%s",
         o.vfLimits.minimumHz, o.vfLimits.maximumHz,

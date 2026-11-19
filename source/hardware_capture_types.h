@@ -8,14 +8,23 @@
 
 // Schema 4 gives two reserved fields meaning: the driver's VF voltage lock
 // (pinVoltageLocked/pinVoltageUv), and a clock limit with no floor
-// (pinPresent with pinMinimumHz == 0). Same 4960-byte layout.
-enum { HARDWARE_CAPTURE_SCHEMA_CURRENT = 4 };
+// (pinPresent with pinMinimumHz == 0). Schema 5 turns one reserved byte into
+// memoryEvidence (memory_clock_evidence.h). Same 4960-byte layout.
+enum { HARDWARE_CAPTURE_SCHEMA_CURRENT = 5 };
 
 // Fixed wire observation layout. It contains no pointers, C++ bool,
 // ownership claim, file path, permission or automatic-restore acknowledgment.
 enum HardwareCaptureStatus : gc_u32 {
     CAPTURE_NOT_REQUESTED, CAPTURE_COMPLETE, CAPTURE_UNSUPPORTED, CAPTURE_READ_FAILED,
     CAPTURE_STATE_CHANGED, CAPTURE_COMPOSITION_UNRESOLVED, CAPTURE_PARTIAL
+};
+// What the memory scalar's value rests on. GETTER: the NVML offset getter
+// alone (no running-clock reading, e.g. Linux or no Pstates20). AGREES: the
+// running clock confirmed the getter. RUNNING_CLOCK: the getter disagreed
+// with the running clock and the value is the running clock's offset, the
+// reading the live state shows.
+enum HardwareCaptureMemoryEvidence : gc_u8 {
+    CAPTURE_MEMORY_EVIDENCE_GETTER, CAPTURE_MEMORY_EVIDENCE_AGREES, CAPTURE_MEMORY_EVIDENCE_RUNNING_CLOCK
 };
 enum HardwareCaptureComposition : gc_u32 {
     CAPTURE_COMPOSITION_UNKNOWN, CAPTURE_COMPOSITION_INDEPENDENT, CAPTURE_COMPOSITION_ALIASED
@@ -66,7 +75,8 @@ struct HardwareCaptureObservation {
     // lock is held at pinVoltageUv. All three come from the same reading.
     gc_bool8 valid, topologyComplete, pinGetterValid, pinPresent;
     gc_bool8 pinVoltageLocked;
-    gc_u8 reserved[3];
+    gc_u8 memoryEvidence;  // HardwareCaptureMemoryEvidence
+    gc_u8 reserved[2];
     gc_u32 schemaVersion, requestedDomains, capturedDomains, omittedDomains, unavailableDomains;
     gc_u32 domainStatus[9];
     int32_t driverStatus[9];

@@ -26,6 +26,8 @@ static inline bool hardware_capture_observation_valid(const HardwareCaptureObser
         !hardware_capture_bytes_zero(o.textReserved, sizeof(o.textReserved)) ||
         o.osFamily > 2u || o.backendFamily > INT_MAX ||
         o.composition > CAPTURE_COMPOSITION_ALIASED || o.pinVoltageLocked > 1 ||
+        o.memoryEvidence > CAPTURE_MEMORY_EVIDENCE_RUNNING_CLOCK ||
+        (o.memoryEvidence && (!(o.requestedDomains & PROFILE_DOMAIN_MEMORY) || !o.memory.valid)) ||
         !profile_bounded_text_valid(o.driverVersion, sizeof(o.driverVersion), 64)) return false;
     if (!o.binding.valid || o.binding.valid > 1 || o.binding.pciInfoValid > 1 ||
         !hardware_capture_bytes_zero(o.binding.reserved, sizeof(o.binding.reserved)) ||

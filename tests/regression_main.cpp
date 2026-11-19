@@ -1062,6 +1062,9 @@ int run_gui_observed_lock_tests();
 // The editor draft a loaded profile declares: the lock anchor holds the lock
 // target (tests/gui_draft_desired_tests.cpp, 12300-12305).
 int run_gui_draft_desired_tests();
+// Memory offset read from the running memory clock in passive capture
+// (tests/capture_memory_clock_tests.cpp, 12306-12319).
+int run_capture_memory_clock_tests();
 int run_profile_pin_observation_tests();
 int run_profile_mapping_tests();
 int run_profile_conversion_tests();
@@ -2786,6 +2789,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int draftDesiredFailure = run_gui_draft_desired_tests()) {
         fprintf(stderr, "editor draft lock anchor regression failed: %d\n", draftDesiredFailure);
         return draftDesiredFailure;
+    }
+    if (int memoryClockFailure = run_capture_memory_clock_tests()) {
+        fprintf(stderr, "capture memory clock regression failed: %d\n", memoryClockFailure);
+        return memoryClockFailure;
     }
     if (int pinObservationFailure = run_profile_pin_observation_tests()) {
         fprintf(stderr, "pin observation regression failed: %d\n", pinObservationFailure);
