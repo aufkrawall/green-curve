@@ -49,6 +49,7 @@ Curve checks, profile transfer and capture improve.
 - **Profile storage:** saved profiles retain exact sub-MHz curve points, captured offsets, power ratios and domain scope across local slots and editor Load, Apply and Save.
 - **Linux profile switching:** replaced points clear first; flatten and lock readback are verified.
 - **Linux memory clocks:** curve-only changes preserve memory; failed preparation restores prior curves.
+- **Changes made in other tools:** switching back to the window re-reads live GPU settings; nothing polls in the background.
 - **Profile matching:** exact offsets and power ratios remain matched as previews change.
 
 ### Fixed

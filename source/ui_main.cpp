@@ -11,6 +11,9 @@
 // this file owns what a read that did NOT come back means -- a busy service is
 // kept and labelled stale, only an unreachable one is a lost connection.
 #include "gui_service_stale_read.cpp"
+// After gui_service_state.cpp: switching back to the window re-reads live
+// GPU state through the same presentation-preserving resync Refresh uses.
+#include "gui_activation_resync.cpp"
 #include "gui_tray_visibility.cpp"
 #include "gui_selected_gpu_pnp.cpp"
 #include "ui_pending_changes.cpp"

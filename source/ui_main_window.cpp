@@ -970,6 +970,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (handle_main_window_timer(hwnd, wParam)) return 0;
             break;
 
+        case WM_ACTIVATEAPP:
+            // Event-driven, never timed: see gui_activation_resync_policy.h.
+            if (wParam) gui_activation_resync_on_app_activated();
+            break;
+
         case WM_HOTKEY:
             auto_profile_on_hotkey(hwnd, (int)wParam);
             return 0;

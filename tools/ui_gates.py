@@ -1371,6 +1371,25 @@ def check_manual_refresh_preserves_presentation(ctx, require_text, forbid_text):
                  "a real presentation transition supersedes the silent "
                  "refresh's status line")
 
+    # Switching back to the window re-reads live state so changes made by
+    # another tool show up, but only on that event: no timer, no read while
+    # tray-resident, minimized, modal or busy (gui_activation_resync_policy.h).
+    activation_cpp = _p(ctx, "gui_activation_resync.cpp")
+    require_text(_p(ctx, "ui_main_window.cpp"),
+                 "case WM_ACTIVATEAPP:\n"
+                 "            // Event-driven, never timed: see gui_activation_resync_policy.h.\n"
+                 "            if (wParam) gui_activation_resync_on_app_activated();",
+                 "window activation triggers the live re-read")
+    require_text(activation_cpp,
+                 "gui_activation_resync_decide(in)",
+                 "the activation re-read goes through the tested gate")
+    require_text(activation_cpp,
+                 'gui_service_request_resync("window activation", false);',
+                 "the activation re-read preserves the presentation")
+    for polling in ("SetTimer(", "CreateTimerQueueTimer(", "CreateThread("):
+        forbid_text(activation_cpp, polling,
+                    "the activation re-read is event-driven, never polled")
+
 
 def check_graph_frequency_axis(ctx, require_text, forbid_text):
     """The VF graph's frequency axis is derived from the plotted data.

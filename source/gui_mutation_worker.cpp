@@ -465,6 +465,19 @@ static bool gui_service_io_queue_full_sync(const char* reason) {
     return true;
 }
 
+// Whether the worker already holds work whose completion carries fresh state
+// or that an unsolicited read must not delay: a write (active or queued), a
+// full sync, a capture, a service change or a profile transfer.
+static bool gui_service_io_work_outstanding() {
+    if (!g_guiMutationLockReady) return false;
+    EnterCriticalSection(&g_guiMutationLock);
+    const bool outstanding = g_guiMutationActive || g_guiMutationPending ||
+        g_guiFullSyncPending || g_guiCapturePending || g_guiAdminTogglePending ||
+        g_guiProfileTransferActive || g_guiProfileTransferPending != nullptr;
+    LeaveCriticalSection(&g_guiMutationLock);
+    return outstanding;
+}
+
 static bool gui_service_io_queue_admin_toggle(bool enable, bool repair,
     const char* configPath, char* status, size_t statusSize) {
     if (!configPath || !configPath[0]) {

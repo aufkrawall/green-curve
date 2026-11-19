@@ -502,9 +502,27 @@ compatible with v4 records.
 - Periodic reconnect/backstop probes enqueue a full state request without
   entering `SYNCING`. Repeated identical disconnected results are presentation-
   inert; the GUI renders a failure only when phase, discarded live authority,
-  visible service state, or displayed error changes. Interactive manual refresh
-  still enters `SYNCING`; tray reopen retains a coherent cached frame while an
-  asynchronous telemetry response checks for service/GPU/topology drift.
+  visible service state, or displayed error changes. Manual Refresh queues a
+  presentation-preserving full sync from a READY model
+  (`gui_service_resync_policy.h`) and enters `SYNCING` only when it cannot;
+  tray reopen retains a coherent cached frame while an asynchronous telemetry
+  response checks for service/GPU/topology drift.
+- **Activation re-read (2026-11-19).** Clock settings another tool changes are
+  invisible to the service until something reads them: its fan worker polls
+  only fans and temperature, and a full VF/offset read costs it tens of ms
+  (93 ms measured on a 5070) under the serialized hardware lock. On
+  `WM_ACTIVATEAPP` (the window becoming the foreground application) the GUI
+  queues the same presentation-preserving full sync Refresh uses, without its
+  status line (`gui_activation_resync.cpp`, decision in
+  `gui_activation_resync_policy.h`). It skips when not a service client,
+  hidden to the tray or minimized, a modal dialog is up, not READY with live
+  authority, the worker already holds a write/sync/capture/service
+  change/transfer (`gui_service_io_work_outstanding()`), a detached draft is
+  preserved, or the previous activation read is under 2 s old. Invariant:
+  event-driven only, no timer; a game in the foreground never triggers it.
+  Diagnostics: `GUI activation resync: window activated; ...` per read and
+  change-gated `GUI activation resync: skip-...` lines. Coverage 12386-12397
+  plus `check_manual_refresh_preserves_presentation()`.
 - Selected-device PnP notifications in the GUI are presentation invalidation
   cues only. Exact removal/arrival immediately enters a neutral state, retires
   pending mutations and GDI surfaces, and enqueues one full sync; the service

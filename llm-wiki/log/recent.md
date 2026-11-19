@@ -27,6 +27,12 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   so a memory offset raised elsewhere after it survived Reset. Reset now
   re-reads those controls (and the ClkDomains values) first
   (`reset_live_readback_policy.h`, 12380-12385).
+- Requested follow-up: register external changes without pressing Refresh,
+  but with no background polling. Chosen: re-read on `WM_ACTIVATEAPP` only,
+  gated and throttled (`gui_activation_resync_policy.h`, 12386-12397).
+  Changing settings in another tool means leaving this window, so returning
+  is when the snapshot may be stale; a timed poll was rejected because a
+  full read holds the service's hardware lock for ~90 ms.
 
 ## 2026-11-19: Editor Load->Apply/Save keep an imported record's intent
 
