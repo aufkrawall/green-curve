@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "profile_bank_edit.h"
-#include "profile_legacy_ini.h"
+#include "profile_ini_slot.h"
 #include "profile_file_read.h"
 
 // ConfigStorageLockGuard and the bounded atomic writer belong to the client

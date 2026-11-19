@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "profile_bank_edit.h"
-#include "profile_legacy_ini.h"
+#include "profile_ini_slot.h"
 #include "profile_file_read.h"
 #include "linux_port.h"
 #include "linux_config_lock.h"

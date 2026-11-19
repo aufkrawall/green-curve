@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 #include "profile_editor_transfer.h"
+#include "profile_ini_slot.h"
 #include <map>
 
 namespace {

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include "profile_codec_fixture.h"
 #include "profile_slot_codec.h"
-#include "profile_legacy_ini.h"
+#include "profile_ini_slot.h"
 #include "profile_mapping.h"
 #include "profile_conversion_grid.h"
 #include "profile_runtime_resolution.h"

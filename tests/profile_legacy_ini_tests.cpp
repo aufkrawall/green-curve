@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
-#include "profile_legacy_ini.h"
+#include "profile_ini_slot.h"
 #include "profile_mapping.h"
 
 int run_profile_legacy_ini_tests() {

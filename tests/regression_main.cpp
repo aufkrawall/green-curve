@@ -1078,6 +1078,7 @@ int run_profile_editor_transfer_tests();
 int run_profile_review_session_tests();
 int run_profile_mapped_draft_tests();
 int run_profile_slot_runtime_tests();
+int run_profile_ini_slot_tests();
 int run_profile_tools_tests();
 int run_tui_profile_tools_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
@@ -2867,6 +2868,9 @@ static int run_all_tests(int argc, char** argv) {
     }
     if (int slotRuntimeFailure = run_profile_slot_runtime_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", slotRuntimeFailure); return slotRuntimeFailure;
+    }
+    if (int iniSlotFailure = run_profile_ini_slot_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", iniSlotFailure); return iniSlotFailure;
     }
 #if defined(_WIN32)
     // Win32 config storage: the named-mutex lock and the Unicode INI writer.

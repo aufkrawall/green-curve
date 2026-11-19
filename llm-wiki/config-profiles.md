@@ -7,10 +7,11 @@ Source anchors: `source/profile_slot_runtime.h`, `source/config_profile_document
 `source/profile_summary.h`, `source/profile_editor_transfer.h` (probe and explicit
 selection), `source/gui_profile_tools.cpp`, `source/gui_profile_capture.cpp`,
 `source/gui_profile_transfer.cpp`, `source/gui_profile_dialog_kit.h`,
-`source/gui_profile_transfer_work.h`, `source/linux_tui_capture_draft.h`,
+`source/gui_profile_transfer_work.h`, `source/profile_ini_slot.h`, `source/linux_tui_capture_draft.h`,
 `source/linux_tui_transfer.h`, `source/linux_tui_layout_transfer.h`,
 `tests/profile_slot_runtime_tests.cpp` (9950-9969), `tests/profile_tools_tests.cpp`
-(9970-9990), `tests/tui_profile_tools_tests.cpp` (9770-9791).
+(9970-9990), `tests/tui_profile_tools_tests.cpp` (9770-9791), `tests/profile_ini_slot_tests.cpp`
+(9930-9948).
 
 This supersedes the source-editor workflow described in the 2026-11-14/15 sections
 below ("Windows capture into an unsaved source draft", "Windows canonical source
@@ -58,6 +59,21 @@ Current behavior:
 - **Export** ticks saved slots (summaries via `profile_document_summary()`), then a
   native Save As (Windows) or a typed path with overwrite confirmation (TUI); the
   job prepares and commits in one worker run.
+- **Ordinary INI slots decode as their runtime record** (`profile_ini_slot.h`, used
+  by export, the slot summaries and INI import). Base keys go through the historical
+  decoder; the keys newer slots add (`application_scope`, precise Hz, captured
+  points, `topology_bound` voltages, identity exclusions) are applied afterwards by
+  the loader's own extension reader, and the record is described with
+  `profile_document_from_legacy_desired()`. A voltage-bound record exports by its
+  saved voltages (`legacyIndicesUnresolved` false), so an import maps it exactly or
+  refuses, as the record does at Apply. For this machine's own slots
+  (`ProfileLegacyOptions::nativeSlot`) a curve without `curve_semantics` uses the
+  slot loader's rule: Windows reads base clocks plus offset only when the stored
+  lock point plus the offset equals the lock frequency and the stored value alone
+  does not, otherwise final clocks; Linux keeps the offset and drops the points.
+  A file being imported still asks. The `gpu_offset_exclude_low_count` copy that
+  Windows writes into the curve section is accepted and must equal the control
+  section's value (the loaders read only that one).
 - **Import** reads the file first (`profile_editor_transfer_probe()`): portable banks
   list records in file order; anything else is tried as an old INI (Windows
   interpretation by default, switchable), slot by slot, and a missing memory unit or
@@ -79,12 +95,23 @@ document every reader converts; a refusal names what the user can do; probe,
 capture and import diagnostics log one `profile-capture:` / `profile-transfer:` line
 per event without paths or document bodies.
 
+Diagnostics / failure modes: the native decoder used to reject the curve-section
+exclusion copy and every unmarked curve, so export (dialog and CLI) failed for
+ordinary Windows slots with a core offset and the Export dialog showed "Saved
+profile" without a summary; a slot whose summary cannot be built now logs
+`profile-transfer: slot N summary unavailable: <reason>`. Verified 2026-11-19 by a
+CLI export of real slots followed by import into a scratch config and a
+byte-identical re-export. The repair pass of the Windows loader
+(`repair_profile_locked_curve_readback_artifacts`) is deliberately not mirrored,
+so an export describes the stored record, not a repaired one.
+
 Open questions / stale-risk: the TUI still contains the source-document editing
 code (`linux_tui_source_edit.h`, `linux_tui_source_check.h`,
 `linux_tui_mapped_draft.h`); nothing sets `state.document.valid` any more, so it is
-unreachable and should be removed. The Windows dialogs were compiled and their
-engines tested; an interactive desktop pass and physical GPU replay of captured
-records are not recorded here.
+unreachable and should be removed. The Windows Profiles menu, capture dialog and
+Export dialog were opened on a desktop (layout and live read confirmed); the
+Import dialog pass and physical GPU replay of captured records are not recorded
+here.
 
 ## Capture lock proposals (2026-11-15)
 

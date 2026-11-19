@@ -85,6 +85,7 @@ REGRESSION_SOURCES = (
     'profile_review_session_tests.cpp',
     'profile_mapped_draft_tests.cpp',
     'profile_slot_runtime_tests.cpp',
+    'profile_ini_slot_tests.cpp',
     'profile_tools_tests.cpp',
     'tui_profile_tools_tests.cpp',
 )

@@ -3,7 +3,7 @@
 #ifndef GREEN_CURVE_PROFILE_COMMANDS_H
 #define GREEN_CURVE_PROFILE_COMMANDS_H
 #include "profile_bank_edit.h"
-#include "profile_legacy_ini.h"
+#include "profile_ini_slot.h"
 #include "profile_document_slot.h"
 
 enum ProfileCommandExit { PROFILE_COMMAND_OK = 0, PROFILE_COMMAND_IO = 1,

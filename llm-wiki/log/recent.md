@@ -18,8 +18,16 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 - Found by the Linux compile check, not the Windows suite: the Linux document
   loader missed an include. Windows `--test` does not compile Linux-only `.cpp`
   files, so run `--check --target linux` after touching them.
+- Export failed for real Windows slots ("legacy points require an explicit
+  source curve-semantics choice", and the curve section's exclusion copy was an
+  unsupported key), and slots saved by the new capture dialog would not have
+  exported either (extension keys). Ordinary INI slots now decode as their runtime
+  record (`profile_ini_slot.h`, `config-profiles.md`). Caught only by a desktop
+  pass and a CLI export of real slots: fixtures had used minimal INI text, so
+  tests now write slots in the writers' real layout.
 - Open: the TUI source-document editing code is unreachable and should be
-  removed; the Windows dialogs still need an interactive desktop pass.
+  removed (a side session stopped before committing anything); the Windows
+  Import dialog still needs a desktop pass.
 
 ## 2026-11-18: CI Linux jobs pin the runner image
 

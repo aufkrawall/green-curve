@@ -5,9 +5,12 @@
 #include "profile_document.h"
 #include "desired_settings_ui_policy.h"
 
-// Adapt an already decoded historical profile without consulting live hardware.
+// Adapt an already decoded runtime record without consulting live hardware.
 // Indices stay explicitly unresolved: this adapter never supplies voltages from
-// a different/current GPU or promotes the record into capture evidence.
+// a different/current GPU or promotes the record into capture evidence. A
+// record bound to its own GPU's voltages (a capture, or an imported
+// voltage-bound profile) exports by those saved voltages, so an import maps it
+// exactly or refuses, as the record itself does at Apply.
 static inline bool profile_document_from_legacy_desired(const DesiredSettings& in,
     ProfileDocument& output, char* why, size_t whySize) {
     ProfileDocument d = profile_document_make_empty();
@@ -25,12 +28,21 @@ static inline bool profile_document_from_legacy_desired(const DesiredSettings& i
             d.graphicsOffset.excludeLowCount = in.gpuOffsetExcludeLowCount;
         }
     }
+    const bool bound = in.authoring.topologyBound != 0;
+    const bool identities = bound && in.authoring.identityExclusions && in.hasGpuOffset;
+    if (identities) d.graphicsOffset.exclusionPolicy = PROFILE_EXCLUDE_IDENTITIES;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         const auto kind = desired_curve_point_kind(&in, ci);
         if (kind == DESIRED_CURVE_INVALID) return fail("invalid legacy point tags");
-        if (kind == DESIRED_CURVE_ABSENT && !(in.hasLock && in.lockCi == ci)) continue;
+        const bool excluded = identities && in.authoring.graphicsExcluded[ci];
+        if (kind == DESIRED_CURVE_ABSENT && !(in.hasLock && in.lockCi == ci) && !excluded) continue;
         const int index = d.topologyCount++;
         d.topology[index] = {ci, ci, 0, 0};
+        if (bound) {
+            if (in.authoring.voltageUv[ci] <= 0) return fail("a voltage-bound curve point has no saved voltage");
+            d.topology[index].voltageUv = in.authoring.voltageUv[ci];
+        }
+        if (excluded) d.graphicsOffset.excludedTopologyIds[d.graphicsOffset.excludedCount++] = ci;
         if (kind == DESIRED_CURVE_ABSENT) continue;
         d.domains |= PROFILE_DOMAIN_VF_CURVE;
         auto& p = d.points[index];
@@ -51,7 +63,7 @@ static inline bool profile_document_from_legacy_desired(const DesiredSettings& i
                 (long long)in.curvePointMHz[ci] * 1000000;
         }
     }
-    d.legacyIndicesUnresolved = d.topologyCount != 0;
+    d.legacyIndicesUnresolved = !bound && d.topologyCount != 0;
     if (in.hasLock) {
         d.domains |= PROFILE_DOMAIN_LOCK; d.lock.present = true;
         d.lock.mode = in.lockMode; d.lock.anchorTopologyId = in.lockCi;

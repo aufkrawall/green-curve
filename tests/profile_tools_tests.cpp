@@ -8,6 +8,7 @@
 #include "profile_capture_proposal_fixture.h"
 #include "gui_profile_transfer_work.h"
 #include "profile_legacy_document.h"
+#include "profile_ini_slot.h"
 #include <map>
 #include <cstring>
 

@@ -5,6 +5,7 @@
 #include "linux_tui_internal.h"
 #include "linux_debug_log.h"
 #include "profile_capture_proposal_fixture.h"
+#include "profile_ini_slot.h"
 #include <map>
 #include <cstring>
 

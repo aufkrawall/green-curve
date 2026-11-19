@@ -3,6 +3,7 @@
 #include "profile_codec_fixture.h"
 #include "profile_commands.h"
 #include "profile_legacy_document.h"
+#include "profile_ini_slot.h"
 #include <map>
 
 struct ProfileTestIO {

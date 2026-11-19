@@ -14,6 +14,9 @@ struct ProfileLegacyOptions {
     ProfileLegacyFormat format = PROFILE_LEGACY_NONE;
     ProfileLegacyMemoryUnit memory = PROFILE_LEGACY_MEMORY_UNKNOWN;
     ProfileLegacyCurveKind curve = PROFILE_LEGACY_CURVE_UNKNOWN;
+    // This machine's own slot (profile_ini_slot.h): a curve without its
+    // marker is read with the slot loader's rule instead of asking.
+    bool nativeSlot = false;
 };
 struct ProfileSourceSelection {
     bool all = true;
@@ -121,6 +124,30 @@ inline bool fan(Fields& controls, Fields& fields, ProfileDocument& d, ProfileCod
     if (!fields.empty()) return fail(e, "unsupported legacy fan curve key");
     return fan_curve_validate(&c, e ? e->message : nullptr, e ? sizeof(e->message) : 0);
 }
+// Builds before the curve marker saved either final clocks or base clocks plus
+// the core offset without saying which. For this machine's own slots, answer
+// with the rule the slot loader applies (config_profile_repair.cpp on Windows,
+// linux_port_profiles.cpp on Linux), so an export describes what the slot
+// actually applies. A file being imported still asks.
+inline ProfileLegacyCurveKind native_unmarked(const Fields& fields, ProfileLegacyOptions options,
+    const ProfileDocument& d, bool& dropPoints) {
+    dropPoints = false;
+    const gc_i64 offsetMHz = d.graphicsOffset.present ? d.graphicsOffset.offsetHz / 1000000 : 0;
+    if (!offsetMHz) return PROFILE_LEGACY_CURVE_ABSOLUTE;
+    // The Linux loader cannot tell either, so it keeps the offset and ignores the points.
+    if (options.format == PROFILE_LEGACY_LINUX_INI) { dropPoints = true; return PROFILE_LEGACY_CURVE_ABSOLUTE; }
+    // Windows: base clocks only when the lock point plus the offset lands
+    // exactly on the lock frequency and the stored value alone does not.
+    const int ci = d.lock.present ? d.lock.anchorTopologyId : -1;
+    if (offsetMHz < 0 || ci < 0 || ci >= VF_NUM_POINTS || d.lock.targetFrequencyHz % 1000000) return PROFILE_LEGACY_CURVE_ABSOLUTE;
+    if (d.graphicsOffset.exclusionPolicy == PROFILE_EXCLUDE_LEGACY_COUNT && ci < d.graphicsOffset.excludeLowCount)
+        return PROFILE_LEGACY_CURVE_ABSOLUTE;
+    const auto at = fields.find("point" + std::to_string(ci) + "_mhz");
+    gc_i64 stored = 0;
+    if (at == fields.end() || !profile_codec::number(View(at->second), stored, 1, UINT_MAX)) return PROFILE_LEGACY_CURVE_ABSOLUTE;
+    const gc_i64 lockMHz = d.lock.targetFrequencyHz / 1000000;
+    return stored != lockMHz && stored + offsetMHz == lockMHz ? PROFILE_LEGACY_CURVE_BASE : PROFILE_LEGACY_CURVE_ABSOLUTE;
+}
 inline bool points(Fields& fields, ProfileLegacyOptions options, ProfileDocument& d, ProfileCodecError* e) {
     std::string marker, format;
     take(fields, "format", format); take(fields, "curve_semantics", marker);
@@ -140,6 +167,15 @@ inline bool points(Fields& fields, ProfileLegacyOptions options, ProfileDocument
             return fail(e, "legacy curve and graphics controls disagree");
         d.graphicsOffset.present = true; d.graphicsOffset.offsetHz = component * 1000000; d.domains |= PROFILE_DOMAIN_GRAPHICS_OFFSET;
     }
+    // Windows writers copy the exclusion count next to the offset. The loaders
+    // read only the control section's value, so the copy must agree with it.
+    gc_i64 excludeCopy = 0; bool hasExcludeCopy = false;
+    if (!number(fields, "gpu_offset_exclude_low_count", excludeCopy, hasExcludeCopy, e, 0, VF_NUM_POINTS)) return false;
+    const gc_i64 exclude = d.graphicsOffset.exclusionPolicy == PROFILE_EXCLUDE_LEGACY_COUNT ? d.graphicsOffset.excludeLowCount : 0;
+    if (hasExcludeCopy && excludeCopy != exclude) return fail(e, "legacy curve and graphics exclusions disagree");
+    bool dropPoints = false;
+    if (kind == PROFILE_LEGACY_CURVE_UNKNOWN && marker.empty() && options.nativeSlot)
+        kind = native_unmarked(fields, options, d, dropPoints);
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         const std::string root = "point" + std::to_string(ci);
         gc_i64 mhz = 0, voltage = 0, offset = 0, origin = 0, visible = 0;
@@ -154,6 +190,7 @@ inline bool points(Fields& fields, ProfileLegacyOptions options, ProfileDocument
             if (hasVoltage || hasOffset || hasOrigin || hasVisible) return fail(e, "legacy point metadata has no point value");
             continue;
         }
+        if (dropPoints) continue;
         if (kind == PROFILE_LEGACY_CURVE_UNKNOWN) return fail(e, "legacy points require an explicit source curve-semantics choice");
         if (hasOrigin && kind != PROFILE_LEGACY_CURVE_ORIGIN) return fail(e, "legacy point origin conflicts with curve semantics");
         const bool projected = kind == PROFILE_LEGACY_CURVE_BASE || (kind == PROFILE_LEGACY_CURVE_ORIGIN && origin);
@@ -236,75 +273,3 @@ inline bool document(Fields controls, Fields curve, Fields fanFields, const Fiel
     output = d; return true;
 }
 } // namespace profile_legacy
-
-static inline bool profile_legacy_ini_decode(std::string_view input, ProfileLegacyOptions options,
-    const ProfileSourceSelection& selection, ProfileBank& output, ProfileCodecError* error = nullptr) {
-    if (error) *error = {};
-    if (options.format != PROFILE_LEGACY_WINDOWS_INI && options.format != PROFILE_LEGACY_LINUX_INI)
-        return profile_legacy::fail(error, "select a supported legacy source format");
-    if (options.memory < PROFILE_LEGACY_MEMORY_UNKNOWN || options.memory > PROFILE_LEGACY_MEMORY_EFFECTIVE ||
-        options.curve < PROFILE_LEGACY_CURVE_UNKNOWN || options.curve > PROFILE_LEGACY_CURVE_BASE)
-        return profile_legacy::fail(error, "invalid legacy source interpretation");
-    if (selection.count < 1 || selection.count > 5) return profile_legacy::fail(error, "invalid legacy source selection");
-    if (selection.all && (selection.count != 5 || selection.slots[0] != 1 || selection.slots[1] != 2 ||
-        selection.slots[2] != 3 || selection.slots[3] != 4 || selection.slots[4] != 5))
-        return profile_legacy::fail(error, "invalid all-profiles selection");
-    profile_legacy::Sections sections;
-    if (!profile_legacy::sections(input, sections, error)) return false;
-    const auto meta = sections.find("meta");
-    const profile_legacy::Fields empty;
-    const auto& metadata = meta != sections.end() ? meta->second : empty;
-    const auto version = metadata.find("format_version");
-    if (version != metadata.end() && version->second != "1" && version->second != "2")
-        return profile_legacy::fail(error, "unsupported legacy format version");
-    auto bank = std::make_unique<ProfileBank>(); bool seen[5]{};
-    for (int n = 0; n < selection.count; ++n) {
-        const int slot = selection.slots[n];
-        if (slot < 1 || slot > 5 || seen[slot - 1]) return profile_legacy::fail(error, "invalid or duplicate legacy source slot");
-        seen[slot - 1] = true;
-        std::string name = "profile" + std::to_string(slot);
-        const auto hasFields = [&](const std::string& root) {
-            const auto at = sections.find(root); return at != sections.end() && !at->second.empty();
-        };
-        const auto exists = [&](const std::string& root) {
-            return hasFields(root) || hasFields(root + "_curve") || hasFields(root + "_fan_curve");
-        };
-        const bool useFallback = slot == 1 && !exists(name) &&
-            (hasFields("controls") || hasFields("curve") || hasFields("fan_curve"));
-        const auto get = [&](const std::string& suffix) -> profile_legacy::Fields {
-            const auto key = useFallback ? (suffix.empty() ? "controls" : suffix == "_curve" ? "curve" : "fan_curve") : name + suffix;
-            const auto at = sections.find(key); return at == sections.end() ? profile_legacy::Fields{} : at->second;
-        };
-        if (!exists(name) && !useFallback) {
-            if (selection.all) continue;
-            return profile_legacy::fail(error, "selected legacy source slot is empty");
-        }
-        if (!profile_legacy::document(get(""), get("_curve"), get("_fan_curve"), metadata, options,
-            slot, bank->documents[bank->count], error)) return false;
-        ++bank->count;
-    }
-    if (!bank->count) return profile_legacy::fail(error, "no legacy profiles were found");
-    output = *bank; return true;
-}
-
-// Native export uses the same raw decoder as explicitly selected imports.
-// It never invokes the live-compatible repair/migration settings loader.
-static inline bool profile_legacy_native_slot_decode(std::string_view input, ProfileLegacyFormat format, int slot,
-    ProfileDocument& output, bool& found, ProfileCodecError* error) {
-    found = false;
-    if (slot < 1 || slot > 5) return profile_legacy::fail(error, "invalid native legacy slot");
-    profile_legacy::Sections sections;
-    if (!profile_legacy::sections(input, sections, error)) return false;
-    const std::string root = "profile" + std::to_string(slot);
-    const auto hasFields = [&](const std::string& name) {
-        const auto at = sections.find(name); return at != sections.end() && !at->second.empty();
-    };
-    const bool exists = hasFields(root) || hasFields(root + "_curve") || hasFields(root + "_fan_curve") ||
-        (slot == 1 && (hasFields("controls") || hasFields("curve") || hasFields("fan_curve")));
-    if (!exists) return true;
-    ProfileSourceSelection selected;
-    selected.all = false; selected.count = 1; selected.slots[0] = slot;
-    auto bank = std::make_unique<ProfileBank>();
-    if (!profile_legacy_ini_decode(input, {format}, selected, *bank, error)) return false;
-    output = bank->documents[0]; found = true; return true;
-}

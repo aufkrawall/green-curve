@@ -5,6 +5,7 @@
 // show choices and results. Importing never changes the editor draft.
 #include "profile_transfer_picker.h"
 #include "profile_summary.h"
+#include "profile_ini_slot.h"
 
 enum {
     TRANSFER_DLG_INTRO = 9340, TRANSFER_DLG_FILE, TRANSFER_DLG_STATUS, TRANSFER_DLG_NOTE, TRANSFER_DLG_RUN, TRANSFER_DLG_CANCEL,
@@ -43,7 +44,10 @@ static bool gui_profile_slot_document(int slot, ProfileDocument& document) {
     if (!lock.locked() || !io.read(g_app.configPath, bytes, profile_slot::MAX_CONFIG_BYTES, true, error) ||
         !profile_config::decode(bytes, text, &error) || !profile_document_slot_decode(text, slot, document, found, error))
         return false;
-    if (!found && !profile_legacy_native_slot_decode(text, PROFILE_LEGACY_WINDOWS_INI, slot, document, found, &error)) return false;
+    if (!found && !profile_legacy_native_slot_decode(text, PROFILE_LEGACY_WINDOWS_INI, slot, document, found, &error)) {
+        debug_log("profile-transfer: slot %d summary unavailable: %s\n", slot, error.message);
+        return false;
+    }
     return found;
 }
 static std::vector<int> gui_transfer_checked_rows() {
