@@ -929,6 +929,19 @@ by `nvapi_read_offsets()`), `tests/windows_vf_verified_write_tests.cpp`
   [clock-transition-audit.md](clock-transition-audit.md)). A board whose batch
   write genuinely fails for many points still costs ~1 s per point and can
   outlast the client deadline; only the stale-cache trigger is gone.
+- **Reset's scalar domains read live too:** `service_reset_all()` used to
+  decide memory offset and power target from the last snapshot, so a memory
+  offset another tool raised after it survived a Reset that reported success.
+  It now re-reads NVML offsets, Pstates20 (the live memory derivation, since
+  another tool's memory offset can leave the NVML getter at 0), the power
+  target and, with a valid probe, the ClkDomains XBAR/SYS/VIDEO values, and
+  decides through `reset_scalar_domain_needs_write()`
+  (`source/reset_live_readback_policy.h`): an uncertain earlier write is
+  always repeated, otherwise the live value decides and the snapshot answers
+  only when the live read failed (a failed power read publishes the board
+  default, which must not read as "already at stock"). One line,
+  `service_reset_all: scalar readback memory=live|cached|uncertain ...`,
+  records each decision. Coverage 12380-12385 plus readback gates.
 
 ### F-APPLY-CEILING: the transition clock ceiling
 

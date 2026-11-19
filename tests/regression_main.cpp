@@ -1082,6 +1082,9 @@ int run_windows_vf_exact_tests();
 // A stale cached VF table never forces per-point writes
 // (tests/windows_vf_verified_write_tests.cpp, 12350-12366).
 int run_windows_vf_verified_write_tests();
+// Settings changed by another tool: Reset's live readback decision
+// (tests/external_oc_change_tests.cpp, 12380-12399).
+int run_external_oc_change_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2827,6 +2830,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int verifiedWriteFailure = run_windows_vf_verified_write_tests()) {
         fprintf(stderr, "Windows verified VF writer regression failed: %d\n", verifiedWriteFailure);
         return verifiedWriteFailure;
+    }
+    if (int externalChangeFailure = run_external_oc_change_tests()) {
+        fprintf(stderr, "External clock change regression failed: %d\n", externalChangeFailure);
+        return externalChangeFailure;
     }
     if (int captureFailure = run_hardware_capture_tests()) {
         fprintf(stderr, "hardware capture regression failed: %d\n", captureFailure);

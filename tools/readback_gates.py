@@ -74,6 +74,21 @@ def check_all(ctx, require_text, forbid_text):
     require_text(_p(ctx, "gpu_backend_curve_write.h"),
                  "g_app.vfOffsetsHzValid = vf_control_offsets_decode(backend, baseControl,",
                  "the verified VF writer adopts its entry control table before judging convergence")
+    # Reset decides memory and power from a readback it takes itself, falling
+    # back to the snapshot only when that read fails, and refreshes the
+    # ClkDomains values the XBAR/SYS/VIDEO resets act on.
+    reset_cpp = _p(ctx, "main_service_apply_runtime.cpp")
+    for needle in ("const bool resetMemory = reset_scalar_domain_needs_write(",
+                   "const bool resetPower = reset_scalar_domain_needs_write(",
+                   "if (g_app.xbarProbeValid) xbar_refresh_live_state();",
+                   "    if (resetMemory) {",
+                   "    if (resetPower) {"):
+        require_text(reset_cpp, needle,
+                     "Reset decides scalar domains from its own live readback")
+    for stale in ("if (g_app.memClockOffsetkHz != 0 || g_app.memOffsetWriteUncertain) {",
+                  "if (g_app.powerLimitPct != 100 || g_app.powerLimitWriteUncertain) {"):
+        forbid_text(reset_cpp, stale,
+                    "Reset never decides memory or power from the cached snapshot alone")
     for name, old_copy in (
             ("gpu_backend_curve_write.h", "memcpy(&baseControl[deltaOffset], &g_app.freqOffsets[i]"),
             ("linux_backend_vf_write.h", "memcpy(baseControl + off, &g->freqOffsets[i]")):
@@ -89,9 +104,10 @@ def check_all(ctx, require_text, forbid_text):
     require_text(readback_policy_h,
                  "return writeUncertain || !readbackValid || cachedkHz != targetkHz;",
                  "an uncertain memory write or stale cache cannot be skipped by cached equality")
-    require_text(_p(ctx, "main_service_apply_runtime.cpp"),
-                 "g_app.memClockOffsetkHz != 0 || g_app.memOffsetWriteUncertain",
-                 "explicit Reset accounts for uncertain memory writes")
+    for needle in ("g_app.memOffsetWriteUncertain, memLiveOk,",
+                   "g_app.powerLimitWriteUncertain, powerLiveOk,"):
+        require_text(_p(ctx, "main_service_apply_runtime.cpp"), needle,
+                     "explicit Reset accounts for uncertain memory and power writes")
     require_text(_p(ctx, "main_service_apply_runtime.cpp"),
                  "nvapi_set_mem_offset(0, true)",
                  "explicit Reset forces the memory setter past cached equality")
@@ -242,9 +258,8 @@ def check_all(ctx, require_text, forbid_text):
     require_text(_p(ctx, "gpu_backend.cpp"),
                  "reset_selected_gpu_write_evidence(&g_app);",
                  "a GPU selection change discards the previous GPU's write evidence")
-    require_text(_p(ctx, "main_service_apply_runtime.cpp"),
-                 "g_app.powerLimitPct != 100 || g_app.powerLimitWriteUncertain",
-                 "explicit Reset also repairs uncertain power state")
+    # Explicit Reset's uncertain-power repair is pinned with its live readback
+    # decision above ("g_app.powerLimitWriteUncertain, powerLiveOk,").
     power_fixture = os.path.join(
         ctx.SOURCE_DIR, "..", "tests", "power_recovery_tests.cpp")
     require_text(power_fixture, "nvapi_set_power_limit(80, false)",

@@ -23,6 +23,10 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 - Lesson: a convergence check must read the same moment it compares against;
   a cache that only this process updates is not evidence about hardware other
   tools can also write.
+- Same class, second fix: Reset decided memory and power from the snapshot,
+  so a memory offset raised elsewhere after it survived Reset. Reset now
+  re-reads those controls (and the ClkDomains values) first
+  (`reset_live_readback_policy.h`, 12380-12385).
 
 ## 2026-11-19: Editor Load->Apply/Save keep an imported record's intent
 
