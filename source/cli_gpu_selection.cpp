@@ -44,7 +44,7 @@ static bool validate_configured_gpu_selection_for_cli(char* err,
         if (read) apply_ready_service_envelope_to_app(&response);
         if (!read || g_app.selectedGpuIndex != resolved) {
             const char* reason = !read ? readErr :
-                (response.message[0] && strncmp(response.message, "snapshot ", 9)
+                (response.message[0] && strncmp(response.message, "snapshot ", 9) != 0
                     ? response.message
                     : "The background service kept its current GPU.");
             debug_log("gpu selection: CLI could not show saved nvapi=%u (shown=%u read=%d): %s\n",
