@@ -166,6 +166,11 @@ static inline std::string profile_capture_choice_label(const ProfileCapturePropo
             p.pin.provenance == PROFILE_LOCK_PROVENANCE_APPLIED_INTENT ? " (set by Green Curve)" : "";
         return "Hard clock lock at " + profile_summary_mhz(p.pin.frequencyHz, false) + " MHz" + evidence;
     }
+    // An exact copy Green Curve would refuse at Apply (for example offsets past
+    // this GPU's range that another tool used to flatten its curve) stays
+    // available for the file, but says so.
+    if (p.exactControls.disposition == PROFILE_CONTROL_REFUSED)
+        return "Copy every curve point exactly (cannot be applied on this GPU)";
     return "Copy every curve point exactly";
 }
 

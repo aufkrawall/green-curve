@@ -38,9 +38,28 @@ void refresh(HardwareCaptureObservation& o) {
     o.fingerprint = hardware_capture_fingerprint(o);
     o.revision = service_control_review_revision(o.fingerprint, nullptr);
 }
-bool prepare(const HardwareCaptureObservation& o, ProfileCaptureProposals& out) {
+bool prepare(const HardwareCaptureObservation& o, ProfileCaptureProposals& out,
+             ProfileCaptureProposalContext context = {}) {
     char why[256]{};
-    return hardware_capture_observation_valid(o) && profile_capture_prepare_proposals(o, {}, out, why, sizeof(why));
+    return hardware_capture_observation_valid(o) && profile_capture_prepare_proposals(o, context, out, why, sizeof(why));
+}
+// A curve flattened the way other tools do it: every point past the anchor
+// pushed far below this GPU's reported offset range, so the driver's
+// monotonic rule holds the whole tail at the anchor's frequency.
+HardwareCaptureObservation pushed_tail_flatten() {
+    HardwareCaptureObservation o = curve();
+    o.pointCount = 10;
+    for (int i = 0; i < 10; ++i) {
+        auto& p = o.points[i];
+        p = {};
+        p.index = 70 + i;
+        p.voltageUv = 900000 + i * 6250;
+        p.writableState = p.offsetValid = p.frequencyValid = 1;
+        p.frequencyHz = i < 3 ? 2392000000LL + i * 30000000LL : 2482000000LL;
+        p.offsetHz = i < 3 ? 3199000 - i * 1000000 : i == 3 ? 0 : -2045000000LL;
+    }
+    refresh(o);
+    return o;
 }
 }  // namespace
 
@@ -85,5 +104,35 @@ int run_capture_curve_choice_tests() {
     if (text.find("profile-capture: proposal=flatten recognized=1 offered=1") != 0 ||
         text.find("anchorUv=662000") == std::string::npos || text.find('\n') != std::string::npos)
         return 12264;
+
+    // A pushed-tail flatten: the flatten is recommended, and the exact copy,
+    // whose tail offsets lie past the range, is labeled as not applicable.
+    auto pushed = std::make_unique<HardwareCaptureObservation>(pushed_tail_flatten());
+    auto p = std::make_unique<ProfileCaptureProposals>();
+    if (!prepare(*pushed, *p) || !p->flatten.selectable() || p->flatten.anchorVoltageUv != 918750 ||
+        p->flatten.frequencyHz != 2482000000LL || p->flatten.tailCount != 6 ||
+        p->exactControls.disposition != PROFILE_CONTROL_REFUSED || p->suggested != PROFILE_CAPTURE_FLATTEN)
+        return 12268;
+    if (profile_capture_choice_label(*p, PROFILE_CAPTURE_EXACT).find("cannot be applied") == std::string::npos ||
+        profile_capture_choice_label(*baseline, PROFILE_CAPTURE_EXACT) != "Copy every curve point exactly")
+        return 12269;
+    // Green Curve's own pin at the same frequency describes the combined
+    // state and is recommended; a different pin leaves the choice to the user.
+    if (!prepare(*pushed, *p, {2482000000LL, true, true}) || !p->pin.selectable() || !p->sameTarget ||
+        p->suggested != PROFILE_CAPTURE_PIN)
+        return 12270;
+    if (!prepare(*pushed, *p, {2000000000LL, true, true}) || !p->conflictingTargets ||
+        p->suggested != PROFILE_CAPTURE_EXACT)
+        return 12271;
+    // A workload observation is never recommended, even when it agrees.
+    auto observed = std::make_unique<ProfileCaptureProposals>(*p);
+    observed->pin.provenance = PROFILE_LOCK_PROVENANCE_USER_CONFIRMED_OBSERVATION;
+    observed->pin.frequencyHz = observed->flatten.frequencyHz;
+    observed->sameTarget = true; observed->conflictingTargets = false;
+    if (profile_capture_suggest(*observed) != PROFILE_CAPTURE_EXACT) return 12272;
+    char exactLine[512]{};
+    profile_capture_exact_log_line(*p, exactLine, sizeof(exactLine));
+    if (std::string(exactLine).find("profile-capture: proposal=exact disposition=refused suggested=exact") != 0)
+        return 12272;
     return 0;
 }

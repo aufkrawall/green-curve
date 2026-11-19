@@ -38,7 +38,7 @@ int run_profile_capture_proposals_tests() {
     if (!profile_capture_prepare_proposals(*o, {}, *proposals, why, sizeof(why)) || !proposals->flatten.selectable() ||
         proposals->flatten.anchorVoltageUv != 662000 || proposals->flatten.frequencyHz != 1000000000 ||
         proposals->flatten.tailCount != 4 || proposals->flatten.maximumDeviationHz != 1000 ||
-        proposals->pin.recognized || proposals->suggested != PROFILE_CAPTURE_EXACT ||
+        proposals->pin.recognized || proposals->suggested != PROFILE_CAPTURE_FLATTEN ||
         memcmp(o.get(), &original, sizeof(original)))
         return 9680;
     auto selected = std::make_unique<ProfileDocument>();

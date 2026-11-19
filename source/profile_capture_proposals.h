@@ -70,6 +70,11 @@ struct ProfileCaptureLockProposal {
 };
 struct ProfileCaptureProposals {
     ProfileDocument exact{};
+    // Exact replay judged like the lock proposals. An exact copy of a curve
+    // another tool flattened with offsets beyond this GPU's range is refused
+    // at Apply, so it must not be the recommendation.
+    ProfileControlPlan exactControls{};
+    char exactReason[192]{};
     ProfileCaptureLockProposal flatten{}, pin{};
     bool sameTarget = false, conflictingTargets = false;
     ProfileCaptureRepresentation suggested = PROFILE_CAPTURE_EXACT;
@@ -85,29 +90,33 @@ static inline void profile_capture_proposal_reason(ProfileCaptureLockProposal &p
 // decide which curve representation is offered. Only the curve, the core
 // offset it may follow and the lock are judged here; the saved document
 // itself keeps every captured domain.
-static inline void profile_capture_check_proposal(const HardwareCaptureObservation &observation,
-                                                  ProfileCaptureLockProposal &proposal) {
+static inline void profile_capture_judge_curve(const HardwareCaptureObservation &observation,
+                                               const ProfileDocument &document, ProfileControlPlan &controls,
+                                               char *reason, size_t reasonSize) {
     auto runtime = std::make_unique<DesiredSettings>();
     auto mapping = std::make_unique<ProfileMappingReport>();
     auto destination = std::make_unique<ProfileDestinationTopology>();
-    auto judged = std::make_unique<ProfileDocument>(proposal.document);
+    auto judged = std::make_unique<ProfileDocument>(document);
     ProfileRuntimeRoutes routes;
     routes.graphics = judged->graphicsOffset.present ? observation.graphics.surface : 0;
-    if (!profile_document_drop_domains(*judged, PROFILE_DOCUMENT_NON_CURVE_DOMAINS, proposal.reason,
-                                       sizeof(proposal.reason)) ||
-        !profile_destination_from_capture(observation, *destination, proposal.reason, sizeof(proposal.reason)) ||
-        !profile_resolve_runtime(*judged, *destination, 1, routes, *runtime, *mapping, proposal.reason,
-                                 sizeof(proposal.reason))) {
-        proposal.controls.disposition = PROFILE_CONTROL_UNAVAILABLE;
+    if (!profile_document_drop_domains(*judged, PROFILE_DOCUMENT_NON_CURVE_DOMAINS, reason, reasonSize) ||
+        !profile_destination_from_capture(observation, *destination, reason, reasonSize) ||
+        !profile_resolve_runtime(*judged, *destination, 1, routes, *runtime, *mapping, reason, reasonSize)) {
+        controls.disposition = PROFILE_CONTROL_UNAVAILABLE;
         return;
     }
-    proposal.controls = profile_control_plan(*runtime, observation);
-    snprintf(proposal.reason, sizeof(proposal.reason), "%s; fresh complete operation checks remain required",
-             profile_control_disposition_name(proposal.controls.disposition));
-    if (const auto *issue = curve_plan_lead_issue(proposal.controls.curve))
-        snprintf(proposal.reason, sizeof(proposal.reason), "%s: %s ci=%d worstCi=%d boundHz=%lld affected=%d",
-                 profile_control_disposition_name(proposal.controls.disposition), curve_plan_reason_name(issue->reason),
+    controls = profile_control_plan(*runtime, observation);
+    snprintf(reason, reasonSize, "%s; fresh complete operation checks remain required",
+             profile_control_disposition_name(controls.disposition));
+    if (const auto *issue = curve_plan_lead_issue(controls.curve))
+        snprintf(reason, reasonSize, "%s: %s ci=%d worstCi=%d boundHz=%lld affected=%d",
+                 profile_control_disposition_name(controls.disposition), curve_plan_reason_name(issue->reason),
                  issue->ci, issue->worstCi, issue->limitHz, issue->affectedCount);
+}
+static inline void profile_capture_check_proposal(const HardwareCaptureObservation &observation,
+                                                  ProfileCaptureLockProposal &proposal) {
+    profile_capture_judge_curve(observation, proposal.document, proposal.controls, proposal.reason,
+                                sizeof(proposal.reason));
 }
 static inline void profile_capture_make_lock(const ProfileDocument &exact, ProfileCaptureLockProposal &proposal,
                                              int anchor, LockMode mode, gc_i64 frequency,
@@ -135,6 +144,21 @@ static inline void profile_capture_make_lock(const ProfileDocument &exact, Profi
         }
 }
 
+// The representation a frontend preselects. A recognized lock is what the
+// other tool actually set, so it is recommended over copying its raw offsets
+// even when its replay still needs the Apply-time checks (conditional): a
+// flatten is always recognized on a shaped curve, whose live baseline can
+// never prove the plan, so requiring "representable" recommended it almost
+// never. A pin is recommended only on driver or Green Curve evidence (never a
+// workload observation) and only when it agrees with any recognized flatten;
+// conflicting targets, or no usable lock, leave the exact copy preselected.
+static inline ProfileCaptureRepresentation profile_capture_suggest(const ProfileCaptureProposals &p) {
+    const bool pinProven = p.pin.selectable() && (p.pin.provenance == PROFILE_LOCK_PROVENANCE_DRIVER_GETTER ||
+                                                  p.pin.provenance == PROFILE_LOCK_PROVENANCE_APPLIED_INTENT);
+    if (pinProven && (!p.flatten.recognized || p.sameTarget)) return PROFILE_CAPTURE_PIN;
+    if (p.flatten.selectable() && !p.pin.recognized) return PROFILE_CAPTURE_FLATTEN;
+    return PROFILE_CAPTURE_EXACT;
+}
 // Pure recognition and draft proposals over one coherent observation. There
 // are no setters, implicit decisions, baseline arithmetic or ownership changes.
 static inline bool profile_capture_prepare_proposals(const HardwareCaptureObservation &observation,
@@ -249,9 +273,9 @@ static inline bool profile_capture_prepare_proposals(const HardwareCaptureObserv
                             proposals->flatten.frequencyHz == proposals->pin.frequencyHz;
     proposals->conflictingTargets =
         proposals->flatten.recognized && proposals->pin.recognized && !proposals->sameTarget;
-    if (proposals->flatten.selectable() && proposals->flatten.controls.disposition == PROFILE_CONTROL_READY &&
-        !proposals->pin.recognized)
-        proposals->suggested = PROFILE_CAPTURE_FLATTEN;
+    profile_capture_judge_curve(observation, proposals->exact, proposals->exactControls, proposals->exactReason,
+                                sizeof(proposals->exactReason));
+    proposals->suggested = profile_capture_suggest(*proposals);
     output = *proposals;
     return true;
 }
@@ -355,6 +379,12 @@ static inline void profile_capture_proposal_log_line(const ProfileCaptureLockPro
         (long long)p.frequencyHz, p.tailCount, (long long)p.maximumDeviationHz, (int)p.provenance,
         p.reason[0] ? p.reason : "-");
 }
+static inline void profile_capture_exact_log_line(const ProfileCaptureProposals& p, char* out, size_t size) {
+    if (!out || !size) return;
+    snprintf(out, size, "profile-capture: proposal=exact disposition=%s suggested=%s reason=%s",
+        profile_control_disposition_name(p.exactControls.disposition),
+        profile_capture_representation_name(p.suggested), p.exactReason[0] ? p.exactReason : "-");
+}
 template <class IO>
 static inline void profile_capture_report_observation_result(IO& io, const PinObservationResult& obs) {
     io.message(std::string(obs.summary) + "\n");
@@ -362,6 +392,9 @@ static inline void profile_capture_report_observation_result(IO& io, const PinOb
 }
 template <class IO>
 static inline void profile_capture_report_proposals(IO &io, const ProfileCaptureProposals &proposals) {
+    io.message(std::string("capture: proposal=exact; disposition=") +
+               profile_control_disposition_name(proposals.exactControls.disposition) + "; " + proposals.exactReason +
+               "; recommended=" + profile_capture_representation_name(proposals.suggested) + "\n");
     const ProfileCaptureLockProposal *choices[] = {&proposals.flatten, &proposals.pin};
     for (int i = 0; i < 2; ++i) {
         const auto &choice = *choices[i];

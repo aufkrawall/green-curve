@@ -239,6 +239,8 @@ static GC_NOINLINE bool gui_profile_capture_handle_completion(GuiServiceIoComple
     debug_log("%s\n", proposalLine);
     profile_capture_proposal_log_line(g_profileCaptureProposals->pin, "pin", proposalLine, sizeof(proposalLine));
     debug_log("%s\n", proposalLine);
+    profile_capture_exact_log_line(*g_profileCaptureProposals, proposalLine, sizeof(proposalLine));
+    debug_log("%s\n", proposalLine);
     return true;
 }
 static bool gui_profile_capture_allocation_failed(gc_u64 token) {
