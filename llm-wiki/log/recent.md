@@ -5,6 +5,25 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: TUI source-document mode removed
+
+- Nothing set the TUI's source-document state after Load began converting
+  imported slots, so Check, mapped draft, conversion, tail restore, curve
+  assistance and decimal source-field input were unreachable. Deleted with
+  `linux_tui_source_edit.h`, `_source_check.h`, `_mapped_draft.h`,
+  `_document_view.h`, `_review_lifetime.h` and the orphaned
+  `profile_editor_document.h` / `_source_edit.h` / `_source_rows.h`. The TUI
+  pending-load candidate is a plain `DesiredSettings`.
+- Coverage was kept, not dropped: tests that exercised shared engines through a
+  TUI wrapper now call the engine directly (`profile_editor_check_tests.cpp`,
+  `profile_mapped_draft_tests.cpp`, `profile_document_slot_tests.cpp`,
+  `tui_capture_context_tests.cpp`); the capture-expiry half of the lifetime cases
+  stays. `check_canonical_tui_documents()` now forbids the deleted files and
+  tokens instead of pinning them. Details: `config-profiles.md`, "Profile tools".
+- Lesson: a removed header can carry an include other code relied on; the Linux
+  compile check (`--check --target linux`) caught the missing capture-transport
+  include, the Windows suite did not.
+
 ## 2026-11-19: Profile capture, import and export rebuilt around ordinary slots
 
 - Imported and captured profiles were stored as portable documents that every
@@ -28,9 +47,8 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 - The capture dialog's core-clock row said "Not readable" when the offset was read
   but its relation to the curve is unknown; it now shows the value and that it
   cannot be saved separately. The export hint is no longer drawn as a warning.
-- Open: the TUI source-document editing code is unreachable and should be
-  removed (a side session stopped before committing anything); the Windows
-  Import dialog still needs a desktop pass.
+- Open: the Windows Import dialog still needs a desktop pass. (The unreachable
+  TUI source-document editing code was removed the same day; entry above.)
 
 ## 2026-11-18: CI Linux jobs pin the runner image
 

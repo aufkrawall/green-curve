@@ -89,6 +89,23 @@ Current behavior:
   during a write. An unmatched passive-read completion is freed by the main window.
   `g_app.guiSource`, the Profile source window and the mapped-source Apply path are
   removed; Apply always submits the editor draft.
+- **The TUI edits ordinary slots only (removed 2026-11-19).** The source-document
+  mode (draft editing, Check, mapped draft, conversion, tail restore, curve
+  assistance, decimal-MHz field input) was unreachable once Load converted slots
+  and capture/import stopped staging drafts, and was deleted with its tests. What
+  stays: Load (`profile_slot_document_runtime()`), Save, ordinary field editing,
+  the capture modal, the file dialogs and the frozen-candidate replacement
+  confirmation (`linux_tui_profile_load.h`, `DesiredSettings` candidate). Shared
+  engines kept for the CLI and Windows capture review: `profile_check_commands.h`,
+  `profile_editor_check.h`, `profile_mapped_draft.h`, `profile_destination_review.h`.
+  `profile_editor_document.h`, `profile_editor_source_edit.h` and
+  `profile_editor_source_rows.h` had no other user and are gone. Tests moved with the
+  engines they cover: `tests/profile_editor_check_tests.cpp` (9230-9274),
+  `tests/profile_mapped_draft_tests.cpp` (9630-9680, 9870-9874, no UI state),
+  `tests/profile_document_slot_tests.cpp` (9210-9226), `tests/tui_capture_context_tests.cpp`
+  (9757-9760) and the capture half of `tests/tui_review_lifetime_cases.h`. Gate:
+  `check_canonical_tui_documents()` in `tools/ui_gates.py` fails if the deleted headers or
+  any source-mode token return to the TUI files.
 
 Invariants: no dialog writes hardware; every saved result is an ordinary slot or a
 document every reader converts; a refusal names what the user can do; probe,
@@ -105,13 +122,11 @@ byte-identical re-export. The repair pass of the Windows loader
 (`repair_profile_locked_curve_readback_artifacts`) is deliberately not mirrored,
 so an export describes the stored record, not a repaired one.
 
-Open questions / stale-risk: the TUI still contains the source-document editing
-code (`linux_tui_source_edit.h`, `linux_tui_source_check.h`,
-`linux_tui_mapped_draft.h`); nothing sets `state.document.valid` any more, so it is
-unreachable and should be removed. The Windows Profiles menu, capture dialog and
-Export dialog were opened on a desktop (layout and live read confirmed); the
-Import dialog pass and physical GPU replay of captured records are not recorded
-here.
+Open questions / stale-risk: the Windows Profiles menu, capture dialog and Export
+dialog were opened on a desktop (layout and live read confirmed); the Import
+dialog pass and physical GPU replay of captured records are not recorded here.
+The TUI file dialogs and capture modal are covered by scripted tests only, not by
+a terminal session on a GPU host.
 
 ## Capture lock proposals (2026-11-15)
 
@@ -174,8 +189,8 @@ Replacing missing pin evidence with a guessed value fails case 9680.
 
 Source anchors: `source/profile_mapped_draft.h`,
 `source/gui_profile_source_review.cpp`, `source/ui_main_apply_dispatch.h`,
-`source/gui_mutation_request_binding.h`, `source/linux_tui_mapped_draft.h`,
-`source/linux_tui_mutation_actions.cpp`, `source/service_control_review.h`,
+`source/gui_mutation_request_binding.h`,
+`source/service_control_review.h`,
 `tests/profile_mapped_draft_tests.cpp`, `tests/gui_profile_source_review_tests.cpp`.
 
 Check passively reads all domains, including preserved and cleanup controls,
@@ -428,7 +443,7 @@ claimed by these fixtures.
 > Kept as history of the engines that remain.
 
 Source anchors: `source/gui_profile_source.cpp`,
-`source/profile_source_window.h`, `source/profile_editor_source_rows.h`,
+`source/profile_source_window.h`,
 `source/profile_slot_io_windows.h`, `source/gui_profile_commands.cpp`,
 `source/config_profiles_gui_state.cpp`, `source/gui_service_state.cpp`,
 `tests/profile_source_window_tests.cpp`.
@@ -522,10 +537,15 @@ zero, reduced ratios, invalid input and legacy compatibility.
 
 ## TUI review session lifetime (2026-11-14)
 
+> Removed 2026-11-19: the TUI source-document mode this section describes (draft
+> editing, Check, mapped draft, conversion, tail restore, curve assistance) no
+> longer exists; TUI Load converts imported slots to ordinary records. See
+> [Profile tools](#profile-tools-capture-import-and-export-end-in-ordinary-slots-2026-11-19).
+> Kept as history of the shared engines that remain.
+
 Source anchors: `source/linux_tui_review_context.h`,
-`source/linux_tui_review_lifetime.h`, `source/linux_tui_source_check.h`,
 `source/linux_tui_refresh.cpp`, `source/service_control_review_revision.h`,
-`tests/tui_review_session_tests.cpp`, `tests/tui_review_lifetime_cases.h`.
+`tests/tui_capture_context_tests.cpp`, `tests/tui_review_lifetime_cases.h`.
 
 Check freezes the shown GPU into the passive request. The service refuses a
 different target without selecting or initializing it. The client compares
@@ -551,9 +571,15 @@ cache expiry, telemetry retention and source preservation across selection.
 
 ## Structured destination review (2026-11-14)
 
+> Removed 2026-11-19: the TUI source-document mode this section describes (draft
+> editing, Check, mapped draft, conversion, tail restore, curve assistance) no
+> longer exists; TUI Load converts imported slots to ordinary records. See
+> [Profile tools](#profile-tools-capture-import-and-export-end-in-ordinary-slots-2026-11-19).
+> Kept as history of the shared engines that remain.
+
 Source anchors: `source/profile_destination_review.h`,
 `source/profile_check_commands.h`, `source/profile_editor_check.h`,
-`source/linux_tui_source_check.h`, `tests/tui_profile_check_tests.cpp`.
+`tests/profile_editor_check_tests.cpp`.
 
 The shared check engine optionally publishes a typed result with explicit
 source/capture/mapped/planned stages, source revision, original document,
@@ -581,9 +607,14 @@ mapping failure and a completed refused control plan.
 
 ## Offline TUI source edits (2026-11-14)
 
-Source anchors: `source/profile_editor_source_edit.h`,
-`source/linux_tui_source_edit.h`, `source/linux_tui_document_view.h`,
-`source/linux_tui_actions.cpp`, `tests/tui_source_edit_tests.cpp`.
+> Removed 2026-11-19: the TUI source-document mode this section describes (draft
+> editing, Check, mapped draft, conversion, tail restore, curve assistance) no
+> longer exists; TUI Load converts imported slots to ordinary records. See
+> [Profile tools](#profile-tools-capture-import-and-export-end-in-ordinary-slots-2026-11-19).
+> Kept as history of the shared engines that remain.
+
+Source anchors (all removed 2026-11-19): `profile_editor_source_edit.h`,
+`linux_tui_source_edit.h`, `linux_tui_document_view.h`, `tests/tui_source_edit_tests.cpp`.
 
 Source point and included graphics/memory offset fields accept exact decimal
 MHz through six fractional digits, independently of daemon availability. The
@@ -608,9 +639,14 @@ editable layouts at all supported breakpoints.
 
 ## Read-only TUI destination checks (2026-11-14)
 
-Source anchors: `source/profile_editor_check.h`, `source/linux_tui_source_check.h`,
-`source/profile_check_commands.h`, `source/linux_tui_document_view.h`,
-`tests/tui_profile_check_tests.cpp`.
+> Removed 2026-11-19: the TUI source-document mode this section describes (draft
+> editing, Check, mapped draft, conversion, tail restore, curve assistance) no
+> longer exists; TUI Load converts imported slots to ordinary records. See
+> [Profile tools](#profile-tools-capture-import-and-export-end-in-ordinary-slots-2026-11-19).
+> Kept as history of the shared engines that remain.
+
+Source anchors: `source/profile_editor_check.h`, `source/profile_check_commands.h`,
+`tests/profile_editor_check_tests.cpp`.
 
 The source Profiles panel can switch between stored intent and a destination
 check. Graphics/memory preview buttons select the named APIs or VF component;
@@ -633,9 +669,15 @@ capture and report layouts at all supported breakpoints.
 
 ## Canonical source slots in the TUI (2026-11-14)
 
-Source anchors: `source/profile_editor_document.h`, `source/profile_document_slot.h`,
-`source/profile_slot_io_linux.h`, `source/linux_tui_profile_load.h`,
-`source/linux_tui_document_view.h`, `tests/tui_document_tests.cpp`.
+> Removed 2026-11-19: the TUI source-document mode this section describes (draft
+> editing, Check, mapped draft, conversion, tail restore, curve assistance) no
+> longer exists; TUI Load converts imported slots to ordinary records. See
+> [Profile tools](#profile-tools-capture-import-and-export-end-in-ordinary-slots-2026-11-19).
+> Kept as history of the shared engines that remain.
+
+Source anchors: `source/profile_document_slot.h`, `source/profile_slot_io_linux.h`,
+`source/linux_tui_profile_load.h`, `tests/profile_document_slot_tests.cpp`
+(the editor-document and viewer anchors this section once listed are removed).
 
 TUI Load stages a complete canonical document, independently of its scalar
 display projection. The source viewer lists exact physical units, point kinds
@@ -1740,8 +1782,7 @@ Source anchors: `source/profile_save_policy.h`, `source/gpu_lock_ownership_polic
 
 Source anchors: `source/profile_curve_assistance.h`,
 `source/curve_prefix_repair.h`, `source/profile_check_commands.h`,
-`source/gui_profile_source_review.cpp`, `source/profile_source_window.h`,
-`source/linux_tui_mapped_draft.h`.
+`source/gui_profile_source_review.cpp`, `source/profile_source_window.h`.
 
 - Portable source drafts checked against a live destination support three
   explicit draft-only preparation modes (`prefix`, `closest-target`,

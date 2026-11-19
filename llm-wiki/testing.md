@@ -58,7 +58,7 @@ missing. Source gates: `tools/fan_gates.py`
 
 ## WndProc stack discipline & in-place resets (2026-11-16)
 
-`tests/profile_conversion_tests.cpp` (`8485-8491`) verifies that in-place reset helpers (`profile_document_reset()`, `profile_control_plan_reset()`, `profile_conversion_batch_reset()`, `profile_conversion_plan_reset()`, `profile_destination_review_reset()`, `profile_editor_document_reset()`, `profile_editor_candidate_reset()`) clear `0xA5`-poisoned structs to exact clean defaults without materializing large stack temporaries. `tests/profile_source_window_tests.cpp` exercises nested synchronous `ShowWindow` + `WM_SHOWWINDOW` + `WM_IME_SETCONTEXT` (`0x0281`) + `WM_IME_NOTIFY` (`0x0282`) + `WM_COMMAND` dispatch cycles on Windows, while `check_wndproc_stack_discipline()` in `tools/ui_gates.py` enforces `GC_NOINLINE` handler separation and in-place resets across Win32 message loops.
+`tests/profile_conversion_tests.cpp` (`8485-8489`) verifies that in-place reset helpers (`profile_document_reset()`, `profile_control_plan_reset()`, `profile_conversion_batch_reset()`, `profile_conversion_plan_reset()`, `profile_destination_review_reset()`) clear `0xA5`-poisoned structs to exact clean defaults without materializing large stack temporaries. `tests/profile_source_window_tests.cpp` exercises nested synchronous `ShowWindow` + `WM_SHOWWINDOW` + `WM_IME_SETCONTEXT` (`0x0281`) + `WM_IME_NOTIFY` (`0x0282`) + `WM_COMMAND` dispatch cycles on Windows, while `check_wndproc_stack_discipline()` in `tools/ui_gates.py` enforces `GC_NOINLINE` handler separation and in-place resets across Win32 message loops.
 
 ## Capture lock proposals (2026-11-15)
 
@@ -74,7 +74,7 @@ A negative fixture that substitutes a pin for missing evidence fails 9680.
 
 Cases 9720-9763 in `profile_source_window_tests.cpp`,
 `gui_profile_capture_tests.cpp`, `tui_capture_proposals_tests.cpp`,
-`tui_review_lifetime_cases.h` and `tui_review_session_tests.cpp` exercise native
+`tui_review_lifetime_cases.h` and `tui_capture_context_tests.cpp` exercise native
 representation choices, immutable accepted values, independent omission/discard
 gates and actual TUI refresh expiration. They cover target/session/ownership
 drift, passive Linux capability fallback, unavailable choices, invalid enums,

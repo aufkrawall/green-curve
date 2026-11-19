@@ -968,13 +968,10 @@ editor work still gate authoring activation.
 Source anchors: `source/profile_domain_conversions.h`, `source/profile_commands.h`,
 `source/profile_destination_review.h`, `source/profile_check_commands.h`,
 `source/profile_source_window.h`, `source/gui_profile_source_review.cpp`,
-`source/gui_profile_source.cpp`, `source/linux_tui_mapped_draft.h`,
-`source/linux_tui_layout_fan_profiles.cpp`, `source/linux_tui_render.cpp`,
-`source/linux_tui_actions.cpp`, `tests/profile_conversion_tests.cpp` (8475-8484),
+`source/gui_profile_source.cpp`, `tests/profile_conversion_tests.cpp` (8475-8484),
 `tests/profile_check_commands_cases.h` (8942, 9120-9127),
 `tests/gui_profile_source_review_tests.cpp` (9394-9397),
 `tests/profile_source_window_tests.cpp` (9411-9416),
-`tests/tui_profile_check_tests.cpp` (9275-9276),
 `tests/profile_mapped_draft_tests.cpp` (9678-9680).
 
 - Shared discovery/execution in `profile_conversion_plan_build()` and
@@ -1002,12 +999,10 @@ Source anchors: `source/profile_curve_assistance.h`,
 `source/curve_prefix_repair.h`, `source/curve_prefix_repair_message.h`,
 `source/profile_check_commands.h`, `source/profile_source_window.h`,
 `source/gui_profile_source_review.cpp`, `source/gui_profile_source.cpp`,
-`source/linux_tui_mapped_draft.h`, `source/linux_tui_layout_fan_profiles.cpp`,
-`source/linux_tui_actions.cpp`, `tests/profile_curve_assistance_tests.cpp`
+`tests/profile_curve_assistance_tests.cpp`
 (`9800-9825`), `tests/profile_check_commands_cases.h` (`9830-9836`),
 `tests/gui_profile_source_review_tests.cpp` (`9840-9845`),
 `tests/profile_source_window_tests.cpp` (`9850-9853`),
-`tests/tui_profile_check_tests.cpp` (`9860-9861`),
 `tests/profile_mapped_draft_tests.cpp` (`9870-9874`).
 
 - Operation A (`PROFILE_ASSIST_PREFIX`) extends `curve_prefix_repair_prepare()`
