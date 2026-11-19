@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: Editor Load->Apply/Save keep an imported record's intent
+
+- The editor rebuilt Apply/Save requests from its whole-MHz fields, dropping
+  captured offsets, exact Hz, power ratios, topology binding and the explicit
+  scope of imported/captured slots; ownership read "Manual settings". With an
+  explicit active intent, a later lock edit put retained captured points into
+  a legacy request the service refuses.
+- Fix: the editor keeps a base record (loaded explicit slot, else an explicit
+  active intent) and overlays only edited domains and typed points
+  (`gui_editor_base_policy.h`, `gui_editor_base.cpp`); an unedited Load->Apply
+  equals the tray request. Coverage 12320-12333 plus a ui gate.
+- Lesson: once a record holds intent the fields cannot show, keep the record
+  and send the edits as a delta instead of re-deriving it from the fields.
+
 ## 2026-11-19: Imported flatten applied the live clock; imported memory read as stock
 
 - Reported: Import recognized another tool's 925 mV / 2962 MHz flatten and
@@ -20,10 +34,10 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   Capture now uses that derivation (`memory_clock_evidence.h`, schema 5
   `memoryEvidence`); the live state calls the same helper.
 - Coverage: 12300-12319 plus `check_loaded_lock_reaches_the_draft()`.
-- Follow-up: the editor model cannot hold captured offsets or explicit scope,
-  so Load->Apply of an imported slot drops captured points (zero here) and
-  never claims slot ownership; tray/hotkey/logon apply the record itself.
-  Hardware check with another tool's memory offset still pending.
+- Follow-up (done the same day, entry above): the editor model could not hold
+  captured offsets or explicit scope, so Load->Apply of an imported slot
+  dropped captured points and never claimed slot ownership. Hardware check
+  with another tool's memory offset still pending.
 - Lesson: when two readers of the same control exist (live state and capture),
   give them one helper; the divergence was already visible in the log.
 

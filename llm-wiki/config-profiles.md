@@ -128,6 +128,57 @@ dialog pass and physical GPU replay of captured records are not recorded here.
 The TUI file dialogs and capture modal are covered by scripted tests only, not by
 a terminal session on a GPU host.
 
+## Editor Apply and Save build on a loaded explicit record (2026-11-19)
+
+Source anchors: `source/gui_editor_base_policy.h`, `source/gui_editor_base.cpp`,
+`source/main_runtime_capture.cpp` (`gui_editor_current_scalars()`,
+`capture_gui_apply_settings()`, `capture_gui_config_settings()`),
+`source/gui_profile_commands.cpp`, `source/ui_main_window.cpp` (typed flag),
+`source/ui_pending_changes.cpp` (`GUI_PENDING_PROFILE`),
+`tests/gui_editor_base_tests.cpp` (12320-12333), `tools/ui_gates.py`
+(`check_editor_builds_on_its_base_record()`).
+
+- **Why.** The editor holds whole-MHz fields and owns a point only through an
+  explicit MHz. Records with an explicit application scope (Import current GPU
+  settings, imported profile files) also carry captured per-point offsets, exact
+  Hz for lock/memory/points, power ratios and a topology binding. Load->Apply
+  and Save rebuilt the request from the fields, so captured points went back to
+  stock, the request fell back to legacy scope and ownership read "Manual
+  settings". Tray, hotkey, logon and app start sent the record itself.
+- **Base record.** `g_app.guiEditorBaseMode`: Load, shared Load, Save and the
+  tray/app-start "already active" populate attach the slot record
+  (`gui_editor_base_attach()`); an explicit record becomes the base, a legacy
+  one means no base. Otherwise the base is the service's active intent when it
+  is explicit (a tray-applied import, or an earlier Apply of a loaded one), so
+  later edits keep its captured points too; before, pre-tail retention put
+  those captured points into a legacy request the service refuses. A clean or
+  discarded draft resets to the active intent.
+- **Overlay.** `gui_editor_edits()` decides per domain: an owned domain is
+  edited when the field differs from the record's value, an omitted one when it
+  differs from what the GPU runs. A point is edited only when the user typed it
+  (`g_app.guiCurvePointTyped`, set in the VF field EN_CHANGE handler, cleared by
+  every projection), so projected values and an unchanged lock's tail never
+  count. An edited lock takes the editor's lock and every point from the lower
+  of the two anchors. Edited domains drop the record's exact Hz, captured
+  offset or ratio; the rest keep it. An invalid result is refused with a reason,
+  never sent as something else.
+- **Apply.** A full Apply sends the overlay through
+  `desired_prepare_replacement_request()`, as the tray does, so an unedited
+  loaded slot equals the tray request byte for byte and is claimed as that
+  slot. A loaded record the service does not run forces a full Apply
+  (`GuiApplyChangeSet::loadedProfile` in `gui_apply_shape_policy.h`) and sets
+  `GUI_PENDING_PROFILE`, so Apply stays enabled when no field differs. Sparse
+  power/fan Applies over an active explicit intent are unchanged (the service
+  upgrades their scope). Legacy records keep the legacy request path.
+- **Save** writes the overlay with the record's own scope.
+- **Diagnostics.** `editor base: <why> slot=N mode=... scope=... captured=...`
+  on attach, `editor base: reset from ...`, `editor base: apply|save on <mode>
+  base ... edits={gpu=.. mem=.. ... lock=.. lockFrom=.. points=..}`, and
+  `... overlay refused ...: <reason>`.
+- **Open questions.** The fields still show live values for captured points
+  until Apply (a field cannot show an offset). Verified by fixtures and a
+  Windows compile; not yet driven on hardware.
+
 ## Capture memory from the running clock; loaded locks reach the editor draft (2026-11-19)
 
 Source anchors: `source/memory_clock_evidence.h`, `source/hardware_capture_getters.h`
@@ -167,11 +218,9 @@ Source anchors: `source/memory_clock_evidence.h`, `source/hardware_capture_gette
   `memory=<Hz>(<evidence>)`; the CLI report adds a line when the running clock
   replaced the getter. GUI: `GUI draft: lock anchor ci=N set to the record's lock
   M MHz (was ...)`.
-- **Open questions.** Editor Load->Apply still rebuilds the request from the
-  editor model, which has no captured-offset points or explicit application
-  scope: captured points revert to stock on that path (tray, hotkey, logon and
-  app-start apply the slot record itself) and ownership reads "Manual
-  settings". Hardware verification with another tool's memory offset is pending.
+- **Open questions.** Hardware verification with another tool's memory offset
+  is pending. The editor Load->Apply gap first noted here is closed by the
+  section above.
 
 ## Capture: curve-only judging and load-free driver locks (2026-11-19)
 

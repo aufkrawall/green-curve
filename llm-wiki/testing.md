@@ -1,5 +1,19 @@
 # Testing
 
+## Editor base record overlay (2026-11-19)
+
+`tests/gui_editor_base_tests.cpp` (12320-12333) pins
+`source/gui_editor_base_policy.h` on an imported flatten (explicit scope, exact
+lock, captured offsets, exact memory, power ratio, topology binding): base
+selection (12321), an unedited Load->Apply equal to the record and, prepared,
+to the tray request (12322-12323), power and typed-point edits (12324-12325), a
+moved or removed lock (12326-12327), omitted fan/GPU offset judged against the
+running values (12328-12329), a typed but unchanged explicit point (12330), a
+refused result outside the binding (12331), tail/projection immunity (12332)
+and the log line (12333). `check_editor_builds_on_its_base_record()` in
+`tools/ui_gates.py` ties Apply, Save, Load, draft clean, the pending bit and the
+typed flag to it.
+
 ## Capture memory clock and loaded editor lock (2026-11-19)
 
 `tests/capture_memory_clock_tests.cpp` (12306-12319) pins
