@@ -129,6 +129,7 @@
 #include "vf_point_visibility_policy.h"
 #include "vf_writable_point_policy.h"
 #include "vf_flat_tail_recognition.h"
+#include "vf_live_offset_policy.h"
 // OS-abstraction shim (dynamic loading, sleep, atomics, threads, bounded
 // strings, subprocess capture) used by the shared backend.
 #include "platform.h"

@@ -81,6 +81,7 @@ REGRESSION_SOURCES = (
     'windows_vf_verified_write_tests.cpp',
     'external_oc_change_tests.cpp',
     'profile_lock_tail_ownership_tests.cpp',
+    'vf_live_offset_tests.cpp',
     'linux_read_request_tests.cpp',
     'xbar_read_log_tests.cpp',
     'clk_domain_dump_tests.cpp',

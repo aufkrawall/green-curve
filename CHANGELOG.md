@@ -73,6 +73,7 @@ Curve checks, profile transfer and capture improve.
 - **Reset after another tool reset the GPU:** Reset finishes in about a second instead of stalling and reporting an unknown outcome.
 - **Curve reading on modified drivers:** the curve loads on drivers that refuse points past the editable range, such as the CMP 40HX's.
 - **Tray profile checkmark:** loading and applying an older locked profile, saving active settings to a slot, or restoring active settings across an update now marks the matching slot active in the tray menu and tooltip.
+- **External flatten offset reading:** a tail flattened in another tool no longer reports a large negative GPU offset or excluded low-voltage points.
 
 ### Compatibility notes
 

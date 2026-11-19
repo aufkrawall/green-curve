@@ -97,4 +97,30 @@ static inline VfFlatTailRecognition vf_recognize_flat_tail(
     return out;
 }
 
+// A flat tail counts as programmed only when some populated tail point after
+// the anchor carries a different programmed offset from the anchor: a stock
+// curve whose top bins are already level (zero offsets, or one uniform
+// VF-table offset) is not a programmed flatten.
+static inline VfFlatTailRecognition vf_recognize_programmed_flat_tail(
+    const VFCurvePoint* curve, const int* offsetsKHz,
+    const VfFloorTopology& floor, int toleranceMHz, int minTolerantTail) {
+    VfFlatTailRecognition empty = {};
+    empty.anchorCi = -1;
+    empty.toleranceMHz = toleranceMHz;
+    if (!curve || !offsetsKHz || !floor.valid) return empty;
+    const VfFlatTailRecognition rec =
+        vf_recognize_flat_tail(curve, floor, toleranceMHz, minTolerantTail);
+    if (!rec.found || rec.anchorCi < 0 || rec.anchorCi >= VF_NUM_POINTS ||
+        rec.plateauMHz == 0) {
+        return empty;
+    }
+    const int end = floor.graphicsEnd < VF_NUM_POINTS ? floor.graphicsEnd : VF_NUM_POINTS;
+    bool programmed = false;
+    for (int j = rec.anchorCi + 1; j < end && !programmed; ++j) {
+        if (curve[j].freq_kHz == 0) continue;
+        programmed = offsetsKHz[j] != offsetsKHz[rec.anchorCi];
+    }
+    return programmed ? rec : empty;
+}
+
 #endif  // GREEN_CURVE_VF_FLAT_TAIL_RECOGNITION_H

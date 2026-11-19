@@ -45,7 +45,8 @@ static inline GuiObservedLock gui_observed_lock_recognize(
     const int* visibleMap, int numVisible) {
     GuiObservedLock out;
     if (!curve || !offsetsKHz || !visibleMap || numVisible < 2) return out;
-    const VfFlatTailRecognition rec = vf_recognize_flat_tail(curve, floor, 1, 3);
+    const VfFlatTailRecognition rec =
+        vf_recognize_programmed_flat_tail(curve, offsetsKHz, floor, 1, 3);
     if (!rec.found || rec.anchorCi < 0 || rec.anchorCi >= VF_NUM_POINTS || rec.plateauMHz == 0)
         return out;
     int vi = -1;
@@ -53,13 +54,6 @@ static inline GuiObservedLock gui_observed_lock_recognize(
         if (visibleMap[i] == rec.anchorCi) { vi = i; break; }
     }
     if (vi < 0 || vi >= numVisible - 1) return out;
-    const int end = floor.graphicsEnd < VF_NUM_POINTS ? floor.graphicsEnd : VF_NUM_POINTS;
-    bool programmed = false;
-    for (int j = rec.anchorCi + 1; j < end && !programmed; ++j) {
-        if (curve[j].freq_kHz == 0) continue;
-        programmed = offsetsKHz[j] != offsetsKHz[rec.anchorCi];
-    }
-    if (!programmed) return out;
     out.valid = true;
     out.ci = rec.anchorCi;
     out.vi = vi;

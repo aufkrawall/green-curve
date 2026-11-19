@@ -3324,7 +3324,7 @@ def run_source_regression_checks():
     require_text(main_runtime_capture_cpp, "capture_gui_desired_settings(&resetFull, true, true, err", "apply capture keeps sparse VF curve intent")
     require_text(main_runtime_capture_cpp, "capture_gui_desired_settings(&guiDesired, true, true, err", "profile save capture keeps sparse VF curve intent")
     require_text(config_profile_repair_cpp, "profile repair: removed non-tail readback artifact", "profile load repairs logged non-tail readback artifacts")
-    require_text(main_gpu_state_cpp, "skippedLockedTail ? 4 : 3", "selective GPU offset detection rejects two-point high-edit false positives")
+    require_text(os.path.join(SOURCE_DIR, "vf_live_offset_policy.h"), "skippedLockedTail ? 4 : 3", "selective GPU offset detection rejects two-point high-edit false positives")
 
     # Lock mode (flatten/pin) must round-trip through profile save. The pin (hard)
     # mode was previously dropped because merge_desired_settings ignored lock state

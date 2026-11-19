@@ -1,5 +1,23 @@
 # Testing
 
+## Live VF GPU-offset detection under external flattens (2026-11-19)
+
+`tests/vf_live_offset_tests.cpp` (`12450-12474`, run from
+`tests/regression_main.cpp`) executes `source/vf_live_offset_policy.h` directly
+across: the reported 925 mV / 2962 MHz external flatten with `-1927` MHz tail
+deltas (`12450-12453`, including null-floor fallback), untouched-anchor
+`-2045` MHz flatten (`12454-12455`), in-range `-500` MHz tail flatten
+(`12456-12457`), below-midpoint flatten with zero or `+200` MHz uniform offset
+(`12458-12461`), external flatten combined with a genuine `+200` MHz exclude-30
+selective offset and shape matching (`12462-12464`), Pascal sub-700 mV jittered
+flatten (`12465-12466`), legitimate negative/positive selective and uniform
+offsets over rising and stock-level-top curves (`12467-12470`), owned locks
+with stock-flat prefixes, earlier external override, and HARD locks
+(`12471-12473`), and residual-noise / two-point-edit rejections (`12474`).
+`tools/ui_gates.py` (`check_live_offset_excludes_programmed_flat_tail()`) ties
+`main_gpu_state.cpp` and `gpu_backend.cpp` to the shared policy. Software-verified
+via fixtures and full builds; live GPU/GUI re-test pending hardware check.
+
 ## Legacy locked-profile tail provenance and ownership matching (2026-11-19)
 
 `tests/profile_lock_tail_ownership_tests.cpp` (`12400-12427`, `12433-12447`) pins

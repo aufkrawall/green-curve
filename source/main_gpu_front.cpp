@@ -299,7 +299,8 @@ static void build_point_list_from_flags(const gc_bool8* flags, char* out, size_t
 static void describe_live_gpu_offset_state(char* out, size_t outSize) {
     if (!out || outSize == 0) return;
     int selectiveMHz = 0;
-    bool selective = detect_live_selective_gpu_offset_state(&selectiveMHz);
+    int selectiveExclude = 0;
+    bool selective = detect_live_selective_gpu_offset_state(&selectiveMHz, nullptr, &selectiveExclude);
     int uniformMHz = g_app.gpuClockOffsetkHz / 1000;
     bool mixedCurveOffsets = false;
     int firstNonZeroCi = -1;
@@ -321,7 +322,7 @@ static void describe_live_gpu_offset_state(char* out, size_t outSize) {
         }
     }
     if (selective) {
-        StringCchPrintfA(out, outSize, "selective %d MHz (exclude low 70)", selectiveMHz);
+        StringCchPrintfA(out, outSize, "selective %d MHz (exclude low %d)", selectiveMHz, selectiveExclude);
     } else if (mixedCurveOffsets && firstNonZeroCi >= 0) {
         StringCchPrintfA(out, outSize,
             "mixed/custom VF state (uniform readback %d MHz, first non-zero point %d = %d kHz)",

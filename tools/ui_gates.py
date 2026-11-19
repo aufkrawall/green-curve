@@ -1748,6 +1748,7 @@ def check_all(ctx, require_text, forbid_text):
     check_wndproc_stack_discipline(ctx, require_text, forbid_text)
     check_owner_drawn_text_is_literal(ctx, require_text, forbid_text)
     check_observed_editor_lock(ctx, require_text, forbid_text)
+    check_live_offset_excludes_programmed_flat_tail(ctx, require_text, forbid_text)
     check_loaded_lock_reaches_the_draft(ctx, require_text, forbid_text)
     check_editor_builds_on_its_base_record(ctx, require_text, forbid_text)
 
@@ -1770,12 +1771,33 @@ def check_observed_editor_lock(ctx, require_text, forbid_text):
     require_text(_p(ctx, "main_observed_lock.cpp"),
                  "if (app_is_service_process() || !g_app.usingBackgroundService) return false;",
                  "only the service-backed GUI projects another tool's flatten")
-    require_text(_p(ctx, "gui_observed_lock_policy.h"), "programmed = offsetsKHz[j] != offsetsKHz[rec.anchorCi];",
-                 "a level stock top (no programmed tail offsets) is never shown as a lock")
+    require_text(_p(ctx, "vf_flat_tail_recognition.h"), "programmed = offsetsKHz[j] != offsetsKHz[rec.anchorCi];",
+                 "a level stock top (no programmed tail offsets) is never treated as a programmed flatten")
+    require_text(_p(ctx, "gui_observed_lock_policy.h"), "vf_recognize_programmed_flat_tail(",
+                 "the observed editor lock uses the shared programmed-flat-tail predicate")
     require_text(_p(ctx, "ui_profile_save_notice.cpp"), "PROFILE_SAVE_NOTICE_OBSERVED_FLATTEN",
                  "Save of the projection names the flatten and offers Import")
     forbid_text(_p(ctx, "gpu_backend.cpp"), "gui_observed_lock",
                 "the live lock detector keeps its ownership gate; the projection is editor-only")
+
+
+def check_live_offset_excludes_programmed_flat_tail(ctx, require_text, forbid_text):
+    """Unowned external flattens leave service lockedCi == -1; both selective
+    and uniform live VF offset detectors must still exclude a programmed flat
+    tail so large negative tail deltas never read as a GPU offset."""
+    policy = _p(ctx, "vf_live_offset_policy.h")
+    require_text(policy, "vf_recognize_programmed_flat_tail(",
+                 "live VF offset tail boundary recognizes programmed flat tails")
+    require_text(policy, "vf_offset_detection_tail_start(",
+                 "live VF offset detectors share one tail-boundary helper")
+    require_text(_p(ctx, "main_gpu_state.cpp"), "vf_detect_live_selective_gpu_offset(",
+                 "Windows selective GPU-offset detection delegates to the pure flat-tail-aware policy")
+    require_text(_p(ctx, "main_gpu_state.cpp"), "vf_live_selective_gpu_offset_matches_shape(",
+                 "Windows selective GPU-offset shape matching delegates to the pure flat-tail-aware policy")
+    require_text(_p(ctx, "gpu_backend.cpp"), "vf_uniform_curve_offset_khz(",
+                 "Windows uniform GPU-offset detection delegates to the pure flat-tail-aware policy")
+    forbid_text(_p(ctx, "main_gpu_state.cpp"), "is_locked_tail_detection_point(",
+                "selective offset detection must not rely solely on g_app.lockedCi")
 
 
 def check_loaded_lock_reaches_the_draft(ctx, require_text, forbid_text):

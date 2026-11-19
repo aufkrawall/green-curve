@@ -5,6 +5,36 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: External flatten tail detected as -1927 MHz selective GPU offset (exclude 76)
+
+- Reported: applying a tail flatten at point 76 (925 mV -> 2962 MHz) in another
+  curve editor without touching lower VF points or setting a global GPU offset
+  displayed `GPU Offset (MHz): -1927` and `Exclude first 76 VF points` in Green
+  Curve alongside the projected lock at point 76.
+- Root cause: another tool flattens a tail by writing a large constant negative
+  delta (e.g. `-1927` MHz) to every tail point (`77..126`) and relying on the
+  driver's monotonic clamp. Because the service intentionally leaves
+  `g_app.lockedCi == -1` for unowned external flattens
+  (`gpu_lock_ownership_policy.h`), `detect_live_selective_gpu_offset_state()`
+  (`is_locked_tail_detection_point()`) stopped skipping the flattened tail and
+  matched `0..75` (~0) vs `77..126` (`-1927` MHz) as a selective offset;
+  `uniform_curve_offset_khz()` also included tail points, so a flatten below the
+  midpoint would similarly report `-1927` MHz as a uniform offset.
+- Fix: shared `vf_recognize_programmed_flat_tail()` in
+  `source/vf_flat_tail_recognition.h` (reused by `gui_observed_lock_policy.h`)
+  and extracted pure `source/vf_live_offset_policy.h`
+  (`vf_offset_detection_tail_start()`, `vf_uniform_curve_offset_khz()`,
+  `vf_detect_live_selective_gpu_offset()`,
+  `vf_live_selective_gpu_offset_matches_shape()`), wired into
+  `source/main_gpu_state.cpp` and `source/gpu_backend.cpp` (lowering both file
+  ratchets below 800 lines) plus actual detected exclude-count logging in
+  `source/main_gpu_front.cpp`. Stock level tops remain unexcluded; owned locks
+  and genuine uniform/selective offsets (including combined with an external
+  flatten) are preserved.
+- Coverage: `tests/vf_live_offset_tests.cpp` (`12450-12474`),
+  `check_live_offset_excludes_programmed_flat_tail()` in `tools/ui_gates.py`.
+  Hardware live-curve verification pending rebuild install.
+
 ## 2026-11-19: GUI Load -> Apply of a legacy locked profile lost the tray slot tick
 
 - Reported: loading and applying a saved locked profile slot from the main

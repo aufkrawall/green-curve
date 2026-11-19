@@ -1088,6 +1088,9 @@ int run_external_oc_change_tests();
 // Legacy base_plus_gpu_offset locked-tail provenance and ownership matching
 // (tests/profile_lock_tail_ownership_tests.cpp, 12400-12427).
 int run_profile_lock_tail_ownership_tests();
+// Live VF selective/uniform GPU-offset detection under owned and external
+// programmed flat tails (tests/vf_live_offset_tests.cpp, 12450-12474).
+int run_vf_live_offset_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_read_request_tests();
@@ -2841,6 +2844,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int lockTailOwnershipFailure = run_profile_lock_tail_ownership_tests()) {
         fprintf(stderr, "Profile lock-tail ownership regression failed: %d\n", lockTailOwnershipFailure);
         return lockTailOwnershipFailure;
+    }
+    if (int vfLiveOffsetFailure = run_vf_live_offset_tests()) {
+        fprintf(stderr, "Live VF offset detection regression failed: %d\n", vfLiveOffsetFailure);
+        return vfLiveOffsetFailure;
     }
     if (int captureFailure = run_hardware_capture_tests()) {
         fprintf(stderr, "hardware capture regression failed: %d\n", captureFailure);

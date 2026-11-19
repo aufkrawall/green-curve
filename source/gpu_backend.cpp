@@ -412,39 +412,15 @@ static void read_nvml_max_mem_clock() {
 }
 static int uniform_curve_offset_khz() {
     if (!vf_curve_global_gpu_offset_supported()) return 0;
-    int values[VF_NUM_POINTS] = {};
-    int counts[VF_NUM_POINTS] = {};
-    int uniqueCount = 0;
-    int populatedCount = 0;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (g_app.curve[i].freq_kHz == 0) continue;
-        populatedCount++;
-        int delta = g_app.freqOffsets[i];
-        bool found = false;
-        for (int j = 0; j < uniqueCount; j++) {
-            if (values[j] == delta) {
-                counts[j]++;
-                found = true;
-                break;
-            }
-        }
-        if (!found && uniqueCount < VF_NUM_POINTS) {
-            values[uniqueCount] = delta;
-            counts[uniqueCount] = 1;
-            uniqueCount++;
-        }
+    VfOffsetTailBoundary tail = {};
+    const int offsetKHz = vf_uniform_curve_offset_khz(
+        g_app.curve, g_app.freqOffsets, &g_app.vfFloorBinding.floor, g_app.lockedCi, &tail);
+    if (tail.fromObservedTail) {
+        debug_log_on_change(
+            "uniform_curve_offset: excluded observed flat tail anchor=ci%d plateau=%u MHz (ownedLock=ci%d) -> %d kHz\n",
+            tail.tailStartCi, tail.observedPlateauMHz, g_app.lockedCi, offsetKHz);
     }
-    if (populatedCount == 0) return 0;
-    int bestValue = 0;
-    int bestCount = 0;
-    for (int i = 0; i < uniqueCount; i++) {
-        if (counts[i] > bestCount || (counts[i] == bestCount && abs(values[i]) > abs(bestValue))) {
-            bestValue = values[i];
-            bestCount = counts[i];
-        }
-    }
-    if (bestCount * 2 < populatedCount) return 0;
-    return bestValue;
+    return offsetKHz;
 }
 static void detect_clock_offsets() {
     // Detect global offsets from generic driver-visible sources.

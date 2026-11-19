@@ -736,6 +736,40 @@ checks, and full build 433; RTX 5080 hardware acceptance remains pending.
 - The GUI graph/header display is intent-aware for locked profiles: points at and above the configured lock are drawn/summarized at the requested lock MHz and lock voltage, even if live NVAPI readback has temperature/boost drift in the hidden tail. This is display-only and does not trigger background VF reapply.
 - **Drift-free owned-curve baseline (`g_app.appliedCurveMHz[VF_NUM_POINTS]`, build 350):** the single GUI-side source of truth for *owned* VF point MHz. Populated EXCLUSIVELY from intent (the applied / service-active `DesiredSettings`) via `capture_applied_curve_baseline()` (`main_runtime_gpu.cpp`), **never** from live `g_app.curve[]` readback. `0` = point not owned (show live). This extends the intent-aware display to **pre-tail** points, not just the locked tail. It drives: (a) fan-only apply detection in `capture_gui_apply_settings` (editor vs baseline, so expected boost drift on a pre-tail point can't reclassify a fan-only change as a curve edit → no spurious full reset-and-reapply mid-game); (b) `populate_edits()` owned-point display (so the graph/edit fields and any later save show intent, not drift — voltage/mV is immutable so still read live). Set on client apply success (only when `!fanOnlyApply`, so fan-only never drops the curve the service still holds), service active-desired adoption (`apply_service_desired_to_gui`), and startup; cleared on Reset (`reset_curve`). Guarded by `F-DRIFT-1` source checks in `build.py`. Intent-isolation only — it does NOT write the GPU to counteract drift, and as of 0.18 nothing does (the continuous drift monitor was removed — see "NO continuous VF drift correction" below).
 
+## Live VF GPU-offset detection under external flattens (2026-11-19)
+
+Source anchors: `source/vf_flat_tail_recognition.h`
+(`vf_recognize_programmed_flat_tail()`), `source/vf_live_offset_policy.h`
+(`vf_offset_detection_tail_start()`, `vf_uniform_curve_offset_khz()`,
+`vf_detect_live_selective_gpu_offset()`,
+`vf_live_selective_gpu_offset_matches_shape()`), `source/main_gpu_state.cpp`,
+`source/gpu_backend.cpp`, `source/gui_observed_lock_policy.h`,
+`tests/vf_live_offset_tests.cpp` (`12450-12474`), `tools/ui_gates.py`
+(`check_live_offset_excludes_programmed_flat_tail()`).
+
+- **Invariant:** live selective and uniform GPU-offset detection must exclude
+  both Green Curve's own lock tail (`ownedLockCi`) and any live **programmed**
+  flat tail (`vf_recognize_programmed_flat_tail()`, where at least one tail
+  point after the anchor carries a different offset from the anchor).
+- **Why:** an external curve editor flattens a tail by writing a large constant
+  negative delta (for example `-1927` MHz or `-2045` MHz) to every tail point
+  and relying on the driver's monotonic clamp. Because the service deliberately
+  leaves `g_app.lockedCi == -1` for unowned external flattens
+  (`gpu_lock_ownership_policy.h`), skipping only `ci >= g_app.lockedCi` exposed
+  the tail to both detectors: selective detection reported that negative delta
+  with `exclude = anchorCi`, and uniform detection reported it whenever the tail
+  covered at least half of populated points.
+- **Stock flat tops & owned locks:** stock level tops (all zero or one uniform /
+  selective offset across the top) fail the differing-tail-offset predicate and
+  are never excluded. When `ownedLockCi >= 0`, `vf_offset_detection_tail_start()`
+  keeps `ownedLockCi` unless an external flatten programmed differing offsets
+  before `ownedLockCi`.
+- **Diagnostics:** `detect_live_selective_gpu_offset_state()` logs
+  `tail=ci<N>(owned|observed|none,plateau=<MHz>)` via `debug_log_on_change()`,
+  `uniform_curve_offset_khz()` logs observed-tail exclusions on change, and
+  `describe_live_gpu_offset_state()` prints the actual detected exclude count
+  instead of a hardcoded `70`.
+
 ## Curve feasibility planner (2026-11-12)
 
 Source anchors: `source/curve_feasibility_plan.h`,
