@@ -316,6 +316,7 @@ static void show_shared_profiles_menu(HWND hwnd, POINT screenPt) {
     set_gui_state_dirty(true);
     gui_draft_capture_desired(&desired);
     populate_global_controls();
+    gui_editor_base_attach(&desired, 0, "shared load");
     set_profile_status_text(
         "Loaded shared profile %d into the editor. Click Apply to apply it; use Save to copy it into one of your own slots.", slot);
     invalidate_main_window();

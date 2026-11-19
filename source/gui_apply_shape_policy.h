@@ -21,7 +21,10 @@
 //     (why the backend has preserveCurveAcrossMem), and a sparse request would
 //     run that window without the transition clamp the full path arms;
 //   - XBAR / SYS / VIDEO: the reset-to-stock baseline owns those domains, and
-//     nothing here has been measured to show a direct write is equivalent.
+//     nothing here has been measured to show a direct write is equivalent;
+//   - a loaded profile the service does not run yet: its captured points,
+//     exact values and scope are not editor fields, so no field diff can say
+//     which of its domains would be left out (gui_editor_base_policy.h).
 
 #ifndef GREEN_CURVE_GUI_APPLY_SHAPE_POLICY_H
 #define GREEN_CURVE_GUI_APPLY_SHAPE_POLICY_H
@@ -42,11 +45,12 @@ struct GuiApplyChangeSet {
     bool curve;
     bool lock;
     bool fan;
+    bool loadedProfile;  // a loaded explicit record is not the active profile
 };
 
 static inline GuiApplyShape gui_apply_shape(const GuiApplyChangeSet& changed) {
     const bool clockDomainChanged = changed.gpuOffset || changed.memOffset ||
-        changed.advancedClocks || changed.curve || changed.lock;
+        changed.advancedClocks || changed.curve || changed.lock || changed.loadedProfile;
     if (clockDomainChanged) return GUI_APPLY_SHAPE_FULL;
     if (changed.powerLimit) return GUI_APPLY_SHAPE_POWER_SPARSE;
     return changed.fan ? GUI_APPLY_SHAPE_FAN_ONLY : GUI_APPLY_SHAPE_NO_CHANGE;

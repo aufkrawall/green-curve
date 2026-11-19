@@ -39,6 +39,10 @@ enum {
     GUI_PENDING_XBAR        = 1u << 9,
     GUI_PENDING_SYS_CLK     = 1u << 10,
     GUI_PENDING_VIDEO_CLK   = 1u << 11,
+    // A loaded profile whose record the service does not run yet; its
+    // captured points, exact values and scope are not editor fields
+    // (gui_editor_base_policy.h).
+    GUI_PENDING_PROFILE     = 1u << 12,
 };
 
 // Any field the editor holds as text: GPU offset, exclude-low count, memory

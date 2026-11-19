@@ -702,6 +702,8 @@ static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
 #include "main_gpu_front.cpp"
 #include "desired_settings_helpers.cpp"
 #include "main_gpu_state.cpp"
+// The editor's base record; before main_shell.cpp, whose capture paths use it.
+#include "gui_editor_base.cpp"
 #include "main_tail_diagnostics.cpp"
 #include "main_fan_runtime.cpp"
 #include "gui_tray_menu.cpp"

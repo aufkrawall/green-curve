@@ -122,6 +122,7 @@ static void maybe_load_app_launch_profile_to_gui() {
                 appLaunchSlot,
                 matchDetail[0] ? matchDetail : "match");
             populate_desired_into_gui(&desired);
+            gui_editor_base_attach(&desired, appLaunchSlot, "app start already active");
             if (!set_config_int(g_app.configPath, "profiles", "selected_slot", appLaunchSlot)) {
                 debug_log("app-start profile: matching active slot %d loaded but selected_slot persistence failed\n",
                     appLaunchSlot);

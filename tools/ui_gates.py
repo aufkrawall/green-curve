@@ -1698,6 +1698,7 @@ def check_all(ctx, require_text, forbid_text):
     check_owner_drawn_text_is_literal(ctx, require_text, forbid_text)
     check_observed_editor_lock(ctx, require_text, forbid_text)
     check_loaded_lock_reaches_the_draft(ctx, require_text, forbid_text)
+    check_editor_builds_on_its_base_record(ctx, require_text, forbid_text)
 
 
 def check_observed_editor_lock(ctx, require_text, forbid_text):
@@ -1744,3 +1745,37 @@ def check_loaded_lock_reaches_the_draft(ctx, require_text, forbid_text):
         "if (hasLock) {",
         "(int)g_app.guiDraft.curveMHz[lockCi];",
         "Apply's lock target is the draft anchor the copy above keeps in step")
+
+
+def check_editor_builds_on_its_base_record(ctx, require_text, forbid_text):
+    """Apply and Save build on the editor's base record (a loaded explicit-scope
+    slot, or such an active profile) and overlay only typed edits; rebuilding
+    from the fields alone dropped captured points, exact values and scope."""
+    capture = _p(ctx, "main_runtime_capture.cpp")
+    ctx.require_order_in_operation(
+        capture, "static bool capture_gui_apply_settings(",
+        "if (!capture_gui_desired_settings(&resetFull, true, true, err, errSize)) return false;",
+        "gui_editor_base_overlay_request(resetFull, current, desired, &onBase, \"apply\", err, errSize)",
+        "a full Apply builds on the editor's base before the legacy request path")
+    ctx.require_text_in_operation(
+        capture, "static bool capture_gui_apply_settings(",
+        "changed.loadedProfile = gui_editor_loaded_record_pending();",
+        "a loaded record the service does not run is applied whole")
+    ctx.require_text_in_operation(
+        capture, "static bool capture_gui_config_settings(",
+        "gui_editor_base_overlay_request(guiDesired, current, desired, &onBase, \"save\", err, errSize)",
+        "Save keeps the base record and overlays only the edits")
+    ctx.require_text_in_operation(
+        _p(ctx, "gui_profile_commands.cpp"), "static void gui_profile_load_command(",
+        "gui_editor_base_attach(&desired, slot, \"load\");",
+        "Load makes the slot record the editor's base")
+    ctx.require_text_in_operation(
+        _p(ctx, "gui_service_state.cpp"), "static void gui_draft_mark_clean(",
+        "gui_editor_base_reset(",
+        "an applied or clean draft no longer holds a loaded record")
+    ctx.require_text_in_operation(
+        _p(ctx, "ui_pending_changes.cpp"), "static void gui_pending_changes_evaluate(",
+        "GUI_PENDING_PROFILE",
+        "an unapplied loaded record keeps Apply enabled")
+    require_text(_p(ctx, "ui_main_window.cpp"), "g_app.guiCurvePointTyped[ci] = true;",
+                 "only typing marks a point as an edit over the base record")

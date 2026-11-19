@@ -632,6 +632,10 @@ struct AppData {
     // and only the first may hold the driver to its number.  The VF edit fields
     // show the same digits either way, so this cannot be recovered later.
     bool guiCurvePointFromGpuOffset[VF_NUM_POINTS];
+    // The user typed point ci since the editor took its current base
+    // (gui_editor_base_policy.h). Projections never set it, so a point the
+    // editor merely shows keeps the base record's authority.
+    bool guiCurvePointTyped[VF_NUM_POINTS];
     bool guiStateDirty;
     bool guiHasUserModifiedValues;
     // A manual Refresh is waiting for its full-sync completion.  The refresh no
@@ -765,6 +769,12 @@ struct AppData {
     ServiceAutoApplyFailure serviceAutoApplyFailure;
     bool serviceActiveDesiredValid;
     DesiredSettings serviceActiveDesired;
+    // The editor's base record (gui_editor_base.cpp): guiEditorBaseRecord is
+    // the loaded slot record while guiEditorBaseMode is
+    // GUI_EDITOR_BASE_LOADED_RECORD.
+    int guiEditorBaseMode;
+    int guiEditorBaseSlot;
+    DesiredSettings guiEditorBaseRecord;
     bool serviceControlStateValid;
     ControlState serviceControlState;
     // Main-thread-owned authority model.  Pipe/SCM workers may only post

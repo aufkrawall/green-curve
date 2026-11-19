@@ -23,6 +23,8 @@ GC_NOINLINE static void gui_profile_load_command() {
         set_gui_state_dirty(true);
         gui_draft_capture_desired(&desired);
         populate_global_controls();
+        // Last: the editor now shows this record, and Apply/Save build on it.
+        gui_editor_base_attach(&desired, slot, "load");
         if (!set_config_int(g_app.configPath, "profiles", "selected_slot", slot)) {
             write_error_report_log_for_user_failure(
                 "Selected profile persistence failed",
@@ -114,6 +116,7 @@ GC_NOINLINE static void gui_profile_save_command() {
         const ProfileSaveNotice saveNotice = report_profile_save_omissions(
             slot, &desired, usedGuiCapture, lockFromUserEdit, &captureRequested);
         populate_desired_into_gui(&desired);
+        gui_editor_base_attach(&desired, slot, "save");
         sync_applied_profile_from_service_metadata();
         refresh_profile_controls_from_config();
         if (saveNotice == PROFILE_SAVE_NOTICE_OMITTED_EXTERNAL_CURVE)

@@ -417,6 +417,9 @@ static GC_NOINLINE bool handle_main_window_command(HWND hwnd, WPARAM wParam) {
                     gui_set_curve_point_origin(ci, true, false);
                     g_app.guiHasUserModifiedValues = true;
                     set_gui_state_dirty(true);
+                    // After the dirty transition, whose clean projection
+                    // clears these: an edit over the editor's base record.
+                    g_app.guiCurvePointTyped[ci] = true;
                 }
                 if (vi == g_app.lockedVi) {
                     g_app.guiLockTracksAnchor = false;

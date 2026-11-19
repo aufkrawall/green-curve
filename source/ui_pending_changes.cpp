@@ -490,6 +490,7 @@ static void gui_pending_changes_evaluate(GuiPendingChanges* out) {
     GuiPendingChanges empty = {};
     *out = empty;
     gui_pending_evaluate_editor_diff(out);
+    if (gui_editor_loaded_record_pending()) out->summary.domainMask |= GUI_PENDING_PROFILE;
     // Always last: the preview is a projection OF the diff, and the offset
     // numbers it reads are resolved in the middle of it.
     gui_pending_resolve_graph_preview(out);

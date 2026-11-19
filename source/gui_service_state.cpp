@@ -70,6 +70,7 @@ static void gui_draft_bind_current_ready_state() {
 }
 
 static void gui_draft_capture_clean_projection() {
+    gui_editor_base_clear_typed();
     memset(g_app.guiDraft.curveMHz, 0, sizeof(g_app.guiDraft.curveMHz));
     memset(g_app.guiDraft.curveValueValid, 0,
         sizeof(g_app.guiDraft.curveValueValid));
@@ -208,6 +209,7 @@ static void gui_draft_capture_desired(const DesiredSettings* desired) {
 }
 
 static void gui_draft_mark_clean() {
+    gui_editor_base_reset("draft clean");
     g_app.guiDraft.detached = false;
     g_app.guiDraft.pendingDesiredValid = false;
     memset(&g_app.guiDraft.pendingDesired, 0,
@@ -218,6 +220,7 @@ static void gui_draft_mark_clean() {
 }
 
 static void gui_draft_discard() {
+    gui_editor_base_reset("draft discarded");
     set_gui_state_dirty(false);
     g_app.guiHasUserModifiedValues = false;
     g_app.loadedSharedSlot = 0;

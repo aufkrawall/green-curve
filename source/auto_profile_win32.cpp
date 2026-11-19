@@ -141,6 +141,7 @@ static ApApplyStart ap_do_apply_slot(int slot, ServiceApplyOrigin origin) {
             if (service_apply_origin_is_explicit(origin))
                 set_profile_status_text("Profile %d is already applied.", slot);
             populate_desired_into_gui(&desired);
+            gui_editor_base_attach(&desired, slot, "tray pick already active");
             if (!set_config_int(g_app.configPath, "profiles", "selected_slot", slot)) {
                 debug_log("auto-profile: slot %d already active but selected_slot persistence failed\n",
                     slot);

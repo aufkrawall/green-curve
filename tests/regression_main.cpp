@@ -1065,6 +1065,9 @@ int run_gui_draft_desired_tests();
 // Memory offset read from the running memory clock in passive capture
 // (tests/capture_memory_clock_tests.cpp, 12306-12319).
 int run_capture_memory_clock_tests();
+// The editor's base record: Apply/Save send a loaded explicit record with only
+// the user's edits overlaid (tests/gui_editor_base_tests.cpp, 12320-12333).
+int run_gui_editor_base_tests();
 int run_profile_pin_observation_tests();
 int run_profile_mapping_tests();
 int run_profile_conversion_tests();
@@ -1475,7 +1478,7 @@ static int run_audit_followup_tests() {
         if (gui_apply_shape(power) != GUI_APPLY_SHAPE_POWER_SPARSE) return 5838;
         GuiApplyChangeSet powerFan = power; powerFan.fan = true;
         if (gui_apply_shape(powerFan) != GUI_APPLY_SHAPE_POWER_SPARSE) return 5839;
-        GuiApplyChangeSet clockDomains[6] = {};
+        GuiApplyChangeSet clockDomains[7] = {};
         clockDomains[0].gpuOffset = true;
         clockDomains[1].memOffset = true;
         clockDomains[2].advancedClocks = true;
@@ -1484,6 +1487,10 @@ static int run_audit_followup_tests() {
         clockDomains[5].memOffset = true;
         clockDomains[5].powerLimit = true;
         clockDomains[5].fan = true;
+        // A loaded profile the service does not run is applied whole, even
+        // when only power (or nothing) differs field by field.
+        clockDomains[6].loadedProfile = true;
+        clockDomains[6].powerLimit = true;
         for (const GuiApplyChangeSet& change : clockDomains) {
             if (gui_apply_shape(change) != GUI_APPLY_SHAPE_FULL) return 5840;
         }
@@ -2793,6 +2800,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int memoryClockFailure = run_capture_memory_clock_tests()) {
         fprintf(stderr, "capture memory clock regression failed: %d\n", memoryClockFailure);
         return memoryClockFailure;
+    }
+    if (int editorBaseFailure = run_gui_editor_base_tests()) {
+        fprintf(stderr, "editor base record regression failed: %d\n", editorBaseFailure);
+        return editorBaseFailure;
     }
     if (int pinObservationFailure = run_profile_pin_observation_tests()) {
         fprintf(stderr, "pin observation regression failed: %d\n", pinObservationFailure);

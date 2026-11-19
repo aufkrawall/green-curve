@@ -174,6 +174,27 @@ static void capture_applied_curve_baseline(const DesiredSettings* desired) {
         desired->hasLock ? desired->lockCi : -1, desired->hasLock ? desired->lockMHz : 0u);
 }
 
+// The values a field shows for a domain the editor's request did not take from
+// a profile: the applied control state, or the last read when it has none.
+static GuiEditorCurrentScalars gui_editor_current_scalars(const DesiredSettings& editor) {
+    ControlState control = {};
+    const bool have = get_effective_control_state(&control);
+    GuiEditorCurrentScalars c;
+    const bool gpu = have && control_state_has_meaningful_gpu(&control);
+    c.gpuOffsetMHz = gpu ? control.gpuOffsetMHz : current_applied_gpu_offset_mhz();
+    c.gpuOffsetExcludeLowCount = gpu ? control.gpuOffsetExcludeLowCount :
+        (current_applied_gpu_offset_excludes_low_points() ? g_app.appliedGpuOffsetExcludeLowCount : 0);
+    c.memOffsetMHz = have && control_state_has_meaningful_mem(&control) ? control.memOffsetMHz :
+        mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
+    c.powerLimitPct = have && control_state_has_meaningful_power(&control) ? control.powerLimitPct : g_app.powerLimitPct;
+    c.xbarOffsetKhz = have && control.hasXbarOffset ? control.xbarOffsetKhz : g_app.xbarFreqOffsetKhz;
+    c.xbarMsvddOffsetUv = have && control.hasXbarMsvddOffset ? control.xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv;
+    c.sysClkOffsetKhz = have && control.hasSysClkOffset ? control.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz;
+    c.videoClkOffsetKhz = have && control.hasVideoClkOffset ? control.videoClkOffsetKhz : g_app.videoClkFreqOffsetKhz;
+    c.fanChanged = editor.hasFan && !fan_setting_matches_current(editor.fanMode, editor.fanPercent, &editor.fanCurve);
+    return c;
+}
+
 static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline* baselineOut, char* err, size_t errSize) {
     if (!desired) return false;
     if (baselineOut) {
@@ -188,15 +209,16 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
     initialize_desired_settings_defaults(&fanOnly);
 
     ControlState control = {};
-    bool haveControlState = get_effective_control_state(&control);
-    int currentGpuOffsetMHz = haveControlState && control_state_has_meaningful_gpu(&control) ? control.gpuOffsetMHz : current_applied_gpu_offset_mhz();
-    int currentGpuOffsetExcludeLowCount = haveControlState && control_state_has_meaningful_gpu(&control) ? control.gpuOffsetExcludeLowCount : (current_applied_gpu_offset_excludes_low_points() ? g_app.appliedGpuOffsetExcludeLowCount : 0);
-    int currentMemOffsetMHz = haveControlState && control_state_has_meaningful_mem(&control) ? control.memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
-    int currentPowerLimitPct = haveControlState && control_state_has_meaningful_power(&control) ? control.powerLimitPct : g_app.powerLimitPct;
-    int currentXbarOffsetKhz = haveControlState && control.hasXbarOffset ? control.xbarOffsetKhz : g_app.xbarFreqOffsetKhz;
-    int currentXbarMsvddUv = haveControlState && control.hasXbarMsvddOffset ? control.xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv;
-    int currentSysClkKhz = haveControlState && control.hasSysClkOffset ? control.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz;
-    int currentVideoClkKhz = haveControlState && control.hasVideoClkOffset ? control.videoClkOffsetKhz : g_app.videoClkFreqOffsetKhz;
+    get_effective_control_state(&control);
+    const GuiEditorCurrentScalars current = gui_editor_current_scalars(full);
+    const int currentGpuOffsetMHz = current.gpuOffsetMHz;
+    const int currentGpuOffsetExcludeLowCount = current.gpuOffsetExcludeLowCount;
+    const int currentMemOffsetMHz = current.memOffsetMHz;
+    const int currentPowerLimitPct = current.powerLimitPct;
+    const int currentXbarOffsetKhz = current.xbarOffsetKhz;
+    const int currentXbarMsvddUv = current.xbarMsvddOffsetUv;
+    const int currentSysClkKhz = current.sysClkOffsetKhz;
+    const int currentVideoClkKhz = current.videoClkOffsetKhz;
     if (baselineOut) {
         baselineOut->currentGpuOffsetMHz = currentGpuOffsetMHz;
         baselineOut->currentMemOffsetMHz = currentMemOffsetMHz;
@@ -225,7 +247,7 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
         full.hasXbarOffsetKhz ? 1 : 0, full.xbarOffsetKhz,
         full.hasXbarMsvddOffsetUv ? 1 : 0, full.xbarMsvddOffsetUv,
         xbarUnchanged ? 1 : 0);
-    bool fanChanged = full.hasFan && !fan_setting_matches_current(full.fanMode, full.fanPercent, &full.fanCurve);
+    const bool fanChanged = current.fanChanged;
 
     // A fan-only apply must stay fan-only even when the live VF curve has drifted
     // under boost/temperature. Compare each captured point against the drift-free
@@ -296,12 +318,17 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
     changed.curve = !curveUnchanged;
     changed.lock = lockChanged;
     changed.fan = fanChanged;
+    // A loaded explicit record the service does not run yet is applied whole
+    // (gui_apply_shape_policy.h): the field diff above cannot see its captured
+    // points, exact values or scope.
+    changed.loadedProfile = gui_editor_loaded_record_pending();
     const GuiApplyShape shape = gui_apply_shape(changed);
-    debug_log("capture_gui_apply_settings: shape=%s changed gpu=%d mem=%d power=%d advanced=%d curve=%d lock=%d fan=%d\n",
+    debug_log("capture_gui_apply_settings: shape=%s changed gpu=%d mem=%d power=%d advanced=%d curve=%d lock=%d fan=%d loadedProfile=%d slot=%d\n",
         gui_apply_shape_name(shape), changed.gpuOffset ? 1 : 0,
         changed.memOffset ? 1 : 0, changed.powerLimit ? 1 : 0,
         changed.advancedClocks ? 1 : 0, changed.curve ? 1 : 0,
-        changed.lock ? 1 : 0, changed.fan ? 1 : 0);
+        changed.lock ? 1 : 0, changed.fan ? 1 : 0,
+        changed.loadedProfile ? 1 : 0, g_app.guiEditorBaseSlot);
 
     if (shape == GUI_APPLY_SHAPE_NO_CHANGE) {
         set_message(err, errSize, "No changes to apply");
@@ -345,6 +372,19 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
     DesiredSettings resetFull = {};
     if (!capture_gui_desired_settings(&resetFull, true, true, err, errSize)) return false;
 
+    // An explicit-scope base (a loaded imported/captured slot, or such an
+    // active profile): send the base with only the edited domains replaced,
+    // exactly as the tray would send the slot when nothing was edited.
+    {
+        bool onBase = false;
+        if (!gui_editor_base_overlay_request(resetFull, current, desired, &onBase, "apply", err, errSize))
+            return false;
+        if (onBase) {
+            desired_prepare_replacement_request(desired);
+            return true;
+        }
+    }
+
     // Keep the VF curve request sparse. The reset-before-apply step zeros all
     // offsets and re-reads the stock curve; only user-explicit points and the
     // locked tail should be written back after that reset.
@@ -379,6 +419,16 @@ static bool capture_gui_config_settings(DesiredSettings* desired, char* err, siz
 
     DesiredSettings guiDesired = {};
     if (!capture_gui_desired_settings(&guiDesired, true, true, err, errSize)) return false;
+
+    // An explicit-scope base keeps its own record in the slot; only what the
+    // user edited replaces it (gui_editor_base_policy.h).
+    {
+        bool onBase = false;
+        const GuiEditorCurrentScalars current = gui_editor_current_scalars(guiDesired);
+        if (!gui_editor_base_overlay_request(guiDesired, current, desired, &onBase, "save", err, errSize))
+            return false;
+        if (onBase) return true;
+    }
 
     DesiredSettings full = {};
     build_full_live_desired_settings(&full);

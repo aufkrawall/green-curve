@@ -25,6 +25,8 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
     const unsigned int savedAppliedLockFreq = g_app.appliedLockFreq;
     const LockMode savedAppliedLockMode = g_app.appliedLockMode;
     bool preserveDirty = gui_state_dirty();
+    // The fields are re-projected from a record: nothing on screen is typed.
+    gui_editor_base_clear_typed();
     unlock_all();
     if (g_app.loaded) populate_edits();
     begin_programmatic_edit_update();
