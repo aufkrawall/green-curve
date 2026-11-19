@@ -11,6 +11,7 @@
 #include "win32_raii.h"
 #include "startup_task_definition_policy.h"
 #include "gpu_selection_policy.h"
+#include "gpu_adapter_identity.h"
 #include "profile_persistence_policy.h"
 #include "profile_desired_ini_ext.h"
 #include "ui_theme_metrics.h"
@@ -206,12 +207,6 @@ static const DWORD ELEVATED_HELPER_TIMEOUT_MS = 60000;
 
 static void* nvapi_qi(unsigned int id);
 static bool nvapi_init();
-static bool gpu_adapter_has_valid_pci_location(const GpuAdapterInfo* adapter);
-static bool gpu_adapter_has_same_pci_identity(
-    const GpuAdapterInfo* a, const GpuAdapterInfo* b);
-static bool gpu_adapter_pci_base_identity_is_unique(
-    const GpuAdapterInfo* target, const GpuAdapterInfo* adapters,
-    unsigned int adapterCount);
 static void format_gpu_adapter_label(const GpuAdapterInfo* adapter, char* out, size_t outSize);
 static bool nvapi_enum_gpu();
 static bool nvapi_get_name();

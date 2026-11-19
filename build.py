@@ -2173,10 +2173,10 @@ def run_source_regression_checks():
         "if (request->targetGpu.nvapiIndex >= MAX_GPU_ADAPTERS)",
         "g_app.selectedGpuIndex = live.nvapiIndex",
         "service validates requested GPU index before mutating selected GPU state")
-    require_text(gpu_backend_cpp,
+    require_text(os.path.join(SOURCE_DIR, "gpu_adapter_identity.h"),
         "bool aHasBdf = gpu_adapter_has_valid_pci_location(a);",
         "strong GPU identity distinguishes whether each adapter has a BDF")
-    require_text(gpu_backend_cpp,
+    require_text(os.path.join(SOURCE_DIR, "gpu_adapter_identity.h"),
         "return a->pciDomain == b->pciDomain && a->pciBus == b->pciBus &&\n        a->pciDevice == b->pciDevice &&\n        a->pciFunction == b->pciFunction;",
         "strong GPU identity includes the complete PCI domain/bus/device/function")
     require_text(config_utils_cpp, "selected_identity_version=",

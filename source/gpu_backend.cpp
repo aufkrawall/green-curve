@@ -106,52 +106,7 @@ static void close_nvapi() {
     debug_log("nvapi: closed DLL, cleared adapter cache, and invalidated nvapi_qi cache\n");
 }
 
-static bool gpu_adapter_has_valid_pci_location(const GpuAdapterInfo* adapter) {
-    return adapter && adapter->pciDomain <= 0xFFFFu &&
-        adapter->pciBus <= 255u && adapter->pciDevice <= 31u &&
-        adapter->pciFunction <= 7u &&
-        (adapter->pciDomain != 0 || adapter->pciBus != 0 ||
-         adapter->pciDevice != 0 || adapter->pciFunction != 0);
-}
-
-static bool gpu_adapter_has_same_pci_base_identity(
-    const GpuAdapterInfo* a, const GpuAdapterInfo* b) {
-    return a && b && a->valid && b->valid && a->pciInfoValid &&
-        b->pciInfoValid && a->deviceId == b->deviceId &&
-        a->subSystemId == b->subSystemId &&
-        a->pciRevisionId == b->pciRevisionId &&
-        a->extDeviceId == b->extDeviceId;
-}
-
-static bool gpu_adapter_has_same_pci_identity(const GpuAdapterInfo* a, const GpuAdapterInfo* b) {
-    if (!gpu_adapter_has_same_pci_base_identity(a, b)) return false;
-    bool aHasBdf = gpu_adapter_has_valid_pci_location(a);
-    bool bHasBdf = gpu_adapter_has_valid_pci_location(b);
-    // BDF is a strengthening field, not a wire-compatibility requirement.
-    // Older/current client snapshots can carry the stable PCI IDs without the
-    // service-side NVML/NVAPI location enrichment.  Reject a different BDF
-    // when both sides know it, but do not make ordinary explicit Apply fail
-    // merely because exactly one side has already been enriched.  Durable
-    // recovery still counts all base-ID matches and rejects duplicates.
-    if (!aHasBdf || !bHasBdf) return true;
-    return a->pciDomain == b->pciDomain && a->pciBus == b->pciBus &&
-        a->pciDevice == b->pciDevice &&
-        a->pciFunction == b->pciFunction;
-}
-
-static bool gpu_adapter_pci_base_identity_is_unique(
-    const GpuAdapterInfo* target, const GpuAdapterInfo* adapters,
-    unsigned int adapterCount) {
-    if (!target || !adapters || !target->pciInfoValid) return false;
-    unsigned int matches = 0;
-    for (unsigned int i = 0; i < adapterCount; ++i) {
-        if (adapters[i].valid &&
-            gpu_adapter_has_same_pci_base_identity(target, &adapters[i])) {
-            ++matches;
-        }
-    }
-    return matches == 1;
-}
+// PCI identity predicates live in gpu_adapter_identity.h (pure, tested).
 
 static void format_gpu_adapter_label(const GpuAdapterInfo* adapter, char* out, size_t outSize) {
     if (!out || outSize == 0) return;

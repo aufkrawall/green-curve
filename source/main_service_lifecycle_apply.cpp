@@ -182,13 +182,10 @@ static bool service_lifecycle_target_gpu_still_matches(
     const GpuAdapterInfo* expected,
     const GpuAdapterInfo* current)
 {
-    if (!expected || !current || !expected->valid || !current->valid) return false;
-    if (expected->pciInfoValid && current->pciInfoValid) {
-        return gpu_adapter_has_same_pci_identity(expected, current);
-    }
-    // Weak ordinal identity is safe only on an unambiguous one-adapter system.
-    return g_app.adapterCount == 1 &&
-        expected->nvapiIndex == current->nvapiIndex;
+    // PCI identity when both sides carry it; a weak ordinal only on an
+    // unambiguous one-adapter system (gpu_adapter_identity.h).
+    return gpu_adapter_is_same_write_target(expected, current,
+        g_app.adapterCount);
 }
 
 static bool service_lifecycle_select_context_gpu(
