@@ -5,6 +5,28 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: Imported flatten applied the live clock; imported memory read as stock
+
+- Reported: Import recognized another tool's 925 mV / 2962 MHz flatten and
+  saved it to a slot (`lock_mhz=2962`, no explicit anchor point), but Load then
+  Apply from the editor locked 2482 MHz, the stock clock at that point. Load's
+  `set_gui_state_dirty(true)` rebuilds the draft from the applied/live curve
+  and `gui_draft_capture_desired()` copied only explicit points, while Apply
+  reads the lock target from the draft anchor. The copy now writes the lock
+  target at the anchor (`gui_draft_desired_point_mhz()`).
+- Reported: the same import showed memory as stock although the other tool had
+  set +3000 MHz. The debug log had it: capture read the NVML getter (0 on P0
+  and global) while the live state's Pstates20 derivation held 3000000 kHz.
+  Capture now uses that derivation (`memory_clock_evidence.h`, schema 5
+  `memoryEvidence`); the live state calls the same helper.
+- Coverage: 12300-12319 plus `check_loaded_lock_reaches_the_draft()`.
+- Follow-up: the editor model cannot hold captured offsets or explicit scope,
+  so Load->Apply of an imported slot drops captured points (zero here) and
+  never claims slot ownership; tray/hotkey/logon apply the record itself.
+  Hardware check with another tool's memory offset still pending.
+- Lesson: when two readers of the same control exist (live state and capture),
+  give them one helper; the divergence was already visible in the log.
+
 ## 2026-11-19: Editor projects another tool's flatten as its lock
 
 - Reversed the 2026-11-15 rule **for the Windows editor only** (`gui_observed_lock_policy.h`,

@@ -1,5 +1,23 @@
 # Testing
 
+## Capture memory clock and loaded editor lock (2026-11-19)
+
+`tests/capture_memory_clock_tests.cpp` (12306-12319) pins
+`source/memory_clock_evidence.h` and the capture decision: Pstates20 memory
+maximum (single/range, clamped counts, graphics ignored; 12306), offset
+arithmetic (12307), the getter-only reader with VER3->VER2 fallback and missing
+getters (12308), the reported getter-0 / running +3000 MHz capture through the
+production collector, its summary row and log text (12309-12310), no reader
+(Linux) (12311), agreement keeping the finer getter value (12312), a stale
+getter (12313), no running reading (12314), a failed getter staying unread
+(12315), wire validation of `memoryEvidence` and schema 5 (12316-12318), and the
+saved document (12319). `tests/gui_draft_desired_tests.cpp` (12300-12305) pins
+`gui_draft_desired_point_mhz()`: a lock-only record puts the lock target at the
+anchor of a live-rebuilt draft (12300-12301), the lock wins over an explicit
+anchor (12302), ordinary records pass through (12303), no usable lock (12304),
+range guards (12305). `check_loaded_lock_reaches_the_draft()` in
+`tools/ui_gates.py` ties the draft copy to Apply's anchor read.
+
 ## Editor projection of external flatten (2026-11-19)
 
 `tests/gui_observed_lock_tests.cpp` (`12290-12299`, run from

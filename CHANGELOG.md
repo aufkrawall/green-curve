@@ -38,7 +38,7 @@ Curve checks, profile transfer and capture improve.
 - **Prepare compatible curve:** preview lowering earlier points or searching the closest lower compatible lock frequency before Apply.
 - **Profile files:** export chosen slots to a file and import them into chosen slots on Windows, the Linux TUI and the CLI, without a GPU.
 - **Older settings files:** import profiles from older Green Curve settings, asked only when a file does not say how values were saved.
-- **Import current GPU settings:** save settings another tool set into a slot as a flat curve, a clock lock or an exact copy; locks are read without GPU load.
+- **Import current GPU settings:** save settings another tool set, memory overclocks included, into a slot as a flat curve, a clock lock or an exact copy; locks are read without GPU load.
 - **Profile checks (CLI):** preview how a profile file maps onto this GPU without changing anything.
 - **NVIDIA CMP mining cards (experimental):** a startup warning explains the modified-driver requirement; continue once, stop asking, or exit.
 

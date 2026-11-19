@@ -128,6 +128,51 @@ dialog pass and physical GPU replay of captured records are not recorded here.
 The TUI file dialogs and capture modal are covered by scripted tests only, not by
 a terminal session on a GPU host.
 
+## Capture memory from the running clock; loaded locks reach the editor draft (2026-11-19)
+
+Source anchors: `source/memory_clock_evidence.h`, `source/hardware_capture_getters.h`
+(`hardware_capture_apply_memory_clock()`, `HardwareCaptureContext::memoryClockReader`),
+`source/main_service_capture.cpp`, `source/gpu_backend.cpp` (`nvapi_read_pstates()`,
+`detect_clock_offsets()`), `source/gui_draft_desired_policy.h`,
+`source/gui_service_state.cpp` (`gui_draft_capture_desired()`),
+`tests/capture_memory_clock_tests.cpp` (12306-12319),
+`tests/gui_draft_desired_tests.cpp` (12300-12305), `tools/ui_gates.py`
+(`check_loaded_lock_reaches_the_draft()`).
+
+- **Memory: one rule for live state and capture.** The Windows live state reads
+  the memory offset as the highest Pstates20 memory clock minus the board maximum
+  (`nvmlDeviceGetMaxClockInfo`). Passive capture read only the NVML offset getter,
+  which stays 0 when another tool programs memory through Pstates20 (observed:
+  running maximum 17001 MHz vs board 14001 MHz, getter 0), so Import reported
+  memory as stock and the slot saved 0. Capture now takes the same running-clock
+  reading (`memory_clock_read()`, getters only) and reports it when it disagrees
+  with the getter by a whole MHz; a getter within that resolution keeps its finer
+  value. The value stays on the getter's surface, the control replay writes; an
+  NVML write replaces a Pstates20 offset (a reset to 0 brought the running maximum
+  back to the board value). Without a usable getter the domain stays unread.
+  `memoryEvidence` (capture schema 5) records `getter`, `agrees` or
+  `running-clock`. Linux does not set the reader: its live state reads NVML only.
+- **Loaded lock reaches the draft.** Apply takes the lock target from the draft's
+  anchor value (`capture_gui_desired_settings()`), and Load rebuilds the draft from
+  the applied/live curve (`set_gui_state_dirty(true)` ->
+  `gui_draft_capture_clean_projection()`) before copying the record in. That copy
+  handled explicit curve points only, so a record whose lock owns its anchor
+  without an explicit point (a captured or imported flatten) kept the live anchor
+  clock: the reported slot held `lock_mhz=2962` and Apply sent 2482 MHz. The copy
+  now writes every value `gui_draft_desired_point_mhz()` declares: explicit points
+  and the lock anchor at the lock target, which wins over an explicit anchor point
+  as it does in the field.
+- **Diagnostics.** Service: `capture memory: getter=... running=... board=... ->
+  ...Hz evidence=...` once per changed reading; the capture summary line carries
+  `memory=<Hz>(<evidence>)`; the CLI report adds a line when the running clock
+  replaced the getter. GUI: `GUI draft: lock anchor ci=N set to the record's lock
+  M MHz (was ...)`.
+- **Open questions.** Editor Load->Apply still rebuilds the request from the
+  editor model, which has no captured-offset points or explicit application
+  scope: captured points revert to stock on that path (tray, hotkey, logon and
+  app-start apply the slot record itself) and ownership reads "Manual
+  settings". Hardware verification with another tool's memory offset is pending.
+
 ## Capture: curve-only judging and load-free driver locks (2026-11-19)
 
 Source anchors: `source/profile_capture_proposals.h` (`profile_capture_judge_curve()`,

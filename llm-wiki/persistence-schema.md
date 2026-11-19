@@ -116,6 +116,12 @@ voltage lock) and a clock limit without a floor (`pinPresent` with
 `pinMinimumHz == 0`). Wire validation ties every lock field to a decoded driver
 table; schema-3 peers refuse. Nothing durable stores the observation.
 
+Capture schema 5 (2026-11-19) turns one more reserved byte into
+`memoryEvidence` (`getter`, `agrees`, `running-clock`; see
+[config-profiles.md](config-profiles.md#capture-memory-from-the-running-clock-loaded-locks-reach-the-editor-draft-2026-11-19)).
+Layout unchanged; nonzero evidence requires a read memory domain; schema-4
+peers refuse.
+
 The active request control-precondition fields bind physical controls and
 outgoing owned intent, while its physical fingerprint stays separate. Reviewed
 Apply requires all-domain passive evidence and an explicit interactive scope;
