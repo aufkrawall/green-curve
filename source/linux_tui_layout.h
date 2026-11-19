@@ -16,7 +16,6 @@
 #include "profile_capture_representation.h"
 #include "intent_readback_status.h"
 #include "startup_snapshot_policy.h"
-struct ProfileDocument;
 
 enum TuiTab {
     TUI_TAB_VF = 0,
@@ -77,9 +76,6 @@ enum TuiField {
     TUI_FIELD_XBAR_MSVDD,
     TUI_FIELD_SYS_CLK_OFFSET,
     TUI_FIELD_VIDEO_CLK_OFFSET,
-    TUI_FIELD_SOURCE_POINT,
-    TUI_FIELD_SOURCE_GRAPHICS,
-    TUI_FIELD_SOURCE_MEMORY,
 };
 
 enum ActionType {
@@ -102,16 +98,6 @@ enum ActionType {
     ACTION_LOAD,
     ACTION_PROFILE_LOAD_DISCARD,
     ACTION_PROFILE_LOAD_KEEP,
-    ACTION_CHECK_SOURCE,
-    ACTION_USE_MAPPED,
-    ACTION_SOURCE_GRAPHICS_CHOICE,
-    ACTION_SOURCE_MEMORY_CHOICE,
-    ACTION_CONVERT_SOURCE_CYCLE,
-    ACTION_CONVERT_SOURCE_ACCEPT,
-    ACTION_RESTORE_CAPTURED_TAIL,
-    ACTION_ASSIST_CURVE_CYCLE,
-    ACTION_ASSIST_CURVE_PREPARE,
-    ACTION_ASSIST_CURVE_ACCEPT,
     ACTION_CAPTURE_SOURCE,
     ACTION_CAPTURE_DOMAIN,
     ACTION_CAPTURE_READ,
@@ -222,20 +208,6 @@ struct TuiViewModel {
     bool dirty;
     bool profileLoadPending;
     int pendingProfileSlot;
-    const ProfileDocument* sourceDocument;
-    int sourceScroll;
-    const std::vector<std::string>* sourceCheckLines;
-    bool sourceMappedReady = false, sourceMappedAccepted = false;
-    gc_u32 sourceGraphicsChoice, sourceMemoryChoice;
-    int sourceConvertCount = 0;
-    int sourceConvertIndex = 0;
-    bool sourceConvertReady = false;
-    bool sourceRestoreTailVisible = false;
-    bool sourceCanRestoreTail = false;
-    char sourceConvertLabel[32]{};
-    int sourceAssistMode = 0;
-    bool sourceAssistReady = false;
-    bool sourceAssistPending = false;
     TuiCaptureView capture;
     TuiTransferView transfer;
     bool serviceOnline;
@@ -279,8 +251,6 @@ struct TuiLayout {
     TuiRect graphRect;
     int vfFirstVisible;
     int vfVisibleRows;
-    int sourceVisibleRows;
-    int sourceLineCount;
     bool captureVisible = false;
     int captureVisibleRows = 0, captureLineCount = 0;
     bool transferVisible = false;

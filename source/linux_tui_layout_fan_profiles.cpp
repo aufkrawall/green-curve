@@ -3,7 +3,6 @@
 
 #include "profile_capture_save.h"
 #include "linux_tui_layout_internal.h"
-#include "linux_tui_document_view.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -226,36 +225,8 @@ void draw_profile_panel(TuiCanvas* c, const TuiRect& panel) {
     c->button(TuiRect{x + 24, y + 2, 11, 1}, "CLEAR", ACTION_CLEAR_PROFILE);
     c->button(TuiRect{x + 36, y + 2, 15, 1}, "RESET DRAFT",
               ACTION_RESET_DRAFT);
-    if (vm.sourceDocument) {
-        c->button({x + 52, y + 2, 9, 1}, vm.sourceCheckLines ? "SOURCE" : "CHECK", ACTION_CHECK_SOURCE);
-        const auto name = [](gc_u32 choice) { return choice == CLOCK_OFFSET_SURFACE_P0 ? "P0" :
-            choice == CLOCK_OFFSET_SURFACE_GLOBAL ? "global" : choice == DESIRED_GRAPHICS_VF_COMPONENT ? "VF" : "auto"; };
-        const std::string graphics = std::string("Graphics preview: ") + name(vm.sourceGraphicsChoice);
-        const std::string memory = std::string("Memory preview: ") + name(vm.sourceMemoryChoice);
-        if (vm.sourceDocument->graphicsOffset.present)
-            c->button({x, y + 4, 30, 1}, graphics.c_str(), ACTION_SOURCE_GRAPHICS_CHOICE);
-        if (vm.sourceDocument->hasMemoryOffset)
-            c->button({x + 32, y + 4, 30, 1}, memory.c_str(), ACTION_SOURCE_MEMORY_CHOICE);
-        c->button({x, y + 5, 21, 1}, vm.sourceMappedAccepted ? "MAPPED STAGED" : "USE MAPPED DRAFT",
-            ACTION_USE_MAPPED, 0, 0, vm.sourceMappedReady);
-        if (vm.sourceConvertCount > 0) {
-            c->button({x + 22, y + 5, 16, 1}, vm.sourceConvertLabel[0] ? vm.sourceConvertLabel : "CVT:domain",
-                ACTION_CONVERT_SOURCE_CYCLE);
-            c->button({x + 39, y + 5, 9, 1}, "CONVERT", ACTION_CONVERT_SOURCE_ACCEPT, 0, 0, vm.sourceConvertReady);
-        }
-        if (vm.sourceRestoreTailVisible)
-            c->button({x + 49, y + 5, 14, 1}, "RESTORE TAIL", ACTION_RESTORE_CAPTURED_TAIL, 0, 0, vm.sourceCanRestoreTail);
-        const char* assistText = vm.sourceAssistMode == 1 ? "Assist: Closest target"
-            : vm.sourceAssistMode == 2 ? "Assist: Prefix+target" : "Assist: Lower prefix";
-        c->button({x, y + 6, 24, 1}, assistText, ACTION_ASSIST_CURVE_CYCLE);
-        c->button({x + 25, y + 6, 15, 1}, "PREPARE CURVE", ACTION_ASSIST_CURVE_PREPARE, 0, 0, vm.sourceAssistReady);
-        if (vm.sourceAssistPending)
-            c->button({x + 41, y + 6, 15, 1}, "ACCEPT ASSIST", ACTION_ASSIST_CURVE_ACCEPT, 0, 0, true);
-        return;
-    }
     c->text(x, y + 4, panel.width - 6,
-            vm.sourceDocument ? "Portable source staged; destination mapping is pending"
-            : vm.dirty ? "● staged values differ from accepted intent"
+            vm.dirty ? "● staged values differ from accepted intent"
                      : vm.intentReadback.divergedDomains
                         ? "● accepted intent differs from hardware readback"
                         : "● editor matches accepted intent and hardware",
@@ -505,11 +476,6 @@ void tui_draw_fan_tab(TuiCanvas* canvas, const TuiRect& content) {
 
 void tui_draw_profiles_tab(TuiCanvas* canvas, const TuiRect& content) {
     TuiLayout* out = canvas->layout();
-    if (canvas->view().sourceDocument) {
-        draw_profile_panel(canvas, {2, content.y, content.width - 2, 10});
-        tui_draw_document_source(canvas, {2, content.y + 10, content.width - 2, content.height - 10});
-        return;
-    }
     if (out->breakpoint == TUI_BREAKPOINT_WIDE) {
         int half = content.width / 2;
         int top = content.height / 2;

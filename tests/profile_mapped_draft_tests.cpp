@@ -1,25 +1,22 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
+// Mapped-draft acceptance and the shared review engines the CLI uses:
+// domain conversion, captured-tail restore and curve assistance. No UI state.
+// Cases 9630-9680 and 9870-9874.
 #include "profile_review_fixture.h"
 #include "profile_mapped_draft.h"
-#include "linux_tui_mapped_draft.h"
 #include "service_control_review.h"
 #include "gui_service_actionability_policy.h"
 
 int run_profile_mapped_draft_tests() {
-    auto state = std::make_unique<TuiState>();
     auto live = std::make_unique<ServiceResponse>();
     profile_review_fixture::live(*live);
-    state->document.valid = true;
-    state->document.value = state->document.saved = profile_review_fixture::source();
-    state->document.revision = 29;
-    state->serviceOnline = true;
-    state->service = *live;
-    state->sourceReviewContext = linux_tui_review_context(*live);
-    profile_review_fixture::capture(*live, state->document.value);
-    state->sourceReview = std::make_unique<ProfileDestinationReview>();
-    auto &review = *state->sourceReview;
-    auto &source = state->document.value;
+    auto savedSource = profile_review_fixture::source();
+    auto sourceHolder = std::make_unique<ProfileDocument>(savedSource);
+    auto &source = *sourceHolder;
+    profile_review_fixture::capture(*live, source);
+    auto reviewHolder = std::make_unique<ProfileDestinationReview>();
+    auto &review = *reviewHolder;
     std::vector<std::string> lines;
     if (profile_editor_check(
             source, 0, 0,
@@ -35,19 +32,15 @@ int run_profile_mapped_draft_tests() {
     DesiredSettings desired{};
     desired.hasGpuOffset = 1;
     gc_u64 token = 123;
-    if (profile_mapped_draft_prepare(review, source, 29, desired, token) || !desired.hasGpuOffset || token != 123 ||
-        tui_use_mapped_draft(*state))
-        return 9631; // Report must be explicitly presented first.
-    state->sourceCheckVisible = true;
-    if (!tui_use_mapped_draft(*state) || !review.accepted || !tui_mapped_draft_available(*state) ||
+    if (profile_mapped_draft_prepare(review, source, 29, desired, token) || !desired.hasGpuOffset || token != 123)
+        return 9631; // The mapped draft must be explicitly accepted first.
+    if (!profile_mapped_draft_accept(review, source, 29) || !review.accepted ||
         !profile_mapped_draft_prepare(review, source, 29, desired, token) || desired.hasGpuOffset ||
         desired.memOffsetHz != -123500000 || desired.memOffsetSurface != CLOCK_OFFSET_SURFACE_P0 ||
-        desired.applicationScope != DESIRED_SCOPE_UPDATE_INCLUDED || token != live->capture.revision ||
-        profile_editor_document_dirty(state->document) || state->service.state.activeDesiredValid ||
-        state->draftAttached)
+        desired.applicationScope != DESIRED_SCOPE_UPDATE_INCLUDED || token != live->capture.revision)
         return 9632;
     // Acceptance is neither a rounded live projection nor a local save/ownership acknowledgment.
-    if (source.memoryOffsetHz != -123500000 || state->document.saved.memoryOffsetHz != source.memoryOffsetHz)
+    if (source.memoryOffsetHz != -123500000 || savedSource.memoryOffsetHz != source.memoryOffsetHz)
         return 9633;
     ServiceRequest request{};
     request.magic = SERVICE_PROTOCOL_MAGIC;
@@ -79,30 +72,12 @@ int run_profile_mapped_draft_tests() {
     if (service_control_review_matches(request, nullptr, read, why, sizeof(why)) || reads != 2)
         return 9648;
     live->capture = review.capture;
-    TuiViewModel vm{};
-    vm.desired = &desired;
-    vm.sourceDocument = &source;
-    vm.sourceCheckLines = &lines;
-    vm.sourceMappedReady = true;
-    vm.tab = TUI_TAB_PROFILES;
-    vm.currentSlot = 1;
-    for (const auto dimensions : {TuiRect{0, 0, 72, 24}, TuiRect{0, 0, 100, 32}, TuiRect{0, 0, 160, 48}}) {
-        TuiLayout layout{};
-        build_tui_layout(vm, dimensions.width, dimensions.height, &layout);
-        bool found = false;
-        for (const auto &item : layout.actions)
-            found |= item.type == ACTION_USE_MAPPED;
-        if (!found || !tui_layout_actions_valid(layout))
-            return 9672;
-    }
-    ++state->document.revision;
-    if (tui_mapped_draft_available(*state) || profile_mapped_draft_prepare(review, source, 30, desired, token))
-        return 9634;
-    --state->document.revision;
+    if (profile_mapped_draft_prepare(review, source, 30, desired, token))
+        return 9634; // A different source revision cannot reuse the review.
     source.source.driverVersion[0] = 'x';
     if (profile_mapped_draft_ready(review, source, 29))
         return 9635; // Metadata edits are source changes too.
-    source = state->document.saved;
+    source = savedSource;
     const auto capture = review.capture;
     ++review.capture.memory.value;
     if (profile_mapped_draft_prepare(review, source, 29, desired, token))
@@ -121,122 +96,109 @@ int run_profile_mapped_draft_tests() {
     review.controls.disposition = PROFILE_CONTROL_CONDITIONAL;
     if (!profile_mapped_draft_accept(review, source, 29))
         return 9640;
-    state->edit.active = true;
-    if (tui_mapped_draft_available(*state))
-        return 9641;
-    state->edit.active = false;
-    ++state->service.state.serviceInstanceId;
-    if (tui_mapped_draft_available(*state))
-        return 9642;
-    state->service = *live;
-    state->service.capture = {};
-    state->service.state.gpuPhase = SERVICE_GPU_PHASE_RECOVERING;
-    if (tui_mapped_draft_available(*state))
-        return 9643;
-    state->service.state.gpuPhase = SERVICE_GPU_PHASE_READY;
-    state->service.desired.hasMemOffset = 1;
-    state->service.state.activeDesiredValid = 1;
-    if (tui_mapped_draft_available(*state))
-        return 9644;
-    state->service.state.activeDesiredValid = 0;
-    state->service.desired = {};
-    if (!tui_mapped_draft_available(*state))
-        return 9645;
-    state->service.state.validSections = SERVICE_STATE_SECTION_ADAPTER_IDENTITY;
-    if (tui_mapped_draft_available(*state))
-        return 9674;
-    state->service = *live;
-    state->capture.active = true;
-    if (tui_mapped_draft_available(*state))
-        return 9675;
-    state->capture.active = false;
-    state->transfer.active = true;
-    if (tui_mapped_draft_available(*state))
-        return 9676;
-    state->transfer.active = false;
-    state->profileLoadPending = true;
-    if (tui_mapped_draft_available(*state))
-        return 9677;
-    state->profileLoadPending = false;
     review.mapping.structurallyValid = false;
     if (profile_mapped_draft_accept(review, source, 29))
         return 9646;
 
-    // UNIT-07 & CAP-10 TUI actions: batch conversion updates draft while saved stays exact; tail restore works offline without recapture.
+    // Batch conversion produces a derived document while the reviewed source stays exact.
     auto convDoc = profile_review_fixture::source();
     convDoc.memoryOffsetHz = -500;
-    state->document.valid = true; state->document.value = state->document.saved = convDoc;
-    state->document.revision = 40;
-    state->service = *live;
-    state->sourceReviewContext = linux_tui_review_context(*live);
-    profile_review_fixture::capture(*live, state->document.value);
-    state->sourceReview = std::make_unique<ProfileDestinationReview>();
-    if (profile_editor_check(state->document.value, 0, 0,
-            [&](gc_u32 domains, auto& out, auto&) { if (domains != 511u) return false; out = live->capture; return true; },
-            lines, state->sourceReview.get(), 40) != PROFILE_COMMAND_DECISION ||
-        !state->sourceReview->conversions.anyConvertible()) return 9678;
-    state->sourceCheckVisible = true;
-    char logLine[256]{};
-    if (!tui_cycle_source_conversion(*state) || !tui_accept_source_conversion(*state, logLine, sizeof(logLine)) ||
-        !strstr(logLine, "profile-map: domain=memory") || !strstr(logLine, "decision=accepted") ||
-        state->document.value.memoryOffsetHz != -500000 || state->document.saved.memoryOffsetHz != -500 ||
-        state->document.revision != 41 || state->sourceReview != nullptr) return 9679;
+    profile_review_fixture::capture(*live, convDoc);
+    auto convReview = std::make_unique<ProfileDestinationReview>();
+    const auto liveCapture = [&](gc_u32 domains, auto &out, auto &) {
+        if (domains != 511u)
+            return false;
+        out = live->capture;
+        return true;
+    };
+    if (profile_editor_check(convDoc, 0, 0, liveCapture, lines, convReview.get(), 40) != PROFILE_COMMAND_DECISION ||
+        !convReview->conversions.anyConvertible())
+        return 9678;
+    int convertible = -1;
+    for (int i = 0; i < convReview->conversions.count && convertible < 0; ++i)
+        if (convReview->conversions.items[i].convertible)
+            convertible = i;
+    ProfileDestinationTopology dest{};
+    char summary[256]{};
+    auto derived = std::make_unique<ProfileDocument>();
+    if (convertible < 0 || !profile_destination_from_capture(convReview->capture, dest, why, sizeof(why)) ||
+        !profile_conversion_accept_item(convReview->conversions.items[convertible], convDoc, 40, convReview->capture,
+            dest, convReview->routes, *derived, summary, sizeof(summary), why, sizeof(why)) ||
+        !strstr(summary, "profile-map: domain=memory") || !strstr(summary, "decision=accepted") ||
+        derived->memoryOffsetHz != -500000 || convDoc.memoryOffsetHz != -500)
+        return 9679;
+
+    // Captured-tail restore works on the document alone, without a recapture.
     auto flat = profile_document_make_empty();
     flat.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK;
-    flat.topologyCount = 2; flat.sourceTopologyComplete = true;
-    flat.topology[0] = {10, 22, 662000, 1}; flat.topology[1] = {11, 23, 668250, 1};
+    flat.topologyCount = 2;
+    flat.sourceTopologyComplete = true;
+    flat.topology[0] = {10, 22, 662000, 1};
+    flat.topology[1] = {11, 23, 668250, 1};
     flat.points[0] = {PROFILE_POINT_CAPTURED_OFFSET, 0, 15000500, false, 0, true, 15000500};
     flat.points[1] = {PROFILE_POINT_ABSENT, 0, 0, false, 0, true, -25000500};
-    flat.lock.present = true; flat.lock.mode = LOCK_MODE_FLATTEN;
-    flat.lock.anchorTopologyId = 11; flat.lock.targetFrequencyHz = 1000000000;
-    state->document.value = state->document.saved = flat;
-    if (!tui_restore_captured_tail(*state, logLine, sizeof(logLine)) || state->document.value.lock.present ||
-        !state->document.saved.lock.present || state->document.value.points[1].kind != PROFILE_POINT_CAPTURED_OFFSET ||
-        state->document.value.points[1].capturedOffsetHz != -25000500) return 9680;
+    flat.lock.present = true;
+    flat.lock.mode = LOCK_MODE_FLATTEN;
+    flat.lock.anchorTopologyId = 11;
+    flat.lock.targetFrequencyHz = 1000000000;
+    auto restored = std::make_unique<ProfileDocument>();
+    if (!profile_document_restore_captured_tail(flat, *restored, why, sizeof(why)) || restored->lock.present ||
+        !flat.lock.present || restored->points[1].kind != PROFILE_POINT_CAPTURED_OFFSET ||
+        restored->points[1].capturedOffsetHz != -25000500)
+        return 9680;
 
-    // HELP-01..08 TUI actions: cycle mode, prepare two-step preview (draft untouched until ACCEPT ASSIST), reject stale revision.
+    // Curve assistance: a two-step preview that leaves the document untouched until accepted,
+    // and a stale source revision is refused.
     auto assistDoc = profile_document_make_empty();
     assistDoc.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK;
-    assistDoc.topologyCount = 3; assistDoc.sourceTopologyComplete = true;
-    for (int i = 0; i < 3; ++i) assistDoc.topology[i] = {10 + i, 22 + i, 662000 + (gc_i64)i * 6250, 1};
-    assistDoc.points[0].kind = PROFILE_POINT_ABSOLUTE_FREQUENCY; assistDoc.points[0].absoluteFrequencyHz = 1200000000LL;
-    assistDoc.points[1].kind = PROFILE_POINT_ABSOLUTE_FREQUENCY; assistDoc.points[1].absoluteFrequencyHz = 1000000000LL;
-    assistDoc.lock.present = true; assistDoc.lock.mode = LOCK_MODE_FLATTEN;
-    assistDoc.lock.anchorTopologyId = 11; assistDoc.lock.targetFrequencyHz = 1050000250LL;
-    state->document.value = state->document.saved = assistDoc; state->document.revision = 80;
-    profile_review_fixture::capture(*live, state->document.value);
+    assistDoc.topologyCount = 3;
+    assistDoc.sourceTopologyComplete = true;
+    for (int i = 0; i < 3; ++i)
+        assistDoc.topology[i] = {10 + i, 22 + i, 662000 + (gc_i64)i * 6250, 1};
+    assistDoc.points[0].kind = PROFILE_POINT_ABSOLUTE_FREQUENCY;
+    assistDoc.points[0].absoluteFrequencyHz = 1200000000LL;
+    assistDoc.points[1].kind = PROFILE_POINT_ABSOLUTE_FREQUENCY;
+    assistDoc.points[1].absoluteFrequencyHz = 1000000000LL;
+    assistDoc.lock.present = true;
+    assistDoc.lock.mode = LOCK_MODE_FLATTEN;
+    assistDoc.lock.anchorTopologyId = 11;
+    assistDoc.lock.targetFrequencyHz = 1050000250LL;
+    profile_review_fixture::capture(*live, assistDoc);
     {
-        auto& o = live->capture; o.pointCount = 3;
+        auto &o = live->capture;
+        o.pointCount = 3;
         for (gc_u32 i = 0; i < 3; ++i) {
-            o.points[i].index = 22 + i; o.points[i].voltageUv = 662000 + (gc_i64)i * 6250;
+            o.points[i].index = 22 + i;
+            o.points[i].voltageUv = 662000 + (gc_i64)i * 6250;
             o.points[i].writableState = o.points[i].frequencyValid = o.points[i].offsetValid = 1;
-            o.points[i].offsetHz = 0; o.points[i].frequencyHz = 1000000000LL + (gc_i64)i * 50000000LL;
+            o.points[i].offsetHz = 0;
+            o.points[i].frequencyHz = 1000000000LL + (gc_i64)i * 50000000LL;
         }
         o.vfLimits = {1, 1, 1, 1, VF_OFFSET_RANGE_SOURCE_NVML_GRAPHICS, -500000000, 500000000, 500};
         o.fingerprint = hardware_capture_fingerprint(o);
         o.revision = service_control_review_revision(o.fingerprint, nullptr);
     }
-    state->service = *live;
-    state->sourceReviewContext = linux_tui_review_context(*live);
-    state->sourceReview = std::make_unique<ProfileDestinationReview>();
-    if (profile_editor_check(state->document.value, 0, 0,
-            [&](gc_u32 domains, auto& out, auto&) { if (domains != 511u) return false; out = live->capture; return true; },
-            lines, state->sourceReview.get(), 80) != PROFILE_COMMAND_DECISION) return 9870;
-    state->sourceCheckVisible = true;
-    state->sourceAssistMode = PROFILE_ASSIST_PREFIX;
-    tui_cycle_assist_mode(*state);
-    tui_cycle_assist_mode(*state);
-    if (state->sourceAssistMode != PROFILE_ASSIST_COMBINED) return 9871;
-    if (!tui_prepare_curve_assist(*state, logLine, sizeof(logLine)) || !state->sourceAssistPending ||
-        state->document.value.lock.targetFrequencyHz != 1050000250LL || !state->sourceCheckVisible) return 9872;
-    ++state->document.revision;
-    if (tui_accept_curve_assist(*state, logLine, sizeof(logLine)) ||
-        state->document.value.lock.targetFrequencyHz != 1050000250LL) return 9873;
-    --state->document.revision;
-    if (!tui_accept_curve_assist(*state, logLine, sizeof(logLine)) || state->sourceAssistPending != nullptr ||
-        state->document.value.lock.targetFrequencyHz != 1050000000LL ||
-        state->document.value.points[0].absoluteFrequencyHz != 1050000000LL ||
-        state->document.saved.lock.targetFrequencyHz != 1050000250LL ||
-        state->document.revision != 81) return 9874;
+    auto assistReview = std::make_unique<ProfileDestinationReview>();
+    if (profile_editor_check(assistDoc, 0, 0, liveCapture, lines, assistReview.get(), 80) != PROFILE_COMMAND_DECISION)
+        return 9870;
+    ProfileDestinationTopology assistDest{};
+    if (!profile_destination_from_capture(assistReview->capture, assistDest, why, sizeof(why)))
+        return 9871;
+    auto assist = std::make_unique<ProfileCurveAssistance>();
+    profile_curve_assistance_prepare(assistDoc, assistReview->capture, assistDest, 80, assistReview->routes,
+        PROFILE_ASSIST_COMBINED, *assist);
+    if ((assist->status != PROFILE_ASSIST_PREPARED && assist->status != PROFILE_ASSIST_ESTIMATE) ||
+        assistDoc.lock.targetFrequencyHz != 1050000250LL)
+        return 9872;
+    auto accepted = std::make_unique<ProfileDocument>();
+    if (profile_curve_assistance_accept(*assist, assistDoc, 81, assistReview->capture, assistDest,
+            assistReview->routes, *accepted, why, sizeof(why)) ||
+        assistDoc.lock.targetFrequencyHz != 1050000250LL)
+        return 9873;
+    if (!profile_curve_assistance_accept(*assist, assistDoc, 80, assistReview->capture, assistDest,
+            assistReview->routes, *accepted, why, sizeof(why)) ||
+        accepted->lock.targetFrequencyHz != 1050000000LL || accepted->points[0].absoluteFrequencyHz != 1050000000LL ||
+        assistDoc.lock.targetFrequencyHz != 1050000250LL)
+        return 9874;
     return 0;
 }

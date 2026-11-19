@@ -8,17 +8,10 @@
 // Freeze the loaded record before asking. Confirmation never rereads another
 // process's newer file generation, writes a slot or invokes the daemon.
 template<class Bind>
-static inline void tui_install_profile_load(TuiState& state, const ProfileEditorCandidate& loaded, int slot, Bind bind, bool captured = false) {
-    state.desired = loaded.settings; state.document = loaded.source; state.currentSlot = slot; state.edit = {};
-    state.sourceCheckVisible = false; state.sourceCheckLines.clear(); state.sourceReview.reset();
-    state.sourceGraphicsChoice = state.sourceMemoryChoice = 0;
+static inline void tui_install_profile_load(TuiState& state, const DesiredSettings& loaded, int slot, Bind bind) {
+    state.desired = loaded; state.currentSlot = slot; state.edit = {};
     bind(state);
-    if (state.document.valid) {
-        state.dirty = true; state.draftAttached = false; state.draftBinding = {}; state.sourceScroll = 0; state.tab = TUI_TAB_PROFILES;
-        if (captured) snprintf(state.status, sizeof(state.status), "Captured source draft; Save stores it; destination review is required before Apply");
-        else snprintf(state.status, sizeof(state.status), "Loaded slot %d as portable source; destination review is required before Apply", slot);
-    }
-    else if (state.draftAttached)
+    if (state.draftAttached)
         snprintf(state.status, sizeof(state.status), "Loaded slot %d into the staged editor", slot);
     else if (state.serviceOnline) {
         const gc_u32 requested = service_desired_mutation_domains(&state.desired);
@@ -29,17 +22,17 @@ static inline void tui_install_profile_load(TuiState& state, const ProfileEditor
     }
     else
         snprintf(state.status, sizeof(state.status), "Loaded slot %d locally; daemon is offline, so Apply remains detached", slot);
-    linux_debug_logf("profile-draft: staged source=%s slot=%d attached=%d", captured ? "capture" : "load", slot, state.draftAttached ? 1 : 0);
+    linux_debug_logf("profile-draft: staged source=load slot=%d attached=%d", slot, state.draftAttached ? 1 : 0);
 }
 template<class Read, class Bind>
 static inline void tui_request_profile_load(TuiState& state, Read read, Bind bind) {
-    auto loaded = std::make_unique<ProfileEditorCandidate>(); char error[256]{};
+    auto loaded = std::make_unique<DesiredSettings>(); char error[256]{};
     if (!read(state.currentSlot, *loaded, error, sizeof(error))) {
         snprintf(state.status, sizeof(state.status), "Profile load failed: %.220s", error);
         linux_debug_logf("profile-draft: load failed slot=%d", state.currentSlot);
         return;
     }
-    if ((state.document.valid ? profile_editor_document_dirty(state.document) : state.dirty) || state.edit.active) {
+    if (state.dirty || state.edit.active) {
         state.pendingProfile = *loaded; state.pendingProfileSlot = state.currentSlot;
         state.profileLoadPending = true; state.profileLoadPresented = false; state.focusIndex = 1;
         snprintf(state.status, sizeof(state.status), "Unsaved draft: confirm Discard and load or Keep draft");

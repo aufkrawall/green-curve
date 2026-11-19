@@ -1532,48 +1532,68 @@ def check_profile_draft_replacement(ctx, require_text):
                           "unavailable target comparison cannot discard dirty GUI values implicitly")
 
 
+# The Linux TUI edits ordinary profile slots only. Imported and captured portable
+# documents are converted to an ordinary slot (profile_slot_document_runtime) and
+# every apply path reads that slot, so no TUI code may keep a second, source
+# document editing mode.
+_TUI_SOURCE_MODE_FILES = (
+    "linux_tui_actions.cpp", "linux_tui_render.cpp", "linux_tui_refresh.cpp",
+    "linux_tui_mutation_actions.cpp", "linux_tui_authority_runtime.cpp",
+    "linux_tui_internal.h", "linux_tui_layout.h", "linux_tui_layout.cpp",
+    "linux_tui_layout_fan_profiles.cpp", "linux_tui_profile_load.h",
+    "linux_tui_edit_policy.h",
+)
+_TUI_SOURCE_MODE_TOKENS = (
+    "document.valid", "sourceReview", "sourceDocument", "sourceCheck", "ACTION_CHECK_SOURCE",
+    "ACTION_USE_MAPPED", "TUI_FIELD_SOURCE", "tui_mapped_draft", "allowDecimal",
+)
+_TUI_SOURCE_MODE_FILES_GONE = (
+    "linux_tui_source_edit.h", "linux_tui_source_check.h", "linux_tui_mapped_draft.h",
+    "linux_tui_document_view.h", "linux_tui_review_lifetime.h", "profile_editor_document.h",
+    "profile_editor_source_edit.h", "profile_editor_source_rows.h",
+)
+
+
+def _forbid_tui_source_mode(ctx, forbid_text):
+    for name in _TUI_SOURCE_MODE_FILES_GONE:
+        if os.path.exists(_p(ctx, name)):
+            print("Regression source check FAILED: %s was removed with the TUI source-document "
+                  "mode and must not return" % name)
+            sys.exit(1)
+    for name in _TUI_SOURCE_MODE_FILES:
+        for token in _TUI_SOURCE_MODE_TOKENS:
+            forbid_text(_p(ctx, name), token,
+                        "the TUI edits ordinary slots only; no source-document mode (%s)" % token)
+
+
 def check_canonical_tui_documents(ctx, require_text, forbid_text):
     actions = _p(ctx, "linux_tui_actions.cpp")
-    require_text(actions, "profile_slot_document_runtime(*source, haveLive ? live.get() : nullptr, loaded.settings",
+    require_text(actions, "profile_slot_document_runtime(*source, haveLive ? live.get() : nullptr, loaded,",
                  "TUI Load turns imported slots into the ordinary record every apply path uses")
-    ctx.require_order_in_operation(actions, "case ACTION_SAVE:", "profile_document_slot_save(io,",
-                                   "save_profile_to_config_path(", "canonical sources save before the legacy display writer")
     ctx.require_order_in_operation(_p(ctx, "linux_tui_mutation_actions.cpp"), "void apply_to_gpu(",
-                                   "if (mappedSource && !tui_mapped_draft_available(*state))", "if (!state->serviceOnline)",
-                                   "unreviewed source documents refuse before any Apply transport")
+                                   "if (!state->draftAttached ||", "linux_daemon_apply_checked(",
+                                   "a detached TUI draft refuses before any Apply transport")
+    _forbid_tui_source_mode(ctx, forbid_text)
     require_text(_p(ctx, "profile_mapped_draft.h"), "!review.accepted || !profile_mapped_draft_ready",
                  "source submission requires an explicit current mapped-draft decision")
     require_text(_p(ctx, "gui_mutation_worker.cpp"), "work.request.expectedControlFingerprint = reviewedControls;",
                  "the GUI sends its complete source control revision")
-    require_text(_p(ctx, "linux_daemon_client.h"), "req.expectedControlFingerprint = reviewedControls;",
-                 "the TUI sends its complete source control revision")
     require_text(_p(ctx, "profile_commands_linux.h"), "struct LinuxProfileCommands : LinuxProfileSlotIO",
                  "CLI and TUI use the same synchronized slot writer")
     require_text(_p(ctx, "profile_slot_io_linux.h"), "LinuxConfigLock lock(path.c_str(),",
                  "source slot commits keep the configuration lock")
     require_text(_p(ctx, "profile_slot_io_linux.h"), "profile_bank_commit_edit(edit,",
                  "source slot commits compare the reviewed generation before replacement")
-    require_text(actions, "case ACTION_CHECK_SOURCE:", "the TUI exposes explicit source destination checking")
     require_text(_p(ctx, "linux_tui_capture_transport.h"), "request.command = SERVICE_CMD_CAPTURE_CURRENT;",
-                 "destination Check uses the passive command")
+                 "TUI Capture uses the passive command")
     require_text(_p(ctx, "profile_editor_check.h"), "profile_check_commands_run(args, io, code, review, sourceRevision)",
                  "editor previews use the tested CLI mapping and feasibility engine")
-    require_text(_p(ctx, "linux_tui_source_check.h"), "state->sourceReview->planned()",
-                 "the editor summarizes typed review results rather than parsing report text")
     require_text(_p(ctx, "linux_tui_capture_transport.h"), "request.targetGpu = context.gpu;",
-                 "source checks name the shown GPU without selecting or initializing another one")
+                 "TUI Capture names the shown GPU without selecting or initializing another one")
     require_text(_p(ctx, "linux_tui_capture_transport.h"), "linux_tui_review_capture_matches(context, *response)",
                  "Capture adoption checks the service and GPU lifetime")
-    require_text(_p(ctx, "linux_tui_refresh.cpp"), "tui_reconcile_source_review(*state);",
-                 "answered refreshes expire stale destination previews")
-    require_text(_p(ctx, "linux_tui_document_view.h"), "lines.swap(wrapped);",
-                 "long feasibility details wrap before scrolling and rendering")
-    ctx.require_order_in_operation(actions, "void tui_begin_edit(", "tui_begin_source_edit(*state, field, index)",
-                                   "field_edit_available(state, field)", "offline source edits precede destination availability checks")
-    ctx.require_order_in_operation(actions, "void tui_commit_edit(", "tui_commit_source_edit(*state)",
-                                   "parse_int_strict(", "source values retain exact decimal precision")
-    require_text(actions, "&state->edit.selectAll, character, tui_source_field(state->edit.field)",
-                 "decimal input is enabled only for source frequency fields")
+    require_text(_p(ctx, "linux_tui_refresh.cpp"), "tui_reconcile_capture(*state, \"GPU session or ownership changed\");",
+                 "answered refreshes expire a stale Capture read")
     require_text(actions, "desired_memory_edit_physical_mhz(&desired, clamp_int(value, -3000, 3000))",
                  "typed memory replaces precise authority while keeping the named control")
     require_text(actions, "desired_power_edit_percent(&desired, clamp_power_limit_pct(value))",
@@ -1581,7 +1601,6 @@ def check_canonical_tui_documents(ctx, require_text, forbid_text):
     require_text(actions, "tui_capture_accept(*state, [&](int slot, const DesiredSettings& record",
                  "Capture saves an ordinary slot record instead of replacing the editor draft")
     require_text(actions, "tui_capture_read(*state,", "Capture reads through the bounded passive adapter")
-    require_text(actions, "state->document.unsaved = false;", "successful source Save clears the unsaved-capture marker")
     ctx.require_order_in_operation(_p(ctx, "linux_tui_render.cpp"), "void tui_handle_event(", "tui_capture_modal_event(*state, event,",
                                    "tui_profile_load_event(", "capture modals isolate input before draft edits and file actions")
     forbid_text(_p(ctx, "main_runtime_control.cpp"), "captureAllCurvePoints",
@@ -1618,8 +1637,6 @@ def check_wndproc_stack_discipline(ctx, require_text, forbid_text):
                  "review reset clears large structs without stack temporaries")
     require_text(_p(ctx, "profile_domain_conversions.h"), "profile_conversion_plan_reset(",
                  "conversion plan reset clears in place without stack temporaries")
-    require_text(_p(ctx, "profile_editor_document.h"), "profile_editor_document_reset(",
-                 "editor document reset clears in place without stack temporaries")
     forbid_text(_p(ctx, "profile_editor_review_session.h"), "review = {};",
                 "review session clears review in place rather than allocating a 190 KB stack temporary")
 

@@ -1,6 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
-#include "linux_tui_internal.h"
 #include "profile_editor_check.h"
 #include <memory>
 
@@ -34,7 +33,9 @@ struct Capture {
     }
 };
 }
-int run_tui_profile_check_tests() {
+// Shared destination-check engine (CLI --check-profile and the Windows capture
+// review share it); no TUI state is involved. Cases 9230-9274.
+int run_profile_editor_check_tests() {
     auto source = std::make_unique<ProfileDocument>(profile_document_make_empty());
     source->domains = PROFILE_DOMAIN_MEMORY; source->hasMemoryOffset = true;
     source->memoryOffsetHz = -123500000; source->memorySurface = CLOCK_OFFSET_SURFACE_P0;
@@ -64,19 +65,6 @@ int run_tui_profile_check_tests() {
     state.malformed = false; state.fail = true;
     if (profile_editor_check(*source, 0, 0, capture, lines) != PROFILE_COMMAND_IO ||
         text().find("session unavailable") == std::string::npos) return 9237;
-    // Reports wrap long structured reasons rather than clipping their trailing bounds.
-    lines = {"Mapping and feasibility report with a long explanatory constraint followed by requested=123456789 and maximum=987654321"};
-    TuiViewModel vm{}; DesiredSettings display{}; vm.desired = &display; vm.sourceDocument = source.get();
-    vm.sourceCheckLines = &lines; vm.tab = TUI_TAB_PROFILES; vm.currentSlot = 1;
-    for (const auto size : {TuiRect{0,0,72,24}, TuiRect{0,0,100,32}, TuiRect{0,0,160,48}}) {
-        TuiLayout layout{}; build_tui_layout(vm, size.width, size.height, &layout);
-        if (!tui_layout_actions_valid(layout) || layout.sourceVisibleRows <= 0 || layout.sourceLineCount < 1) return 9238;
-        bool check = false, memory = false;
-        for (const auto& a : layout.actions) { check |= a.type == ACTION_CHECK_SOURCE; memory |= a.type == ACTION_SOURCE_MEMORY_CHOICE; }
-        if (!check || !memory) return 9239;
-        std::string cells; for (const auto& cell : layout.cells) cells += cell.glyph;
-        if (cells.find("maximum=987654321") == std::string::npos) return 9240;
-    }
     auto review = std::make_unique<ProfileDestinationReview>();
     state.fail = false;
     if (profile_editor_check(*source, 0, CLOCK_OFFSET_SURFACE_GLOBAL, capture, lines, review.get(), 91) != PROFILE_COMMAND_DECISION ||
@@ -117,31 +105,5 @@ int run_tui_profile_check_tests() {
     ProfileEditorCheckIO<decltype(capture)> io{*source, capture, lines}; int code = 42;
     if (profile_check_commands_run({}, io, code, review.get()) || code != 42 || review->stage != PROFILE_REVIEW_EMPTY ||
         review->capture.valid || review->runtime.hasMemOffset) return 9274;
-    vm.sourceConvertCount = 1; vm.sourceConvertReady = true;
-    snprintf(vm.sourceConvertLabel, sizeof(vm.sourceConvertLabel), "CVT:memory");
-    vm.sourceRestoreTailVisible = true; vm.sourceCanRestoreTail = true;
-    for (const auto size : {TuiRect{0,0,72,24}, TuiRect{0,0,100,32}, TuiRect{0,0,160,48}}) {
-        TuiLayout layout{}; build_tui_layout(vm, size.width, size.height, &layout);
-        if (!tui_layout_actions_valid(layout)) return 9275;
-        bool cyc = false, cvt = false, rst = false;
-        for (const auto& a : layout.actions) {
-            cyc |= a.type == ACTION_CONVERT_SOURCE_CYCLE;
-            cvt |= a.type == ACTION_CONVERT_SOURCE_ACCEPT;
-            rst |= a.type == ACTION_RESTORE_CAPTURED_TAIL;
-        }
-        if (!cyc || !cvt || !rst) return 9276;
-    }
-    vm.sourceAssistReady = true; vm.sourceAssistPending = true; vm.sourceAssistMode = PROFILE_ASSIST_COMBINED;
-    for (const auto size : {TuiRect{0,0,72,24}, TuiRect{0,0,100,32}, TuiRect{0,0,160,48}}) {
-        TuiLayout layout{}; build_tui_layout(vm, size.width, size.height, &layout);
-        if (!tui_layout_actions_valid(layout) || layout.sourceVisibleRows <= 0) return 9860;
-        bool cyc = false, prep = false, acc = false;
-        for (const auto& a : layout.actions) {
-            cyc |= a.type == ACTION_ASSIST_CURVE_CYCLE;
-            prep |= a.type == ACTION_ASSIST_CURVE_PREPARE;
-            acc |= a.type == ACTION_ASSIST_CURVE_ACCEPT;
-        }
-        if (!cyc || !prep || !acc) return 9861;
-    }
     return 0;
 }

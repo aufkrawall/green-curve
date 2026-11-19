@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "linux_tui_layout_internal.h"
-#include "linux_tui_document_view.h"
+#include <algorithm>
+#include <cstdio>
+#include <string>
 #include "profile_legacy_ini.h"
 
 // Export: one row per slot. Import: one row per record in the file, each with

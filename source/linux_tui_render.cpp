@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 #include "linux_tui_internal.h"
-#include "linux_tui_source_edit.h"
-#include "linux_tui_mapped_draft.h"
 #include "linux_tui_capture_input.h"
 #include "linux_tui_transfer.h"
 #include "linux_tui_profile_load.h"
@@ -113,34 +111,11 @@ void populate_view_model(const TuiState& state, TuiViewModel* vm,
     vm->focusIndex = state.focusIndex;
     vm->dirty = state.dirty;
     vm->profileLoadPending = state.profileLoadPending; vm->pendingProfileSlot = state.pendingProfileSlot;
-    vm->sourceDocument = state.document.valid ? &state.document.value : nullptr; vm->sourceScroll = state.sourceScroll;
-    vm->sourceCheckLines = state.sourceCheckVisible ? &state.sourceCheckLines : nullptr;
-    vm->sourceMappedReady = state.sourceCheckVisible && tui_mapped_draft_available(state, false);
-    vm->sourceMappedAccepted = tui_mapped_draft_available(state);
-    vm->dirty |= vm->sourceMappedAccepted;
-    vm->sourceGraphicsChoice = state.sourceGraphicsChoice; vm->sourceMemoryChoice = state.sourceMemoryChoice;
-    if (state.document.valid) {
-        vm->sourceRestoreTailVisible = state.document.value.lock.present;
-        vm->sourceCanRestoreTail = !state.edit.active && profile_document_can_restore_captured_tail(state.document.value);
-        if (tui_source_conversion_context_ready(state) && state.sourceReview->conversions.count > 0) {
-            vm->sourceConvertCount = state.sourceReview->conversions.count;
-            const int idx = state.sourceConvertIndex >= 0 && state.sourceConvertIndex < vm->sourceConvertCount
-                ? state.sourceConvertIndex : 0;
-            vm->sourceConvertIndex = idx;
-            const auto& item = state.sourceReview->conversions.items[idx];
-            vm->sourceConvertReady = item.convertible;
-            snprintf(vm->sourceConvertLabel, sizeof(vm->sourceConvertLabel), "CVT:%s%s",
-                tui_conversion_short_name(item.kind), item.convertible ? "" : "*");
-        }
-        vm->sourceAssistMode = state.sourceAssistMode >= 0 && state.sourceAssistMode <= 2 ? state.sourceAssistMode : 0;
-        vm->sourceAssistReady = tui_source_conversion_context_ready(state) && state.document.value.lock.present;
-        vm->sourceAssistPending = vm->sourceAssistReady && state.sourceAssistPending != nullptr;
-    }
     vm->capture = state.capture; vm->capture.report = &state.captureLines;
     vm->transfer = state.transfer; vm->transfer.path = tui_transfer_path_display(state.transferPath);
     vm->transfer.report = &state.transferLines;
     vm->serviceOnline = state.serviceOnline;
-    vm->draftAttached = state.draftAttached || vm->sourceMappedAccepted;
+    vm->draftAttached = state.draftAttached;
     vm->editing = state.edit.active;
     vm->editField = state.edit.field;
     vm->editIndex = state.edit.index;
@@ -248,14 +223,7 @@ void activate_focused(TuiState* state) {
 }
 
 void scroll_current_tab(TuiState* state, int direction, bool page) {
-    if (state->document.valid && state->tab == TUI_TAB_PROFILES) {
-        const int rows = state->layout.sourceVisibleRows > 0 ? state->layout.sourceVisibleRows : 1;
-        state->sourceScroll += direction * (page ? rows : 1);
-        if (state->sourceScroll < 0) state->sourceScroll = 0;
-        const int maximum = std::max(0, state->layout.sourceLineCount - rows);
-        if (state->sourceScroll > maximum) state->sourceScroll = maximum;
-    }
-    else if (state->tab == TUI_TAB_VF) {
+    if (state->tab == TUI_TAB_VF) {
         int amount = page ? state->layout.vfVisibleRows : 3;
         if (amount < 1) amount = 1;
         // Stops at both ends: the top is index 0 and the bottom is the last
@@ -543,10 +511,6 @@ void tui_handle_event(TuiState* state, const TuiInputEvent& event) {
         else if (event.type == TUI_INPUT_BACKSPACE) {
             tui_edit_backspace(state->edit.text, &state->edit.selectAll);
         } else if (event.type == TUI_INPUT_UP || event.type == TUI_INPUT_DOWN) {
-            if (tui_source_field(state->edit.field)) {
-                snprintf(state->status, sizeof(state->status), "Type exact source MHz; Enter commits and Esc cancels");
-                return;
-            }
             TuiField field = state->edit.field;
             int index = state->edit.index;
             int delta = edit_step(field) *

@@ -1069,10 +1069,9 @@ int run_linux_clk_domain_dump_tests();
 // (tests/linux_tui_gpu_target_tests.cpp, 7400-7409 and 7430-7439).
 int run_linux_tui_gpu_target_tests();
 int run_tui_profile_load_tests();
-int run_tui_document_tests();
-int run_tui_profile_check_tests();
-int run_tui_source_edit_tests();
-int run_tui_review_session_tests();
+int run_profile_document_slot_tests();
+int run_profile_editor_check_tests();
+int run_tui_capture_context_tests();
 int run_scalar_editor_tests();
 int run_profile_editor_transfer_tests();
 int run_profile_review_session_tests();
@@ -2836,16 +2835,13 @@ static int run_all_tests(int argc, char** argv) {
     if (int loadFailure = run_tui_profile_load_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", loadFailure); return loadFailure;
     }
-    if (int documentFailure = run_tui_document_tests()) {
+    if (int documentFailure = run_profile_document_slot_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", documentFailure); return documentFailure;
     }
-    if (int checkFailure = run_tui_profile_check_tests()) {
+    if (int checkFailure = run_profile_editor_check_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", checkFailure); return checkFailure;
     }
-    if (int editFailure = run_tui_source_edit_tests()) {
-        fprintf(stderr, "regression assertion failed: code %d\n", editFailure); return editFailure;
-    }
-    if (int sessionFailure = run_tui_review_session_tests()) {
+    if (int sessionFailure = run_tui_capture_context_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", sessionFailure); return sessionFailure;
     }
     if (int scalarEditFailure = run_scalar_editor_tests()) {
@@ -8722,6 +8718,9 @@ static int run_all_tests(int argc, char** argv) {
             snprintf(text, sizeof(text), "%d", 100);
             selectAll = true;
             if (tui_edit_insert_character(text, sizeof(text), &selectAll, 'x'))
+                return 2093;
+            // Numeric TUI fields are integers; a decimal point is never accepted.
+            if (tui_edit_insert_character(text, sizeof(text), &selectAll, '.'))
                 return 2093;
             if (strcmp(text, "100") != 0 || !selectAll) return 2094;
 

@@ -14,8 +14,6 @@
 #include "linux_tui_transfer.h"
 #include "profile_slot_io_linux.h"
 #include "profile_document_slot.h"
-#include "linux_tui_source_edit.h"
-#include "linux_tui_mapped_draft.h"
 #include "platform.h"
 #include "nvml_pin_observation_sampler.h"
 #include "desired_scalar_editor.h"
@@ -346,7 +344,6 @@ unsigned long long tui_monotonic_ms() {
 
 void tui_recompute_dirty(TuiState* state) {
     if (!state) return;
-    if (state->document.valid) { state->dirty = true; return; }
     state->dirty = !desired_settings_equal(
         &state->desired, &state->acceptedDesired);
 }
@@ -356,12 +353,11 @@ void tui_answer_profile_load(TuiState* state, bool discard) {
 }
 
 #include "linux_tui_refresh.cpp"
-#include "linux_tui_source_check.h"
+#include "linux_tui_capture_transport.h"
 #include "linux_tui_capture_draft.h"
 
 void tui_begin_edit(TuiState* state, TuiField field, int index) {
     if (!state || field == TUI_FIELD_NONE) return;
-    if (tui_source_field(field)) { (void)tui_begin_source_edit(*state, field, index); return; }
     if (!field_edit_available(state, field)) return;
     state->edit.active = true;
     state->edit.field = field;
@@ -378,12 +374,6 @@ void tui_begin_edit(TuiState* state, TuiField field, int index) {
 
 void tui_commit_edit(TuiState* state) {
     if (!state || !state->edit.active) return;
-    if (tui_source_field(state->edit.field)) {
-        const int index = state->edit.index; const auto field = state->edit.field;
-        const bool accepted = tui_commit_source_edit(*state);
-        linux_debug_logf("profile-edit: source=tui field=%d index=%d accepted=%d", (int)field, index, accepted ? 1 : 0);
-        return;
-    }
     int value = 0;
     if (!parse_int_strict(state->edit.text, &value)) {
         snprintf(state->status, sizeof(state->status),
@@ -406,7 +396,7 @@ void tui_handle_character(TuiState* state, char character) {
     if (!state) return;
     if (state->edit.active) {
         tui_edit_insert_character(state->edit.text, sizeof(state->edit.text),
-                                  &state->edit.selectAll, character, tui_source_field(state->edit.field));
+                                  &state->edit.selectAll, character);
         return;
     }
     switch (character) {
@@ -444,13 +434,6 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
         else if (action.type == ACTION_PROFILE_LOAD_KEEP) tui_answer_profile_load(state, false);
         return;
     }
-    const bool sourceEdit = action.type == ACTION_FIELD_EDIT && tui_source_field((TuiField)action.index);
-    if (state->document.valid && ((!sourceEdit && action.type == ACTION_FIELD_EDIT) || action.type == ACTION_FIELD_STEP ||
-        action.type == ACTION_LOCK_CYCLE || action.type == ACTION_FAN_MODE_SET || action.type == ACTION_FAN_POINT_ENABLE ||
-        action.type == ACTION_FAN_ZERO_RPM_TOGGLE)) {
-        snprintf(state->status, sizeof(state->status), "Use source fields to edit stored intent; destination controls require review");
-        return;
-    }
     switch (action.type) {
         case ACTION_CAPTURE_SOURCE:
             tui_capture_begin(*state, [&](gc_u32 domains, HardwareCaptureObservation& out, ProfileCodecError& error) {
@@ -484,67 +467,6 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
                 return true;
             });
             break;
-        case ACTION_CHECK_SOURCE:
-            tui_check_source(state);
-            break;
-        case ACTION_USE_MAPPED:
-            if (tui_use_mapped_draft(*state)) linux_debug_logf("profile-check: mapped draft accepted revision=%llu controlRevision=%llu",
-                (unsigned long long)state->document.revision, (unsigned long long)state->sourceReview->capture.revision);
-            break;
-        case ACTION_CONVERT_SOURCE_CYCLE:
-            (void)tui_cycle_source_conversion(*state);
-            break;
-        case ACTION_CONVERT_SOURCE_ACCEPT: {
-            char logLine[256]{};
-            const bool accepted = tui_accept_source_conversion(*state, logLine, sizeof(logLine));
-            if (logLine[0]) linux_debug_logf("%s", logLine);
-            if (accepted) {
-                state->sourceAssistPending.reset();
-                tui_recompute_dirty(state);
-                bind_current_draft(state);
-            }
-            break;
-        }
-        case ACTION_RESTORE_CAPTURED_TAIL: {
-            char logLine[256]{};
-            const bool restored = tui_restore_captured_tail(*state, logLine, sizeof(logLine));
-            if (logLine[0]) linux_debug_logf("%s", logLine);
-            if (restored) {
-                state->sourceAssistPending.reset();
-                tui_recompute_dirty(state);
-                bind_current_draft(state);
-            }
-            break;
-        }
-        case ACTION_ASSIST_CURVE_CYCLE:
-            tui_cycle_assist_mode(*state);
-            break;
-        case ACTION_ASSIST_CURVE_PREPARE: {
-            char logLine[300]{};
-            (void)tui_prepare_curve_assist(*state, logLine, sizeof(logLine));
-            if (logLine[0]) linux_debug_logf("%s", logLine);
-            break;
-        }
-        case ACTION_ASSIST_CURVE_ACCEPT: {
-            char logLine[300]{};
-            const bool accepted = tui_accept_curve_assist(*state, logLine, sizeof(logLine));
-            if (logLine[0]) linux_debug_logf("%s", logLine);
-            if (accepted) {
-                tui_recompute_dirty(state);
-                bind_current_draft(state);
-            }
-            break;
-        }
-        case ACTION_SOURCE_GRAPHICS_CHOICE:
-        case ACTION_SOURCE_MEMORY_CHOICE: {
-            if (!state->document.valid) break;
-            auto& choice = action.type == ACTION_SOURCE_GRAPHICS_CHOICE ? state->sourceGraphicsChoice : state->sourceMemoryChoice;
-            choice = (choice + 1) % (action.type == ACTION_SOURCE_GRAPHICS_CHOICE ? 4u : 3u);
-            state->sourceCheckVisible = false; state->sourceCheckLines.clear(); state->sourceReview.reset();
-            state->sourceAssistPending.reset(); state->sourceConvertIndex = 0; state->sourceScroll = 0;
-            snprintf(state->status, sizeof(state->status), "Control preview selection changed; use Check to review this choice");
-            break;
-        }
         case ACTION_QUIT:
             state->running = false;
             break;
@@ -631,21 +553,21 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
                      state->currentSlot);
             break;
         case ACTION_LOAD: {
-            tui_request_profile_load(*state, [&](int slot, ProfileEditorCandidate& loaded, char* why, size_t size) {
+            tui_request_profile_load(*state, [&](int slot, DesiredSettings& loaded, char* why, size_t size) {
                 LinuxProfileSlotIO io; ProfileCodecError error; bool found = false;
                 auto source = std::make_unique<ProfileDocument>();
                 if (!profile_document_slot_load(io, state->configPath, slot, *source, found, error)) {
                     snprintf(why, size, "%s", error.message); return false;
                 }
-                if (!found) return load_profile_from_config_path(state->configPath, slot, &loaded.settings, why, size);
+                if (!found) return load_profile_from_config_path(state->configPath, slot, &loaded, why, size);
                 // Imported profiles load like any other slot; captures bound to
                 // curve voltages map onto the shown GPU's live curve.
                 auto live = std::make_unique<ProfileDestinationTopology>();
                 const auto& snapshot = state->service.snapshot;
                 const bool haveLive = state->serviceOnline && profile_destination_from_vf_curve(snapshot.curve,
                     vf_floor_topology_compute(snapshot.curve, snapshot.freqOffsets, VF_NUM_POINTS), *live);
-                if (!profile_slot_document_runtime(*source, haveLive ? live.get() : nullptr, loaded.settings, why, size)) return false;
-                normalize_desired_settings_for_ui(&loaded.settings);
+                if (!profile_slot_document_runtime(*source, haveLive ? live.get() : nullptr, loaded, why, size)) return false;
+                normalize_desired_settings_for_ui(&loaded);
                 linux_debug_logf("profile load: slot %d converted portable record live=%d", slot, haveLive ? 1 : 0);
                 return true;
             }, [](TuiState& draft) { bind_current_draft(&draft); tui_recompute_dirty(&draft); });
@@ -653,17 +575,6 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
         }
         case ACTION_SAVE: {
             char error[256] = {};
-            if (state->document.valid) {
-                LinuxProfileSlotIO io; ProfileCodecError issue;
-                if (!profile_document_slot_save(io, state->configPath, state->currentSlot, state->document.value, issue)) {
-                    set_daemon_failure(state, "Source profile save failed", issue.message); break;
-                }
-                state->document.saved = state->document.value;
-                state->document.unsaved = false;
-                snprintf(state->status, sizeof(state->status), "Saved slot %d with all portable source intent; no GPU readings were substituted", state->currentSlot);
-                sync_startup_snapshot_after_profile_write(state, state->currentSlot, false);
-                break;
-            }
             if (!save_profile_to_config_path(state->configPath,
                     state->currentSlot, &state->desired,
                     error, sizeof(error))) {
@@ -725,9 +636,6 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
             break;
         }
         case ACTION_RESET_DRAFT:
-            state->document = {};
-            state->sourceCheckVisible = false; state->sourceCheckLines.clear(); state->sourceReview.reset();
-            state->sourceAssistPending.reset(); state->sourceConvertIndex = 0;
             state->desired = state->acceptedDesired;
             state->dirty = false;
             bind_current_draft(state);

@@ -11,10 +11,7 @@
 #include "linux_tui_layout.h"
 #include "linux_tui_diagnostic_policy.h"
 #include "linux_startup_sync.h"
-#include "profile_editor_document.h"
 #include "profile_editor_transfer.h"
-#include "profile_destination_review.h"
-#include "profile_curve_assistance.h"
 #include "profile_capture_proposals.h"
 #include "linux_tui_review_context.h"
 
@@ -43,17 +40,7 @@ struct TuiState {
     bool profileLoadPending;
     bool profileLoadPresented;
     int pendingProfileSlot;
-    ProfileEditorCandidate pendingProfile;
-    ProfileEditorDocument document;
-    int sourceScroll;
-    bool sourceCheckVisible;
-    gc_u32 sourceGraphicsChoice, sourceMemoryChoice;
-    int sourceConvertIndex = 0;
-    int sourceAssistMode = 0;
-    std::unique_ptr<ProfileCurveAssistance> sourceAssistPending;
-    std::vector<std::string> sourceCheckLines;
-    std::unique_ptr<ProfileDestinationReview> sourceReview;
-    LinuxTuiReviewContext sourceReviewContext;
+    DesiredSettings pendingProfile;
     TuiCaptureView capture;
     bool capturePresented;
     std::unique_ptr<HardwareCaptureObservation> captureObservation;

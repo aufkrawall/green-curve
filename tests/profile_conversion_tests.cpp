@@ -3,7 +3,6 @@
 #include "profile_conversion_batch.h"
 #include "profile_domain_conversions.h"
 #include "profile_destination_review.h"
-#include "profile_editor_document.h"
 #include <cstring>
 #include <memory>
 
@@ -47,19 +46,6 @@ static int run_profile_reset_equivalence_tests() {
         review->conversions.count != 0 || review->runtime.hasLock ||
         review->mapping.issues[0].topologyId != -1 ||
         review->controls.disposition != PROFILE_CONTROL_READY) return 8489;
-
-    auto edDoc = std::make_unique<ProfileEditorDocument>();
-    memset(edDoc.get(), 0xA5, sizeof(*edDoc));
-    profile_editor_document_reset(*edDoc);
-    if (edDoc->valid || edDoc->unsaved || edDoc->revision != 1 ||
-        edDoc->value.documentVersion != 1 || edDoc->saved.documentVersion != 1 ||
-        edDoc->value.lock.anchorTopologyId != -1) return 8490;
-
-    auto edCand = std::make_unique<ProfileEditorCandidate>();
-    memset(edCand.get(), 0xA5, sizeof(*edCand));
-    profile_editor_candidate_reset(*edCand);
-    if (edCand->settings.hasLock || edCand->settings.hasPowerLimit ||
-        edCand->source.value.documentVersion != 1 || edCand->source.revision != 1) return 8491;
     return 0;
 }
 
