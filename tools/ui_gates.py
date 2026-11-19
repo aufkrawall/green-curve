@@ -852,6 +852,22 @@ def check_service_profile_identity_survives_a_delta_apply(ctx, require_text,
                  "profile_ownership_lock_tail_mismatch_allowed(",
                  "relaxed ownership checks use the shared lock-tail equivalence policy")
 
+    # An ad-hoc active intent that uniquely describes one saved personal slot
+    # resolves to that slot on both the service and GUI indicator sides, while
+    # shared/machine slots remain isolated to their own banks.
+    require_text(policy_h, "service_profile_identity_unique_user_slot_match",
+                 "service unique personal-slot fallback is a pure policy decision")
+    ctx.require_text_in_operation(
+        request_policy,
+        "static void service_confirm_profile_metadata_from_active_intent(",
+        "service_profile_identity_unique_user_slot_match(",
+        "service post-write confirmation resolves unique personal-slot matches")
+    ctx.require_text_in_operation(
+        _p(ctx, "config_profiles_ui.cpp"),
+        "static void sync_applied_profile_from_service_metadata()",
+        "decision.matchedUserSlotCount",
+        "GUI indicator scans personal slots drift-free when the service holds AD_HOC")
+
 
 def check_apply_in_flight_presentation(ctx, require_text, forbid_text):
     """An apply that is still running says so, on every surface.

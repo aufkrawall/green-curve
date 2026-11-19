@@ -10,6 +10,8 @@
 #include "gpu_core.h"
 #include "fan_curve_api.h"
 #include "desired_settings_ui_policy.h"
+#include "applied_profile_indicator_policy.h"
+#include "service_profile_identity_policy.h"
 
 namespace {
 
@@ -198,10 +200,86 @@ int production_matcher_cases() {
     return 0;
 }
 
+int ad_hoc_unique_slot_cases() {
+    AppliedProfileIndicatorReason reason = APPLIED_PROFILE_REASON_NO_AUTHORITY;
+    AppliedProfileIndicatorInputs in = {};
+    in.serviceAuthoritative = true;
+    in.activeDesiredValid = true;
+    in.profileSource = SERVICE_PROFILE_SOURCE_AD_HOC;
+    in.maxSlots = 5;
+
+    // 12433: ad-hoc active intent uniquely matching slot 3 ticks slot 3.
+    in.matchedUserSlot = 3;
+    in.matchedUserSlotCount = 1;
+    if (applied_profile_indicator_slot(in, &reason) != 3 ||
+        reason != APPLIED_PROFILE_REASON_MATCHED_AD_HOC_SLOT) return 12433;
+
+    // 12434: duplicate personal slots stay unticked and report ambiguity.
+    in.matchedUserSlot = 0;
+    in.matchedUserSlotCount = 2;
+    if (applied_profile_indicator_slot(in, &reason) != 0 ||
+        reason != APPLIED_PROFILE_REASON_AMBIGUOUS_AD_HOC_SLOT) return 12434;
+
+    // 12435: out-of-range unique slot stays unticked.
+    in.matchedUserSlot = 6;
+    in.matchedUserSlotCount = 1;
+    if (applied_profile_indicator_slot(in, &reason) != 0 ||
+        reason != APPLIED_PROFILE_REASON_AMBIGUOUS_AD_HOC_SLOT) return 12435;
+
+    // 12436: without an active intent or without authority, never tick.
+    in.matchedUserSlot = 3;
+    in.matchedUserSlotCount = 1;
+    in.activeDesiredValid = false;
+    if (applied_profile_indicator_slot(in, &reason) != 0 ||
+        reason != APPLIED_PROFILE_REASON_NOT_A_USER_SLOT) return 12436;
+    in.activeDesiredValid = true;
+    in.serviceAuthoritative = false;
+    if (applied_profile_indicator_slot(in, &reason) != 0 ||
+        reason != APPLIED_PROFILE_REASON_NO_AUTHORITY) return 12437;
+
+    // 12438: shared, machine, and none sources never consult personal-slot scan.
+    in.serviceAuthoritative = true;
+    in.profileSource = SERVICE_PROFILE_SOURCE_SHARED_SLOT;
+    if (applied_profile_indicator_slot(in, &reason) != 0 ||
+        reason != APPLIED_PROFILE_REASON_NOT_A_USER_SLOT) return 12438;
+    in.profileSource = SERVICE_PROFILE_SOURCE_MACHINE_SLOT;
+    if (applied_profile_indicator_slot(in, &reason) != 0 ||
+        reason != APPLIED_PROFILE_REASON_NOT_A_USER_SLOT) return 12439;
+    in.profileSource = SERVICE_PROFILE_SOURCE_NONE;
+    if (applied_profile_indicator_slot(in, &reason) != 0 ||
+        reason != APPLIED_PROFILE_REASON_NOT_A_USER_SLOT) return 12440;
+
+    // 12441: new reason names are distinct and non-unknown.
+    const char* matchedName = applied_profile_indicator_reason_name(
+        APPLIED_PROFILE_REASON_MATCHED_AD_HOC_SLOT);
+    const char* ambiguousName = applied_profile_indicator_reason_name(
+        APPLIED_PROFILE_REASON_AMBIGUOUS_AD_HOC_SLOT);
+    if (!matchedName || !ambiguousName ||
+        strcmp(matchedName, "unknown") == 0 ||
+        strcmp(ambiguousName, "unknown") == 0 ||
+        strcmp(matchedName, ambiguousName) == 0) return 12441;
+
+    // 12442-12447: service-side unique personal-slot fallback.
+    if (service_profile_identity_unique_user_slot_match(
+            SERVICE_PROFILE_SOURCE_AD_HOC, 3, 1, 5) != 3) return 12442;
+    if (service_profile_identity_unique_user_slot_match(
+            SERVICE_PROFILE_SOURCE_USER_SLOT, 3, 1, 5) != 3) return 12443;
+    if (service_profile_identity_unique_user_slot_match(
+            SERVICE_PROFILE_SOURCE_AD_HOC, 3, 2, 5) != 0) return 12444;
+    if (service_profile_identity_unique_user_slot_match(
+            SERVICE_PROFILE_SOURCE_AD_HOC, 3, 0, 5) != 0) return 12445;
+    if (service_profile_identity_unique_user_slot_match(
+            SERVICE_PROFILE_SOURCE_SHARED_SLOT, 3, 1, 5) != 0) return 12446;
+    if (service_profile_identity_unique_user_slot_match(
+            SERVICE_PROFILE_SOURCE_MACHINE_SLOT, 3, 1, 5) != 0) return 12447;
+    return 0;
+}
+
 }  // namespace
 
 int run_profile_lock_tail_ownership_tests() {
     if (int failure = provenance_helper_cases()) return failure;
     if (int failure = ownership_policy_cases()) return failure;
-    return production_matcher_cases();
+    if (int failure = production_matcher_cases()) return failure;
+    return ad_hoc_unique_slot_cases();
 }

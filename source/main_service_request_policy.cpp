@@ -652,33 +652,80 @@ static void service_confirm_profile_metadata_from_active_intent(
 
     ServiceProfileSource claimed = (ServiceProfileSource)request->profileSource;
     int slot = (int)request->profileSlot;
-    if (!service_profile_metadata_claims_slot((unsigned int)claimed, slot,
-            CONFIG_NUM_SLOTS)) {
-        return;
-    }
+    bool claimedValidSlot = service_profile_metadata_claims_slot(
+        (unsigned int)claimed, slot, CONFIG_NUM_SLOTS);
     if (!g_serviceHasActiveDesired) {
-        debug_log("service APPLY: cannot confirm claimed profile source=%u slot=%d without an active intent; ownership stays ad-hoc\n",
-            (unsigned int)claimed, slot);
+        if (claimedValidSlot) {
+            debug_log("service APPLY: cannot confirm claimed profile source=%u slot=%d without an active intent; ownership stays ad-hoc\n",
+                (unsigned int)claimed, slot);
+        }
         return;
     }
     DesiredSettings activeIntent = g_serviceActiveDesired;
-    char detail[256] = {};
-    bool activeIntentMatches = service_profile_record_describes_intent(claimed,
-        slot, &activeIntent, detail, sizeof(detail), true);
-    ServiceProfileIdentityOutcome outcome = service_profile_identity_outcome(
-        (unsigned int)claimed, slot, CONFIG_NUM_SLOTS, false,
-        activeIntentMatches);
-    if (outcome != SERVICE_PROFILE_IDENTITY_FROM_ACTIVE_INTENT) {
-        debug_log("service APPLY: resulting intent does not match claimed profile source=%u slot=%d: %s; ownership stays ad-hoc\n",
+    if (claimedValidSlot) {
+        char detail[256] = {};
+        bool activeIntentMatches = service_profile_record_describes_intent(claimed,
+            slot, &activeIntent, detail, sizeof(detail), true);
+        ServiceProfileIdentityOutcome outcome = service_profile_identity_outcome(
+            (unsigned int)claimed, slot, CONFIG_NUM_SLOTS, false,
+            activeIntentMatches);
+        if (outcome == SERVICE_PROFILE_IDENTITY_FROM_ACTIVE_INTENT) {
+            *sourceInOut = claimed;
+            *slotInOut = (unsigned int)slot;
+            debug_log("service APPLY: profile metadata proven by %s source=%u slot=%d (%s)\n",
+                service_profile_identity_outcome_name(outcome),
+                (unsigned int)claimed, slot, detail[0] ? detail : "match");
+            return;
+        }
+        debug_log("service APPLY: resulting intent does not match claimed profile source=%u slot=%d: %s\n",
             (unsigned int)claimed, slot,
             detail[0] ? detail : "profile does not match resulting intent");
-        return;
     }
-    *sourceInOut = claimed;
-    *slotInOut = (unsigned int)slot;
-    debug_log("service APPLY: profile metadata proven by %s source=%u slot=%d (%s)\n",
-        service_profile_identity_outcome_name(outcome),
-        (unsigned int)claimed, slot, detail[0] ? detail : "match");
+
+    // Fallback when no claimed slot matched (including AD_HOC restores across
+    // upgrades, CLI applies, or a GUI Apply whose combo pointed elsewhere):
+    // if the resulting active intent uniquely describes one saved personal
+    // slot, record that slot instead of demoting it to ad-hoc.
+    if (service_profile_identity_may_match_unique_user_slot((unsigned int)claimed) &&
+        g_app.configPath[0]) {
+        int matchedSlot = 0;
+        int matchCount = 0;
+        char matchedDetail[256] = {};
+        for (int candidate = 1; candidate <= CONFIG_NUM_SLOTS; ++candidate) {
+            if (claimedValidSlot && claimed == SERVICE_PROFILE_SOURCE_USER_SLOT &&
+                candidate == slot) {
+                continue;
+            }
+            if (!is_profile_slot_saved(g_app.configPath, candidate)) continue;
+            char slotDetail[256] = {};
+            if (service_profile_record_describes_intent(
+                    SERVICE_PROFILE_SOURCE_USER_SLOT, candidate, &activeIntent,
+                    slotDetail, sizeof(slotDetail), true)) {
+                matchCount++;
+                if (matchCount == 1) {
+                    matchedSlot = candidate;
+                    StringCchCopyA(matchedDetail, ARRAY_COUNT(matchedDetail), slotDetail);
+                }
+            }
+        }
+        int uniqueSlot = service_profile_identity_unique_user_slot_match(
+            (unsigned int)claimed, matchedSlot, matchCount, CONFIG_NUM_SLOTS);
+        if (uniqueSlot > 0) {
+            *sourceInOut = SERVICE_PROFILE_SOURCE_USER_SLOT;
+            *slotInOut = (unsigned int)uniqueSlot;
+            debug_log("service APPLY: profile metadata proven by unique active-intent match source=1 slot=%d (%s)\n",
+                uniqueSlot, matchedDetail[0] ? matchedDetail : "match");
+            return;
+        }
+        if (matchCount > 1) {
+            debug_log("service APPLY: resulting active intent matches %d personal slots; ownership stays ad-hoc\n",
+                matchCount);
+            return;
+        }
+    }
+    if (claimedValidSlot) {
+        debug_log("service APPLY: no unique personal slot matches resulting intent; ownership stays ad-hoc\n");
+    }
 }
 
 // Publish the profile identity of a successful APPLY.  The pre-write proof is

@@ -99,4 +99,28 @@ static inline bool service_profile_identity_replaces_active_intent(
     return outcome == SERVICE_PROFILE_IDENTITY_FROM_REQUEST;
 }
 
+// Whether the service's post-write check may scan personal slots 1..maxSlots
+// when the apply did not prove a claimed slot.  Shared and machine slots live
+// in separate banks and must never fall back to a personal slot; everything
+// else (an ad-hoc apply, an upgrade transfer carrying AD_HOC, or a GUI apply
+// whose combo pointed at a different slot) may match a unique saved personal
+// slot against the resulting active intent.
+static inline bool service_profile_identity_may_match_unique_user_slot(
+    unsigned int claimedSource) {
+    return claimedSource != (unsigned int)SERVICE_PROFILE_SOURCE_SHARED_SLOT &&
+           claimedSource != (unsigned int)SERVICE_PROFILE_SOURCE_MACHINE_SLOT;
+}
+
+// Pure decision for the unique personal-slot scan: returns the matched slot
+// (1..maxSlots) only when exactly one saved personal slot describes the active
+// intent, or 0 otherwise (no match, ambiguous duplicates, or separate bank).
+static inline int service_profile_identity_unique_user_slot_match(
+    unsigned int claimedSource, int matchedSlot, int matchCount, int maxSlots) {
+    if (!service_profile_identity_may_match_unique_user_slot(claimedSource))
+        return 0;
+    if (matchCount != 1) return 0;
+    if (matchedSlot < 1 || matchedSlot > maxSlots) return 0;
+    return matchedSlot;
+}
+
 #endif  // GREEN_CURVE_SERVICE_PROFILE_IDENTITY_POLICY_H

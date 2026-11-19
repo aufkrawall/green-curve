@@ -67,12 +67,14 @@ enum ProfileReadMode {
 // Why the indicator ended up where it did.  Carried into the debug log so a
 // support report answers "which branch cleared my tick" without a rebuild.
 enum AppliedProfileIndicatorReason {
-    APPLIED_PROFILE_REASON_NO_AUTHORITY = 0,   // no accepted service snapshot
-    APPLIED_PROFILE_REASON_NOT_A_USER_SLOT,    // ad-hoc, shared, machine, none
-    APPLIED_PROFILE_REASON_NO_ACTIVE_INTENT,   // service owns nothing readable
-    APPLIED_PROFILE_REASON_PROFILE_UNREADABLE, // slot gone or malformed
-    APPLIED_PROFILE_REASON_PROFILE_EDITED,     // stored record no longer matches
-    APPLIED_PROFILE_REASON_APPLIED,            // the tick is legitimate
+    APPLIED_PROFILE_REASON_NO_AUTHORITY = 0,        // no accepted service snapshot
+    APPLIED_PROFILE_REASON_NOT_A_USER_SLOT,         // ad-hoc (no match), shared, machine, none
+    APPLIED_PROFILE_REASON_NO_ACTIVE_INTENT,        // service owns nothing readable
+    APPLIED_PROFILE_REASON_PROFILE_UNREADABLE,      // slot gone or malformed
+    APPLIED_PROFILE_REASON_PROFILE_EDITED,          // stored record no longer matches
+    APPLIED_PROFILE_REASON_APPLIED,                 // service-named personal slot matches
+    APPLIED_PROFILE_REASON_MATCHED_AD_HOC_SLOT,     // ad-hoc active intent uniquely matches one personal slot
+    APPLIED_PROFILE_REASON_AMBIGUOUS_AD_HOC_SLOT,   // ad-hoc active intent matches multiple personal slots
 };
 
 struct AppliedProfileIndicatorInputs {
@@ -89,17 +91,26 @@ struct AppliedProfileIndicatorInputs {
     // Both are false when the read was not reached.
     bool profileReadable;
     bool intentMatchesProfile;
+    // Results of scanning personal slots 1..maxSlots with
+    // PROFILE_READ_FOR_OWNERSHIP when profileSource is SERVICE_PROFILE_SOURCE_AD_HOC.
+    // A unique match (matchedUserSlotCount == 1) identifies the active personal
+    // slot after saving active settings, upgrading from an ad-hoc transfer, or
+    // applying via CLI; shared and machine banks never consult these fields.
+    int matchedUserSlot;
+    int matchedUserSlotCount;
 };
 
 static inline const char* applied_profile_indicator_reason_name(
     AppliedProfileIndicatorReason reason) {
     switch (reason) {
-        case APPLIED_PROFILE_REASON_NO_AUTHORITY:      return "no authoritative service snapshot";
-        case APPLIED_PROFILE_REASON_NOT_A_USER_SLOT:   return "active profile is not a personal slot";
-        case APPLIED_PROFILE_REASON_NO_ACTIVE_INTENT:  return "service published no active intent";
-        case APPLIED_PROFILE_REASON_PROFILE_UNREADABLE:return "stored profile could not be read";
-        case APPLIED_PROFILE_REASON_PROFILE_EDITED:    return "stored profile no longer matches active intent";
-        case APPLIED_PROFILE_REASON_APPLIED:           return "applied";
+        case APPLIED_PROFILE_REASON_NO_AUTHORITY:         return "no authoritative service snapshot";
+        case APPLIED_PROFILE_REASON_NOT_A_USER_SLOT:      return "active profile is not a personal slot";
+        case APPLIED_PROFILE_REASON_NO_ACTIVE_INTENT:     return "service published no active intent";
+        case APPLIED_PROFILE_REASON_PROFILE_UNREADABLE:   return "stored profile could not be read";
+        case APPLIED_PROFILE_REASON_PROFILE_EDITED:       return "stored profile no longer matches active intent";
+        case APPLIED_PROFILE_REASON_APPLIED:              return "applied";
+        case APPLIED_PROFILE_REASON_MATCHED_AD_HOC_SLOT:  return "matched personal slot from ad-hoc active intent";
+        case APPLIED_PROFILE_REASON_AMBIGUOUS_AD_HOC_SLOT:return "ad-hoc active intent matches multiple personal slots";
     }
     return "unknown";
 }
@@ -114,21 +125,35 @@ static inline int applied_profile_indicator_slot(
     int slot = 0;
     if (!inputs.serviceAuthoritative) {
         reason = APPLIED_PROFILE_REASON_NO_AUTHORITY;
-    } else if (inputs.profileSource != (unsigned int)SERVICE_PROFILE_SOURCE_USER_SLOT ||
-               inputs.profileSlot < 1 ||
-               (int)inputs.profileSlot > inputs.maxSlots) {
+    } else if (inputs.profileSource == (unsigned int)SERVICE_PROFILE_SOURCE_USER_SLOT &&
+               inputs.profileSlot >= 1 &&
+               (int)inputs.profileSlot <= inputs.maxSlots) {
+        if (!inputs.activeDesiredValid) {
+            reason = APPLIED_PROFILE_REASON_NO_ACTIVE_INTENT;
+        } else if (!inputs.profileReadable) {
+            reason = APPLIED_PROFILE_REASON_PROFILE_UNREADABLE;
+        } else if (!inputs.intentMatchesProfile) {
+            reason = APPLIED_PROFILE_REASON_PROFILE_EDITED;
+        } else {
+            reason = APPLIED_PROFILE_REASON_APPLIED;
+            slot = (int)inputs.profileSlot;
+        }
+    } else if (inputs.profileSource == (unsigned int)SERVICE_PROFILE_SOURCE_AD_HOC &&
+               inputs.activeDesiredValid &&
+               inputs.matchedUserSlotCount > 0) {
+        if (inputs.matchedUserSlotCount == 1 &&
+            inputs.matchedUserSlot >= 1 &&
+            inputs.matchedUserSlot <= inputs.maxSlots) {
+            reason = APPLIED_PROFILE_REASON_MATCHED_AD_HOC_SLOT;
+            slot = inputs.matchedUserSlot;
+        } else {
+            reason = APPLIED_PROFILE_REASON_AMBIGUOUS_AD_HOC_SLOT;
+        }
+    } else {
         // Shared and machine banks are separate banks with separate contents;
         // they must never masquerade as the same-numbered personal slot.
+        // An ad-hoc intent matching no saved personal slot also lands here.
         reason = APPLIED_PROFILE_REASON_NOT_A_USER_SLOT;
-    } else if (!inputs.activeDesiredValid) {
-        reason = APPLIED_PROFILE_REASON_NO_ACTIVE_INTENT;
-    } else if (!inputs.profileReadable) {
-        reason = APPLIED_PROFILE_REASON_PROFILE_UNREADABLE;
-    } else if (!inputs.intentMatchesProfile) {
-        reason = APPLIED_PROFILE_REASON_PROFILE_EDITED;
-    } else {
-        reason = APPLIED_PROFILE_REASON_APPLIED;
-        slot = (int)inputs.profileSlot;
     }
     if (reasonOut) *reasonOut = reason;
     return slot;

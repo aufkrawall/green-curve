@@ -1441,7 +1441,7 @@ Source anchors: `source/desired_curve_intent.h` (`desired_curve_point_kind_name(
 `source/linux_port_profiles.cpp`, `source/gpu_backend_apply_targets.h`,
 `source/profile_ownership_policy.h` (`profile_ownership_lock_tail_mismatch_allowed()`),
 `source/desired_settings_helpers.cpp`,
-`tests/profile_lock_tail_ownership_tests.cpp` (12400-12427),
+`tests/profile_lock_tail_ownership_tests.cpp` (12400-12427, 12433-12447),
 `tests/regression_main.cpp` (12428-12432), `tools/ui_gates.py`.
 
 A legacy `base_plus_gpu_offset` locked profile stored its flattened tail as
@@ -1462,6 +1462,23 @@ legacy/imported lock-only slots and pre-fix restart snapshots match too;
 pre-write claims, pre-tail points, captured points, and divergent tail
 frequencies remain strict. Mismatch diagnostics now report both sides' point
 kind and value.
+
+### Unique personal-slot resolution for `AD_HOC` active intent (2026-11-19)
+
+When the service holds an authoritative active intent under
+`SERVICE_PROFILE_SOURCE_AD_HOC` (after saving active manual settings into a
+slot, applying with the combo pointing at another slot, applying via CLI, or
+restoring an older `AD_HOC` upgrade transfer), both the service post-write
+identity check (`service_profile_identity_unique_user_slot_match()` in
+`source/service_profile_identity_policy.h`, `main_service_request_policy.cpp`)
+and the GUI applied-profile indicator (`applied_profile_indicator_slot()` in
+`source/applied_profile_indicator_policy.h`, `config_profiles_ui.cpp`) scan
+personal slots `1..CONFIG_NUM_SLOTS` using `PROFILE_READ_FOR_OWNERSHIP`. A
+unique match (`matchCount == 1`) resolves to that personal slot (ticking the
+tray menu and naming it in the tooltip); duplicate identical slots remain
+unticked (`APPLIED_PROFILE_REASON_AMBIGUOUS_AD_HOC_SLOT`), and shared/machine
+bank sources never consult personal slots. Live VF readback is still never
+used.
 
 ## Curve semantics
 

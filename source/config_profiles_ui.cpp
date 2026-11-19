@@ -611,17 +611,44 @@ static void sync_applied_profile_from_service_metadata() {
     char loadErr[256] = {};
     int candidateSlot = applied_user_slot_from_service_profile(
         g_app.serviceActiveProfileSource, g_app.serviceActiveProfileSlot);
-    if (decision.serviceAuthoritative && decision.activeDesiredValid &&
-        candidateSlot > 0) {
+    if (decision.serviceAuthoritative && decision.activeDesiredValid) {
         DesiredSettings savedProfile = {};
-        decision.profileReadable = load_profile_from_config(g_app.configPath,
-            candidateSlot, &savedProfile, loadErr, sizeof(loadErr),
-            PROFILE_READ_FOR_OWNERSHIP);
-        if (decision.profileReadable) {
-            decision.intentMatchesProfile =
-                desired_settings_match_active_service_intent(
-                    &savedProfile, &g_app.serviceActiveDesired,
-                    matchDetail, sizeof(matchDetail), true);
+        if (candidateSlot > 0) {
+            decision.profileReadable = load_profile_from_config(g_app.configPath,
+                candidateSlot, &savedProfile, loadErr, sizeof(loadErr),
+                PROFILE_READ_FOR_OWNERSHIP);
+            if (decision.profileReadable) {
+                decision.intentMatchesProfile =
+                    desired_settings_match_active_service_intent(
+                        &savedProfile, &g_app.serviceActiveDesired,
+                        matchDetail, sizeof(matchDetail), true);
+            }
+        } else if (g_app.serviceActiveProfileSource == SERVICE_PROFILE_SOURCE_AD_HOC &&
+                   !restricted_to_shared_profiles()) {
+            for (int slot = 1; slot <= CONFIG_NUM_SLOTS; ++slot) {
+                if (!is_profile_slot_saved(g_app.configPath, slot)) continue;
+                memset(&savedProfile, 0, sizeof(savedProfile));
+                char slotErr[128] = {};
+                if (!load_profile_from_config(g_app.configPath, slot,
+                        &savedProfile, slotErr, sizeof(slotErr),
+                        PROFILE_READ_FOR_OWNERSHIP)) {
+                    continue;
+                }
+                char slotDetail[128] = {};
+                if (desired_settings_match_active_service_intent(
+                        &savedProfile, &g_app.serviceActiveDesired,
+                        slotDetail, sizeof(slotDetail), true)) {
+                    decision.matchedUserSlotCount++;
+                    if (decision.matchedUserSlotCount == 1) {
+                        decision.matchedUserSlot = slot;
+                        StringCchCopyA(matchDetail, ARRAY_COUNT(matchDetail), slotDetail);
+                    } else {
+                        decision.matchedUserSlot = 0;
+                        set_message(matchDetail, sizeof(matchDetail),
+                            "matches %d personal slots", decision.matchedUserSlotCount);
+                    }
+                }
+            }
         }
     }
 
@@ -634,13 +661,14 @@ static void sync_applied_profile_from_service_metadata() {
     // debug_log_on_change() keeps the 1 Hz telemetry tick from burying it.
     debug_log_on_change("applied profile metadata sync: verdict slot=%d reason=%s "
         "(authoritative=%d activeIntent=%d source=%u serviceSlot=%u candidate=%d "
-        "readable=%d matches=%d detail=%s)\n",
+        "readable=%d matches=%d matchedSlot=%d matchedCount=%d detail=%s)\n",
         appliedSlot, applied_profile_indicator_reason_name(reason),
         decision.serviceAuthoritative ? 1 : 0,
         decision.activeDesiredValid ? 1 : 0,
         decision.profileSource, decision.profileSlot, candidateSlot,
         decision.profileReadable ? 1 : 0,
         decision.intentMatchesProfile ? 1 : 0,
+        decision.matchedUserSlot, decision.matchedUserSlotCount,
         matchDetail[0] ? matchDetail : (loadErr[0] ? loadErr : "-"));
 
     int persisted = get_config_int(g_app.configPath, "profiles", "applied_slot", 0);

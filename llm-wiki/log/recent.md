@@ -34,11 +34,21 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   explicit lock and authoring, and curve-mismatch diagnostics now report both
   sides' kind and value.
 - Coverage: `tests/profile_lock_tail_ownership_tests.cpp` (`12400-12427`,
-  executing production `desired_settings_match_active_service_intent()`),
+  `12433-12447`, executing production `desired_settings_match_active_service_intent()`),
   `tests/regression_main.cpp` (`12428-12432`, executing production
   `restore_curve_points_from_base_plus_gpu_offset()`), and gates in
-  `tools/ui_gates.py`. Hardware GUI re-test with installed updated binaries
-  remains pending.
+  `tools/ui_gates.py`.
+- Follow-up (same day): after upgrading from the pre-fix build, the settings
+  transfer re-applied the active intent with the old build's `AD_HOC` identity,
+  so the tray still showed no tick even though the active intent matched slot 3.
+  Both `service_confirm_profile_metadata_from_active_intent()` and
+  `sync_applied_profile_from_service_metadata()` now scan personal slots
+  `1..CONFIG_NUM_SLOTS` drift-free (`PROFILE_READ_FOR_OWNERSHIP`) when ownership
+  would otherwise stay `AD_HOC` (`service_profile_identity_unique_user_slot_match()`,
+  `APPLIED_PROFILE_REASON_MATCHED_AD_HOC_SLOT` / `AMBIGUOUS_AD_HOC_SLOT`),
+  resolving any unique personal-slot match (upgrades, Save of active settings,
+  CLI applies, combo moved before Apply) while keeping ambiguous duplicates
+  unticked and shared/machine banks isolated. Hardware upgrade re-test pending.
 
 ## 2026-11-19: Reset after another tool's reset stalled for ~50 s
 
