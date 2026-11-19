@@ -5,6 +5,23 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: Reset left the old lock in the GUI and tray
+
+- After a successful Reset of a flatten-lock profile the driver was at stock,
+  but the RESET envelope still reported the lock, so the GUI re-adopted it
+  (lock checkbox, flattened tail, "Lock:" header) and the tray showed OC.
+  Cause: the live-lock ownership gate (2026-11-15) made detection return
+  early for unowned state without clearing the markers, and Reset relied on
+  detection to clear them after dropping the intent; the snapshot then read
+  the stale markers. The regression never reached a release.
+- Fix: Reset clears the markers itself once the lock domain verified and the
+  restriction released (`service_reset_lock_policy.h`), before its post-reset
+  refresh; a retained cap keeps them. The snapshot lock projection moved into
+  the same header. Coverage: `tests/service_reset_lock_tests.cpp`
+  (12240-12252) plus order gates in `tools/apply_ceiling_gates.py`.
+- Lesson: when a gate stops a refresh from touching state it does not own,
+  audit every caller that relied on that refresh to CLEAR the state.
+
 ## 2026-11-19: TUI source-document mode removed
 
 - Nothing set the TUI's source-document state after Load began converting

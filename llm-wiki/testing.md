@@ -14,6 +14,21 @@ forbid `g_app.vfBackend` in both GUI predicates (they fail on the previous
 code). The dialogs were not shown on hardware: no unrecognized or
 reduced-surface board is available.
 
+## Reset lock markers (2026-11-19)
+
+`tests/service_reset_lock_tests.cpp` (12240-12252, run from
+`tests/regression_main.cpp`) pins `service_reset_lock_policy.h`: before Reset
+the snapshot reports the active desired lock; markers left behind after the
+intent is dropped still report the lock (the reported defect, 12241); a
+verified, released Reset clears every marker and the snapshot then reports
+none; any unverified curve or scalar, or a retained restriction, keeps them.
+The policy cases cannot fail on the old service code, which never called the
+helper; the order gates in `tools/apply_ceiling_gates.py` do (clear after the
+intent drop and before the post-reset refresh). Not reproduced on hardware
+after the fix in this pass; the reproducer is: apply a flatten-lock profile,
+press Reset, and check the RESET envelope log line
+`apply_service_snapshot_to_app` no longer says `adopted service lock`.
+
 ## CMP mining-board warning (2026-11-18)
 
 `tests/gpu_cmp_policy_tests.cpp` (12220-12227, run from

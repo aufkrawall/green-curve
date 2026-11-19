@@ -805,6 +805,15 @@ Source anchors: `source/curve_feasibility_plan.h`,
   plateau = rounded mean). The former exact-first pass over >= 700 mV points
   anchored a Pascal external flatten at point 67 (1125 mV) instead of its
   true start below 700 mV. Only Green Curve-owned locks (`service` or `client`) refine `preferredCi`; unowned live flat tails log `ownership=external` once and are ignored (`locked*`/`appliedLock*`), while active owned locks keep `"live lock detection suppressed; preserving intent"`. Diagnostic: `lock detect: ...`.
+  Detection never CLEARS markers it does not own either, so whoever drops the
+  owning intent must clear the markers itself: a successful service Apply
+  without a lock and a Reset whose lock domain verified and released both call
+  `service_clear_lock_markers()` (`source/service_reset_lock_policy.h`), and the
+  service snapshot reports the markers whenever no active desired lock is in
+  force (`service_snapshot_lock_projection()`). Reset keeps the markers while a
+  clock restriction is retained, because a retried Reset reads them to know one
+  may still be active. Diagnostics: `service_reset_all: lock markers ...` and
+  `populate_service_snapshot: reporting lock markers without active desired lock`.
 - **Passive pin/limit getters (inventory).** Both backends
   resolve the same read-only NVML clock/limit set:
   `nvmlDeviceGetClock` (only `NVML_CLOCK_ID_CURRENT` is used),
