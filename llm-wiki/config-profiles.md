@@ -10,7 +10,7 @@ selection), `source/gui_profile_tools.cpp`, `source/gui_profile_capture.cpp`,
 `source/gui_profile_transfer_work.h`, `source/profile_ini_slot.h`, `source/linux_tui_capture_draft.h`,
 `source/linux_tui_transfer.h`, `source/linux_tui_layout_transfer.h`,
 `tests/profile_slot_runtime_tests.cpp` (9950-9969), `tests/profile_tools_tests.cpp`
-(9970-9990), `tests/tui_profile_tools_tests.cpp` (9770-9791), `tests/profile_ini_slot_tests.cpp`
+(9970-9991), `tests/tui_profile_tools_tests.cpp` (9770-9791), `tests/profile_ini_slot_tests.cpp`
 (9930-9948).
 
 This supersedes the source-editor workflow described in the 2026-11-14/15 sections

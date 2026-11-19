@@ -179,5 +179,16 @@ int run_profile_tools_tests() {
     if (profile_capture_default_slot(4, [](int s) { return s != 3; }) != 3 ||
         profile_capture_default_slot(4, [](int) { return true; }) != 4)
         return 9990;
+    // 9991: a core offset that was read but whose relation to the curve is
+    // unknown shows its value and why it cannot be saved, not "Not readable".
+    auto unresolved = std::make_unique<HardwareCaptureObservation>(observation);
+    unresolved->graphics.valid = 1; unresolved->graphics.value = 475000000LL;
+    hardware_capture_domain(*unresolved, PROFILE_DOMAIN_GRAPHICS_OFFSET, CAPTURE_COMPOSITION_UNRESOLVED);
+    const auto unresolvedSummary = profile_capture_summary(*unresolved, nullptr);
+    if (unresolvedSummary.core.available ||
+        unresolvedSummary.core.text != "+475 MHz, cannot be saved separately on this GPU") {
+        fprintf(stderr, "9991: %s\n", unresolvedSummary.core.text.c_str());
+        return 9991;
+    }
     return 0;
 }

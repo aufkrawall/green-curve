@@ -330,7 +330,7 @@ static LRESULT CALLBACK gui_transfer_dialog_proc(HWND hwnd, UINT msg, WPARAM wPa
             const int id = GetDlgCtrlID((HWND)lParam);
             const bool strong = id == TRANSFER_DLG_STATUS || id == TRANSFER_DLG_INTRO || id == TRANSFER_DLG_FILE ||
                 (id >= TRANSFER_DLG_ROW_TEXT && id < TRANSFER_DLG_ROW_TEXT + TRANSFER_ROWS);
-            return gui_profile_dialog_color(d.brushes, msg, (HDC)wParam, (HWND)lParam, strong, id == TRANSFER_DLG_NOTE);
+            return gui_profile_dialog_color(d.brushes, msg, (HDC)wParam, (HWND)lParam, strong, id == TRANSFER_DLG_NOTE && d.importing);
         }
         case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX: case WM_CTLCOLORBTN:
             return gui_profile_dialog_color(d.brushes, msg, (HDC)wParam, (HWND)lParam, true);

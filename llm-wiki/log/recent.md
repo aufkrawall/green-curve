@@ -25,6 +25,9 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   record (`profile_ini_slot.h`, `config-profiles.md`). Caught only by a desktop
   pass and a CLI export of real slots: fixtures had used minimal INI text, so
   tests now write slots in the writers' real layout.
+- The capture dialog's core-clock row said "Not readable" when the offset was read
+  but its relation to the curve is unknown; it now shows the value and that it
+  cannot be saved separately. The export hint is no longer drawn as a warning.
 - Open: the TUI source-document editing code is unreachable and should be
   removed (a side session stopped before committing anything); the Windows
   Import dialog still needs a desktop pass.

@@ -79,6 +79,10 @@ struct ProfileCaptureSummary {
 static inline bool profile_capture_domain_read(const HardwareCaptureObservation& o, gc_u32 domain) {
     return (o.capturedDomains & domain) != 0;
 }
+static inline gc_u32 profile_capture_domain_status(const HardwareCaptureObservation& o, gc_u32 domain) {
+    for (int index = 0; index < 9; ++index) if ((1u << index) == domain) return o.domainStatus[index];
+    return CAPTURE_UNSUPPORTED;
+}
 static inline ProfileCaptureSummaryRow profile_capture_scalar_row(const HardwareCaptureObservation& o, gc_u32 domain,
     const HardwareCaptureScalar& value) {
     ProfileCaptureSummaryRow row;
@@ -115,6 +119,12 @@ static inline ProfileCaptureSummary profile_capture_summary(const HardwareCaptur
         s.curve.text = "Not readable on this GPU";
     }
     s.core = profile_capture_scalar_row(o, PROFILE_DOMAIN_GRAPHICS_OFFSET, o.graphics);
+    // Read, but whether it acts on top of the curve or is already part of it
+    // is unknown, so it cannot be saved on its own. Not "unreadable".
+    if (!s.core.available && o.graphics.valid &&
+        profile_capture_domain_status(o, PROFILE_DOMAIN_GRAPHICS_OFFSET) == CAPTURE_COMPOSITION_UNRESOLVED)
+        s.core.text = o.graphics.value ? profile_summary_mhz(o.graphics.value) + " MHz, cannot be saved separately on this GPU" :
+            "No offset (stock)";
     s.memory = profile_capture_scalar_row(o, PROFILE_DOMAIN_MEMORY, o.memory);
     s.power.available = profile_capture_domain_read(o, PROFILE_DOMAIN_POWER) && o.power.currentValid && o.power.defaultValid &&
         o.power.defaultMw > 0;
