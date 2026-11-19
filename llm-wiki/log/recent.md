@@ -5,6 +5,54 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: Previewing an offset profile over a flatten spiked point 75 to 3047 MHz (driver cross-talk) and zero-MHz projected drafts failed capture
+
+- Reported: after applying Profile 5 (flatten at ci=76 / 925 mV -> 2962 MHz,
+  `offset=0` on 45..75, `+480 MHz` at ci=76, `-1000 MHz` on 77..126) and
+  loading Profile 3 (`+475 MHz`, exclude first 70, flatten 2957 MHz @ ci=76)
+  without clicking Apply, the preview showed `3047 MHz` for point 75 (920 mV)
+  instead of `~2932 MHz` (above the 2957 MHz lock at point 76).
+- Root cause (two interacting defects confirmed from live capture + debug log):
+  1. On Blackwell, raising ci=76 by `+480 MHz` next to untouched ci=75
+     (`freqOffsets[75] == 0`) triggers driver VF neighbor cross-talk that pulls
+     `curve[75]` up from stock ~2457 MHz to 2572 MHz while `freqOffsets[75]`
+     stays `0` (and tail points 77..126 are monotonically clamped at 2962 MHz
+     with `-1000 MHz` offsets). Both Windows (`pending_curve_mhz_for_gui_point`
+     -> `curve_base_khz_for_point`) and Linux TUI (`tui_point_values`) computed
+     stock as raw `live - freqOffsets`, yielding `2572 + 475 = 3047 MHz` at
+     ci=75 (and `3962 MHz` on clamped tails when releasing a lock).
+  2. Profile 3's portable indexed document stored `kind=projection` points
+     without `observed_frequency_hz`, so `profile_desired_from_indexed_document()`
+     produced `hasCurvePoint=1, curvePointFromGpuOffset=1, curvePointMHz=0`.
+     `gui_draft_capture_desired()` copied `0` / `curveValueValid=false` into
+     `g_app.guiDraft`, while `sync_vf_curve_field_values()` hid it in the Win32
+     edit boxes -- causing `capture_gui_desired_settings()` (Apply, Save, and
+     reload comparison) to fail with `Invalid MHz value for point 70`.
+- Fix:
+  1. Added pure `source/vf_stock_base_policy.h` combining a topology-bound
+     unshaped stock curve cache (`vf_stock_curve_cache_observe()`, thermally
+     aligned via median delta over clean zero-offset reference points) with a
+     monotonic + concave-down-safe (chord + left-tangent) shaped-curve
+     estimator (`vf_estimate_stock_base()`) that interpolates cross-talked
+     neighbors by voltage and bounds monotonically clamped tails while leaving
+     unshaped curves and clean points untouched. Wired into Windows GUI
+     snapshot adoption (`main_state_sync.cpp`, `main_runtime_gpu.cpp` with
+     change-gated `gui stock base:` diagnostics, `ui_main_graph.cpp`) and Linux
+     TUI (`linux_tui_layout.cpp`).
+  2. Extended `gui_draft_desired_point_mhz()` (`source/gui_draft_desired_policy.h`)
+     and `resolved_desired_point_mhz_for_gui()` (`main_runtime_gpu.cpp`, wired
+     into `gui_draft_capture_desired()` and `populate_desired_into_gui()`) so
+     zero-MHz projected pre-tail points resolve from the crosstalk-safe stock
+     base + GPU offset component and zero-MHz locked-tail points resolve to
+     `lockMHz`; updated `maybe_confirm_profile_load_replace()` to treat matching
+     projected points semantically.
+- Coverage: `tests/vf_stock_base_tests.cpp` (`12520-12542`, `12544-12550`),
+  `tests/regression_main.cpp` (`12543`), and `tools/ui_gates.py`
+  (`check_preview_stock_base_crosstalk_protection()`, updated
+  `check_loaded_lock_reaches_the_draft()`). Software-verified via `--test`,
+  `--check --target all`, `--tidy`, and full deliverable build; live GUI
+  re-test pending rebuilt install.
+
 ## 2026-11-19: Importing a 5-profile export with slot 5 empty swapped Profile 1 into Slot 5 ("graphics offset is out of range")
 
 - Reported: after exporting all 5 slots to a `.gcprofile` file, clearing slot 5

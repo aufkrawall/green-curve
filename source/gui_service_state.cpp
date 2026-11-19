@@ -158,14 +158,14 @@ static void gui_draft_capture_desired(const DesiredSettings* desired) {
     // the lock target from the draft's anchor (gui_draft_desired_policy.h).
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         bool fromLock = false;
-        const unsigned int mhz = gui_draft_desired_point_mhz(*desired, ci, &fromLock);
-        if (!mhz && !desired->hasCurvePoint[ci]) continue;
-        if (fromLock && g_app.guiDraft.curveMHz[ci] != mhz) {
+        const unsigned int mhz = resolved_desired_point_mhz_for_gui(desired, ci, &fromLock);
+        if (!mhz) continue;
+        if (fromLock && desired->lockCi == ci && g_app.guiDraft.curveMHz[ci] != mhz) {
             debug_log("GUI draft: lock anchor ci=%d set to the record's lock %u MHz (was %u%s)\n",
                 ci, mhz, g_app.guiDraft.curveMHz[ci],
                 desired->hasCurvePoint[ci] ? ", explicit point" : ", live/applied projection");
         }
-        g_app.guiDraft.curveValueValid[ci] = mhz > 0;
+        g_app.guiDraft.curveValueValid[ci] = true;
         g_app.guiDraft.curveMHz[ci] = mhz;
         StringCchPrintfA(g_app.guiDraft.curveText[ci],
             ARRAY_COUNT(g_app.guiDraft.curveText[ci]), "%u", mhz);

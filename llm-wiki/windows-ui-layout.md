@@ -302,8 +302,22 @@ under the cursor; later launches restore the last validated normal placement.
   normalizes like the backend's desired settings (exclude counts count only
   while the offset is nonzero). The locked tail is pinned to the lock target
   regardless. Every point the offset path re-places
-  is previewed at **stock + the pending offset component**, where stock is
-  `curve_base_khz_for_point()` (`curve[ci] - freqOffsets[ci]`). Such a point
+  is previewed at **stock + the pending offset component**, where stock comes
+  from `curve_stock_base_khz_for_point()` (`source/vf_stock_base_policy.h`,
+  refreshed on every snapshot via `update_gui_stock_base_estimate()`). Raw
+  `curve[ci] - freqOffsets[ci]` stays untouched on unshaped curves and clean
+  points, while driver neighbor cross-talk (e.g. an untouched point immediately
+  below a large flatten step pulled up without changing its offset) and
+  monotonically clamped flat tails (`-1000 MHz` tail clamped to the plateau)
+  are corrected from a thermally aligned observed unshaped stock cache when
+  available, or voltage interpolation / bounded fallback otherwise. Linux TUI
+  (`tui_point_values()` in `source/linux_tui_layout.cpp`) uses the same
+  `vf_estimate_stock_base()` policy. Similarly, loading an indexed portable
+  profile whose projected points omit `observed_frequency_hz` (`curvePointMHz
+  == 0`) resolves pre-tail draft/field MHz through
+  `resolved_desired_point_mhz_for_gui()` (`gui_draft_desired_point_mhz()` with
+  `curve_stock_base_khz_for_point(ci)`) and locked-tail points to `lockMHz`
+  instead of leaving `"0"` / invalid in `GuiDraft`. Such a point
   currently *displays* stock + the **applied** component, so without this
   projection the preview silently misses every point a changed offset is about
   to move. This is the reported regression: an applied +475 MHz / exclude-first
@@ -332,7 +346,7 @@ under the cursor; later launches restore the last validated normal placement.
   pending offset component when the new profile's offset covers them).
   `gui_pending_curve_point_changed()` now treats an applied-owned point the
   editor does not own as changed, and `GuiGraphPreviewInput.releasedToStock`
-  makes the preview project it from `curve_base_khz_for_point()` instead of
+  makes the preview project it from `curve_stock_base_khz_for_point()` instead of
   the stale draft value the previous profile left behind. Applied hard NVML
   pins fold into that ownership via `gui_applied_curve_mhz_for_pending()`: a
   hard pin owns every visible point even where `appliedCurveMHz` has no entry.

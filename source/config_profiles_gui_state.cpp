@@ -50,7 +50,8 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
         gui_set_curve_point_origin(ci, desired->hasCurvePoint[ci], desired->curvePointFromGpuOffset[ci]);
         if (g_app.hEditsMhz[vi]) {
             unsigned int mhz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
-            if (desired->hasCurvePoint[ci]) mhz = desired->curvePointMHz[ci];
+            const unsigned int desiredMHz = resolved_desired_point_mhz_for_gui(desired, ci);
+            if (desiredMHz > 0) mhz = desiredMHz;
             set_edit_value(g_app.hEditsMhz[vi], mhz);
         }
     }
@@ -538,10 +539,14 @@ static bool maybe_confirm_profile_load_replace(int slot) {
                              current.lockTracksAnchor != targetFull.lockTracksAnchor))) same = false;
     if (current.fanMode != targetFull.fanMode || current.fanPercent != targetFull.fanPercent || !fan_curve_equals(&current.fanCurve, &targetFull.fanCurve)) same = false;
     for (int i = 0; same && i < VF_NUM_POINTS; i++) {
-        if (current.hasCurvePoint[i] != targetFull.hasCurvePoint[i] ||
-            (current.hasCurvePoint[i] &&
-             current.curvePointMHz[i] != targetFull.curvePointMHz[i]))
+        if (current.hasCurvePoint[i] != targetFull.hasCurvePoint[i]) {
             same = false;
+        } else if (current.hasCurvePoint[i]) {
+            const bool bothProjected =
+                current.curvePointFromGpuOffset[i] && targetFull.curvePointFromGpuOffset[i];
+            if (!bothProjected && current.curvePointMHz[i] != targetFull.curvePointMHz[i])
+                same = false;
+        }
     }
     if (same) return true;
 

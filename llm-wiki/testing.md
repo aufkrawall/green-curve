@@ -1,5 +1,35 @@
 # Testing
 
+## Stock-base VF preview under cross-talk and projected profile drafts (2026-11-19)
+
+`tests/vf_stock_base_tests.cpp` (`12520-12542`, `12544-12550`) and
+`tests/regression_main.cpp` (`12543`) pin `source/vf_stock_base_policy.h`,
+`source/gui_draft_desired_policy.h`, and `source/linux_tui_layout.cpp`:
+- `12520-12524`: reported Profile 5 -> Profile 3 scenario without a stock cache
+  (ci=75 pulled up to 2572 MHz at offset=0 before ci=76 +480 MHz / 2962 MHz
+  flatten, ci=77..126 at -1000 MHz): ci=75 interpolates to 2456 MHz (+475 ->
+  2931 MHz, not 3047 MHz), clean points stay exact, and clamped tail points
+  never fabricate 3962 MHz.
+- `12525-12528`: same scenario with a cached unshaped stock snapshot plus
+  -15 MHz thermal boost drift recovers exact thermally aligned stock for both
+  ci=75 (2442 MHz) and tail points 77..126 (2492..3157 MHz).
+- `12529-12534`: multi-point cross-talk (ci=74 and ci=75), sub-monotonic upward
+  cross-talk above both chord and left tangent, and small (+18 MHz) cross-talk
+  resolved via the aligned stock cache.
+- `12535-12542`: unshaped curves (including stock level tops), uniform offsets,
+  and clean concave-down selective curves remain untouched; shaped, hard-pinned,
+  or nonzero-scalar snapshots never enter the cache, and a topology change
+  clears the prior GPU's cache.
+- `12543`: Linux TUI `tui_point_values()` interpolates ci=75 to 2456 MHz
+  (target 2931 MHz) under the same Profile 5 cross-talk fixture.
+- `12544-12550`: `gui_draft_desired_point_mhz()` resolves zero-MHz projected
+  pre-tail points through the crosstalk-safe stock base + offset component and
+  zero-MHz locked-tail points to `lockMHz`, preserves explicit non-zero MHz,
+  and returns 0 cleanly when offline or non-projected.
+- `tools/ui_gates.py` (`check_preview_stock_base_crosstalk_protection()` and
+  updated `check_loaded_lock_reaches_the_draft()`) pins both platforms to the
+  shared stock-base estimator and projected-point draft resolution.
+
 ## Profile import default slot assignment and indexed pre-check (2026-11-19)
 
 `tests/profile_tools_tests.cpp` (`9992-9996`), `tests/profile_slot_runtime_tests.cpp`

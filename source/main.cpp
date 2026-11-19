@@ -607,6 +607,9 @@ static void repair_profile_locked_curve_readback_artifacts(const char* path, con
 static int curve_base_khz_for_point(int pointIndex);
 static void update_gui_stock_base_estimate();
 static int curve_stock_base_khz_for_point(int pointIndex);
+static unsigned int resolved_desired_point_mhz_for_gui(
+    const DesiredSettings* desired, int ci, bool* fromLock = nullptr,
+    bool* fromProjection = nullptr);
 static void persist_runtime_selective_gpu_offset_request(int gpuOffsetMHz, int excludeLowCount);
 static void clear_runtime_selective_gpu_offset_request();
 static void resolve_displayed_live_gpu_offset_state_for_gui(int* gpuOffsetMHzOut, int* excludeLowCountOut);

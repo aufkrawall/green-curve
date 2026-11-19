@@ -1804,14 +1804,24 @@ def check_live_offset_excludes_programmed_flat_tail(ctx, require_text, forbid_te
 
 def check_loaded_lock_reaches_the_draft(ctx, require_text, forbid_text):
     """Apply takes the lock target from the draft's anchor value, so every
-    profile-sourced draft copy must write the record's lock there; a copy of
-    explicit points alone sent the live anchor clock for a lock-only record
-    (a captured or imported flatten)."""
+    profile-sourced draft copy must write the record's lock there and project
+    zero-MHz offset-projection points through the crosstalk-safe stock base
+    rather than writing 0 / invalid into the draft."""
     ctx.require_text_in_operation(
         _p(ctx, "gui_service_state.cpp"),
         "static void gui_draft_capture_desired(",
-        "gui_draft_desired_point_mhz(*desired, ci, &fromLock)",
-        "the draft copy of a loaded profile writes the lock target at its anchor")
+        "resolved_desired_point_mhz_for_gui(desired, ci, &fromLock)",
+        "the draft copy of a loaded profile resolves lock targets and projected points")
+    ctx.require_text_in_operation(
+        _p(ctx, "main_runtime_gpu.cpp"),
+        "static unsigned int resolved_desired_point_mhz_for_gui(",
+        "gui_draft_desired_point_mhz(*desired, ci, fromLock,",
+        "the GUI point resolver delegates to gui_draft_desired_point_mhz()")
+    ctx.require_text_in_operation(
+        _p(ctx, "config_profiles_gui_state.cpp"),
+        "static void populate_desired_into_gui(",
+        "resolved_desired_point_mhz_for_gui(desired, ci)",
+        "editor population resolves projected points through the same helper as the draft")
     forbid_text(_p(ctx, "gui_service_state.cpp"),
                 "if (!desired->hasCurvePoint[ci]) continue;",
                 "the draft copy must not be limited to explicit curve points")

@@ -1,6 +1,7 @@
 #include "gpu_backend_curve_write.h"
 
 #include "curve_point_verify_policy.h"
+#include "gui_draft_desired_policy.h"
 
 static unsigned int displayed_curve_mhz(unsigned int rawFreq_kHz) {
     return curve_display_mhz_from_khz((unsigned int)displayed_curve_khz(rawFreq_kHz));
@@ -122,6 +123,18 @@ static int curve_stock_base_khz_for_point(int pointIndex) {
         return (int)base;
     }
     return curve_base_khz_for_point(pointIndex);
+}
+
+static unsigned int resolved_desired_point_mhz_for_gui(
+    const DesiredSettings* desired, int ci, bool* fromLock,
+    bool* fromProjection) {
+    if (!desired) return 0;
+    const int offsetComp = desired->hasGpuOffset
+        ? gpu_offset_component_mhz_for_point(
+              ci, desired->gpuOffsetMHz, desired->gpuOffsetExcludeLowCount)
+        : 0;
+    return gui_draft_desired_point_mhz(*desired, ci, fromLock,
+        (long long)curve_stock_base_khz_for_point(ci), offsetComp, fromProjection);
 }
 
 static int curve_delta_khz_for_target_display_mhz_unclamped(int pointIndex, unsigned int displayMHz) {

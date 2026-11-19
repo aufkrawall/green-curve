@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "curve_plan_fixtures.h"
+#include "gui_draft_desired_policy.h"
 #include "vf_stock_base_policy.h"
 
 namespace {
@@ -269,10 +270,80 @@ int run_crosstalk_and_cache_edge_cases() {
     return 0;
 }
 
+int run_projected_draft_point_cases() {
+    // 12544-12550: loading an indexed portable profile whose projected points
+    // omit observed_frequency_hz (hasCurvePoint=1, curvePointFromGpuOffset=1,
+    // curvePointMHz=0, e.g. Profile 3) must resolve pre-tail points from the
+    // crosstalk-safe stock base + GPU offset component and locked-tail points
+    // from lockMHz, never writing 0 / invalid into the editor draft.
+    Table t;
+    rtx5070_stock_curve(&t);
+    apply_profile5_with_crosstalk(&t, 2572u);
+    const VfStockBaseEstimate est =
+        vf_estimate_stock_base(t.curve, t.offsets, floor_for(t), nullptr, 0);
+
+    DesiredSettings profile3 = {};
+    profile3.hasGpuOffset = 1;
+    profile3.gpuOffsetMHz = 475;
+    profile3.gpuOffsetExcludeLowCount = 70;
+    profile3.hasLock = 1;
+    profile3.lockCi = 76;
+    profile3.lockMHz = 2957;
+    profile3.lockMode = LOCK_MODE_FLATTEN;
+    profile3.lockTracksAnchor = 0;
+    for (int ci = 70; ci <= 126; ++ci) {
+        profile3.hasCurvePoint[ci] = 1;
+        profile3.curvePointFromGpuOffset[ci] = 1;
+        profile3.curvePointMHz[ci] = 0;  // no observed_frequency_hz in document
+    }
+
+    bool fromLock = false, fromProj = false;
+    // 12544: pre-tail projected point 70 -> 2332 + 475 = 2807 MHz.
+    if (gui_draft_desired_point_mhz(profile3, 70, &fromLock, est.baseKHz[70], 475, &fromProj) != 2807u ||
+        fromLock || !fromProj)
+        return 12544;
+    // 12545: cross-talked pre-tail projected point 75 -> 2456 + 475 = 2931 MHz
+    // (NOT 0, and NOT 2572 + 475 = 3047 MHz!).
+    if (gui_draft_desired_point_mhz(profile3, 75, &fromLock, est.baseKHz[75], 475, &fromProj) != 2931u ||
+        fromLock || !fromProj)
+        return 12545;
+    // 12546: lock anchor point 76 -> lockMHz = 2957 MHz (fromLock=true).
+    if (gui_draft_desired_point_mhz(profile3, 76, &fromLock, est.baseKHz[76], 475, &fromProj) != 2957u ||
+        !fromLock || fromProj)
+        return 12546;
+    // 12547: zero-MHz projected tail point 77 -> lockMHz = 2957 MHz (fromLock=true).
+    if (gui_draft_desired_point_mhz(profile3, 77, &fromLock, est.baseKHz[77], 475, &fromProj) != 2957u ||
+        !fromLock || fromProj)
+        return 12547;
+    // 12548: offline / unknown stock base (0 kHz) -> returns 0 cleanly so the
+    // caller skips writing an invalid "0" into the draft.
+    if (gui_draft_desired_point_mhz(profile3, 70, &fromLock, 0, 475, &fromProj) != 0u ||
+        fromLock || fromProj)
+        return 12548;
+    // 12549: explicit non-zero point MHz always wins over projection fallback.
+    profile3.curvePointMHz[70] = 2815u;
+    if (gui_draft_desired_point_mhz(profile3, 70, &fromLock, est.baseKHz[70], 475, &fromProj) != 2815u ||
+        fromLock || fromProj)
+        return 12549;
+    // 12550: non-projected point with MHz==0 (invalid/absent) never synthesizes
+    // a frequency from stockBaseKHz.
+    DesiredSettings nonProj = {};
+    nonProj.hasGpuOffset = 1;
+    nonProj.gpuOffsetMHz = 475;
+    nonProj.hasCurvePoint[70] = 1;
+    nonProj.curvePointFromGpuOffset[70] = 0;
+    nonProj.curvePointMHz[70] = 0;
+    if (gui_draft_desired_point_mhz(nonProj, 70, &fromLock, est.baseKHz[70], 475, &fromProj) != 0u)
+        return 12550;
+
+    return 0;
+}
+
 }  // namespace
 
 int run_vf_stock_base_tests() {
     if (int rc = run_reported_crosstalk_cases()) return rc;
     if (int rc = run_crosstalk_and_cache_edge_cases()) return rc;
+    if (int rc = run_projected_draft_point_cases()) return rc;
     return 0;
 }
