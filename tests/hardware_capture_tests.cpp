@@ -51,6 +51,9 @@ static void* query(unsigned int id) {
     if (id == g_vfBackendPascal.getInfoId) return (void*)info;
     if (id == g_vfBackendPascal.getStatusId) return (void*)status;
     if (id == g_vfBackendPascal.getControlId) return (void*)control;
+    // This fixture driver has no client lock table: lock knowledge stays
+    // unknown (unsupported), the production default without the getter.
+    if (id == NVAPI_CLIENT_LOCK_TABLE_GET) return nullptr;
     ++active->unexpectedQueries;
     return nullptr;
 }
@@ -67,8 +70,12 @@ static nvmlReturn_t baseline(nvmlDevice_t, unsigned int* v) {
 static nvmlReturn_t constraints(nvmlDevice_t, unsigned int* low, unsigned int* high) {
     *low = 100000; *high = 300000; return NVML_SUCCESS;
 }
-static bool pin(void*, bool& present, gc_i64& low, gc_i64& high, int& result) {
-    present = true; low = high = 1000000500; result = 0; return true;
+static NvapiClientLocks pin(void*) {
+    NvapiClientLocks locks{};
+    locks.known = true; locks.rejectedIndex = -1;
+    locks.graphicsMaxPresent = locks.graphicsMinPresent = true;
+    locks.graphicsMaxHz = locks.graphicsMinHz = 1000000500;
+    return locks;
 }
 static HardwareCaptureContext context(Driver& driver, const NvmlApi& api) {
     active = &driver;
@@ -162,7 +169,7 @@ int run_hardware_capture_tests() {
         document->power.present || !document->power.hasObservedCurrentMw ||
         document->power.hasObservedDefaultMw) return 8491;
     driver.rangeFails = driver.defaultFails = false;
-    c.composition = CAPTURE_COMPOSITION_INDEPENDENT; c.pinGetter = pin;
+    c.composition = CAPTURE_COMPOSITION_INDEPENDENT; c.lockReader = pin;
     if (!collect(c, requested, *observation, why, sizeof(why)) || observation->omittedDomains ||
         !hardware_capture_to_document(*observation, *document, why, sizeof(why)) ||
         !document->graphicsOffset.present || document->source.pinKnowledge != PROFILE_PIN_PRESENT ||

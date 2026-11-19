@@ -131,7 +131,14 @@ static inline bool profile_capture_commands_run(const std::vector<std::string>& 
         io.message("  " + profile_command_domains(1 << i) + ": " + statuses[capture->domainStatus[i]] +
             " (driver status " + std::to_string(capture->driverStatus[i]) + ")\n");
     io.message("Best-effort consistent programmed controls; observed clocks may vary. Pin knowledge: " +
-        std::string(!capture->pinGetterValid ? "unknown" : capture->pinPresent ? "present" : "absent") + ".\n");
+        std::string(!capture->pinGetterValid ? "unknown" :
+            (capture->pinPresent || capture->pinVoltageLocked) ? "present" : "absent") + ".\n");
+    if (capture->pinGetterValid && (capture->pinPresent || capture->pinVoltageLocked))
+        io.message("  Driver locks:" +
+            (capture->pinPresent ? " clock limit " + std::to_string(capture->pinMinimumHz) + ".." +
+                std::to_string(capture->pinMaximumHz) + " Hz" : std::string()) +
+            (capture->pinVoltageLocked ? " voltage lock " + std::to_string(capture->pinVoltageUv) + " uV" : std::string()) +
+            "\n");
     if (!capture->capturedDomains) {
         profile_codec::fail(&error, 0, "no requested controls were captured; output was not written"); return reject(PROFILE_COMMAND_IO);
     }

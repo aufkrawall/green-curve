@@ -25,7 +25,7 @@ static inline bool hardware_capture_observation_valid(const HardwareCaptureObser
         !hardware_capture_bytes_zero(o.reserved, sizeof(o.reserved)) ||
         !hardware_capture_bytes_zero(o.textReserved, sizeof(o.textReserved)) ||
         o.osFamily > 2u || o.backendFamily > INT_MAX ||
-        o.composition > CAPTURE_COMPOSITION_ALIASED || o.alignmentReserved ||
+        o.composition > CAPTURE_COMPOSITION_ALIASED || o.pinVoltageLocked > 1 ||
         !profile_bounded_text_valid(o.driverVersion, sizeof(o.driverVersion), 64)) return false;
     if (!o.binding.valid || o.binding.valid > 1 || o.binding.pciInfoValid > 1 ||
         !hardware_capture_bytes_zero(o.binding.reserved, sizeof(o.binding.reserved)) ||
@@ -72,9 +72,15 @@ static inline bool hardware_capture_observation_valid(const HardwareCaptureObser
         (p.currentValid ? p.currentMw <= 0 : p.currentMw != 0) ||
         (p.defaultValid ? p.defaultMw <= 0 : p.defaultMw != 0) ||
         (p.rangeValid ? (p.minimumMw <= 0 || p.maximumMw < p.minimumMw) : (p.minimumMw || p.maximumMw))) return false;
-    if ((!o.pinGetterValid && (o.pinPresent || o.pinMinimumHz || o.pinMaximumHz)) ||
-        (o.pinGetterValid && (o.pinPresent ? (o.pinMinimumHz <= 0 || o.pinMaximumHz < o.pinMinimumHz) :
-            (o.pinMinimumHz || o.pinMaximumHz)))) return false;
+    // A clock limit always has a ceiling; its floor is 0 when absent. A
+    // voltage lock carries a plausible voltage, and every lock field needs
+    // the decoded driver table behind it.
+    if ((!o.pinGetterValid && (o.pinPresent || o.pinMinimumHz || o.pinMaximumHz || o.pinVoltageLocked ||
+            o.pinVoltageUv)) ||
+        (o.pinGetterValid && (o.pinPresent ? (o.pinMaximumHz <= 0 || o.pinMinimumHz < 0 ||
+            o.pinMaximumHz < o.pinMinimumHz) : (o.pinMinimumHz || o.pinMaximumHz))) ||
+        (o.pinVoltageLocked ? (o.pinVoltageUv < 200000u || o.pinVoltageUv > 2000000u) : o.pinVoltageUv != 0))
+        return false;
     bool indices[128]{};
     for (gc_u32 i = 0; i < 128; ++i) {
         const auto& point = o.points[i];

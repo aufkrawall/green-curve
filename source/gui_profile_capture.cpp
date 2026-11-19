@@ -403,8 +403,10 @@ static GC_NOINLINE void gui_profile_capture_begin(int preferredSlot) {
     d.styleLabel = gui_profile_dialog_label(d.hwnd, "Save the curve as", CAPTURE_DLG_STYLE_LABEL);
     d.style = gui_profile_dialog_combo(d.hwnd, CAPTURE_DLG_STYLE);
     d.detect = gui_profile_dialog_button(d.hwnd, "Detect clock lock under load...", CAPTURE_DLG_DETECT);
-    d.detectNote = gui_profile_dialog_label(d.hwnd, "Only if another tool pins the clock: start a game or benchmark first, "
-        "then detect. Green Curve samples the clocks for a few seconds.", CAPTURE_DLG_DETECT_NOTE);
+    // Shown only when the driver could not report its clock locks; normally
+    // the read above already names any lock, with no GPU load needed.
+    d.detectNote = gui_profile_dialog_label(d.hwnd, "This driver did not report clock locks. Only if another tool "
+        "pins the clock: start a game or benchmark first, then detect.", CAPTURE_DLG_DETECT_NOTE);
     d.slotLabel = gui_profile_dialog_label(d.hwnd, "Save to", CAPTURE_DLG_SLOT_LABEL);
     d.slot = gui_profile_dialog_combo(d.hwnd, CAPTURE_DLG_SLOT);
     for (int s = 1; s <= CONFIG_NUM_SLOTS; ++s) gui_profile_dialog_combo_add(d.slot, gui_profile_slot_label(s).c_str(), s);

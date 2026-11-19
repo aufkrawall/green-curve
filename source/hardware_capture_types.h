@@ -6,7 +6,10 @@
 #include "profile_domain_mask.h"
 #include "vf_offset_range_policy.h"
 
-enum { HARDWARE_CAPTURE_SCHEMA_CURRENT = 3 };
+// Schema 4 gives two reserved fields meaning: the driver's VF voltage lock
+// (pinVoltageLocked/pinVoltageUv), and a clock limit with no floor
+// (pinPresent with pinMinimumHz == 0). Same 4960-byte layout.
+enum { HARDWARE_CAPTURE_SCHEMA_CURRENT = 4 };
 
 // Fixed wire observation layout. It contains no pointers, C++ bool,
 // ownership claim, file path, permission or automatic-restore acknowledgment.
@@ -57,13 +60,18 @@ struct HardwareCaptureVfLimits {
     gc_i64 minimumHz, maximumHz, gridHz;
 };
 struct HardwareCaptureObservation {
+    // pinGetterValid: the driver's client lock table was read and decoded.
+    // pinPresent: a graphics clock limit is held (pinMaximumHz; pinMinimumHz
+    // is the floor, 0 when there is none). pinVoltageLocked: a VF voltage
+    // lock is held at pinVoltageUv. All three come from the same reading.
     gc_bool8 valid, topologyComplete, pinGetterValid, pinPresent;
-    gc_u8 reserved[4];
+    gc_bool8 pinVoltageLocked;
+    gc_u8 reserved[3];
     gc_u32 schemaVersion, requestedDomains, capturedDomains, omittedDomains, unavailableDomains;
     gc_u32 domainStatus[9];
     int32_t driverStatus[9];
     gc_u32 osFamily, backendFamily, composition, pointCount;
-    gc_u32 alignmentReserved;
+    gc_u32 pinVoltageUv;
     gc_u64 gpuGeneration, revision, fingerprint;
     HardwareCaptureBinding binding;
     char driverVersion[65];

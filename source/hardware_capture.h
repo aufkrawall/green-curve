@@ -78,7 +78,8 @@ static inline bool hardware_capture_to_document(const HardwareCaptureObservation
     d.source.captureComplete = !o.omittedDomains;
     d.source.capturedDomains = o.capturedDomains; d.source.omittedDomains = o.omittedDomains;
     d.source.unavailableDomains = o.unavailableDomains;
-    d.source.pinKnowledge = !o.pinGetterValid ? PROFILE_PIN_UNKNOWN : o.pinPresent ? PROFILE_PIN_PRESENT : PROFILE_PIN_ABSENT;
+    d.source.pinKnowledge = !o.pinGetterValid ? PROFILE_PIN_UNKNOWN :
+        (o.pinPresent || o.pinVoltageLocked) ? PROFILE_PIN_PRESENT : PROFILE_PIN_ABSENT;
     for (int i = 0; i < d.topologyCount; ++i) {
         const auto& p = o.points[i];
         d.topology[i] = {(int)p.index, (int)p.index, p.voltageUv, p.writableState};
@@ -106,7 +107,9 @@ static inline bool hardware_capture_to_document(const HardwareCaptureObservation
         d.domains |= PROFILE_DOMAIN_POWER; d.power.present = true;
         d.power.ratio = tuning_power_ratio_from_mw(o.power.currentMw, o.power.defaultMw);
     }
-    if (o.pinGetterValid && o.pinPresent) {
+    // The document's observed range needs a floor; a ceiling-only limit and
+    // a voltage lock stay in pin knowledge (and the capture report) only.
+    if (o.pinGetterValid && o.pinPresent && o.pinMinimumHz > 0) {
         d.lock.hasObservedPinRange = true; d.lock.observedPinMinimumHz = o.pinMinimumHz;
         d.lock.observedPinMaximumHz = o.pinMaximumHz; d.lock.provenance = PROFILE_LOCK_PROVENANCE_DRIVER_GETTER;
     }

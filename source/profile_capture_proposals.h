@@ -65,6 +65,7 @@ struct ProfileCaptureLockProposal {
     gc_i64 anchorVoltageUv = 0, frequencyHz = 0, maximumDeviationHz = 0;
     int tailCount = 0;
     ProfileLockProvenance provenance = PROFILE_LOCK_PROVENANCE_USER;
+    gc_i64 voltageLockUv = 0;  // pin derived from the driver's VF voltage lock
     char reason[192]{};
     bool selectable() const { return recognized && controls.disposition <= PROFILE_CONTROL_CONDITIONAL; }
 };
@@ -79,6 +80,14 @@ struct ProfileCaptureProposals {
     bool sameTarget = false, conflictingTargets = false;
     ProfileCaptureRepresentation suggested = PROFILE_CAPTURE_EXACT;
 };
+// The captured curve point at exactly `voltageUv`, or null. A voltage lock
+// names a curve point's voltage; any other voltage is not turned into a clock.
+static inline const HardwareCapturePoint *profile_capture_point_at_voltage(const HardwareCaptureObservation &o,
+                                                                           gc_i64 voltageUv) {
+    for (gc_u32 i = 0; i < o.pointCount && i < 128u; ++i)
+        if (o.points[i].voltageUv == voltageUv && o.points[i].frequencyValid) return &o.points[i];
+    return nullptr;
+}
 static inline void profile_capture_proposal_reason(ProfileCaptureLockProposal &proposal, const char *reason,
                                                    ProfileControlFeasibility status = PROFILE_CONTROL_UNAVAILABLE) {
     proposal.controls.disposition = status;
@@ -221,13 +230,36 @@ static inline bool profile_capture_prepare_proposals(const HardwareCaptureObserv
             profile_capture_check_proposal(observation, flatten);
         }
     }
-    gc_i64 pinHz = 0;
+    gc_i64 pinHz = 0, pinVoltageUv = 0;
     ProfileLockProvenance pinProvenance = PROFILE_LOCK_PROVENANCE_USER;
     if (observation.requestedDomains & PROFILE_DOMAIN_LOCK) {
         if (observation.pinGetterValid) {
-            if (!observation.pinPresent)
+            if (observation.pinVoltageLocked && observation.pinPresent)
+                profile_capture_proposal_reason(proposals->pin,
+                    "another tool holds both a clock limit and a voltage lock; a fixed pin needs a separate decision");
+            else if (observation.pinVoltageLocked) {
+                // A VF voltage lock holds the GPU at that curve point, i.e. at
+                // its frequency (observed idle and under load). Replay pins
+                // that frequency, rounded down to the MHz the clock lock
+                // takes so it never needs a higher voltage than the point.
+                const auto point = profile_capture_point_at_voltage(observation, observation.pinVoltageUv);
+                if (!point || point->frequencyHz < 1000000)
+                    profile_capture_proposal_reason(proposals->pin,
+                        "the driver's voltage lock names no readable curve point");
+                else {
+                    pinHz = point->frequencyHz / 1000000 * 1000000;
+                    pinVoltageUv = observation.pinVoltageUv;
+                    pinProvenance = PROFILE_LOCK_PROVENANCE_DRIVER_GETTER;
+                }
+            } else if (!observation.pinPresent)
                 profile_capture_proposal_reason(proposals->pin, "validated getter reports no pin");
-            else if (observation.pinMinimumHz != observation.pinMaximumHz)
+            else if (!observation.pinMinimumHz) {
+                char reason[192]{};
+                snprintf(reason, sizeof(reason),
+                    "another tool caps the clock at %lld MHz without a minimum; only fixed clock locks can be saved",
+                    (long long)(observation.pinMaximumHz / 1000000));
+                profile_capture_proposal_reason(proposals->pin, reason);
+            } else if (observation.pinMinimumHz != observation.pinMaximumHz)
                 profile_capture_proposal_reason(proposals->pin,
                                                 "the getter reports a range; a fixed pin needs a separate decision");
             else {
@@ -254,6 +286,7 @@ static inline bool profile_capture_prepare_proposals(const HardwareCaptureObserv
             profile_capture_proposal_reason(pin, "pin evidence has no complete writable curve anchor");
         else {
             profile_capture_make_lock(proposals->exact, pin, anchor, LOCK_MODE_HARD, pinHz, pinProvenance);
+            pin.voltageLockUv = pinVoltageUv;
             if (context.pinAvailabilityKnown && !context.pinAvailable)
                 profile_capture_proposal_reason(
                     pin, "hard-pin control is unavailable; exact replay or an explicit flatten remains separate");

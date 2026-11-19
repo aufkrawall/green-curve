@@ -53,6 +53,7 @@ REGRESSION_SOURCES = (
     'profile_capture_proposals_tests.cpp',
     'capture_curve_choice_tests.cpp',
     'capture_aux_writable_tests.cpp',
+    'capture_client_lock_tests.cpp',
     'profile_pin_observation_tests.cpp',
     'profile_mapping_tests.cpp',
     'profile_conversion_tests.cpp',

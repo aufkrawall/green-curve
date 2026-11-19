@@ -93,6 +93,22 @@ static inline ProfileCaptureSummaryRow profile_capture_scalar_row(const Hardware
     row.text = row.changed ? profile_summary_mhz(value.value) + " MHz" : "No offset (stock)";
     return row;
 }
+// The driver-reported lock, in words, or empty when none is held or known.
+static inline std::string profile_capture_lock_text(const HardwareCaptureObservation& o,
+    const ProfileCaptureProposals* proposals) {
+    if (!o.pinGetterValid) return std::string();
+    const std::string voltage = profile_summary_mhz((gc_i64)o.pinVoltageUv * 1000, false) + " mV";
+    if (o.pinVoltageLocked && proposals && proposals->pin.recognized && proposals->pin.voltageLockUv)
+        return "locked at " + voltage + " (" + profile_summary_mhz(proposals->pin.frequencyHz, false) + " MHz)";
+    if (o.pinVoltageLocked && !o.pinPresent) return "voltage locked at " + voltage;
+    if (!o.pinPresent) return std::string();
+    const std::string ceiling = profile_summary_mhz(o.pinMaximumHz, false) + " MHz";
+    std::string text = !o.pinMinimumHz ? "clock capped at " + ceiling :
+        o.pinMinimumHz == o.pinMaximumHz ? "clock locked at " + ceiling :
+        "clock held at " + profile_summary_mhz(o.pinMinimumHz, false) + "-" + ceiling;
+    if (o.pinVoltageLocked) text += ", voltage locked at " + voltage;
+    return text;
+}
 static inline ProfileCaptureSummary profile_capture_summary(const HardwareCaptureObservation& o,
     const ProfileCaptureProposals* proposals) {
     ProfileCaptureSummary s;
@@ -116,6 +132,10 @@ static inline ProfileCaptureSummary profile_capture_summary(const HardwareCaptur
         } else {
             s.curve.text = "Custom curve, " + std::to_string(changed) + " points changed";
         }
+        // A lock another tool holds is part of what the curve does; the driver
+        // reports it without any GPU load.
+        const std::string lock = profile_capture_lock_text(o, proposals);
+        if (!lock.empty()) { s.curve.text += ", " + lock; s.curve.changed = true; }
     } else {
         s.curve.text = "Not readable on this GPU";
     }
@@ -162,8 +182,12 @@ static inline std::string profile_capture_choice_label(const ProfileCapturePropo
         return "Flat curve at " + profile_summary_mhz(p.flatten.frequencyHz, false) + " MHz from " +
             profile_summary_mhz(p.flatten.anchorVoltageUv * 1000, false) + " mV";
     if (r == PROFILE_CAPTURE_PIN) {
-        const char* evidence = p.pin.provenance == PROFILE_LOCK_PROVENANCE_USER_CONFIRMED_OBSERVATION ? " (detected under load)" :
+        std::string evidence = p.pin.provenance == PROFILE_LOCK_PROVENANCE_USER_CONFIRMED_OBSERVATION ? " (detected under load)" :
             p.pin.provenance == PROFILE_LOCK_PROVENANCE_APPLIED_INTENT ? " (set by Green Curve)" : "";
+        if (p.pin.provenance == PROFILE_LOCK_PROVENANCE_DRIVER_GETTER)
+            evidence = p.pin.voltageLockUv
+                ? " (replaces the voltage lock at " + profile_summary_mhz(p.pin.voltageLockUv * 1000, false) + " mV)"
+                : std::string(" (read from the driver)");
         return "Hard clock lock at " + profile_summary_mhz(p.pin.frequencyHz, false) + " MHz" + evidence;
     }
     // An exact copy Green Curve would refuse at Apply (for example offsets past

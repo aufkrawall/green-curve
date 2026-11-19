@@ -4,6 +4,15 @@
 #include "hardware_capture_aux.h"
 static void* nvapi_qi_passive(unsigned int id);
 
+// Called under the runtime lock by every passive capture read.
+static void service_log_client_locks(const NvapiClientLocks& locks) {
+    static NvapiClientLocksLogGate gate{};
+    if (!nvapi_client_locks_log_changed(gate, locks)) return;
+    char line[192];
+    nvapi_client_locks_describe(locks, line, sizeof(line));
+    debug_log("%s\n", line);
+}
+
 // Caller holds the runtime lock. Reuse the passive collector at the mutation
 // boundary without acquiring that lock recursively or waking recovery.
 static bool service_collect_capture_locked(const GpuAdapterInfo& target, gc_u32 domains,
@@ -25,6 +34,7 @@ static bool service_collect_capture_locked(const GpuAdapterInfo& target, gc_u32 
         const auto driver = service_loaded_driver_label();
         memcpy(c.driverVersion, driver.text, sizeof(driver.text));
         c.ownedFanIntent = g_serviceHasActiveDesired ? &g_serviceActiveDesired : nullptr;
+        c.lockObserved = service_log_client_locks;
         LeaveCriticalSection(&g_appLock);
         return hardware_capture_collect(c, domains, hardware_capture_aux, out, why, size);
     };

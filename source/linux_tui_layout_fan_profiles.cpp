@@ -539,7 +539,8 @@ void tui_draw_capture_dialog(TuiCanvas* canvas) {
         ++y;
         if (view.pinObservable) {
             canvas->button({x, y, 30, 1}, "DETECT CLOCK LOCK UNDER LOAD", ACTION_CAPTURE_OBSERVE_PIN);
-            canvas->text(x + 32, y, width - 32, "Only if another tool pins clocks; run a game first", TUI_STYLE_MUTED);
+            canvas->text(x + 32, y, width - 32, "Driver cannot report locks; only if a tool pins clocks, run a game first",
+                TUI_STYLE_MUTED);
             ++y;
         }
         ++y;

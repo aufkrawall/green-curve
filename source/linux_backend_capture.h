@@ -4,6 +4,15 @@
 #include "hardware_capture_runtime.h"
 #include "hardware_capture_aux.h"
 
+// Called on the daemon runtime lane by every passive capture read.
+static void linux_capture_log_client_locks(const NvapiClientLocks& locks) {
+    static NvapiClientLocksLogGate gate{};
+    if (!nvapi_client_locks_log_changed(gate, locks)) return;
+    char line[192];
+    nvapi_client_locks_describe(locks, line, sizeof(line));
+    lb_log("%s\n", line);
+}
+
 bool linux_backend_capture_current(const LinuxGpuState* gpu, gc_u64 generation, gc_u32 domains,
     const DesiredSettings* ownedFan, HardwareCaptureObservation* output, char* why, size_t size) {
     if (!gpu || !output) return false;
@@ -19,6 +28,7 @@ bool linux_backend_capture_current(const LinuxGpuState* gpu, gc_u64 generation, 
         if (getVersion && getVersion(version, sizeof(version)) == NVML_SUCCESS)
             memcpy(c.driverVersion, version, sizeof(version));
         c.ownedFanIntent = ownedFan;
+        c.lockObserved = linux_capture_log_client_locks;
         return hardware_capture_collect(c, domains, hardware_capture_aux, out, reason, reasonSize);
     };
     return hardware_capture_consistent(read, *output, why, size);

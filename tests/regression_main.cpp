@@ -1053,6 +1053,9 @@ int run_profile_capture_proposals_tests();
 // tests/capture_aux_writable_tests.cpp 12265-12267).
 int run_capture_curve_choice_tests();
 int run_capture_aux_writable_tests();
+// Load-free driver lock evidence: client lock table decoding, capture fields,
+// pin proposals and rows (tests/capture_client_lock_tests.cpp, 12273-12289).
+int run_capture_client_lock_tests();
 int run_profile_pin_observation_tests();
 int run_profile_mapping_tests();
 int run_profile_conversion_tests();
@@ -2765,6 +2768,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int auxWritableFailure = run_capture_aux_writable_tests()) {
         fprintf(stderr, "capture advanced-clock regression failed: %d\n", auxWritableFailure);
         return auxWritableFailure;
+    }
+    if (int clientLockFailure = run_capture_client_lock_tests()) {
+        fprintf(stderr, "capture driver lock regression failed: %d\n", clientLockFailure);
+        return clientLockFailure;
     }
     if (int pinObservationFailure = run_profile_pin_observation_tests()) {
         fprintf(stderr, "pin observation regression failed: %d\n", pinObservationFailure);

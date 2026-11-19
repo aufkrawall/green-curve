@@ -25,8 +25,13 @@ static inline void hardware_capture_summary(const HardwareCaptureObservation& o,
     snprintf(text, size, "capture: requested=0x%03x captured=0x%03x omitted=0x%03x unavailable=0x%03x points=%u attempts=%u composition=%u pin=%s",
         (unsigned)o.requestedDomains, (unsigned)o.capturedDomains, (unsigned)o.omittedDomains,
         (unsigned)o.unavailableDomains, (unsigned)o.pointCount, (unsigned)o.readAttempts, (unsigned)o.composition,
-        !o.pinGetterValid ? "unknown" : o.pinPresent ? "present" : "absent");
-    const size_t used = strlen(text);
+        !o.pinGetterValid ? "unknown" : (o.pinPresent || o.pinVoltageLocked) ? "present" : "absent");
+    size_t used = strlen(text);
+    if ((o.requestedDomains & PROFILE_DOMAIN_LOCK) && used < size) {
+        snprintf(text + used, size - used, " (lockStatus=%d clockMax=%lld clockMin=%lld voltageUv=%u)",
+            (int)o.pinStatus, (long long)o.pinMaximumHz, (long long)o.pinMinimumHz, (unsigned)o.pinVoltageUv);
+        used = strlen(text);
+    }
     if (o.vfLimits.valid && used < size) snprintf(text + used, size - used,
         "; VF offsets=%lld..%lld Hz (%s), grid=%lld Hz%s",
         o.vfLimits.minimumHz, o.vfLimits.maximumHz,

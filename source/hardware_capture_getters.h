@@ -7,6 +7,7 @@
 #include "nvml_clock_observation.h"
 #include "vf_curve_units.h"
 #include "vf_writable_point_policy.h"
+#include "nvapi_client_lock_table.h"
 
 // Only getters are resolved/called here. API setup, backend refresh, cache
 // publication, ownership changes and recovery remain outside passive capture.
@@ -160,10 +161,35 @@ struct HardwareCaptureContext {
     HardwareCaptureComposition composition = CAPTURE_COMPOSITION_UNKNOWN;
     char driverVersion[65]{};
     const DesiredSettings* ownedFanIntent = nullptr;
-    // Optional, validated read-only pin getter. No production backend currently
-    // supplies one; operating clocks and active intent never substitute for it.
-    bool (*pinGetter)(void*, bool&, gc_i64&, gc_i64&, int&) = nullptr;
+    // Lock evidence comes from the driver's client lock table, read through
+    // `query` (nvapi_client_lock_table.h). A fixture may substitute the
+    // reading; operating clocks and active intent never substitute for it.
+    NvapiClientLocks (*lockReader)(void* gpuHandle) = nullptr;
+    // Optional diagnostics sink for each reading (the platform logger).
+    void (*lockObserved)(const NvapiClientLocks& locks) = nullptr;
 };
+
+// The lock fields of an observation from one decoded table reading.
+static inline void hardware_capture_apply_client_locks(const NvapiClientLocks& locks, HardwareCaptureObservation& out) {
+    out.pinStatus = locks.status;
+    out.pinGetterValid = gc_bool8_from_bool(locks.known);
+    out.pinPresent = out.pinVoltageLocked = 0;
+    out.pinMinimumHz = out.pinMaximumHz = 0;
+    out.pinVoltageUv = 0;
+    if (!locks.known) return;
+    if (locks.graphicsMaxPresent) {
+        out.pinPresent = 1;
+        out.pinMaximumHz = locks.graphicsMaxHz;
+        out.pinMinimumHz = locks.graphicsMinPresent ? locks.graphicsMinHz : 0;
+    }
+    if (locks.voltagePresent) {
+        out.pinVoltageLocked = 1;
+        out.pinVoltageUv = (gc_u32)locks.voltageUv;
+    }
+}
+static inline HardwareCaptureStatus hardware_capture_client_lock_status(const NvapiClientLocks& locks) {
+    return locks.known ? CAPTURE_COMPLETE : locks.status == -100001 ? CAPTURE_UNSUPPORTED : CAPTURE_READ_FAILED;
+}
 
 static inline void hardware_capture_owned_fan(const DesiredSettings* intent, HardwareCaptureFan& fan) {
     if (!intent || !intent->hasFan) return;
@@ -241,11 +267,13 @@ static inline bool hardware_capture_collect(const HardwareCaptureContext& contex
         out.power.currentValid && out.power.defaultValid ? CAPTURE_COMPLETE : CAPTURE_READ_FAILED,
         out.power.currentValid ? out.power.defaultStatus : out.power.currentStatus);
     if (requested & PROFILE_DOMAIN_LOCK) {
-        bool present = false; gc_i64 minimum = 0, maximum = 0; int status = -100001;
-        const bool known = context.pinGetter && context.pinGetter(context.gpuHandle, present, minimum, maximum, status);
-        out.pinStatus = status; out.pinGetterValid = gc_bool8_from_bool(known);
-        if (known) { out.pinPresent = gc_bool8_from_bool(present); out.pinMinimumHz = minimum; out.pinMaximumHz = maximum; }
-        hardware_capture_domain(out, PROFILE_DOMAIN_LOCK, known ? CAPTURE_COMPLETE : context.pinGetter ? CAPTURE_READ_FAILED : CAPTURE_UNSUPPORTED, status);
+        NvapiClientLocks locks{};
+        locks.status = -100001; locks.rejectedIndex = -1;
+        if (context.lockReader) locks = context.lockReader(context.gpuHandle);
+        else if (context.query) locks = nvapi_client_locks_read(context.query, context.gpuHandle);
+        if (context.lockObserved) context.lockObserved(locks);
+        hardware_capture_apply_client_locks(locks, out);
+        hardware_capture_domain(out, PROFILE_DOMAIN_LOCK, hardware_capture_client_lock_status(locks), locks.status);
     }
     if (requested & PROFILE_DOMAIN_FAN) {
         hardware_capture_owned_fan(context.ownedFanIntent, out.fan);
