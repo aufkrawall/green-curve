@@ -1493,6 +1493,65 @@ unticked (`APPLIED_PROFILE_REASON_AMBIGUOUS_AD_HOC_SLOT`), and shared/machine
 bank sources never consult personal slots. Live VF readback is still never
 used.
 
+### Zero-MHz projected curve points across INI transfer and ownership matching (2026-11-20)
+
+Source anchors: `source/profile_curve_semantics.h`
+(`profile_curve_point_should_emit()`, `profile_curve_point_zero_mhz_allowed()`),
+`source/profile_curve_origin_io.h`
+(`profile_curve_point_zero_mhz_in_section_allowed()`),
+`source/config_profile_curve_format.cpp`, `source/main_gpu_state.cpp`,
+`source/config_profiles.cpp`, `source/main_settings_transfer.cpp`,
+`source/linux_profile_curve_codec.h`, `source/linux_port_profiles.cpp`,
+`source/profile_legacy_ini.h`, `source/profile_ownership_policy.h`
+(`profile_ownership_scope_replaces_curve_points()`,
+`profile_ownership_projected_point_mismatch_allowed()`),
+`source/desired_settings_helpers.cpp`, `source/config_profiles_ui.cpp`,
+`tests/regression_main.cpp` (12560-12575),
+`tests/profile_legacy_ini_tests.cpp` (12576-12579),
+`tests/profile_lock_tail_ownership_tests.cpp` (12580-12595),
+`tools/ui_gates.py`.
+
+Imported portable indexed documents store `kind=projection` points without
+`observed_frequency_hz`, which `profile_desired_from_indexed_document()` decodes
+as valid zero-MHz projected points (`hasCurvePoint=1`,
+`curvePointFromGpuOffset=1`, `curvePointMHz=0`). Both INI writers
+(`profile_curve_point_record_for_save()` on Windows,
+`linux_profile_write_curve_points()` on Linux) previously skipped any point with
+`mhz == 0`, so `--export-active-settings` (and any INI slot save) silently
+dropped all projected points. On upgrade restore, the GPU still received the
+same selective/uniform GPU offset and lock, but the service held `curvePoints=0`
+(`ABSENT`) while the stored indexed slot decoded `PROJECTED/0`, failing both
+claimed-slot confirmation and the `AD_HOC` personal-slot scan at the first
+pre-tail point (`curve intent differs at ci<N> (profile=projected/0
+active=absent/0)`).
+
+Two complementary invariants fix both future upgrades and upgrades from
+already-installed builds whose exporter still drops zero-MHz projected entries:
+
+1. **Zero-MHz projected INI round-trip:** `profile_curve_point_should_emit()`
+   emits owned projected points even when `mhz == 0`, and
+   `profile_curve_point_zero_mhz_allowed()` accepts `mhz == 0` on read ONLY
+   under `curve_semantics=absolute_with_origin` with an explicit
+   `pointN_from_gpu_offset=1` (Windows explicit loader, Linux profile loader,
+   and `profile_legacy::points()`); zero-MHz absolute points and legacy sections
+   remain refused. Stored-MHz monotonicity checks skip zero-MHz projected
+   points. `settings_transfer_export()` and `settings_transfer_apply()` read
+   transfer files with `PROFILE_READ_FOR_OWNERSHIP` and log projected point
+   counts (and any export-vs-readback discrepancy).
+2. **Projected-vs-absent relaxed ownership equivalence:**
+   `profile_ownership_projected_point_mismatch_allowed()` treats
+   `DESIRED_CURVE_PROJECTED` and `DESIRED_CURVE_ABSENT` as equivalent on
+   `relaxedOwnershipRead` (post-write identity confirmation and the GUI tray
+   indicator) once both records already agree on `hasGpuOffset`,
+   `gpuOffsetMHz`, `gpuOffsetExcludeLowCount`, and graphics authoring, and both
+   scopes replace the VF point set (`DESIRED_SCOPE_LEGACY`,
+   `DESIRED_SCOPE_REPLACE_PROFILE`, or `DESIRED_SCOPE_REPLACE_VF_POINTS`).
+   Pre-write claims, non-replacing partial-update scopes, `ABSOLUTE` points, and
+   `CAPTURED` points remain strictly compared. When an `AD_HOC` personal-slot
+   scan matches zero slots, `sync_applied_profile_from_service_metadata()` now
+   logs a concise slot mismatch reason (preferring `selected_slot`) instead of
+   `detail=-`.
+
 ## Curve semantics
 
 A saved VF point carries a number and, separately, what that number IS. The

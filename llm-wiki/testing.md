@@ -1,5 +1,33 @@
 # Testing
 
+## Zero-MHz projected INI round-trip and projected-vs-absent ownership matching (2026-11-20)
+
+- `tests/regression_main.cpp` (`12560-12575`) executes
+  `source/profile_curve_semantics.h` and `source/profile_curve_origin_io.h`:
+  `profile_curve_point_should_emit()` and `profile_curve_point_zero_mhz_allowed()`
+  truth tables, plus real INI section round-trips verifying that `pointN_mhz=0`
+  with `pointN_from_gpu_offset=1` under `curve_semantics=absolute_with_origin`
+  is accepted and retains its origin flag while zero-MHz absolute points and
+  legacy sections are refused.
+- `tests/profile_legacy_ini_tests.cpp` (`12576-12579`) verifies Windows and
+  Linux INI decoding of zero-MHz projected points under `absolute_with_origin`
+  into observation-free `PROFILE_POINT_PROJECTION` points and refusal of
+  zero-MHz absolute/legacy points.
+- `tests/profile_lock_tail_ownership_tests.cpp` (`12580-12595`) executes
+  `source/profile_ownership_policy.h` and `source/desired_settings_helpers.cpp`:
+  the pure `profile_ownership_projected_point_mismatch_allowed()` and
+  `profile_ownership_scope_replaces_curve_points()` tables plus the end-to-end
+  imported-slot upgrade-transfer scenario (57 zero-MHz projected points vs 0
+  curve points on a pre-fix export), verifying strict pre-write refusal,
+  relaxed ownership match in both directions, refusal on non-replacing
+  `DESIRED_SCOPE_UPDATE_INCLUDED`, refusal on differing GPU offset, and refusal
+  on `ABSOLUTE` / `CAPTURED` points.
+- `tools/ui_gates.py` pins the Windows/Linux INI writer and reader helpers,
+  `PROFILE_READ_FOR_OWNERSHIP` in `main_settings_transfer.cpp`, and
+  `profile_ownership_projected_point_mismatch_allowed()` in
+  `desired_settings_helpers.cpp`. Live installer upgrade replay across an
+  in-place install remains manual/hardware-verified.
+
 ## Client/service GPU selection agreement (2026-11-19)
 
 `tests/gpu_selection_sync_tests.cpp` (7090-7099) executes

@@ -5,6 +5,52 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-20: Upgrade restore of an imported profile lost its tray checkmark (zero-MHz projected points dropped on INI export)
+
+- Reported: installing a new Green Curve version on top restored the running
+  settings from Profile 3, but the tray right-click menu still showed no
+  checkmark for slot 3.
+- Root cause (confirmed from debug log and code):
+  1. Profile 3 is stored as a portable indexed document whose 57 curve points
+     (`ci=70..126`) are `kind=projection` without `observed_frequency_hz`, so
+     `profile_desired_from_indexed_document()` produces valid zero-MHz
+     projected points (`hasCurvePoint=1, curvePointFromGpuOffset=1,
+     curvePointMHz=0`).
+  2. During `--export-active-settings`, `save_profile_to_config()` called
+     `profile_curve_point_record_for_save()`, which rejected `record.mhz == 0`
+     unconditionally and silently dropped all 57 projected points (same check
+     in Linux `linux_profile_write_curve_points()`). The restored apply still
+     wrote the exact same selective GPU offset (`+475 MHz`, exclude 70) and
+     flatten lock (`ci=76 @ 2957 MHz`) to the GPU, but `g_serviceActiveDesired`
+     now held `curvePoints=0` (`ABSENT`) while slot 3 on disk decoded
+     `PROJECTED/0`.
+  3. Both service claimed-slot confirmation and the GUI `AD_HOC` personal-slot
+     scan failed at `ci=70` (`curve intent differs at ci70 (profile=projected/0
+     active=absent/0)`), leaving `applied_slot=0`.
+- Fix (two commits):
+  1. Preserve zero-MHz projected curve points across INI save/load and upgrade
+     transfer on Windows, Linux, and `profile_legacy::points()` via shared
+     `profile_curve_point_should_emit()` and
+     `profile_curve_point_zero_mhz_allowed()` (`source/profile_curve_semantics.h`,
+     `source/profile_curve_origin_io.h`, `source/linux_profile_curve_codec.h`),
+     skipping zero-MHz projected points in stored-MHz monotonicity checks, and
+     reading transfer files with `PROFILE_READ_FOR_OWNERSHIP` with projected
+     point count logging.
+  2. Add `profile_ownership_projected_point_mismatch_allowed()` in
+     `source/profile_ownership_policy.h` (wired into
+     `desired_settings_match_active_service_intent()`) so relaxed ownership
+     reads (post-write confirmation and the GUI tray indicator) treat
+     `PROJECTED` vs `ABSENT` as equivalent when both records agree on
+     `hasGpuOffset`, offset/exclusions, authoring, and curve-replacing scope
+     (preserving the tray tick even when upgrading directly from an
+     already-installed build whose exporter dropped zero-MHz projected points).
+     Also record a concise slot mismatch reason in
+     `sync_applied_profile_from_service_metadata()` when an `AD_HOC` scan finds
+     no matching slot.
+- Verified: regression cases `12560-12595`, `tools/ui_gates.py`, `--test`,
+  `--tidy`, and full deliverable `python build.py`. Live in-place installer
+  replay pending user install of the freshly built setup.
+
 ## 2026-11-19: Windows GPU selector snapped back to the service's GPU
 
 - Confirmed from code (deterministic, not timing): Windows state reads
