@@ -1509,6 +1509,34 @@ The installed `nvml.dll` exports APIs for true clock pinning (locking the GPU to
 - **Not persistent** across reboots or driver reloads (resets to default idle clocks).
 - Coexists with VF curve offsets: the locked clock sets the operating frequency floor/ceiling, VF offsets still shift the voltage-frequency relationship at that frequency.
 
+### Reading locks held by any client (2026-11-19)
+
+Source anchors: `source/nvapi_client_lock_table.h`, `source/hardware_capture_getters.h`,
+`source/main_service_capture.cpp`, `source/linux_backend_capture.h`,
+`tests/capture_client_lock_tests.cpp` (12273-12281).
+
+NVML has no getter for locked clocks, and a clock *ceiling* does not show at
+idle. The NvAPI client lock table (`0xE440B867`, version 1, 0x30C bytes: version
+word, flags, entry count <= 32, 32 entries of 24 bytes `{index, -, mode, -, value,
+-}`) reports what every client holds, with no GPU load. Observed on Windows
+(Blackwell, one driver), one lock at a time, each released afterwards:
+
+| Lock held | Table | Idle clock |
+|-----------|-------|------------|
+| none | every mode 0 | idles normally |
+| NVML 1500/1500 | entries 0 and 1: mode 2, 1500000 (kHz) | held at about 1500 MHz |
+| NVML 0/1500 | entry 0: mode 2, 1500000; entry 1: mode 2, 0 | idles normally |
+| another tool's VF point lock at 925 mV | entry 6: mode 3, 925000 (uV) | held at the point's clock |
+
+So entry 0 is the graphics clock ceiling, entry 1 the floor, entry 6 the VF
+voltage lock. The decoder accepts only those; any other nonzero mode, a
+mismatched index, an implausible value, a floor without (or above) a ceiling, or
+a wrong header makes the reading unknown, never guessed. Capture is the only
+consumer (read-only, under the runtime lock); writes and the apply's own lock
+handling are unchanged. Green Curve's own NVML pin appears in the same table, so
+Tier 1 evidence now also covers it. Capture schema 4 carries the voltage lock
+and a floorless limit (`pinMinimumHz == 0`).
+
 ### Current project status
 
 **Implemented (Build 265).** The `NvmlApi` struct has `setGpuLockedClocks`, `resetGpuLockedClocks`, `setMemoryLockedClocks`, `resetMemoryLockedClocks` fields, resolved via `nvml_resolve()` in `main_runtime_nvml.cpp`.

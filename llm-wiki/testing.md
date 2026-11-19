@@ -1,5 +1,26 @@
 # Testing
 
+## Capture curve choices and driver locks (2026-11-19)
+
+`tests/capture_curve_choice_tests.cpp` (12260-12264, 12268-12272) runs
+`profile_capture_prepare_proposals()` on observations shaped like the reported
+case: advanced clocks read without a setter flag and a refused memory offset no
+longer make the flatten unselectable (12261 fails on the previous judging), the
+saved flatten keeps those domains, and a pushed-tail flatten (tail offsets
+-2045 MHz against a +/-1000 MHz range) is recommended over an exact copy that is
+labeled not applicable; an agreeing Green Curve pin is recommended, conflicting
+targets and workload observations are not. `tests/capture_aux_writable_tests.cpp`
+(12265-12267) drives `hardware_capture_aux()` through a fake ClkDomains driver:
+writable follows the setter entry point, which capture never calls.
+`tests/capture_client_lock_tests.cpp` (12273-12289) decodes the four lock tables
+read on hardware (none, NVML pin, NVML ceiling, a 925 mV VF point lock), refuses
+every unobserved shape, checks the getter-only reader, schema-4 wire validation,
+the voltage-lock pin (rounded down, exact point voltage only), ceiling and
+conflict handling, rows and labels. Live checks in this pass: a read-only probe
+read the table with each lock held, and the production decoder read the live
+unlocked table as known; the installed service was not updated, so the GUI flow
+itself was not re-run on hardware.
+
 ## GPU support warning tiers from the snapshot (2026-11-18)
 
 `tests/gpu_support_warning_tests.cpp` (12230-12237) decodes packed capability

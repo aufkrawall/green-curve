@@ -383,8 +383,9 @@ exact Hz offsets and separate frequency samples. NVML memory retains half-MHz
 physical steps; power keeps independently valid current/default observations.
 Scalar/table composition defaults to unresolved, with a portable graphics
 observation that cannot silently become an independent graphics component.
-Pin knowledge requires an optional validated getter; current clocks never prove
-absence. External fan behavior is excluded; explicitly requested owned fan
+Pin knowledge requires a validated getter (since 2026-11-19 the driver's client
+lock table, [gpu-backend.md](gpu-backend.md#reading-locks-held-by-any-client-2026-11-19));
+current clocks never prove absence. External fan behavior is excluded; explicitly requested owned fan
 intent can be copied with its complete curve configuration.
 
 At most three immediate read pairs compare topology, bindings, controls, ranges
@@ -1062,7 +1063,7 @@ Source anchors: `source/profile_pin_observation.h`,
 - `nvml_pin_observation_sample_burst()` executes read-only NVML queries matching
   the captured `HardwareCaptureBinding` PCI domain/bus/device without sleeps,
   cross-GPU fallback, or hardware writes, leaving wire schemas (`SERVICE_PROTOCOL_VERSION = 37`,
-  `HARDWARE_CAPTURE_SCHEMA_CURRENT = 3`) unchanged.
+  `HARDWARE_CAPTURE_SCHEMA_CURRENT = 3` at the time; schema 4 since 2026-11-19) unchanged.
 - `profile_capture_apply_pin_observation()` never overrides Tier 1/2 evidence or
   auto-changes `proposals.suggested`, validates 1 MHz grid + writable curve anchor,
   runs `profile_capture_check_proposal()` (with `PROFILE_CONTROL_CONDITIONAL` until

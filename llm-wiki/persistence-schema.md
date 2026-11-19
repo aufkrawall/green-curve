@@ -110,6 +110,12 @@ Both controls join consistency checks and fingerprints. Mixed protocol/schema
 peers refuse rather than guessing. This observation expansion leaves runtime
 intent and durable disk layouts unchanged.
 
+Capture schema 4 (2026-11-19) keeps the 4960-byte layout and gives two
+reserved fields meaning: `pinVoltageLocked`/`pinVoltageUv` (the driver's VF
+voltage lock) and a clock limit without a floor (`pinPresent` with
+`pinMinimumHz == 0`). Wire validation ties every lock field to a decoded driver
+table; schema-3 peers refuse. Nothing durable stores the observation.
+
 The active request control-precondition fields bind physical controls and
 outgoing owned intent, while its physical fingerprint stays separate. Reviewed
 Apply requires all-domain passive evidence and an explicit interactive scope;

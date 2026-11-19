@@ -5,6 +5,30 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-19: Import current GPU settings missed another tool's flatten
+
+- Reported: a curve flattened at 925 mV / 2482 MHz by another tool was only
+  offered as "copy every point exactly", and lock detection asked the user to
+  start a game first. The CLI capture recognized the flatten (anchor, target,
+  tail 50, deviation 0); the GUI did not, because its default domains add the
+  advanced clocks, whose capture scalars had no setter flag, so the control
+  plan of every lock proposal was "unavailable". Representations are now
+  judged on the curve, core offset and lock only; advanced scalars carry the
+  setter flag.
+- The other tool flattens by writing -2045 MHz to every tail point (beyond
+  the +/-1000 MHz range Green Curve uses) and relying on the driver's
+  monotonic clamp. An exact copy is therefore refused at Apply; it is now
+  labeled so, and a selectable flatten is recommended instead.
+- Load: read-only probes with the user holding each lock in turn (another
+  tool's VF point lock, NVML 1500/1500, NVML 0/1500) showed the NvAPI client
+  lock table reports all three idle; NVML range/mode getters reported none.
+  A pin or voltage lock also holds the idle clock high, a ceiling does not.
+  Capture now reads the table (schema 4); no workload or load generator needed.
+- Follow-ups: validate the table on other generations, Linux and memory locks;
+  decide whether the per-point VF range should follow what the driver accepts.
+  The installed service was not updated in this pass, so the GUI flow is
+  verified by fixtures plus a live decoder read, not end to end.
+
 ## 2026-11-19: Reset left the old lock in the GUI and tray
 
 - After a successful Reset of a flatten-lock profile the driver was at stock,

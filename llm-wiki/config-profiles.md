@@ -128,6 +128,58 @@ dialog pass and physical GPU replay of captured records are not recorded here.
 The TUI file dialogs and capture modal are covered by scripted tests only, not by
 a terminal session on a GPU host.
 
+## Capture: curve-only judging and load-free driver locks (2026-11-19)
+
+Source anchors: `source/profile_capture_proposals.h` (`profile_capture_judge_curve()`,
+`profile_capture_suggest()`, `profile_capture_point_at_voltage()`),
+`source/profile_document_domains.h`, `source/hardware_capture_aux.h`,
+`source/nvapi_client_lock_table.h`, `source/hardware_capture_getters.h`
+(`hardware_capture_apply_client_locks()`), `source/profile_summary.h`
+(`profile_capture_lock_text()`), `tests/capture_curve_choice_tests.cpp`
+(12260-12264, 12268-12272), `tests/capture_aux_writable_tests.cpp` (12265-12267),
+`tests/capture_client_lock_tests.cpp` (12273-12289).
+
+- **Curve-only judging.** Exact, flatten and pin differ only in the curve and the
+  lock; memory, power, fan and the advanced clocks are carried identically and
+  are separate rows. Each representation is therefore judged on a copy with the
+  non-curve domains dropped (`PROFILE_DOCUMENT_NON_CURVE_DOMAINS`); the saved
+  document keeps every domain. Before, the GUI/TUI default domains included the
+  advanced clocks, whose capture scalars carried no setter flag, so every
+  flatten/pin proposal was "unavailable" and only the exact copy was offered.
+  The CLI's default domains (no advanced clocks) hid it.
+- **Advanced-clock writability.** Their capture scalars report `writable` when the
+  ClkDomains setter entry point resolves, like the NVML scalars (entry point, not
+  capability proof).
+- **Recommendation.** A selectable flatten (ready or conditional) without competing
+  pin evidence is preselected; a pin from the driver table or Green Curve's applied
+  intent is preselected when it agrees with any recognized flatten. Conflicts,
+  workload observations and no usable lock leave the exact copy preselected. A
+  flatten is only ever recognized on a shaped curve, whose live baseline cannot
+  prove the plan, so the old "representable only" rule practically never fired.
+- **Exact copy check.** Exact replay is judged too (`exactControls`). Other tools
+  flatten by pushing every tail point far below the reported offset range (one
+  observed capture: -2045 MHz against a +/-1000 MHz range) and let the driver's
+  monotonic rule hold the tail at the anchor; Green Curve would refuse that exact
+  copy at Apply, so its choice reads "cannot be applied on this GPU".
+- **Load-free lock evidence (Tier 1).** Passive capture reads the driver's client
+  lock table (see [gpu-backend.md](gpu-backend.md#reading-locks-held-by-any-client-2026-11-19)).
+  A fixed clock lock (floor = ceiling) becomes a pin proposal; a VF voltage lock
+  becomes a pin at the frequency of the curve point with exactly that voltage,
+  rounded down to whole MHz (never above the point); a voltage lock that names no
+  point, a voltage lock next to a clock limit, a ranged limit and a ceiling with
+  no floor stay unselectable with a reason. Rows say "locked at 925 mV (2482 MHz)",
+  "clock locked/capped at N MHz". The workload "Detect clock lock under load"
+  action appears only when the table could not be read.
+- **Diagnostics.** GUI/TUI log `profile-capture: proposal=flatten|pin|exact ...`
+  after each review; the service/daemon log `client-locks: known|unknown ...`
+  once per changed reading; the capture summary line carries
+  `lockStatus/clockMax/clockMin/voltageUv`.
+- **Open questions.** The table is validated on one Blackwell board and driver
+  (Windows); other generations, Linux NvAPI and memory locks (presumably entries
+  2/3) are unverified, and any unobserved entry makes the reading unknown. The
+  VF per-point offset range is still NVML's graphics range although the driver
+  accepted -2045 MHz per-point offsets; widening it is a separate decision.
+
 ## Capture lock proposals (2026-11-15)
 
 Source anchors: `source/profile_capture_proposals.h`,
@@ -142,9 +194,10 @@ helper over complete graphics topology, retaining hidden writable anchors and
 the bound read-only floor. It never reconstructs stock from a shaped curve.
 Every proposal runs through runtime mapping and the complete shared control/
 curve planner. Proven refusal and unavailable constraints keep exact controls;
-conditional proposals retain their need for fresh operation checks. Only a
-representable flatten without competing pin evidence is preselected in native
-frontends. No representation is implicitly accepted by the CLI.
+conditional proposals retain their need for fresh operation checks. The
+preselection rule here was superseded on 2026-11-19 (see
+[Capture: curve-only judging](#capture-curve-only-judging-and-load-free-driver-locks-2026-11-19)).
+No representation is implicitly accepted by the CLI.
 
 Flatten/pin conversion removes authoritative tail values while retaining exact
 observed offsets and frequencies in the portable document. Pre-anchor intent,
@@ -1806,7 +1859,11 @@ Source anchors: `source/profile_pin_observation.h`,
   only on explicit user action in CLI (`--observe-pin` + `--confirm-pin-mhz`),
   Windows GUI (`Observe pin` -> editable MHz -> `Confirm pin`), or Linux TUI
   (`ACTION_CAPTURE_OBSERVE_PIN` -> step MHz -> `ACTION_CAPTURE_CONFIRM_PIN`),
-  never overriding Tier 1/2 evidence or auto-selecting `pin`.
+  never overriding Tier 1/2 evidence or auto-selecting `pin`. Since 2026-11-19
+  Tier 1 is the driver's client lock table, read by every passive capture, so
+  the Tier 3 action appears only when that table cannot be read.
+- Stale-risk: the burst takes its samples back to back, so "sustained" covers
+  one instant rather than seconds; the dialog no longer claims a timed sample.
 - Read-only NVML burst sampling stays isolated to the exact captured GPU PCI
   address, requires sustained active load (`>= 3` active samples, spread `<= 15 MHz`)
   well below the captured VF curve ceiling at operating voltage, reports driver
