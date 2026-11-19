@@ -10,6 +10,36 @@
 
 #include "profile_curve_semantics.h"
 
+static inline bool linux_profile_zero_mhz_point_allowed(
+    const IniDocument* doc, const char* curveSection,
+    ProfileCurveDecode curveDecode, int pointIndex) {
+    if (!doc || !curveSection ||
+        curveDecode != PROFILE_CURVE_DECODE_ABSOLUTE_WITH_ORIGIN) {
+        return false;
+    }
+    char originKey[48] = {};
+    snprintf(originKey, sizeof(originKey), "point%d_%s", pointIndex,
+             PROFILE_CURVE_POINT_ORIGIN_SUFFIX);
+    std::string originValue = get_section_value(doc, curveSection, originKey);
+    int parsedOrigin = 0;
+    const bool hasOrigin = !originValue.empty() &&
+        parse_int_strict(originValue.c_str(), &parsedOrigin) &&
+        parsedOrigin != 0;
+    return profile_curve_point_zero_mhz_allowed(curveDecode, hasOrigin);
+}
+
+static inline void linux_profile_clamp_curve_monotonic(DesiredSettings* desired) {
+    if (!desired) return;
+    for (int i = 1; i < VF_NUM_POINTS; i++) {
+        if (desired->hasCurvePoint[i] && desired->hasCurvePoint[i - 1] &&
+            !(desired->curvePointFromGpuOffset[i] && desired->curvePointMHz[i] == 0) &&
+            !(desired->curvePointFromGpuOffset[i - 1] && desired->curvePointMHz[i - 1] == 0) &&
+            desired->curvePointMHz[i] < desired->curvePointMHz[i - 1]) {
+            desired->curvePointMHz[i] = desired->curvePointMHz[i - 1];
+        }
+    }
+}
+
 // Read the per-point provenance of an `absolute_with_origin` section.  Returns
 // false when the section is not in that format, so the caller falls through to
 // the legacy whole-section base+offset reconstruction.
@@ -25,6 +55,7 @@ static inline bool linux_profile_read_curve_point_origins(
         PROFILE_CURVE_DECODE_ABSOLUTE_WITH_ORIGIN)
         return false;
     int projected = 0;
+    int zeroProjected = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (!desired->hasCurvePoint[i]) continue;
         char originKey[48] = {};
@@ -38,11 +69,12 @@ static inline bool linux_profile_read_curve_point_origins(
             continue;
         desired->curvePointFromGpuOffset[i] = gc_bool8_from_bool(true);
         projected++;
+        if (desired->curvePointMHz[i] == 0) zeroProjected++;
     }
-    linux_debug_logf("profile: [%s] is %s; %d projected point(s) kept as offset "
-                     "intent, the rest hold their absolute MHz\n",
+    linux_debug_logf("profile: [%s] is %s; %d projected point(s) (%d zero-MHz) "
+                     "kept as offset intent, the rest hold their absolute MHz\n",
                      curveSection, PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN,
-                     projected);
+                     projected, zeroProjected);
     return true;
 }
 
@@ -63,7 +95,11 @@ static inline void linux_profile_write_curve_points(
     char value[32] = {};
     int savedProjectedPoints = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (!desired->hasCurvePoint[i] || desired->curvePointMHz[i] == 0) continue;
+        if (!desired->hasCurvePoint[i] ||
+            !profile_curve_point_should_emit(true, desired->curvePointMHz[i],
+                desired->curvePointFromGpuOffset[i] != 0)) {
+            continue;
+        }
         IniEntry entry;
         char key[32] = {};
         snprintf(key, sizeof(key), "point%d", i);

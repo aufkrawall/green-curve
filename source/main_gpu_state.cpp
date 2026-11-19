@@ -542,6 +542,7 @@ static void build_full_live_desired_settings(DesiredSettings* desired) {
 
 static bool load_curve_points_explicit_from_section(const char* path, const char* section, DesiredSettings* desired, char* err, size_t errSize) {
     if (!path || !section || !desired) return false;
+    const ProfileCurveDecode sectionDecode = profile_curve_section_decode(path, section);
     bool foundAny = false;
     int lastMHz = 0;
     int lastCi = -1;
@@ -554,7 +555,9 @@ static bool load_curve_points_explicit_from_section(const char* path, const char
         if (!buf[0]) continue;
 
         int mhz = 0;
-        if (!parse_int_strict(buf, &mhz) || mhz <= 0) {
+        if (!parse_int_strict(buf, &mhz) || mhz < 0 ||
+            (mhz == 0 && !profile_curve_point_zero_mhz_in_section_allowed(
+                path, section, sectionDecode, i))) {
             set_message(err, errSize, "Invalid %s in section [%s]", key, section);
             return false;
         }
@@ -593,7 +596,7 @@ static bool load_curve_points_explicit_from_section(const char* path, const char
 
         // Non-monotonic points can confuse the driver. Log a warning but still
         // load the point so the user can see it in the GUI.
-        if (lastCi >= 0 && mhz < lastMHz) {
+        if (mhz > 0 && lastCi >= 0 && mhz < lastMHz) {
             char semBuf[64] = {};
             gc_GetPrivateProfileStringUtf8(section, "curve_semantics", "", semBuf, sizeof(semBuf), path);
             trim_ascii(semBuf);
@@ -609,10 +612,9 @@ static bool load_curve_points_explicit_from_section(const char* path, const char
         }
 
         desired->hasCurvePoint[i] = true;
-        desired->curvePointMHz[i] = (unsigned int)mhz; desired->curvePointFromGpuOffset[i] = 0;
+        desired->curvePointMHz[i] = (unsigned int)mhz; desired->curvePointFromGpuOffset[i] = gc_bool8_from_bool(mhz == 0);
         foundAny = true;
-        lastCi = i;
-        lastMHz = mhz;
+        if (mhz > 0) { lastCi = i; lastMHz = mhz; }
     }
     return foundAny;
 }

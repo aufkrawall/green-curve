@@ -703,6 +703,7 @@ static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
 #include "gui_update_client.cpp"
 #include "main_gpu_front.cpp"
 #include "desired_settings_helpers.cpp"
+#include "profile_curve_origin_io.h"
 #include "main_gpu_state.cpp"
 // The editor's base record; before main_shell.cpp, whose capture paths use it.
 #include "gui_editor_base.cpp"

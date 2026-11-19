@@ -123,6 +123,31 @@ int run_profile_legacy_ini_tests() {
     if (!refuses("[profile1]\nlock_ci=128\nlock_mhz=1000\n", windows)) return 9007;
     windows.memory = (ProfileLegacyMemoryUnit)9;
     if (!refuses(input, windows)) return 9008;
+    // Zero-MHz projected points under `absolute_with_origin` decode cleanly as
+    // observation-free projections on both platforms, while zero-MHz absolute
+    // points and legacy formats stay refused (12576-12579).
+    windows.memory = PROFILE_LEGACY_MEMORY_UNKNOWN;
+    const std::string zeroProjWin =
+        "[profile1]\ngpu_offset_mhz=475\ngpu_offset_exclude_low_count=70\n"
+        "[profile1_curve]\nformat=explicit_vf_points_v1\n"
+        "curve_semantics=absolute_with_origin\ngpu_offset_mhz=475\n"
+        "gpu_offset_exclude_low_count=70\n"
+        "point70_mhz=0\npoint70_mv=890\npoint70_offset_khz=475000\npoint70_visible=1\npoint70_from_gpu_offset=1\n";
+    if (!profile_legacy_ini_decode(zeroProjWin, windows, selection, *bank, &error) ||
+        bank->count != 1 || bank->documents[0].topologyCount != 1 ||
+        bank->documents[0].points[0].kind != PROFILE_POINT_PROJECTION ||
+        bank->documents[0].points[0].hasObservedFrequency) return 12576;
+    const std::string zeroProjLinux =
+        "[controls]\ngpu_offset_mhz=475\n[curve]\ncurve_semantics=absolute_with_origin\n"
+        "point70=0\npoint70_from_gpu_offset=1\n";
+    if (!profile_legacy_ini_decode(zeroProjLinux, linux, selection, *bank, &error) ||
+        bank->count != 1 || bank->documents[0].topologyCount != 1 ||
+        bank->documents[0].points[0].kind != PROFILE_POINT_PROJECTION ||
+        bank->documents[0].points[0].hasObservedFrequency) return 12577;
+    if (!refuses("[profile1]\ngpu_offset_mhz=475\n[profile1_curve]\ncurve_semantics=absolute_with_origin\npoint70_mhz=0\n", windows))
+        return 12578;
+    if (!refuses("[controls]\ngpu_offset_mhz=475\n[curve]\ncurve_semantics=base_plus_gpu_offset\npoint70=0\n", linux))
+        return 12579;
     fprintf(stdout, "legacy profile adapters: units, origins, unresolved indices, strict parsing and atomic decode passed\n");
     return 0;
 }

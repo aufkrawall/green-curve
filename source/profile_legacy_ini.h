@@ -180,7 +180,7 @@ inline bool points(Fields& fields, ProfileLegacyOptions options, ProfileDocument
         const std::string root = "point" + std::to_string(ci);
         gc_i64 mhz = 0, voltage = 0, offset = 0, origin = 0, visible = 0;
         bool has = false, hasVoltage = false, hasOffset = false, hasOrigin = false, hasVisible = false;
-        if (!number(fields, root + (options.format == PROFILE_LEGACY_WINDOWS_INI ? "_mhz" : ""), mhz, has, e, 1, UINT_MAX) ||
+        if (!number(fields, root + (options.format == PROFILE_LEGACY_WINDOWS_INI ? "_mhz" : ""), mhz, has, e, 0, UINT_MAX) ||
             !number(fields, root + "_from_gpu_offset", origin, hasOrigin, e, 0, 1)) return false;
         if (options.format == PROFILE_LEGACY_WINDOWS_INI &&
             (!number(fields, root + "_mv", voltage, hasVoltage, e, 1, UINT_MAX) ||
@@ -194,6 +194,8 @@ inline bool points(Fields& fields, ProfileLegacyOptions options, ProfileDocument
         if (kind == PROFILE_LEGACY_CURVE_UNKNOWN) return fail(e, "legacy points require an explicit source curve-semantics choice");
         if (hasOrigin && kind != PROFILE_LEGACY_CURVE_ORIGIN) return fail(e, "legacy point origin conflicts with curve semantics");
         const bool projected = kind == PROFILE_LEGACY_CURVE_BASE || (kind == PROFILE_LEGACY_CURVE_ORIGIN && origin);
+        if (mhz == 0 && !(kind == PROFILE_LEGACY_CURVE_ORIGIN && origin))
+            return fail(e, "invalid legacy numeric tuning value");
         if (projected && !d.graphicsOffset.present) return fail(e, "legacy projected points have no graphics offset intent");
         const int at = d.topologyCount++;
         // Rounded historical mV labels cannot supply exact voltage identity.
@@ -202,7 +204,10 @@ inline bool points(Fields& fields, ProfileLegacyOptions options, ProfileDocument
         auto& point = d.points[at];
         point.kind = projected ? PROFILE_POINT_PROJECTION : PROFILE_POINT_ABSOLUTE_FREQUENCY;
         if (!projected) point.absoluteFrequencyHz = mhz * 1000000;
-        else if (kind != PROFILE_LEGACY_CURVE_BASE) { point.hasObservedFrequency = true; point.observedFrequencyHz = mhz * 1000000; }
+        else if (kind != PROFILE_LEGACY_CURVE_BASE && mhz > 0) {
+            point.hasObservedFrequency = true;
+            point.observedFrequencyHz = mhz * 1000000;
+        }
         if (hasOffset) { point.hasObservedOffset = true; point.observedOffsetHz = offset * 1000; }
         d.domains |= PROFILE_DOMAIN_VF_CURVE;
     }

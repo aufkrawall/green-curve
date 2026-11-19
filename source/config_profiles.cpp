@@ -310,6 +310,12 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
 
         for (int i = 1; i < VF_NUM_POINTS; i++) {
             if (desired->hasCurvePoint[i] && desired->hasCurvePoint[i - 1]) {
+                // Zero-MHz projected points carry offset intent without an
+                // observed frequency; skip comparing them against stored MHz.
+                if ((desired->curvePointFromGpuOffset[i] && desired->curvePointMHz[i] == 0) ||
+                    (desired->curvePointFromGpuOffset[i - 1] && desired->curvePointMHz[i - 1] == 0)) {
+                    continue;
+                }
                 if (desired->curvePointMHz[i] < desired->curvePointMHz[i - 1]) {
                     set_message(err, errSize, "Profile %d has a non-monotonic curve point at index %d (%u MHz < %u MHz)", slot, i, desired->curvePointMHz[i], desired->curvePointMHz[i - 1]);
                     return false;

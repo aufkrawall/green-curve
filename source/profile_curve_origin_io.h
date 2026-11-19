@@ -39,6 +39,19 @@ static ProfileCurveDecode profile_curve_section_decode(const char* path,
     return profile_curve_decode_from_marker(semanticsBuf);
 }
 
+// True when `pointN_mhz=0` in `[section]` is a valid zero-MHz projected point
+// (`curve_semantics=absolute_with_origin` plus `pointN_from_gpu_offset=1`).
+static bool profile_curve_point_zero_mhz_in_section_allowed(
+    const char* path, const char* section, ProfileCurveDecode decode,
+    int pointIndex) {
+    if (decode != PROFILE_CURVE_DECODE_ABSOLUTE_WITH_ORIGIN) return false;
+    int originValue = 0;
+    const bool hasOrigin = read_profile_point_int(
+        path, section, pointIndex, PROFILE_CURVE_POINT_ORIGIN_SUFFIX,
+        &originValue) && originValue != 0;
+    return profile_curve_point_zero_mhz_allowed(decode, hasOrigin);
+}
+
 // Read the per-point provenance an `absolute_with_origin` section carries.
 // Returns false when the section is not in that format, so the caller falls
 // through to the legacy whole-section base+offset reconstruction.
@@ -57,6 +70,7 @@ static bool restore_curve_point_origins_from_section(const char* path,
         return false;
 
     int projected = 0;
+    int zeroProjected = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         desired->curvePointFromGpuOffset[i] = 0;
         if (!desired->hasCurvePoint[i]) continue;
@@ -67,10 +81,12 @@ static bool restore_curve_point_origins_from_section(const char* path,
         if (value == 0) continue;
         desired->curvePointFromGpuOffset[i] = gc_bool8_from_bool(true);
         projected++;
+        if (desired->curvePointMHz[i] == 0) zeroProjected++;
     }
     debug_log("profile curve format: section [%s] is %s; %d projected point(s) "
-              "kept as offset intent, the rest hold their absolute MHz\n",
-              section, PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN, projected);
+              "(%d zero-MHz) kept as offset intent, the rest hold their absolute MHz\n",
+              section, PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN,
+              projected, zeroProjected);
     return true;
 }
 

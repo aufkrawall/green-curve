@@ -48,7 +48,8 @@ static bool profile_curve_point_record_for_save(const DesiredSettings* desired,
     } else if (useCurrentForUnset && g_app.curve[pointIndex].freq_kHz > 0) {
         record.mhz = displayed_curve_mhz(g_app.curve[pointIndex].freq_kHz);
     }
-    if (record.mhz == 0) {
+    if (!profile_curve_point_should_emit(owned, record.mhz,
+                                         record.fromGpuOffset)) {
         *out = record;
         return false;
     }

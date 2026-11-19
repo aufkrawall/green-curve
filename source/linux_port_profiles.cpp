@@ -432,13 +432,15 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
         value = get_section_value(doc, curveSection, key);
         if (value.empty()) continue;
         int parsed = 0;
-        if (!parse_int_strict(value.c_str(), &parsed) || parsed <= 0) {
+        if (!parse_int_strict(value.c_str(), &parsed) || parsed < 0 ||
+            (parsed == 0 && !linux_profile_zero_mhz_point_allowed(
+                doc, curveSection, curveDecode, i))) {
             set_message(err, errSize, "Invalid curve point %d in %s", i, messageContext);
             return false;
         }
         desired->hasCurvePoint[i] = true;
         desired->curvePointMHz[i] = (unsigned int)parsed;
-        desired->curvePointFromGpuOffset[i] = 0;
+        desired->curvePointFromGpuOffset[i] = gc_bool8_from_bool(parsed == 0);
     }
 
     // Per-point provenance when the section carries it; only a section written
@@ -473,11 +475,7 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
             }
         }
 
-        for (int i = 1; i < VF_NUM_POINTS; i++) {
-            if (desired->hasCurvePoint[i] && desired->hasCurvePoint[i - 1] && desired->curvePointMHz[i] < desired->curvePointMHz[i - 1]) {
-                desired->curvePointMHz[i] = desired->curvePointMHz[i - 1];
-            }
-        }
+        linux_profile_clamp_curve_monotonic(desired);
     }
 
     if (!desired_ini_load_curve_ext([&](const char* key, char* out, size_t outSize) {

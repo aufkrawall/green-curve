@@ -3112,6 +3112,50 @@ static int run_all_tests(int argc, char** argv) {
         if (!set_config_int(argv[1], section, "point70_mhz", 2322)) return 5088;
         if (profile_curve_section_decode(argv[1], section) !=
             PROFILE_CURVE_DECODE_UNMARKED) return 5089;
+
+        // Zero-MHz projected points (e.g. from imported portable indexed
+        // profiles without observed_frequency_hz) must survive INI save/load
+        // under `absolute_with_origin`, while zero-MHz absolute points and
+        // legacy sections remain refused (12560-12575).
+        if (!profile_curve_point_should_emit(true, 2800u, false)) return 12560;
+        if (!profile_curve_point_should_emit(true, 0u, true)) return 12561;
+        if (profile_curve_point_should_emit(true, 0u, false)) return 12562;
+        if (profile_curve_point_should_emit(false, 0u, true)) return 12563;
+        if (!profile_curve_point_zero_mhz_allowed(
+                PROFILE_CURVE_DECODE_ABSOLUTE_WITH_ORIGIN, true)) return 12564;
+        if (profile_curve_point_zero_mhz_allowed(
+                PROFILE_CURVE_DECODE_ABSOLUTE_WITH_ORIGIN, false)) return 12565;
+        if (profile_curve_point_zero_mhz_allowed(
+                PROFILE_CURVE_DECODE_ABSOLUTE, true)) return 12566;
+        if (profile_curve_point_zero_mhz_allowed(
+                PROFILE_CURVE_DECODE_BASE_PLUS_GPU_OFFSET, true)) return 12567;
+        if (profile_curve_point_zero_mhz_allowed(
+                PROFILE_CURVE_DECODE_UNMARKED, true)) return 12568;
+
+        gc_DeleteFileUtf8(argv[1]);
+        if (!set_config_string(argv[1], section, "curve_semantics",
+                PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN)) return 12569;
+        if (!set_config_int(argv[1], section, "point70_mhz", 0) ||
+            !set_config_int(argv[1], section, "point70_from_gpu_offset", 1) ||
+            !set_config_int(argv[1], section, "point71_mhz", 0) ||
+            !set_config_int(argv[1], section, "point72_mhz", 2850)) return 12570;
+        const ProfileCurveDecode originDecode =
+            profile_curve_section_decode(argv[1], section);
+        if (!profile_curve_point_zero_mhz_in_section_allowed(
+                argv[1], section, originDecode, 70)) return 12571;
+        if (profile_curve_point_zero_mhz_in_section_allowed(
+                argv[1], section, originDecode, 71)) return 12572;
+        if (profile_curve_point_zero_mhz_in_section_allowed(
+                argv[1], section, PROFILE_CURVE_DECODE_BASE_PLUS_GPU_OFFSET, 70))
+            return 12573;
+        DesiredSettings zeroProj = {};
+        zeroProj.hasCurvePoint[70] = 1; zeroProj.curvePointMHz[70] = 0;
+        zeroProj.hasCurvePoint[72] = 1; zeroProj.curvePointMHz[72] = 2850;
+        if (!restore_curve_point_origins_from_section(argv[1], section, &zeroProj))
+            return 12574;
+        if (!zeroProj.curvePointFromGpuOffset[70] || zeroProj.curvePointMHz[70] != 0 ||
+            zeroProj.curvePointFromGpuOffset[72] || zeroProj.curvePointMHz[72] != 2850)
+            return 12575;
         gc_DeleteFileUtf8(argv[1]);
     }
 

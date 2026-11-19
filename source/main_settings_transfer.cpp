@@ -68,16 +68,21 @@ static bool settings_transfer_export(const char* path, char* result, size_t resu
     }
 
     int curvePoints = 0;
+    int projectedPoints = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (active.hasCurvePoint[i]) curvePoints++;
+        if (active.hasCurvePoint[i]) {
+            curvePoints++;
+            if (active.curvePointFromGpuOffset[i]) projectedPoints++;
+        }
     }
     debug_log("settings transfer: exporting active intent gpu=%dMHz mem=%dMHz power=%d%% "
-        "lockCi=%d curvePoints=%d fanMode=%d to %s\n",
+        "lockCi=%d curvePoints=%d projected=%d fanMode=%d to %s\n",
         active.hasGpuOffset ? active.gpuOffsetMHz : 0,
         active.hasMemOffset ? active.memOffsetMHz : 0,
         active.hasPowerLimit ? active.powerLimitPct : 0,
         active.hasLock ? active.lockCi : -1,
         curvePoints,
+        projectedPoints,
         active.hasFan ? active.fanMode : -1,
         path);
 
@@ -102,11 +107,27 @@ static bool settings_transfer_export(const char* path, char* result, size_t resu
     // Read the snapshot back before reporting success.  The caller (setup) is
     // about to stop this process and every other Green Curve process on the
     // machine, so an unreadable file discovered later cannot be regenerated.
+    // Use PROFILE_READ_FOR_OWNERSHIP so live-curve editor projection cannot
+    // hide points or mutate lockTracksAnchor during verification.
     DesiredSettings verify = {};
-    if (!load_profile_from_config(path, SETTINGS_TRANSFER_SLOT, &verify, err, sizeof(err))) {
+    if (!load_profile_from_config(path, SETTINGS_TRANSFER_SLOT, &verify,
+            err, sizeof(err), PROFILE_READ_FOR_OWNERSHIP)) {
         set_message(result, resultSize,
             "The settings snapshot could not be read back: %s", err[0] ? err : "unknown error");
         return false;
+    }
+    int verifyCurvePoints = 0;
+    int verifyProjectedPoints = 0;
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (verify.hasCurvePoint[i]) {
+            verifyCurvePoints++;
+            if (verify.curvePointFromGpuOffset[i]) verifyProjectedPoints++;
+        }
+    }
+    if (verifyCurvePoints != curvePoints || verifyProjectedPoints != projectedPoints) {
+        debug_log("settings transfer: export readback point count changed "
+            "(exported curvePoints=%d projected=%d -> verified curvePoints=%d projected=%d)\n",
+            curvePoints, projectedPoints, verifyCurvePoints, verifyProjectedPoints);
     }
     set_message(result, resultSize, "Active settings exported to %s", path);
     return true;
@@ -191,7 +212,8 @@ static bool settings_transfer_apply(const char* path, char* result, size_t resul
 
     DesiredSettings desired = {};
     char err[256] = {};
-    if (!load_profile_from_config(path, SETTINGS_TRANSFER_SLOT, &desired, err, sizeof(err))) {
+    if (!load_profile_from_config(path, SETTINGS_TRANSFER_SLOT, &desired,
+            err, sizeof(err), PROFILE_READ_FOR_OWNERSHIP)) {
         set_message(result, resultSize, "%s", err[0] ? err : "Failed reading the settings file");
         return false;
     }
@@ -214,16 +236,21 @@ static bool settings_transfer_apply(const char* path, char* result, size_t resul
     }
 
     int curvePoints = 0;
+    int projectedPoints = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (desired.hasCurvePoint[i]) curvePoints++;
+        if (desired.hasCurvePoint[i]) {
+            curvePoints++;
+            if (desired.curvePointFromGpuOffset[i]) projectedPoints++;
+        }
     }
     debug_log("settings transfer: applying restored intent gpu=%dMHz mem=%dMHz power=%d%% "
-        "lockCi=%d curvePoints=%d fanMode=%d from %s\n",
+        "lockCi=%d curvePoints=%d projected=%d fanMode=%d from %s\n",
         desired.hasGpuOffset ? desired.gpuOffsetMHz : 0,
         desired.hasMemOffset ? desired.memOffsetMHz : 0,
         desired.hasPowerLimit ? desired.powerLimitPct : 0,
         desired.hasLock ? desired.lockCi : -1,
         curvePoints,
+        projectedPoints,
         desired.hasFan ? desired.fanMode : -1,
         path);
 

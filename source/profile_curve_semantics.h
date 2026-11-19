@@ -74,4 +74,23 @@ static inline ProfileCurveDecode profile_curve_decode_from_marker(
     return PROFILE_CURVE_DECODE_ABSOLUTE;
 }
 
+// Whether a curve point should be emitted to an `absolute_with_origin` INI
+// section.  Absolute points require a positive MHz, whereas owned projected
+// points (`fromGpuOffset`) carry offset authority from the GPU offset and are
+// valid even without an observed frequency (mhz == 0, e.g. imported indexed
+// documents).  Shared by the Windows and Linux writers so neither drops them.
+static inline bool profile_curve_point_should_emit(
+    bool owned, unsigned int mhz, bool fromGpuOffset) {
+    return mhz > 0 || (owned && fromGpuOffset);
+}
+
+// Whether stored MHz == 0 is valid to read back from an INI curve section.
+// Only `absolute_with_origin` sections carrying an explicit per-point
+// `pointN_from_gpu_offset=1` marker may store 0 MHz; absolute points and
+// legacy sections still reject non-positive frequencies.
+static inline bool profile_curve_point_zero_mhz_allowed(
+    ProfileCurveDecode decode, bool fromGpuOffset) {
+    return decode == PROFILE_CURVE_DECODE_ABSOLUTE_WITH_ORIGIN && fromGpuOffset;
+}
+
 #endif

@@ -868,6 +868,30 @@ def check_service_profile_identity_survives_a_delta_apply(ctx, require_text,
         "decision.matchedUserSlotCount",
         "GUI indicator scans personal slots drift-free when the service holds AD_HOC")
 
+    # Zero-MHz projected curve points (e.g. imported portable indexed profiles)
+    # must survive INI save/load and upgrade settings transfers on both platforms.
+    require_text(_p(ctx, "config_profile_curve_format.cpp"),
+                 "profile_curve_point_should_emit(",
+                 "Windows INI curve writer preserves zero-MHz projected points")
+    require_text(_p(ctx, "linux_profile_curve_codec.h"),
+                 "profile_curve_point_should_emit(",
+                 "Linux INI curve writer preserves zero-MHz projected points")
+    require_text(_p(ctx, "profile_curve_origin_io.h"),
+                 "profile_curve_point_zero_mhz_allowed(",
+                 "Windows INI origin reader uses the shared zero-MHz projected rule")
+    require_text(_p(ctx, "main_gpu_state.cpp"),
+                 "profile_curve_point_zero_mhz_in_section_allowed(",
+                 "Windows explicit curve loader accepts zero-MHz projected points")
+    require_text(_p(ctx, "linux_profile_curve_codec.h"),
+                 "profile_curve_point_zero_mhz_allowed(",
+                 "Linux INI origin helper uses the shared zero-MHz projected rule")
+    require_text(_p(ctx, "linux_port_profiles.cpp"),
+                 "linux_profile_zero_mhz_point_allowed(",
+                 "Linux curve loader accepts zero-MHz projected points")
+    require_text(_p(ctx, "main_settings_transfer.cpp"),
+                 "PROFILE_READ_FOR_OWNERSHIP",
+                 "upgrade settings transfer verifies and reloads snapshots drift-free")
+
 
 def check_apply_in_flight_presentation(ctx, require_text, forbid_text):
     """An apply that is still running says so, on every surface.
