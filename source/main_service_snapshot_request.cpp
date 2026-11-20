@@ -75,8 +75,7 @@ static bool service_snapshot_select_requested_gpu(const ServiceRequest* request,
     if (service_update_install_reserved() || nvml_crash_recovery_active() ||
         InterlockedExchangeAdd(&g_serviceRestartRequested, 0) != 0 ||
         InterlockedExchangeAdd(&g_serviceRestartPreparing, 0) != 0) {
-        set_message(err, errSize,
-            "The background service is updating or recovering the GPU driver; the GPU selection was not changed. Try again shortly.");
+        set_message(err, errSize, "%s", GPU_SELECTION_TRANSITION_MESSAGE);
         debug_log("service snapshot: requested GPU nvapi=%u deferred (update=%d nvmlRecovery=%d restart=%ld preparing=%ld)\n",
             request->targetGpu.nvapiIndex,
             service_update_install_reserved() ? 1 : 0,
@@ -114,7 +113,7 @@ static void service_handle_snapshot_request(const ServiceRequest* request,
         response->status = SERVICE_STATUS_OK;
         StringCchCopyA(response->message, ARRAY_COUNT(response->message),
             request && request->targetGpu.valid
-                ? "The background service is busy; the GPU selection was not changed. Try again."
+                ? GPU_SELECTION_BUSY_MESSAGE
                 : "snapshot cached");
         populate_service_snapshot(&response->snapshot);
         if (g_serviceControlStateValid)

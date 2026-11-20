@@ -324,7 +324,7 @@ static void populate_control_state(ControlState* state) {
 #include "main_observed_lock.cpp"
 
 static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot,
-    bool activeDesiredValid, const DesiredSettings* activeDesired) {
+    bool activeDesiredValid, const DesiredSettings* activeDesired, bool fromFullSync) {
     if (!snapshot) return;
     EnterCriticalSection(&g_appLock);
 #ifndef GREEN_CURVE_SERVICE_BINARY
@@ -608,7 +608,7 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot,
     LeaveCriticalSection(&g_appLock);
 #ifndef GREEN_CURVE_SERVICE_BINARY
     if (selectedGpuChanged)
-        gui_mutation_advance_gpu_epoch("service snapshot GPU identity");
+        gui_mutation_advance_gpu_epoch("service snapshot GPU identity", !fromFullSync);
     sync_applied_profile_from_service_metadata();
     maintain_configured_gpu_selection_record();
 #endif

@@ -112,7 +112,7 @@ static void gui_gpu_selection_choose(unsigned int index) {
     g_guiSelectionChoiceTarget = g_app.adapters[index];
     g_guiSelectionReconcilePending = false;
     gui_service_io_set_full_sync_target(&g_guiSelectionChoiceTarget);
-    gui_mutation_advance_gpu_epoch("GPU selector");
+    gui_mutation_advance_gpu_epoch("GPU selector", false);
     gui_service_begin_full_sync("GPU selection changed");
     set_profile_status_text("Selecting GPU %u...", index);
 }
@@ -157,11 +157,42 @@ static void gui_gpu_selection_finish_choice(
 
 static void gui_gpu_selection_after_read(
     const GuiServiceIoCompletion* completion, bool accepted) {
-    if (!completion || completion->kind != GUI_SERVICE_IO_FULL_SYNC ||
-        !accepted || !gui_service_model_ready(&g_app.guiServiceModel))
-        return;  // a pending request keeps its target for the next full sync
+    if (!completion || completion->kind != GUI_SERVICE_IO_FULL_SYNC || !accepted)
+        return;
     const GpuAdapterInfo* requested = completion->requestedTarget.valid
         ? &completion->requestedTarget : nullptr;
+    if (!gui_service_model_ready(&g_app.guiServiceModel)) {
+        const GuiServicePhase phase = g_app.guiServiceModel.phase;
+        const bool terminalNonReady = phase == GUI_SERVICE_DEGRADED ||
+            phase == GUI_SERVICE_DEVICE_MISSING;
+        if (!terminalNonReady || !requested) return;
+        const char* reason = gui_gpu_selection_refusal_reason(completion);
+        if (g_guiSelectionChoicePending &&
+            requested->nvapiIndex == g_guiSelectionChoiceTarget.nvapiIndex &&
+            gui_gpu_identity_equal(requested, &g_guiSelectionChoiceTarget)) {
+            g_guiSelectionChoicePending = false;
+            gui_service_io_set_full_sync_target(nullptr);
+            debug_log("gpu selection: chosen nvapi=%u landed in non-READY phase=%u; clearing target (%s)\n",
+                requested->nvapiIndex, (unsigned int)phase, reason);
+            set_profile_status_text(
+                "GPU %u is unavailable (%s). Select another GPU to continue.",
+                requested->nvapiIndex, reason);
+            populate_gpu_selector();
+        } else if (g_guiSelectionReconcilePending) {
+            g_guiSelectionReconcilePending = false;
+            gui_service_io_set_full_sync_target(nullptr);
+            if (!gpu_selection_refusal_is_transient(reason))
+                g_guiSelectionLastRefused =
+                    gui_gpu_selection_attempt_key(requested->nvapiIndex);
+            debug_log("gpu selection: saved nvapi=%u landed in non-READY phase=%u; clearing target (%s)\n",
+                requested->nvapiIndex, (unsigned int)phase, reason);
+            set_profile_status_text(
+                "Saved GPU %u is unavailable (%s). Select another GPU to continue.",
+                requested->nvapiIndex, reason);
+            populate_gpu_selector();
+        }
+        return;
+    }
     if (g_guiSelectionChoicePending) {
         // Only the READY sync that carried this choice answers it.
         if (requested && requested->nvapiIndex ==
@@ -180,11 +211,15 @@ static void gui_gpu_selection_after_read(
             set_profile_status_text("Showing the saved GPU %u.",
                 requested->nvapiIndex);
         } else {
-            g_guiSelectionLastRefused =
-                gui_gpu_selection_attempt_key(requested->nvapiIndex);
             const char* reason = gui_gpu_selection_refusal_reason(completion);
-            debug_log("gpu selection: saved nvapi=%u refused; service shows nvapi=%u: %s\n",
-                requested->nvapiIndex, g_app.selectedGpuIndex, reason);
+            const bool transient = gpu_selection_refusal_is_transient(reason);
+            if (!transient) {
+                g_guiSelectionLastRefused =
+                    gui_gpu_selection_attempt_key(requested->nvapiIndex);
+            }
+            debug_log("gpu selection: saved nvapi=%u not selected (transient=%d); service shows nvapi=%u: %s\n",
+                requested->nvapiIndex, transient ? 1 : 0,
+                g_app.selectedGpuIndex, reason);
             set_profile_status_text(
                 "Showing GPU %u, not the saved GPU %u: %s Select a GPU to use it.",
                 g_app.selectedGpuIndex, requested->nvapiIndex, reason);
@@ -208,6 +243,6 @@ static void gui_gpu_selection_after_read(
         saved, g_app.selectedGpuIndex);
     g_guiSelectionReconcilePending = true;
     gui_service_io_set_full_sync_target(&g_app.adapters[saved]);
-    gui_mutation_advance_gpu_epoch("saved GPU selection");
+    gui_mutation_advance_gpu_epoch("saved GPU selection", false);
     gui_service_begin_full_sync("saved GPU selection");
 }

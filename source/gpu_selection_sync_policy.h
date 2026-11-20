@@ -17,7 +17,33 @@
 
 #pragma once
 
+#include <string.h>
 #include "gpu_adapter_identity.h"
+
+// Shared transient deferral messages from service_handle_snapshot_request()
+// and service_snapshot_select_requested_gpu(): busy runtime lock or active
+// driver/service update/recovery. Saved-GPU reconciliation treats these as
+// temporary rather than latching a permanent refusal for the whole generation.
+static const char* const GPU_SELECTION_BUSY_MESSAGE =
+    "The background service is busy; the GPU selection was not changed. Try again.";
+static const char* const GPU_SELECTION_TRANSITION_MESSAGE =
+    "The background service is updating or recovering the GPU driver; the GPU selection was not changed. Try again shortly.";
+
+static inline bool gpu_selection_refusal_is_transient(const char* message) {
+    if (!message || !message[0]) return false;
+    return strcmp(message, GPU_SELECTION_BUSY_MESSAGE) == 0 ||
+           strcmp(message, GPU_SELECTION_TRANSITION_MESSAGE) == 0;
+}
+
+// Keep the GPU selector usable whenever the service is reachable and lists
+// adapters -- including DEGRADED or DEVICE_MISSING -- so selecting a non-READY
+// GPU never traps the user without a way to switch back.
+static inline bool gpu_selector_combo_enabled(bool ready, bool serviceAvailable,
+    bool phaseAllowsReselect, unsigned int adapterCount,
+    bool configuredSelectionUnresolved) {
+    return (ready || (serviceAvailable && phaseAllowsReselect)) &&
+        (adapterCount > 1 || configuredSelectionUnresolved);
+}
 
 // Whether a full state read that asked for `requested` was honoured: the
 // service now shows that exact adapter.

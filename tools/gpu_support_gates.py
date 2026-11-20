@@ -124,6 +124,20 @@ def check_source_gates(ctx, require_text, forbid_text, forbid_text_in_operation)
         "gpu_selection_sync_accepted(&completion->requestedTarget, shown,",
         "save_configured_gpu_selection_atomic(",
         "a selector choice is saved only once the service shows that GPU")
+    require_text(os.path.join(src, "gui_service_state.cpp"),
+                 "gpu_selector_combo_enabled(",
+                 "the GPU selector stays reachable in DEGRADED/DEVICE_MISSING states")
+    require_text(os.path.join(src, "gui_gpu_selection_sync.cpp"),
+                 "gpu_selection_refusal_is_transient(reason)",
+                 "transient busy/update deferrals do not permanently latch GPU reconciliation")
+    require_text(os.path.join(src, "gui_gpu_selection_sync.cpp"),
+                 'gui_mutation_advance_gpu_epoch("GPU selector", false);',
+                 "GPU selector choice does not queue a duplicate full sync before presentation epoch advance")
+    require_text(os.path.join(src, "gui_gpu_selection_sync.cpp"),
+                 'gui_mutation_advance_gpu_epoch("saved GPU selection", false);',
+                 "saved GPU reconciliation does not queue a duplicate full sync before presentation epoch advance")
+    require_text(snapshot_cpp, "GPU_SELECTION_BUSY_MESSAGE",
+                 "busy snapshot deferral uses the shared transient refusal constant")
     ctx.require_order_in_operation(
         os.path.join(src, "gpu_selection_config.cpp"),
         "static bool validate_configured_gpu_selection_for_client(",

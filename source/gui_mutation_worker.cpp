@@ -90,7 +90,7 @@ static HWND gui_worker_notification_window() {
     return window;
 }
 
-static void gui_mutation_advance_gpu_epoch(const char* reason) {
+static void gui_mutation_advance_gpu_epoch(const char* reason, bool queueFullSync) {
     LONG epoch = InterlockedIncrement(&g_guiMutationGpuEpoch);
     bool notifySuperseded = false;
     GuiMutationWork superseded = {};
@@ -101,17 +101,19 @@ static void gui_mutation_advance_gpu_epoch(const char* reason) {
             g_guiMutationPending = false;
             notifySuperseded = true;
         }
-        g_guiFullSyncPending = true;
         g_guiTelemetryPending = false;
         g_guiTelemetryRedrawControls = false;
-        StringCchCopyA(g_guiFullSyncReason,
-            ARRAY_COUNT(g_guiFullSyncReason),
-            reason && reason[0] ? reason : "GPU generation changed");
-        gui_worker_signal_if_dispatchable_locked();
+        if (queueFullSync) {
+            g_guiFullSyncPending = true;
+            StringCchCopyA(g_guiFullSyncReason,
+                ARRAY_COUNT(g_guiFullSyncReason),
+                reason && reason[0] ? reason : "GPU generation changed");
+            gui_worker_signal_if_dispatchable_locked();
+        }
         LeaveCriticalSection(&g_guiMutationLock);
     }
-    debug_log("GUI service I/O: GPU epoch advanced to %ld; pendingMutationDropped=%d (%s)\n",
-        epoch, notifySuperseded ? 1 : 0,
+    debug_log("GUI service I/O: GPU epoch advanced to %ld; pendingMutationDropped=%d queueFullSync=%d (%s)\n",
+        epoch, notifySuperseded ? 1 : 0, queueFullSync ? 1 : 0,
         reason && reason[0] ? reason : "state change");
     if (notifySuperseded) {
         gui_mutation_pending_was_superseded(superseded.context,

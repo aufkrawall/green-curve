@@ -117,6 +117,21 @@ int saved_matches_shown_tests() {
     // 7099: single-GPU systems and non-authoritative state keep the old rule.
     if (!gpu_selection_saved_matches_shown(true, 1, 0, 0)) return 7099;
     if (!gpu_selection_saved_matches_shown(false, 2, 1, 0)) return 7099;
+    // 7100: transient busy/update deferrals are distinguished from real
+    // policy refusals so reconciliation does not latch them permanently.
+    if (!gpu_selection_refusal_is_transient(GPU_SELECTION_BUSY_MESSAGE)) return 7100;
+    if (!gpu_selection_refusal_is_transient(GPU_SELECTION_TRANSITION_MESSAGE)) return 7100;
+    if (gpu_selection_refusal_is_transient("GPU 0 still holds Green Curve settings.")) return 7100;
+    if (gpu_selection_refusal_is_transient(nullptr) ||
+        gpu_selection_refusal_is_transient("")) return 7100;
+    // 7101: GPU selector stays enabled when the service is reachable in
+    // DEGRADED/DEVICE_MISSING so selecting a broken GPU never traps the user.
+    if (!gpu_selector_combo_enabled(true, true, false, 2, false)) return 7101;
+    if (!gpu_selector_combo_enabled(false, true, true, 2, false)) return 7101;
+    if (!gpu_selector_combo_enabled(false, true, true, 1, true)) return 7101;
+    if (gpu_selector_combo_enabled(false, false, true, 2, false)) return 7101;
+    if (gpu_selector_combo_enabled(false, true, false, 2, false)) return 7101;
+    if (gpu_selector_combo_enabled(true, true, false, 1, false)) return 7101;
     return 0;
 }
 

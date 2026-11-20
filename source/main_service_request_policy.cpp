@@ -512,6 +512,27 @@ static bool service_prepare_requested_gpu(const ServiceRequest* request,
         return false;
     }
     if (change) {
+        const unsigned int prevGpuIndex = g_app.selectedGpuIndex;
+        const unsigned int prevNvmlIndex = g_app.selectedNvmlIndex;
+        const bool prevExplicit = g_app.selectedGpuExplicit;
+        const GpuAdapterInfo prevGpu = g_app.selectedGpu;
+        const bool prevIdentityValid = g_app.selectedGpuIdentityValid;
+        const bool prevOrdinalFallback = g_app.selectedGpuOrdinalFallback;
+        auto restore_previous_selection = [&](const char* why) {
+            if (!prevIdentityValid) return;
+            reset_gpu_runtime_selection();
+            g_app.selectedGpuIndex = prevGpuIndex;
+            g_app.selectedNvmlIndex = prevNvmlIndex;
+            g_app.selectedGpuExplicit = prevExplicit;
+            g_app.selectedGpu = prevGpu;
+            g_app.selectedGpuIdentityValid = prevIdentityValid;
+            g_app.selectedGpuOrdinalFallback = prevOrdinalFallback;
+            char restoreDetail[160] = {};
+            const bool restored = hardware_initialize(restoreDetail, sizeof(restoreDetail));
+            debug_log("service gpu target: reverted to previous nvapi=%u after %s (restored=%d%s%s)\n",
+                prevGpuIndex, why ? why : "init failure", restored ? 1 : 0,
+                restoreDetail[0] ? ": " : "", restoreDetail);
+        };
         debug_log("service gpu target: selecting validated nvapi=%u nvml=%u identity=%s name=%s\n",
             live.nvapiIndex,
             live.nvmlIndex,
@@ -532,6 +553,7 @@ static bool service_prepare_requested_gpu(const ServiceRequest* request,
             set_message(err, errSize, "%s",
                 initDetail[0] ? initDetail :
                 "Selected GPU initialization failed");
+            restore_previous_selection("hardware_initialize failure");
             return false;
         }
         if (haveStrongIdentity &&
@@ -540,6 +562,7 @@ static bool service_prepare_requested_gpu(const ServiceRequest* request,
                  &g_app.selectedGpu, &request->targetGpu))) {
             set_message(err, errSize,
                 "Selected GPU identity changed during initialization");
+            restore_previous_selection("identity mismatch");
             return false;
         }
     }

@@ -272,13 +272,13 @@ static void gui_set_editor_enabled(bool ready) {
         EnableWindow(g_app.hApplyBtn,
             gui_pending_apply_button_enabled(allowDraft, gui_pending_summary())
                 ? TRUE : FALSE);
-    // A detached draft must not make its recovery path unreachable.  Keep GPU
-    // selection available for a coherent READY model so the user can reselect
-    // the draft's original GPU; editing and hardware mutations remain blocked.
+    // Keep GPU selection available in READY, DEGRADED, and DEVICE_MISSING so
+    // neither a detached draft nor a degraded target GPU traps the user.
     if (g_app.hGpuSelectCombo) {
-        bool canSelectGpu = ready &&
-            (g_app.adapterCount > 1 ||
-             g_app.configuredGpuSelectionUnresolved);
+        const GuiServicePhase phase = g_app.guiServiceModel.phase;
+        const bool canSelectGpu = gpu_selector_combo_enabled(ready, g_app.backgroundServiceAvailable,
+            phase == GUI_SERVICE_DEGRADED || phase == GUI_SERVICE_DEVICE_MISSING,
+            g_app.adapterCount, g_app.configuredGpuSelectionUnresolved);
         EnableWindow(g_app.hGpuSelectCombo, canSelectGpu ? TRUE : FALSE);
     }
     if (g_app.hRefreshBtn) EnableWindow(g_app.hRefreshBtn, TRUE);
@@ -522,7 +522,8 @@ static void gui_apply_ready_envelope(const ServiceResponse* response,
             reason);
     }
     apply_service_snapshot_to_app(&response->snapshot,
-        response->state.activeDesiredValid, &response->desired);
+        response->state.activeDesiredValid, &response->desired,
+        kind == GUI_SERVICE_IO_FULL_SYNC);
     g_app.serviceSnapshotAuthoritative = true;
     if (!suppressRedraw && g_guiForceFullRefresh) {
         // Snapshot adoption can discover an out-of-band Reset that requires a
@@ -687,10 +688,8 @@ static bool gui_service_accept_response_on_main_thread(
          previousGeneration != response->state.gpuGeneration);
     bool leftReady = previousPhase == GUI_SERVICE_READY &&
         g_app.guiServiceModel.phase != GUI_SERVICE_READY;
-    if (authorityChanged || leftReady) {
-        gui_mutation_advance_gpu_epoch(authorityChanged
-            ? "service/GPU generation changed" : "GPU left READY state");
-    }
+    if (authorityChanged || leftReady)
+        gui_mutation_advance_gpu_epoch(authorityChanged ? "service/GPU generation changed" : "GPU left READY state", kind != GUI_SERVICE_IO_FULL_SYNC || leftReady);
 
     g_app.backgroundServiceAvailable = true;
     g_app.backgroundServiceInstalled = true;
