@@ -17,7 +17,7 @@ struct GuiProfileTransferWork {
     GuiProfileTransferKind kind = GUI_PROFILE_TRANSFER_RUN;
     bool committing = false, success = false;
     ProfileEditorTransferOptions options{};
-    std::string file, config;
+    std::string file, config, reviewedSource;
     std::unique_ptr<ProfileEditorTransferPreview> preview;
     std::unique_ptr<ProfileEditorTransferProbe> probe;
 };
@@ -28,7 +28,8 @@ template<class IO> static inline void gui_profile_transfer_execute(GuiProfileTra
         return;
     }
     if (!work.preview) work.preview = std::make_unique<ProfileEditorTransferPreview>();
-    work.success = profile_editor_transfer_prepare(work.options, work.file, work.config, storage, *work.preview) &&
+    work.success = profile_editor_transfer_prepare(work.options, work.file, work.config, storage, *work.preview,
+        work.options.importing ? &work.reviewedSource : nullptr) &&
         profile_editor_transfer_commit(storage, *work.preview);
     work.committing = true;
 }

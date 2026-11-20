@@ -80,7 +80,7 @@ Curve editing, profile transfer and capture improve.
 - **Tray checkmark:** match after save/restore/upgrade.
 - **External flatten:** avoid false negative core offsets.
 - **Curve errors:** identify out-of-range targets.
-- **Profile imports:** retain slot assignments and range warnings.
+- **Profile files:** import the reviewed contents and confirm before replacing any Linux export destination.
 - **Multi-GPU ownership:** prevent retargeting when identical cards cannot be distinguished.
 - **GPU selector:** switch views and writes together.
 - **Curve previews:** avoid spikes; retain drafts.

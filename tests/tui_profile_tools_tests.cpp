@@ -30,6 +30,10 @@ struct IO {
         return profile_legacy_native_slot_decode(bytes, PROFILE_LEGACY_LINUX_INI, slot, d, found, &error);
     }
     bool write(const std::string& path, const std::string& bytes, ProfileCodecError&) { ++writes; files[path] = bytes; return true; }
+    bool writeNew(const std::string& path, const std::string& bytes, bool& exists, ProfileCodecError& error) {
+        exists = files.count(path) != 0;
+        return !exists && write(path, bytes, error);
+    }
     bool commit(const std::string& path, const ProfileBankEdit& edit, ProfileCodecError& error) {
         return profile_bank_commit_edit(edit, [&](std::string& bytes) { bytes = files[path]; return true; },
             [&](const std::string& bytes) { return write(path, bytes, error); }, &error);
@@ -171,7 +175,9 @@ static int run() {
     act(ACTION_TRANSFER_BEGIN); s.transferPresented = true; s.transferPath = "out.gcprofile";
     act(ACTION_TRANSFER_RECORD, -1);
     const int writes = io.writes;
+    io.files["out.gcprofile"].assign(PROFILE_FILE_MAX_BYTES + 1, 'x');
     act(ACTION_TRANSFER_COMMIT);
+    if (io.files["out.gcprofile"].size() != PROFILE_FILE_MAX_BYTES + 1) return 12710;
     if (!s.transfer.active || !s.transfer.confirmOverwrite || io.writes != writes) return 9782;
     act(ACTION_TRANSFER_COMMIT);
     if (s.transfer.active || !profile_bank_decode(io.files["out.gcprofile"], *bank) || bank->count != 2) return 9783;
@@ -189,6 +195,8 @@ static int run() {
     act(ACTION_TRANSFER_SLOT, 1); act(ACTION_TRANSFER_SLOT, 1); act(ACTION_TRANSFER_SLOT, 1);
     if (s.transfer.rowSlot[1] != 2 || s.transfer.canRun || s.transferLines.back().find("same slot") == std::string::npos) return 9786;
     act(ACTION_TRANSFER_SLOT, 1);
+    bank->documents[1].memoryOffsetHz = 275000000LL;
+    if (!profile_bank_encode(*bank, io.files["out.gcprofile"])) return 12711;
     act(ACTION_TRANSFER_COMMIT);
     std::string text; ProfileCodecError error; bool found = false; ProfileDocument document{};
     if (s.transfer.active || !profile_config::decode(io.files["bank.ini"], text, &error) ||

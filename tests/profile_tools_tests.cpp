@@ -72,6 +72,8 @@ int run_profile_tools_tests() {
     options.importing = true; options.sources = {3, 1}; options.slots = {4, 2};
     auto work = std::make_unique<GuiProfileTransferWork>();
     work->kind = GUI_PROFILE_TRANSFER_RUN; work->options = options; work->file = "three.gcprofile"; work->config = "bank.ini";
+    work->reviewedSource = probe->sourceBytes;
+    io.files.erase("three.gcprofile");
     gui_profile_transfer_execute(*work, io);
     auto slot = std::make_unique<ProfileDocument>();
     bool found = false;
@@ -319,6 +321,7 @@ int run_profile_tools_tests() {
             runWork->options.sources.push_back(probe5->sources[(size_t)i]);
             runWork->options.slots.push_back(assigned[i]);
         }
+        runWork->reviewedSource = probe5->sourceBytes;
         gui_profile_transfer_execute(*runWork, roundtrip);
         if (!runWork->success) return 9995;
         std::string bankText;

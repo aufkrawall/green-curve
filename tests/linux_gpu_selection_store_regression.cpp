@@ -312,6 +312,15 @@ void test_output_directory_walk() {
     fd = linux_open_output_directory(".", true);
     expect(fd >= 0, "bare-file output can pin the current directory");
     if (fd >= 0) close(fd);
+    const std::string exported = real + "/export.ini";
+    bool exists = true;
+    expect(write_text_file_atomic(exported.c_str(), "", outputError, sizeof(outputError), &exists) && !exists,
+           "first export creates its destination");
+    expect(!write_text_file_atomic(exported.c_str(), "replacement", outputError, sizeof(outputError), &exists) &&
+           exists && read_file(exported).empty(), "first export attempt preserves even an empty file");
+    expect(write_text_file_atomic(exported.c_str(), "replacement", outputError, sizeof(outputError)) &&
+           read_file(exported) == "replacement", "confirmed export replaces the existing file");
+    unlink(exported.c_str());
     const std::string regular = path_in_root("regular");
     expect(write_file(regular, "unchanged"), "creating the regular-file ancestor");
     fd = linux_open_output_directory((regular + "/child").c_str(), true);

@@ -2154,3 +2154,5 @@ Source anchors: `source/gui_observed_lock_policy.h`, `source/main_observed_lock.
 - **Diagnostics:** `lock observe: action=...` (`debug_log_on_change`), plus
   `lock observe: showing...` / `withdrawn` and `profile-save: ... observedLock=...
   unsavedBelowLock=... firstBelow=ci...`.
+
+The Windows dialog and Linux TUI keep the bounded bytes used to display import records through commit. The TUI first publishes exports with a no-replace rename. Only an existing destination triggers overwrite confirmation, including empty and oversized files. Other filesystem failures remain errors.

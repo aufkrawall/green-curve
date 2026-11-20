@@ -234,6 +234,7 @@ static void gui_transfer_run() {
         std::string note;
         if (!gui_transfer_import_note(note)) return;
         work->options.legacy = d.probe->legacy;
+        work->reviewedSource = d.probe->sourceBytes;
         for (int row : rows) {
             work->options.sources.push_back(d.probe->sources[(size_t)row]);
             work->options.slots.push_back((int)gui_profile_dialog_combo_data(d.rowSlot[row], row + 1));

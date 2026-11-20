@@ -17,6 +17,8 @@
 #include <string.h>
 #include <string>
 #include <sys/random.h>
+#include <linux/fs.h>
+#include <sys/syscall.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
@@ -189,7 +191,9 @@ static bool write_all_fd(int fd, const void* data, size_t size) {
     return true;
 }
 
-bool write_text_file_atomic(const char* path, const std::string& data, char* err, size_t errSize) {
+bool write_text_file_atomic(const char* path, const std::string& data, char* err, size_t errSize,
+    bool* existingDestination) {
+    if (existingDestination) *existingDestination = false;
     if (!path || !*path) {
         set_message(err, errSize, "Invalid output path");
         return false;
@@ -236,8 +240,15 @@ bool write_text_file_atomic(const char* path, const std::string& data, char* err
         if (close(fd) != 0 && ok) { step = "close"; ok = false; ioError = errno; }
         if (ok) {
             step = "rename";
-            ok = renameat(dirfd, temporary, dirfd, name.c_str()) == 0;
-            if (!ok) ioError = errno;
+            if (existingDestination) {
+                ok = syscall(SYS_renameat2, dirfd, temporary, dirfd, name.c_str(), RENAME_NOREPLACE) == 0;
+            } else {
+                ok = renameat(dirfd, temporary, dirfd, name.c_str()) == 0;
+            }
+            if (!ok) {
+                ioError = errno;
+                if (existingDestination) *existingDestination = ioError == EEXIST;
+            }
         }
         if (ok) {
             written = true;

@@ -154,15 +154,22 @@ template<class IO> static inline bool tui_transfer_run(TuiState& state, IO& stor
             options.sources.push_back(state.transferProbe->sources[(size_t)i]); options.slots.push_back(v.rowSlot[i]);
         }
     } else {
-        std::string existing; ProfileCodecError probeError;
-        if (!v.confirmOverwrite && storage.read(state.transferPath, existing, PROFILE_FILE_MAX_BYTES, true, probeError) && !existing.empty()) {
-            v.confirmOverwrite = true; tui_transfer_refresh(state, storage); return false;
-        }
         for (int i = 0; i < v.rows; ++i) if (v.rowEnabled[i] && v.rowAvailable[i]) options.slots.push_back(i + 1);
     }
     auto preview = std::make_unique<ProfileEditorTransferPreview>();
-    const bool success = profile_editor_transfer_prepare(options, state.transferPath, state.configPath, storage, *preview) &&
-        profile_editor_transfer_commit(storage, *preview);
+    bool exists = false;
+    const bool success = profile_editor_transfer_prepare(options, state.transferPath, state.configPath, storage,
+        *preview, v.importing ? &state.transferProbe->sourceBytes : nullptr) &&
+        profile_editor_transfer_commit(storage, *preview,
+            [&](const std::string& path, const std::string& bytes, ProfileCodecError& error) {
+                return v.confirmOverwrite ? storage.write(path, bytes, error) : storage.writeNew(path, bytes, exists, error);
+            });
+    if (exists) {
+        v.confirmOverwrite = true;
+        linux_debug_logf("profile-transfer: export destination exists, awaiting confirmation");
+        tui_transfer_refresh(state, storage);
+        return false;
+    }
     linux_debug_logf("profile-transfer: run import=%d records=%u sources=%s slots=%s success=%d code=%d", v.importing ? 1 : 0,
         (unsigned)options.slots.size(), profile_editor_transfer_list(options.sources).c_str(),
         profile_editor_transfer_list(options.slots).c_str(), success ? 1 : 0, preview->result);

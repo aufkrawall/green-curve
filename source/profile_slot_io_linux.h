@@ -17,6 +17,9 @@ struct LinuxProfileSlotIO {
     bool write(const std::string& path, const std::string& bytes, ProfileCodecError& error) {
         return write_text_file_atomic(path.c_str(), bytes, error.message, sizeof(error.message));
     }
+    bool writeNew(const std::string& path, const std::string& bytes, bool& exists, ProfileCodecError& error) {
+        return write_text_file_atomic(path.c_str(), bytes, error.message, sizeof(error.message), &exists);
+    }
     bool commit(const std::string& path, const ProfileBankEdit& edit, ProfileCodecError& error) {
         if (edit.replacement.size() > (size_t)LINUX_INI_MAX_BYTES)
             return profile_codec::fail(&error, 0, "updated profile bank exceeds configuration size limit");

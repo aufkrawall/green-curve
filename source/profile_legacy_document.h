@@ -68,7 +68,7 @@ static inline bool profile_document_from_legacy_desired(const DesiredSettings& i
                 (long long)in.curvePointMHz[ci] * 1000000;
         }
     }
-    if (bound && (!d.topologyCount || d.topologyCount != in.authoring.topologyCount))
+    if (bound && (!d.topologyCount || (gc_u32)d.topologyCount != in.authoring.topologyCount))
         return fail("the saved voltage topology is incomplete");
     d.sourceTopologyComplete = bound;
     d.legacyIndicesUnresolved = !bound && d.topologyCount != 0;

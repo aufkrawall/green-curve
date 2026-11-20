@@ -37,7 +37,8 @@ std::string path_join(const std::string& left, const std::string& right);
 bool argument_requires_value(int argc, int index);
 void appendf(std::string* text, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 bool ensure_directory_recursive(const char* path, char* err, size_t errSize);
-bool write_text_file_atomic(const char* path, const std::string& data, char* err, size_t errSize);
+bool write_text_file_atomic(const char* path, const std::string& data, char* err, size_t errSize,
+    bool* existingDestination = nullptr);
 bool load_ini_document(const char* path, IniDocument* doc, char* err, size_t errSize);
 bool save_ini_document(const char* path, const IniDocument& doc, char* err, size_t errSize);
 void set_section_value(IniDocument* doc, const char* sectionName, const char* key, const char* value);

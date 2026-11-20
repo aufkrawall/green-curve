@@ -19,7 +19,7 @@ struct ProfileEditorTransferProbe {
     std::vector<int> sources;             // record number to pass back for each document
     ProfileLegacyOptions legacy{};        // interpretation that decoded the file
     bool ok = false, legacyFile = false, needsMemoryUnit = false, needsCurveMeaning = false;
-    std::string error;
+    std::string error, sourceBytes;
 };
 static inline std::string profile_editor_transfer_list(const std::vector<int>& values) {
     std::string text;
@@ -62,7 +62,7 @@ template<class IO> static inline bool profile_editor_transfer_probe(const std::s
     IO& storage, ProfileEditorTransferProbe& probe) {
     probe = {};
     ProfileCodecError error{};
-    std::string bytes;
+    auto& bytes = probe.sourceBytes;
     const size_t maximum = PROFILE_FILE_MAX_BYTES > profile_slot::MAX_CONFIG_BYTES ? PROFILE_FILE_MAX_BYTES : profile_slot::MAX_CONFIG_BYTES;
     if (file.empty() || !storage.read(file, bytes, maximum, false, error)) {
         probe.error = error.message[0] ? error.message : "could not read the file"; return false;
@@ -164,7 +164,8 @@ template<class IO> struct ProfileEditorTransferIO {
 // select a file ordinal and one destination slot. All inputs are frozen before
 // a frontend offers Commit; changing UI choices must discard this preview.
 template<class IO> static inline bool profile_editor_transfer_prepare(const ProfileEditorTransferOptions& options,
-    const std::string& file, const std::string& config, IO& storage, ProfileEditorTransferPreview& preview) {
+    const std::string& file, const std::string& config, IO& storage, ProfileEditorTransferPreview& preview,
+    const std::string* reviewedSource = nullptr) {
     preview = {};
     const auto fail = [&](std::string message, int result = PROFILE_COMMAND_INVALID) {
         if (message.empty()) message = "could not prepare the profile transfer";
@@ -200,10 +201,11 @@ template<class IO> static inline bool profile_editor_transfer_prepare(const Prof
     }
     bool handled = false;
     if (!profile_command_parse(args, config.c_str(), preview.command, handled, &preview.error)) return fail(preview.error.message);
-    std::string sourceBytes;
+    std::string fileBytes;
+    const std::string& sourceBytes = reviewedSource ? *reviewedSource : fileBytes;
     if (options.importing) {
         if (!storage.distinct(config, file, preview.error)) return fail(preview.error.message);
-        if (!storage.read(file, sourceBytes, legacy.format == PROFILE_LEGACY_NONE ? PROFILE_FILE_MAX_BYTES :
+        if (!reviewedSource && !storage.read(file, fileBytes, legacy.format == PROFILE_LEGACY_NONE ? PROFILE_FILE_MAX_BYTES :
             profile_slot::MAX_CONFIG_BYTES, false, preview.error)) return fail(preview.error.message, PROFILE_COMMAND_IO);
         auto bank = std::make_unique<ProfileBank>();
         if (!profile_command_decode_import(sourceBytes, legacy, preview.command.source, *bank, preview.error)) return fail(preview.error.message);
@@ -220,7 +222,8 @@ template<class IO> static inline bool profile_editor_transfer_prepare(const Prof
     preview.ready = preview.result == PROFILE_COMMAND_OK && io.recorded && !preview.documents.empty();
     return preview.ready;
 }
-template<class IO> static inline bool profile_editor_transfer_commit(IO& storage, ProfileEditorTransferPreview& preview) {
+template<class IO, class Export> static inline bool profile_editor_transfer_commit(IO& storage,
+    ProfileEditorTransferPreview& preview, Export writeExport) {
     if (!preview.ready || preview.committed) {
         preview.result = PROFILE_COMMAND_DECISION;
         return profile_codec::fail(&preview.error, 0, "review a current transfer before committing");
@@ -228,7 +231,13 @@ template<class IO> static inline bool profile_editor_transfer_commit(IO& storage
     preview.ready = false;
     preview.error = {};
     preview.committed = preview.command.importing ? storage.commit(preview.command.config, preview.edit, preview.error) :
-        storage.write(preview.command.file, preview.exportBytes, preview.error);
+        writeExport(preview.command.file, preview.exportBytes, preview.error);
     preview.result = preview.committed ? PROFILE_COMMAND_OK : preview.command.importing ? PROFILE_COMMAND_CONFLICT : PROFILE_COMMAND_IO;
     return preview.committed;
+}
+template<class IO> static inline bool profile_editor_transfer_commit(IO& storage, ProfileEditorTransferPreview& preview) {
+    return profile_editor_transfer_commit(storage, preview,
+        [&](const std::string& path, const std::string& bytes, ProfileCodecError& error) {
+            return storage.write(path, bytes, error);
+        });
 }
