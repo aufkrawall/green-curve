@@ -41,6 +41,7 @@ Curve editing, profile transfer and capture improve.
 - **Capture:** import external curves, locks and memory.
 - **CLI checks:** preview profiles without writes.
 - **CMP cards:** experimental modified-driver startup guidance.
+- **Fan stall protection:** a fan that stops turning under custom control goes back to the driver, with a warning.
 
 ### Improved
 

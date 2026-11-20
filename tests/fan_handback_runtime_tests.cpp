@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 //
 // Executes the production Windows fan runtime handback
-// (main_fan_runtime_failure.cpp) and the service's fan fault record and owned
-// intent update (main_service_fan_fault.cpp) against a scripted driver, cases
-// 12856-12869.  No GPU, no sleeps.
+// (main_fan_runtime_failure.cpp), the service's fan fault record and owned
+// intent update (main_service_fan_fault.cpp), cases 12856-12869, and the stall
+// check after every runtime tick (main_fan_stall.cpp), 12870-12879 and
+// 12887-12888, against a
+// scripted driver and clock.  No GPU, no sleeps.
 #include "app_shared.h"
 #include "fan_curve.h"
 #include "fan_intent_policy.h"
@@ -79,7 +81,44 @@ static bool service_runtime_lock_held_by_current_thread() { return true; }
 static bool service_ownership_marker_clear(const char*) { ++markerClears; return true; }
 static void service_fan_runtime_handback_publish(const ServiceFanFault* fault);
 
+// Scripted fan readings (nvml_read_fans) and clock (GetTickCount64).
+struct ScriptFan {
+    bool manual;
+    int intent;
+    bool rpmKnown;
+    unsigned int rpm;
+    bool measuredKnown;
+    int measured;
+};
+static ScriptFan script[2];
+static bool readFails;
+static int fanReads;
+static unsigned long long fixtureNowMs;
+static unsigned long long fixture_tick_ms() { return fixtureNowMs; }
+static bool nvml_read_fans(char* detail, size_t size) {
+    ++fanReads;
+    if (readFails) { set_message(detail, size, "scripted failure"); return false; }
+    std::memset(&g_app.readback.fan, 0, sizeof(g_app.readback.fan));
+    for (unsigned int fan = 0; fan < 2; ++fan) {
+        const ScriptFan& f = script[fan];
+        g_app.readback.fan.policy[fan] = true;
+        g_app.fanPolicy[fan] = f.manual ? NVML_FAN_POLICY_MANUAL
+                                        : NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW;
+        g_app.readback.fan.target[fan] = f.manual;
+        g_app.fanTargetPercent[fan] = f.manual ? (unsigned int)f.intent : 0u;
+        g_app.readback.fan.rpm[fan] = f.rpmKnown;
+        g_app.fanRpm[fan] = f.rpmKnown ? f.rpm : 0u;
+        g_app.readback.fan.measured[fan] = f.measuredKnown;
+        g_app.fanPercent[fan] = f.measuredKnown ? (unsigned int)f.measured : 0u;
+    }
+    g_app.fanReadSerial++;
+    return true;
+}
+
+#define GetTickCount64 fixture_tick_ms
 #include "main_fan_runtime_failure.cpp"
+#include "main_fan_stall.cpp"
+#undef GetTickCount64
 #include "main_service_fan_fault.cpp"
 
 static void reset(bool service) {
@@ -109,6 +148,147 @@ static void own_running_curve(bool alsoPower) {
     }
     g_app.fanCurveRuntimeActive = true;
     g_app.activeFanMode = FAN_MODE_CURVE;
+}
+
+static ScriptFan spinning_fan() { return {true, 40, true, 1100u, true, 41}; }
+static ScriptFan stopped_fan() { return {true, 40, true, 0u, true, 0}; }
+
+static void start_fixed_runtime(bool service) {
+    reset(service);
+    g_serviceHasActiveDesired = true;
+    g_serviceActiveDesired.lockCi = -1;
+    g_serviceActiveDesired.hasFan = 1;
+    g_serviceActiveDesired.fanMode = FAN_MODE_FIXED;
+    g_serviceActiveDesired.fanPercent = 40;
+    g_app.fanFixedRuntimeActive = true;
+    g_app.activeFanMode = FAN_MODE_FIXED;
+    g_app.activeFanFixedPercent = 40;
+    g_app.fanRangeKnown = true;
+    g_app.fanMinPct = 30;
+    g_app.fanMaxPct = 100;
+    g_app.nvmlDevice = (nvmlDevice_t)(uintptr_t)0x1000;
+    g_app.fanRuntimeGeneration = 1;
+    g_fanStallTracker = {};
+    g_fanStallLogLimiter = {};
+    script[0] = script[1] = spinning_fan();
+    readFails = false;
+    fanReads = 0;
+    fixtureNowMs = 100000;
+}
+
+// One runtime tick every `stepMs` until `untilMs`; the tick itself reads
+// nothing, so the stall check samples on its own cadence.
+static void tick_until(unsigned long long untilMs, unsigned long long stepMs) {
+    while (fixtureNowMs < untilMs) {
+        fixtureNowMs += stepMs;
+        fan_stall_check_after_tick(g_app.fanReadSerial);
+    }
+}
+
+static int run_stall_cases() {
+    // A proven fan stops under a fixed 40% duty: handed back after 20 s of
+    // stopped readings, not one sample earlier, and reported as a stall.
+    start_fixed_runtime(true);
+    fan_stall_check_after_tick(g_app.fanReadSerial);
+    script[1] = stopped_fan();
+    tick_until(121000, 1000);
+    if (autoWrites || !g_app.fanFixedRuntimeActive) return 12870;
+    tick_until(122000, 1000);
+    ServiceFanFault published = service_fan_fault_for_snapshot_locked();
+    if (autoWrites != 1 || g_app.fanFixedRuntimeActive || published.kind != SERVICE_FAN_FAULT_STALL ||
+        published.fanIndex != 1 || published.commandedPercent != 40 ||
+        published.stalledForMs != 20000 || g_serviceActiveDesired.hasFan ||
+        !std::strstr(published.detail, "Fan 2 did not turn at 40%") ||
+        !service_fan_fault_wire_valid(&published)) return 12871;
+    // Readings are taken every 2 s, not on every tick.
+    if (fanReads != 12) return 12872;
+    // A tick that read the fans supplies the sample; nothing is read again.
+    start_fixed_runtime(true);
+    fan_stall_check_after_tick(g_app.fanReadSerial);
+    fixtureNowMs += 2000;
+    g_app.fanReadSerial++;
+    fan_stall_check_after_tick(g_app.fanReadSerial - 1);
+    if (fanReads != 1) return 12873;
+    // A zero-RPM curve in its driver-automatic phase stands still by design.
+    start_fixed_runtime(true);
+    fan_stall_check_after_tick(g_app.fanReadSerial);
+    g_app.fanFixedRuntimeActive = false;
+    g_app.fanCurveRuntimeActive = true;
+    g_app.fanCurveDriverAutoActive = true;
+    g_app.fanCurveHasLastAppliedTemp = true;
+    g_app.fanCurveLastAppliedPercent = 0;
+    g_app.fanRuntimeGeneration++;
+    script[0] = script[1] = stopped_fan();
+    script[0].manual = script[1].manual = false;
+    tick_until(200000, 1000);
+    if (autoWrites || !g_app.fanCurveRuntimeActive) return 12874;
+    // Each gate holds on its own.  The runtime's zero-RPM phase alone: the
+    // driver still reports the last manual duty while it takes the fan back.
+    start_fixed_runtime(true);
+    fan_stall_check_after_tick(g_app.fanReadSerial);
+    g_app.fanFixedRuntimeActive = false;
+    g_app.fanCurveRuntimeActive = true;
+    g_app.fanCurveDriverAutoActive = true;
+    g_app.fanCurveHasLastAppliedTemp = true;
+    g_app.fanCurveLastAppliedPercent = 40;
+    script[0] = script[1] = stopped_fan();
+    tick_until(200000, 1000);
+    if (autoWrites) return 12887;
+    // The driver's policy alone: the runtime commands 40%, the driver reports
+    // automatic control (the runtime's own re-assert handles that).
+    start_fixed_runtime(true);
+    fan_stall_check_after_tick(g_app.fanReadSerial);
+    script[0] = script[1] = stopped_fan();
+    script[0].manual = script[1].manual = false;
+    tick_until(200000, 1000);
+    if (autoWrites) return 12888;
+    // No tach or measured-duty getter: never judged.
+    start_fixed_runtime(true);
+    script[0] = script[1] = stopped_fan();
+    script[0].rpmKnown = script[1].rpmKnown = false;
+    script[0].measuredKnown = script[1].measuredKnown = false;
+    tick_until(200000, 1000);
+    if (autoWrites) return 12875;
+    // Sensors that read 0 from the start prove nothing.
+    start_fixed_runtime(true);
+    script[0] = script[1] = stopped_fan();
+    tick_until(200000, 1000);
+    if (autoWrites) return 12876;
+    // Spin-up after a new Apply: a few stopped seconds, then motion.
+    start_fixed_runtime(true);
+    fan_stall_check_after_tick(g_app.fanReadSerial);
+    g_app.fanRuntimeGeneration++;
+    script[1] = stopped_fan();
+    tick_until(106000, 1000);
+    script[1] = spinning_fan();
+    tick_until(200000, 1000);
+    if (autoWrites) return 12877;
+    // A failed read closes the window; 20 s of fresh stopped readings follow.
+    start_fixed_runtime(true);
+    fan_stall_check_after_tick(g_app.fanReadSerial);
+    script[1] = stopped_fan();
+    tick_until(116000, 1000);
+    readFails = true;
+    tick_until(118000, 1000);
+    readFails = false;
+    tick_until(137000, 1000);
+    if (autoWrites) return 12878;
+    tick_until(140000, 1000);
+    if (autoWrites != 1) return 12878;
+    // A GUI-run runtime tells the user itself.
+    start_fixed_runtime(false);
+    fan_stall_check_after_tick(g_app.fanReadSerial);
+    script[1] = stopped_fan();
+    tick_until(122000, 1000);
+    if (autoWrites != 1 || !std::strstr(lastStatus, "Fan 2 stopped turning at 40%") ||
+        std::strcmp(lastErrorTitle, "Fan stopped turning; custom fan control disabled") != 0)
+        return 12879;
+    // No runtime: no readings at all.
+    start_fixed_runtime(true);
+    g_app.fanFixedRuntimeActive = false;
+    tick_until(200000, 1000);
+    if (fanReads) return 12879;
+    return 0;
 }
 
 static int run() {
@@ -211,6 +391,7 @@ static int run() {
     report_fan_runtime_failure("Fixed fan runtime apply failed", "x");
     if (autoWrites != 1 || g_serviceFanFault.kind != SERVICE_FAN_FAULT_REPEATED_FAILURES)
         return 12868;
+    if (int stall = run_stall_cases()) return stall;
     DeleteCriticalSection(&g_appLock);
     return 0;
 }

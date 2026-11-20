@@ -41,7 +41,7 @@ SOURCE_SIZE_RATCHET = {
     "main_fan_runtime.cpp": 700,  # 913 before the fan apply step moved to main_fan_apply.h  # 929 before the tray menu moved to gui_tray_menu.cpp
     "main_gpu_front.cpp": 845,
     "main_gpu_state.cpp": 765,  # 932 before live VF offset detection moved to vf_live_offset_policy.h  # 928 before VIDEO live-state ownership
-    "main_runtime_nvml.cpp": 827,  # 860 before the VF-info cache moved to main_vf_info_cache.cpp  # 907 before fan_setting_matches_current moved to main_fan_apply.h  # 903 before resolving the NVML load witnesses  # 901 before the XBAR telemetry call moved to its own header
+    "main_runtime_nvml.cpp": 732,  # 827 before nvml_read_fans moved to main_runtime_nvml_fans.cpp  # 860 before the VF-info cache moved to main_vf_info_cache.cpp  # 907 before fan_setting_matches_current moved to main_fan_apply.h  # 903 before resolving the NVML load witnesses  # 901 before the XBAR telemetry call moved to its own header
     "linux_main.cpp": 812,  # 799 before F-03-003 made the generated .desktop/unit paths escape per format (the escapers live in linux_asset_escaping_policy.h)
     "main.cpp": 796,  # 801 before the wedge-watchdog heartbeats moved to service_gate_progress.h  # 800 before F-03-001 made the log tokenizers visible to every shard
     "main_service_persist.cpp": 908,

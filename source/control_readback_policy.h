@@ -24,6 +24,10 @@
 struct FanReadbackValidity {
     bool policy[MAX_GPU_FANS];
     bool target[MAX_GPU_FANS];
+    // Tach and measured duty answered (a 0 reading is valid); the stall check
+    // (fan_stall_policy.h) never trusts a getter that did not answer.
+    bool rpm[MAX_GPU_FANS];
+    bool measured[MAX_GPU_FANS];
 };
 
 struct HardwareReadbackValidity {

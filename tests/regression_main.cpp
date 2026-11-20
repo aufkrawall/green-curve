@@ -971,8 +971,8 @@ int run_fan_intent_tests();
 // Fan stall detection policy and the v39 fan fault record
 // (tests/fan_stall_tests.cpp, 12800-12855).
 int run_fan_stall_tests();
-// Windows fan runtime handback, record and owned intent
-// (tests/fan_handback_runtime_tests.cpp, 12856-12899).
+// Windows fan runtime handback, record, owned intent and stall check
+// (tests/fan_handback_runtime_tests.cpp, 12856-12879, 12887-12888).
 int run_fan_handback_runtime_tests();
 int run_debug_log_identity_tests();
 int run_service_client_identity_failure_child();

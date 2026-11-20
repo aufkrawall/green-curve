@@ -36,6 +36,7 @@
 
 #include "gpu_core.h"
 
+#include <stdio.h>
 #include <string.h>
 
 // 20 s of consecutive stopped readings.  A fan spinning up from a stop reports
@@ -283,6 +284,48 @@ static inline FanStallReport fan_stall_observe(FanStallTracker* t,
     return report;
 }
 
+// No usable reading this sample (the fan read itself failed): nothing can be
+// judged, so every window closes, and the sample still counts toward the
+// cadence so a failing read is not retried on every 250 ms tick.  Returns
+// whether a window was open.
+static inline bool fan_stall_note_sample_unavailable(FanStallTracker* t,
+                                                     unsigned long long nowMs) {
+    if (!t) return false;
+    const bool hadWindow = fan_stall_tracker_has_open_window(t);
+    fan_stall_tracker_clear_windows(t);
+    t->sampled = true;
+    t->lastSampleMs = nowMs;
+    return hadWindow;
+}
+
+// Window transitions can repeat every sample on a fan that flickers between
+// readings; each fan logs at most once per interval and counts the rest.
+static const unsigned long long FAN_STALL_LOG_INTERVAL_MS = 30000ull;
+struct FanStallLogLimiter {
+    unsigned long long lastMs[MAX_GPU_FANS];
+    unsigned int suppressed[MAX_GPU_FANS];
+    bool logged[MAX_GPU_FANS];
+};
+
+// True when this fan may log now; `suppressedOut` receives how many lines
+// were withheld since its last one.
+static inline bool fan_stall_log_allow(FanStallLogLimiter* l, unsigned int fan,
+                                       unsigned long long nowMs,
+                                       unsigned int* suppressedOut) {
+    if (suppressedOut) *suppressedOut = 0;
+    if (!l || fan >= MAX_GPU_FANS) return false;
+    if (l->logged[fan] && nowMs >= l->lastMs[fan] &&
+        nowMs - l->lastMs[fan] < FAN_STALL_LOG_INTERVAL_MS) {
+        if (l->suppressed[fan] < 0xFFFFFFFFu) l->suppressed[fan]++;
+        return false;
+    }
+    if (suppressedOut) *suppressedOut = l->suppressed[fan];
+    l->suppressed[fan] = 0;
+    l->lastMs[fan] = nowMs;
+    l->logged[fan] = true;
+    return true;
+}
+
 static inline const char* fan_stall_state_name(FanStallFanState state) {
     switch (state) {
         case FAN_STALL_FAN_NOT_JUDGED: return "not-judged";
@@ -300,6 +343,43 @@ static inline const char* fan_stall_reset_name(FanStallReset reset) {
         case FAN_STALL_RESET_COMMAND: return "command-changed";
     }
     return "unknown";
+}
+
+// One line describing fan `fan`'s window transition in `r`, for the platform
+// log; false when it had none.  Proof lines are separate (they are one-shot).
+static inline bool fan_stall_format_window_event(const FanStallReport* r,
+                                                 unsigned int fan,
+                                                 const FanStallFanSample* s,
+                                                 int commandedPercent,
+                                                 unsigned int suppressed,
+                                                 char* out, size_t outSize) {
+    if (!r || fan >= MAX_GPU_FANS || !out || !outSize) return false;
+    out[0] = '\0';
+    const unsigned int bit = 1u << fan;
+    const unsigned int rpm = s && s->rpmKnown ? s->rpm : 0u;
+    const int measured = s && s->measuredKnown ? s->measuredPercent : -1;
+    if (r->windowStartedMask & bit) {
+        snprintf(out, outSize,
+                 "fan %u reads stopped under a manual %d%% duty (rpm=%u measured=%d%%); "
+                 "confirming over %llu s (suppressed=%u)",
+                 fan, commandedPercent, rpm, measured,
+                 FAN_STALL_CONFIRM_MS / 1000ull, suppressed);
+        return true;
+    }
+    if (r->windowRestartedMask & bit) {
+        snprintf(out, outSize,
+                 "fan %u readings were not consecutive; stall window restarted (suppressed=%u)",
+                 fan, suppressed);
+        return true;
+    }
+    if (r->windowClearedMask & bit) {
+        snprintf(out, outSize, "fan %u stall window closed: %s (suppressed=%u)", fan,
+                 r->reset == FAN_STALL_RESET_COMMAND ? fan_stall_reset_name(r->reset)
+                                                     : fan_stall_state_name(r->states[fan]),
+                 suppressed);
+        return true;
+    }
+    return false;
 }
 
 #endif  // GREEN_CURVE_FAN_STALL_POLICY_H

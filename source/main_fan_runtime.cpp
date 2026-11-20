@@ -459,6 +459,7 @@ static void log_fan_runtime_write(const char* mode, unsigned int fanCount, int p
     }
 }
 #include "main_fan_runtime_failure.cpp"
+#include "main_fan_stall.cpp"
 static void stop_fan_curve_runtime(bool restoreFanAutoOnExit) {
     if (restoreFanAutoOnExit && (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive)) {
         char detail[128] = {};
@@ -516,7 +517,14 @@ static bool nvml_read_temperature(int* temperatureC, char* detail, size_t detail
     return true;
 }
 #include "main_fan_zero_rpm.cpp"
+static void apply_fan_curve_tick_once();
+// Every runtime tick ends with the stall check (main_fan_stall.cpp).
 static void apply_fan_curve_tick() {
+    const unsigned long long readSerialBefore = g_app.fanReadSerial;
+    apply_fan_curve_tick_once();
+    fan_stall_check_after_tick(readSerialBefore);
+}
+static void apply_fan_curve_tick_once() {
     // Phase 1: snapshot mode flags and configuration under CS, then release
     // before any NVML calls (which can crash in nvml.dll and kill this thread
     // via VEH, corrupting the CS if held across the crash).

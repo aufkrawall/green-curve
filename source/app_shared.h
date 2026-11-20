@@ -725,6 +725,10 @@ struct AppData {
     bool fanCurveHasLastAppliedTemp;
     unsigned int fanRuntimeConsecutiveFailures;
     ULONGLONG fanRuntimeLastApplyTickMs;
+    // Bumped by every runtime start (a new command for the stall check) and
+    // by every completed fan read (main_fan_stall.cpp).
+    unsigned long long fanRuntimeGeneration;
+    unsigned long long fanReadSerial;
 
     // --- Driver upgrade resilience ---
     bool deviceRemoved;               // GPU display adapter removed (driver uninstall in progress)

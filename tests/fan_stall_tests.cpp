@@ -243,6 +243,30 @@ static int run() {
         if (feed(&t, 1, 1, cmd, stopped(), 50000, 50000, 2000, &r) ||
             r.windowRestartedMask != 1u || t.fans[0].windowStartMs != 50000) return 12827;
     }
+    // A failed fan read closes windows and still keeps the cadence.
+    {
+        FanStallTracker t = {};
+        feed(&t, 1, 1, cmd, spinning(), 0, 0, 2000);
+        feed(&t, 1, 1, cmd, stopped(), 2000, 14000, 2000);
+        if (!fan_stall_note_sample_unavailable(&t, 16000) ||
+            fan_stall_tracker_has_open_window(&t) || fan_stall_sample_due(&t, 17000) ||
+            !t.fans[0].rpmProven) return 12830;
+        // Transition lines are rate limited per fan, with a count of the rest.
+        FanStallLogLimiter limiter = {};
+        unsigned int withheld = 0;
+        if (!fan_stall_log_allow(&limiter, 0, 1000, &withheld) || withheld ||
+            fan_stall_log_allow(&limiter, 0, 2000, &withheld) ||
+            fan_stall_log_allow(&limiter, 0, 30999, &withheld) ||
+            !fan_stall_log_allow(&limiter, 1, 2000, &withheld) ||
+            !fan_stall_log_allow(&limiter, 0, 31000, &withheld) || withheld != 2) return 12831;
+        FanStallReport r = {};
+        r.windowStartedMask = 1u;
+        char line[192] = {};
+        FanStallFanSample s = stopped();
+        if (!fan_stall_format_window_event(&r, 0, &s, 40, 0, line, sizeof(line)) ||
+            !std::strstr(line, "fan 0 reads stopped under a manual 40% duty") ||
+            fan_stall_format_window_event(&r, 1, &s, 40, 0, line, sizeof(line))) return 12831;
+    }
     // Sampling cadence.
     {
         FanStallTracker t = {};

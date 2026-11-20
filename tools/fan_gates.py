@@ -594,10 +594,46 @@ def check_fan_fault_reporting(ctx, require_text, forbid_text, require_order):
                  "the Linux status output names a fan fault")
 
 
+def check_fan_stall_detection(ctx, require_text, forbid_text, require_order):
+    """A commanded fan that does not turn is handed back to the driver.
+
+    fan_stall_policy.h decides from readings the runtime already takes; both
+    platforms run it after every runtime tick and escalate a confirmed stall
+    through their existing handback.  Executed by tests/fan_stall_tests.cpp,
+    tests/fan_handback_runtime_tests.cpp and tests/fan_runtime_followup_tests.cpp.
+    """
+    runtime_cpp = _p(ctx, "main_fan_runtime.cpp")
+    require_text(runtime_cpp, '#include "main_fan_stall.cpp"',
+                 "the Windows stall check is compiled into the fan runtime")
+    require_order(runtime_cpp, "    apply_fan_curve_tick_once();",
+                  "    fan_stall_check_after_tick(readSerialBefore);",
+                  "every Windows runtime tick ends with the stall check")
+    nvml_cpp = _p(ctx, "main_runtime_nvml_fans.cpp")
+    for flag in ("g_app.readback.fan.rpm[fan] = true;", "g_app.readback.fan.measured[fan] = true;",
+                 "g_app.fanReadSerial++;"):
+        require_text(nvml_cpp, flag, "the fan read records which sensors answered")
+    require_text(_p(ctx, "main_shell.cpp"), "g_app.fanRuntimeGeneration++;",
+                 "a runtime start is a new command for the stall check")
+    stall_cpp = _p(ctx, "main_fan_stall.cpp")
+    require_text(stall_cpp, "cause.kind = SERVICE_FAN_FAULT_STALL;",
+                 "a confirmed Windows stall is reported as a stall")
+    require_text(stall_cpp, "escalate_fan_runtime_handback(&cause);",
+                 "a confirmed Windows stall uses the shared handback")
+    require_text(stall_cpp,
+                 "(curve && !g_app.fanCurveDriverAutoActive && g_app.fanCurveHasLastAppliedTemp);",
+                 "a zero-RPM curve's driver-automatic phase commands no manual duty")
+    policy_h = _p(ctx, "fan_stall_policy.h")
+    require_text(policy_h, "if (!s->policyKnown || !s->policyManual) return FAN_STALL_FAN_NOT_JUDGED;",
+                 "only a fan the driver reports under manual policy is judged")
+    require_text(policy_h, "const bool rpmUsable = s->rpmKnown && rpmProven;",
+                 "an unproven tach never judges a fan")
+
+
 def check_all(ctx, require_text, forbid_text, require_order, backend_surface):
     check_fanless_request_rule(ctx, require_text, forbid_text, require_order)
     check_fan_intent_consistency(ctx, require_text, forbid_text, require_order)
     check_fan_fault_reporting(ctx, require_text, forbid_text, require_order)
+    check_fan_stall_detection(ctx, require_text, forbid_text, require_order)
     check_manual_write_verification(ctx, require_text, forbid_text, backend_surface)
     check_service_fan_worker_serialization(ctx, require_text, forbid_text)
     check_runtime_failsafe(ctx, require_text, forbid_text, require_order)
