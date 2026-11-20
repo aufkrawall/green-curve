@@ -26,6 +26,35 @@ static inline std::string profile_editor_transfer_list(const std::vector<int>& v
     for (int value : values) { if (!text.empty()) text += ','; text += std::to_string(value); }
     return text;
 }
+// Detect a legacy Linux config.ini (versus Windows) from parsed sections so
+// importing a Linux config.ini on Windows does not fail until the user
+// manually flips the format selector.
+static inline ProfileLegacyFormat profile_editor_detect_legacy_ini_format(std::string_view bytes) {
+    profile_legacy::Sections sections;
+    ProfileCodecError ignored{};
+    if (!profile_legacy::sections(bytes, sections, &ignored)) return PROFILE_LEGACY_WINDOWS_INI;
+    const auto meta = sections.find("meta");
+    if (meta != sections.end() && meta->second.find("linux_mem_migrated") != meta->second.end())
+        return PROFILE_LEGACY_LINUX_INI;
+    bool hasLinuxPoint = false, hasWindowsPoint = false;
+    for (const auto& entry : sections) {
+        const std::string& name = entry.first;
+        const bool isCurve = name == "curve" ||
+            (name.size() == 14 && name.compare(0, 7, "profile") == 0 && name.compare(8, 6, "_curve") == 0);
+        if (!isCurve) continue;
+        for (const auto& field : entry.second) {
+            const std::string& k = field.first;
+            if (k.size() < 6 || k.compare(0, 5, "point") != 0) continue;
+            size_t i = 5;
+            while (i < k.size() && k[i] >= '0' && k[i] <= '9') ++i;
+            if (i == 5) continue;
+            if (i == k.size()) hasLinuxPoint = true;
+            else if (k.compare(i, std::string::npos, "_mhz") == 0) hasWindowsPoint = true;
+        }
+    }
+    return hasLinuxPoint && !hasWindowsPoint ? PROFILE_LEGACY_LINUX_INI : PROFILE_LEGACY_WINDOWS_INI;
+}
+
 // Portable banks decode directly. Anything else is treated as an old Green
 // Curve INI with the given interpretation; a missing unit or curve meaning is
 // reported as a question instead of a failure.
@@ -49,7 +78,7 @@ template<class IO> static inline bool profile_editor_transfer_probe(const std::s
         if (bytes.find("document.") != std::string::npos) {
             probe.error = error.message[0] ? error.message : "the file is not a Green Curve profile file"; return false;
         }
-        legacy.format = PROFILE_LEGACY_WINDOWS_INI;
+        legacy.format = profile_editor_detect_legacy_ini_format(bytes);
     }
     probe.legacyFile = true; probe.legacy = legacy;
     std::string firstError;

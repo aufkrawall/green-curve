@@ -148,6 +148,24 @@ int run_profile_legacy_ini_tests() {
         return 12578;
     if (!refuses("[controls]\ngpu_offset_mhz=475\n[curve]\ncurve_semantics=base_plus_gpu_offset\npoint70=0\n", linux))
         return 12579;
+    // 12660-12663: Explicit no-lock triple (lock_ci=-1, lock_mhz=0, lock_mode=0)
+    // with a leftover lock_tracks_anchor=1 from earlier Linux/Windows writers
+    // decodes cleanly as unlocked, while bare/contradictory lock keys stay refused.
+    const std::string unlockedLinux =
+        "[meta]\nlinux_mem_migrated=1\nformat_version=2\n"
+        "[profile1]\ngpu_offset_mhz=150\nmem_offset_mhz=500\npower_limit_pct=100\n"
+        "lock_ci=-1\nlock_mhz=0\nlock_mode=0\nlock_tracks_anchor=1\n";
+    if (!profile_legacy_ini_decode(unlockedLinux, linux, selection, *bank, &error) ||
+        bank->count != 1 || bank->documents[0].lock.present ||
+        bank->documents[0].graphicsOffset.offsetHz != 150000000LL ||
+        bank->documents[0].memoryOffsetHz != 500000000LL) return 12660;
+    const std::string unlockedWin =
+        "[profile1]\ngpu_offset_mhz=150\nmem_offset_mhz=500\npower_limit_pct=100\n"
+        "lock_ci=-1\nlock_mhz=0\nlock_mode=0\nlock_tracks_anchor=1\n";
+    if (!profile_legacy_ini_decode(unlockedWin, windows, selection, *bank, &error) ||
+        bank->count != 1 || bank->documents[0].lock.present) return 12661;
+    if (!refuses("[profile1]\ngpu_offset_mhz=150\nlock_tracks_anchor=1\n", windows)) return 12662;
+    if (!refuses("[profile1]\nlock_ci=-1\nlock_mhz=2000\nlock_mode=0\nlock_tracks_anchor=1\n", linux)) return 12663;
     fprintf(stdout, "legacy profile adapters: units, origins, unresolved indices, strict parsing and atomic decode passed\n");
     return 0;
 }

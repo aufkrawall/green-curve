@@ -13,6 +13,23 @@ static void linux_capture_log_client_locks(const NvapiClientLocks& locks) {
     lb_log("%s\n", line);
 }
 
+// Called on the daemon runtime lane by every passive capture read that includes
+// memory: logs getter vs running-clock memory evidence once per changed reading.
+static void linux_capture_log_memory_clock(const MemoryClockReading& reading, gc_i64 getterHz,
+                                           const HardwareCaptureObservation& out) {
+    static char last[256]{};
+    char line[256];
+    snprintf(line, sizeof(line),
+        "capture memory: getter=%lldHz (valid=%d surface=%s) running=%u MHz (pstates=%d) board=%u MHz (nvml=%d)"
+        " -> %lldHz evidence=%s",
+        (long long)getterHz, out.memory.valid ? 1 : 0, hardware_capture_clock_surface_name(out.memory.surface),
+        reading.runningMaxMHz, reading.pstatesStatus, reading.boardMaxMHz, reading.boardStatus,
+        (long long)out.memory.value, hardware_capture_memory_evidence_name(out.memoryEvidence));
+    if (!strcmp(line, last)) return;
+    snprintf(last, sizeof(last), "%s", line);
+    lb_log("%s\n", line);
+}
+
 bool linux_backend_capture_current(const LinuxGpuState* gpu, gc_u64 generation, gc_u32 domains,
     const DesiredSettings* ownedFan, HardwareCaptureObservation* output, char* why, size_t size) {
     if (!gpu || !output) return false;
@@ -29,6 +46,8 @@ bool linux_backend_capture_current(const LinuxGpuState* gpu, gc_u64 generation, 
             memcpy(c.driverVersion, version, sizeof(version));
         c.ownedFanIntent = ownedFan;
         c.lockObserved = linux_capture_log_client_locks;
+        c.memoryClockReader = hardware_capture_memory_clock;
+        c.memoryObserved = linux_capture_log_memory_clock;
         return hardware_capture_collect(c, domains, hardware_capture_aux, out, reason, reasonSize);
     };
     return hardware_capture_consistent(read, *output, why, size);

@@ -543,9 +543,10 @@ static bool save_desired_to_config_with_startup(const char* path, const DesiredS
         buildOk = buildOk && appendf("gpu_offset_exclude_low_count=%d\r\n", gpuOffsetExcludeLowCount);
     }
     if (legacyScope || (desired && desired->hasLock)) {
+        const bool writeLock = (desired && desired->hasLock) || (g_app.lockedCi >= 0 && g_app.lockedFreq > 0);
         buildOk = buildOk && appendf("lock_ci=%d\r\n", desired && desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1));
         buildOk = buildOk && appendf("lock_mhz=%u\r\n", desired && desired->hasLock ? desired->lockMHz : g_app.lockedFreq);
-        buildOk = buildOk && appendf("lock_tracks_anchor=%d\r\n", desired && desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0));
+        buildOk = buildOk && appendf("lock_tracks_anchor=%d\r\n", writeLock ? (desired && desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0)) : 0);
         if (desired && desired->hasLock)
             buildOk = buildOk && appendf("lock_mode=%d\r\n", (int)desired->lockMode);
     }

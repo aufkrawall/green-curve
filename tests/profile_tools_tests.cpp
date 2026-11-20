@@ -346,5 +346,86 @@ int run_profile_tools_tests() {
             !strstr(why, "-1927 MHz") || !strstr(why, "-1000..1000 MHz"))
             return 9996;
     }
+    // 12664-12667: Linux -> Windows profile interchange:
+    // - raw Linux config.ini auto-detects as PROFILE_LEGACY_LINUX_INI in
+    //   profile_editor_transfer_probe() (both migrated and pre-migration),
+    // - unlocked Linux slots with leftover lock_tracks_anchor=1 decode cleanly,
+    // - Linux-exported portable documents (indexed & voltage-bound, os=linux)
+    //   import and resolve through profile_slot_document_runtime() cleanly.
+    {
+        ToolsIO linuxToWin;
+        linuxToWin.files["linux-migrated.ini"] =
+            "[meta]\nlinux_mem_migrated=1\nformat_version=2\n"
+            "[profile1]\ngpu_offset_mhz=150\nmem_offset_mhz=500\npower_limit_pct=100\n"
+            "lock_ci=-1\nlock_mhz=0\nlock_mode=0\nlock_tracks_anchor=1\n"
+            "[profile1_curve]\ncurve_semantics=absolute_with_origin\n"
+            "[profile2]\ngpu_offset_mhz=475\ngpu_offset_exclude_low_count=70\n"
+            "lock_ci=76\nlock_mhz=2957\nlock_mode=1\nlock_tracks_anchor=0\n"
+            "mem_offset_mhz=3000\npower_limit_pct=85\n"
+            "[profile2_curve]\ncurve_semantics=absolute_with_origin\n"
+            "point70=0\npoint70_from_gpu_offset=1\npoint76=2957\n";
+        auto linuxProbe = std::make_unique<ProfileEditorTransferProbe>();
+        if (!profile_editor_transfer_probe("linux-migrated.ini", {}, linuxToWin, *linuxProbe) ||
+            !linuxProbe->legacyFile || linuxProbe->legacy.format != PROFILE_LEGACY_LINUX_INI ||
+            linuxProbe->documents.size() != 2 || linuxProbe->documents[0].lock.present ||
+            linuxProbe->documents[0].source.osFamily != PROFILE_SOURCE_OS_LINUX ||
+            !linuxProbe->documents[1].lock.present ||
+            linuxProbe->documents[1].lock.targetFrequencyHz != 2957000000LL)
+            return 12664;
+
+        linuxToWin.files["linux-pre-migration.ini"] =
+            "[profile1]\ngpu_offset_mhz=100\nmem_offset_mhz=1000\n"
+            "[profile1_curve]\ncurve_semantics=absolute_with_origin\npoint76=2900\n";
+        auto preMigProbe = std::make_unique<ProfileEditorTransferProbe>();
+        if (profile_editor_transfer_probe("linux-pre-migration.ini", {}, linuxToWin, *preMigProbe) ||
+            !preMigProbe->legacyFile || preMigProbe->legacy.format != PROFILE_LEGACY_LINUX_INI ||
+            !preMigProbe->needsMemoryUnit)
+            return 12665;
+
+        auto linuxExportBank = std::make_unique<ProfileBank>();
+        linuxExportBank->count = 2;
+        linuxExportBank->documents[0] = linuxProbe->documents[1];
+        linuxExportBank->documents[0].documentId = 1;
+        auto linuxCap = profile_document_make_empty();
+        linuxCap.documentId = 2;
+        linuxCap.source.osFamily = PROFILE_SOURCE_OS_LINUX;
+        linuxCap.applicationScope = PROFILE_SCOPE_UPDATE_INCLUDED;
+        linuxCap.pointSetPolicy = PROFILE_POINTS_REPLACE;
+        linuxCap.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK | PROFILE_DOMAIN_MEMORY | PROFILE_DOMAIN_POWER;
+        linuxCap.topologyCount = 2;
+        linuxCap.topology[0] = {75, 75, 920000LL, 1};
+        linuxCap.points[0].kind = PROFILE_POINT_CAPTURED_OFFSET;
+        linuxCap.points[0].capturedOffsetHz = 0;
+        linuxCap.topology[1] = {76, 76, 925000LL, 1};
+        linuxCap.lock.present = true;
+        linuxCap.lock.mode = LOCK_MODE_FLATTEN;
+        linuxCap.lock.anchorTopologyId = 76;
+        linuxCap.lock.targetFrequencyHz = 2962000000LL;
+        linuxCap.hasMemoryOffset = true;
+        linuxCap.memoryOffsetHz = 3000000000LL;
+        linuxCap.memorySurface = CLOCK_OFFSET_SURFACE_P0;
+        linuxCap.power.present = true;
+        linuxCap.power.ratio = {17, 20};
+        linuxExportBank->documents[1] = linuxCap;
+        std::string encoded;
+        if (!profile_bank_encode(*linuxExportBank, encoded, &error)) return 12666;
+        auto decodedBank = std::make_unique<ProfileBank>();
+        if (!profile_bank_decode(encoded, *decodedBank, &error) || decodedBank->count != 2) return 12666;
+        auto indexedRuntime = std::make_unique<DesiredSettings>();
+        if (!profile_slot_document_runtime(decodedBank->documents[0], nullptr, *indexedRuntime, why, sizeof(why)) ||
+            indexedRuntime->gpuOffsetMHz != 475 || indexedRuntime->memOffsetMHz != 3000 ||
+            !indexedRuntime->hasLock || indexedRuntime->lockCi != 76 || indexedRuntime->lockMHz != 2957)
+            return 12666;
+        ProfileDestinationTopology winLive{};
+        winLive.available = true; winLive.complete = true; winLive.count = 2;
+        winLive.points[0] = {75, 920000LL, true, true};
+        winLive.points[1] = {76, 925000LL, true, true};
+        auto capRuntime = std::make_unique<DesiredSettings>();
+        if (!profile_slot_document_runtime(decodedBank->documents[1], &winLive, *capRuntime, why, sizeof(why)) ||
+            !capRuntime->curvePointCaptured[75] || capRuntime->curvePointCapturedOffsetHz[75] != 0 ||
+            !capRuntime->hasLock || capRuntime->lockCi != 76 || capRuntime->lockMHz != 2962 ||
+            capRuntime->memOffsetHz != 3000000000LL || capRuntime->memOffsetSurface != CLOCK_OFFSET_SURFACE_P0)
+            return 12667;
+    }
     return 0;
 }

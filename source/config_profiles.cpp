@@ -569,9 +569,10 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
             appendf("gpu_offset_exclude_low_count=%d\r\n", profileExcludeLowCount);
         }
         if (emitAll || desired->hasLock) {
+            const bool writeLock = desired->hasLock || (g_app.lockedCi >= 0 && g_app.lockedFreq > 0);
             appendf("lock_ci=%d\r\n", desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1));
             appendf("lock_mhz=%u\r\n", desired->hasLock ? desired->lockMHz : g_app.lockedFreq);
-            appendf("lock_tracks_anchor=%d\r\n", desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0));
+            appendf("lock_tracks_anchor=%d\r\n", writeLock ? (desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0)) : 0);
             appendf("lock_mode=%d\r\n", desired->hasLock ? (int)desired->lockMode : (int)g_app.lockMode);
         }
         if (emitAll || desired->hasMemOffset)

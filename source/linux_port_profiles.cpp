@@ -648,7 +648,7 @@ static void write_profile_sections(IniDocument* doc, const char* controlsSection
         addControl("lock_mhz", value);
         snprintf(value, sizeof(value), "%d", desired->hasLock ? (int)desired->lockMode : (int)LOCK_MODE_NONE);
         addControl("lock_mode", value);
-        addInt("lock_tracks_anchor", desired->lockTracksAnchor ? 1 : 0);
+        addInt("lock_tracks_anchor", desired->hasLock && desired->lockTracksAnchor ? 1 : 0);
     }
     if (emitAll || desired->hasMemOffset) addInt("mem_offset_mhz", desired->memOffsetMHz);
     if (emitAll || desired->hasPowerLimit) addInt("power_limit_pct", desired->powerLimitPct);

@@ -1322,6 +1322,17 @@ def check_profile_interchange_and_curve_correction(ctx, require_text):
                  "Linux daemon-fallback loader maps voltage-bound slots via live topology")
     require_text(tui_mut_cpp, "load_profile_from_config_path_for_destination(",
                  "Linux TUI startup policy bind resolves voltage-bound slots via live snapshot")
+    require_text(_p(ctx, "linux_port_profiles.cpp"),
+                 'addInt("lock_tracks_anchor", desired->hasLock && desired->lockTracksAnchor ? 1 : 0);',
+                 "Linux save only sets lock_tracks_anchor=1 when a lock is present")
+    require_text(_p(ctx, "linux_backend.cpp"), "nvmlDeviceGetMaxClockInfo",
+                 "Linux NVML resolves board max memory clock for capture evidence parity")
+    require_text(_p(ctx, "linux_backend_capture.h"),
+                 "c.memoryClockReader = hardware_capture_memory_clock;",
+                 "Linux passive capture reads running memory clock evidence like Windows")
+    require_text(_p(ctx, "profile_editor_transfer.h"),
+                 "profile_editor_detect_legacy_ini_format(",
+                 "Profile transfer probe auto-detects legacy Linux vs Windows config.ini")
 
 
 def check_all(ctx, require_text, forbid_text, require_order):

@@ -17,6 +17,7 @@
 #include "linux_port_internal.h"
 #include "linux_cli_profile_load.h"
 #include "profile_slot_codec.h"
+#include "profile_ini_slot.h"
 #include "posix_test_environment.h"
 #include "linux_output_directory.h"
 #include "linux_config_lock.h"
@@ -472,6 +473,41 @@ void test_voltage_bound_profile_load_and_output() {
     g_scriptedSnapshot = ServiceSnapshot{};
     unlink(textPath.c_str());
     unlink(jsonPath.c_str());
+
+    // Saving an unlocked profile (whose default lockTracksAnchor is true) must
+    // write lock_tracks_anchor=0 so Linux -> Windows export succeeds.
+    const std::string unlockedPath = path_in_root("unlocked.ini");
+    DesiredSettings unlocked{};
+    initialize_desired_settings_defaults(&unlocked);
+    unlocked.hasGpuOffset = 1;
+    unlocked.gpuOffsetMHz = 150;
+    unlocked.hasMemOffset = 1;
+    unlocked.memOffsetMHz = 500;
+    expect(save_profile_to_config_path(unlockedPath.c_str(), 1, &unlocked, err, sizeof(err)),
+           "unlocked profile saved to Linux config.ini");
+    std::string unlockedText;
+    if (FILE* rf = fopen(unlockedPath.c_str(), "rb")) {
+        char buf[8192];
+        size_t n = fread(buf, 1, sizeof(buf) - 1, rf);
+        buf[n] = '\0';
+        unlockedText.assign(buf, n);
+        fclose(rf);
+    }
+    expect(unlockedText.find("lock_tracks_anchor=0") != std::string::npos &&
+               unlockedText.find("lock_tracks_anchor=1") == std::string::npos,
+           "unlocked Linux save writes lock_tracks_anchor=0");
+    auto exportedBank = std::make_unique<ProfileBank>();
+    ProfileLegacyOptions linuxOpts{};
+    linuxOpts.format = PROFILE_LEGACY_LINUX_INI;
+    linuxOpts.nativeSlot = true;
+    ProfileCodecError decodeErr{};
+    expect(profile_legacy_ini_decode(unlockedText, linuxOpts, ProfileSourceSelection{},
+                                     *exportedBank, &decodeErr) &&
+               exportedBank->count == 1 && !exportedBank->documents[0].lock.present &&
+               exportedBank->documents[0].graphicsOffset.offsetHz == 150000000LL,
+           "unlocked Linux config.ini decodes cleanly for export to Windows");
+    unlink(unlockedPath.c_str());
+    unlink((unlockedPath + ".lock").c_str());
 }
 
 void remove_root() {

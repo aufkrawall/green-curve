@@ -261,7 +261,14 @@ inline bool document(Fields controls, Fields curve, Fields fanFields, const Fiel
     if (!number(controls, "lock_ci", lockCi, hasCi, e, -1, 127) || !number(controls, "lock_mhz", lockMHz, hasMHz, e, 0, UINT_MAX) ||
         !number(controls, "lock_mode", lockMode, hasMode, e, LOCK_MODE_NONE, LOCK_MODE_HARD) ||
         !number(controls, "lock_tracks_anchor", tracks, hasTracks, e, 0, 1)) return false;
-    if ((hasCi && lockCi >= 0) || (hasMHz && lockMHz > 0) || (hasMode && lockMode != LOCK_MODE_NONE) || tracks) {
+    // Earlier Linux/Windows writers emitted lock_tracks_anchor=1 (the default
+    // UI flag) alongside the explicit no-lock triple (lock_ci=-1, lock_mhz=0,
+    // lock_mode=0). Accept that explicit unlocked record while still rejecting
+    // bare or partial lock declarations.
+    const bool explicitNoLock = hasCi && lockCi < 0 &&
+        (!hasMHz || lockMHz == 0) && (!hasMode || lockMode == LOCK_MODE_NONE);
+    if ((hasCi && lockCi >= 0) || (hasMHz && lockMHz > 0) ||
+        (hasMode && lockMode != LOCK_MODE_NONE) || (tracks && !explicitNoLock)) {
         if (!hasCi || lockCi < 0 || !hasMHz || lockMHz <= 0 || (hasMode && lockMode == LOCK_MODE_NONE))
             return fail(e, "legacy lock needs an explicit anchor, frequency and mode");
         d.lock.present = true; d.lock.mode = (LockMode)lockMode; d.lock.anchorTopologyId = (int)lockCi;
