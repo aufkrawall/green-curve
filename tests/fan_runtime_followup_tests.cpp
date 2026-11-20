@@ -4,9 +4,11 @@
 // sleeps or real GPU calls: waits are explicit scheduling boundaries.
 #include "app_shared.h"
 #include "fan_curve.h"
+#include "fan_intent_policy.h"
 #include "fan_runtime_policy.h"
 #include "fan_fixed_maintenance_policy.h"
 #include "fan_stall_policy.h"
+#include "service_scoped_apply_policy.h"
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -155,8 +157,14 @@ static bool daemon_fan_ownership_resume_deferred_handback() {
     ++deferredHandbacks;
     return true;
 }
+static DesiredSettings storedUncertainDesired;
+static int storeUncertainCalls;
 static void dlog(const char*, ...) {}
-static bool store_daemon_record(int, const GpuAdapterInfo*, const DesiredSettings*, char*, size_t) { return true; }
+static bool store_daemon_record(int, const GpuAdapterInfo*, const DesiredSettings* desired, char*, size_t) {
+    ++storeUncertainCalls;
+    if (desired) storedUncertainDesired = *desired;
+    return true;
+}
 static void daemon_enter_uncertain_after_fan_lockout(const char*, bool autoOk) {
     ++lockouts;
     lockoutAtMs = nowMs;
@@ -206,6 +214,8 @@ static void initialize(Schedule next) {
     waits = polls = writes = lastDuty = iterations = lockouts = 0;
     nowMs = lockoutAtMs = 0;
     stallSamples = 0;
+    storedUncertainDesired = {};
+    storeUncertainCalls = 0;
     schedule = next;
 }
 
@@ -240,13 +250,40 @@ static int run_stall() {
     fan_reassert_thread(nullptr);
     if (!injected || lockouts != 1 || lockoutAtMs != 40000 ||
         g_daemonFanFault.kind != SERVICE_FAN_FAULT_STALL) return 12896;
-    // The driver refuses the fan back: forced to 100%, reported as such.
+    // The driver refuses the fan back: forced to 100%, reported as such, and
+    // the owned intent switches to emergency 100% fixed rather than keeping
+    // the stalled curve/duty.
     initialize(STALL_FIXED);
     autoRefused = true;
     commit_fixed(40);
     fan_reassert_thread(nullptr);
     if (lockouts != 1 || writes != 1 || lastDuty != FAN_RUNTIME_EMERGENCY_PERCENT ||
-        g_daemonFanFault.handback != SERVICE_FAN_HANDBACK_EMERGENCY_MAX) return 12897;
+        g_daemonFanFault.handback != SERVICE_FAN_HANDBACK_EMERGENCY_MAX ||
+        !g_hasActiveDesired || !g_activeDesired.hasFan ||
+        g_activeDesired.fanMode != FAN_MODE_FIXED ||
+        g_activeDesired.fanPercent != FAN_RUNTIME_EMERGENCY_PERCENT ||
+        storedUncertainDesired.fanMode != FAN_MODE_FIXED ||
+        storedUncertainDesired.fanPercent != FAN_RUNTIME_EMERGENCY_PERCENT) return 12897;
+    // Driver-auto lockout drops fan ownership (and drops g_hasActiveDesired
+    // when fan was the last domain) so a subsequent non-fan Apply cannot
+    // resurrect the stalled curve.
+    initialize(STALL_FIXED);
+    commit_curve(40);
+    g_activeDesired.hasPowerLimit = 1;
+    g_activeDesired.powerLimitPct = 90;
+    fan_reassert_thread(nullptr);
+    if (lockouts != 1 || !g_hasActiveDesired || g_activeDesired.hasFan ||
+        g_activeDesired.fanMode != FAN_MODE_AUTO || !g_activeDesired.hasPowerLimit ||
+        storedUncertainDesired.hasFan || !storedUncertainDesired.hasPowerLimit)
+        return 12898;
+    // Shared worker/snapshot runtime activity predicate: uncertainty, missing
+    // target match, or dropped fan ownership all report inactive.
+    if (!linux_daemon_fan_runtime_active(true, true, false, true, true, FAN_MODE_CURVE, false) ||
+        linux_daemon_fan_runtime_active(true, true, true, true, true, FAN_MODE_CURVE, false) ||
+        linux_daemon_fan_runtime_active(true, true, false, false, true, FAN_MODE_CURVE, false) ||
+        linux_daemon_fan_runtime_active(true, true, false, true, false, FAN_MODE_CURVE, false) ||
+        linux_daemon_fan_runtime_active(true, true, false, true, true, FAN_MODE_AUTO, true))
+        return 12899;
     return 0;
 }
 static int run() {
@@ -285,7 +322,9 @@ static int run() {
     commit_curve(30);
     fan_reassert_thread(nullptr);
     if (lockouts != 1 || !lockoutAutoOk || !g_stateUncertain || writes ||
-        polls != (int)FAN_RUNTIME_DEFAULT_FAILURE_LIMIT || !lockOrderValid) return 7546;
+        polls != (int)FAN_RUNTIME_DEFAULT_FAILURE_LIMIT || !lockOrderValid ||
+        g_activeDesired.hasFan || g_hasActiveDesired ||
+        storedUncertainDesired.hasFan) return 7546;
     // Clients are told (protocol v39): which kind of handback, and its outcome.
     if (g_daemonFanFault.kind != SERVICE_FAN_FAULT_REPEATED_FAILURES ||
         g_daemonFanFault.handback != SERVICE_FAN_HANDBACK_DRIVER_AUTO ||

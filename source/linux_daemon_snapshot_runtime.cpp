@@ -161,6 +161,14 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
         }
     }
 
+    const bool intentMatchesSelected = g_hasActiveDesired &&
+        linux_gpu_identity_matches(&g_activeTarget, &g_gpu.selectedGpu);
+    const bool fanRuntimeActive = linux_daemon_fan_runtime_active(g_gpuReady,
+        g_hasActiveDesired, g_stateUncertain, intentMatchesSelected,
+        g_activeDesired.hasFan != 0, g_activeDesired.fanMode,
+        g_activeDesired.fanAuto != 0);
+    const bool intentOwnsSelectedFan = intentMatchesSelected &&
+        !g_stateUncertain && g_activeDesired.hasFan != 0;
     if (g_hasActiveDesired) {
         s->hasLock = g_activeDesired.hasLock;
         s->lockCi = g_activeDesired.lockCi;
@@ -171,16 +179,17 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
         s->appliedGpuOffsetExcludeLowCount =
             g_activeDesired.gpuOffsetExcludeLowCount;
         s->lastApplyUsedGpuOffset = g_activeDesired.hasGpuOffset;
-        // An unclaimed fan is the driver's, whatever stale mode the record
-        // carries (fan_intent_policy.h); the runtime flags below agree.
-        s->activeFanMode = fan_owned_intent_mode(g_activeDesired.hasFan != 0,
+        // An unclaimed, uncertain, or other-GPU fan is not driven by the
+        // worker (fan_intent_policy.h); the runtime flags agree with the worker.
+        s->activeFanMode = fan_owned_intent_mode(intentOwnsSelectedFan,
             g_activeDesired.fanMode, g_activeDesired.fanAuto != 0);
-        s->activeFanFixedPercent = g_activeDesired.fanPercent;
+        s->activeFanFixedPercent = intentOwnsSelectedFan
+            ? g_activeDesired.fanPercent : 0;
         s->activeFanCurve = g_activeDesired.fanCurve;
-        s->fanCurveRuntimeActive = g_activeDesired.hasFan &&
-                                   g_activeDesired.fanMode == FAN_MODE_CURVE;
-        s->fanFixedRuntimeActive = g_activeDesired.hasFan &&
-                                   g_activeDesired.fanMode == FAN_MODE_FIXED;
+        s->fanCurveRuntimeActive = fanRuntimeActive &&
+                                   s->activeFanMode == FAN_MODE_CURVE;
+        s->fanFixedRuntimeActive = fanRuntimeActive &&
+                                   s->activeFanMode == FAN_MODE_FIXED;
     }
 
     if (!control) return;
@@ -216,8 +225,8 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
     control->fanCurrentPercent = s->fanCount > 0 ? (int)s->fanPercent[0] : 0;
     control->fanCurrentTemperatureC = s->gpuTemperatureValid
         ? s->gpuTemperatureC : 0;
-    if (g_hasActiveDesired && g_activeDesired.hasFan) {
-        control->fanMode = g_activeDesired.fanMode;
+    if (intentOwnsSelectedFan) {
+        control->fanMode = s->activeFanMode;
         control->fanFixedPercent = g_activeDesired.fanPercent;
         control->fanCurve = g_activeDesired.fanCurve;
     } else {

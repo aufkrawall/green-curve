@@ -43,6 +43,20 @@ static inline int service_reported_fan_intent_mode(bool intentOwnsFan,
     return fan_runtime_driven_mode(curveRuntimeActive, fixedRuntimeActive);
 }
 
+// Whether the Linux daemon fan worker is actively maintaining a custom fan
+// mode (Curve or Fixed) on the currently selected GPU. Shared by the worker
+// loop and snapshot publication so the two cannot disagree after lockout,
+// uncertainty, or an adapter mismatch.
+static inline bool linux_daemon_fan_runtime_active(bool gpuReady,
+    bool hasActiveDesired, bool stateUncertain, bool targetMatchesSelected,
+    bool hasFan, int fanMode, bool fanAuto) {
+    if (!gpuReady || !hasActiveDesired || stateUncertain ||
+        !targetMatchesSelected || !hasFan)
+        return false;
+    const int mode = fan_owned_intent_mode(true, fanMode, fanAuto);
+    return mode == FAN_MODE_CURVE || mode == FAN_MODE_FIXED;
+}
+
 enum FanRuntimeIntentVerdict {
     FAN_RUNTIME_MATCHES_INTENT = 0,
     // The intent owns Fixed/Curve but no runtime drives it.

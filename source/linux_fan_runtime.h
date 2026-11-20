@@ -79,11 +79,6 @@ static void daemon_fan_runtime_lockout(gc_u32 kind, const char* reason,
                                        unsigned long long stalledForMs) {
     const char* why = reason && reason[0] ? reason : "fan runtime locked out";
     bool autoOk = linux_backend_set_fan_auto(&g_gpu);
-    char stateErr[256] = {};
-    store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_activeTarget,
-                        &g_activeDesired, stateErr, sizeof(stateErr));
-    dlog("daemon: %s; auto=%d state=%s\n", why, autoOk ? 1 : 0,
-         stateErr[0] ? stateErr : "persisted");
     bool emergencyOk = false;
     if (fan_runtime_escalation_after_auto_restore(autoOk) ==
             FAN_RUNTIME_ESCALATION_EMERGENCY_MAX) {
@@ -92,10 +87,47 @@ static void daemon_fan_runtime_lockout(gc_u32 kind, const char* reason,
         dlog("daemon: fan runtime emergency: driver auto restore failed, forced %d%% ok=%d\n",
              FAN_RUNTIME_EMERGENCY_PERCENT, emergencyOk ? 1 : 0);
     }
-    daemon_fan_fault_record(kind,
-        autoOk ? (gc_u8)SERVICE_FAN_HANDBACK_DRIVER_AUTO
-               : (emergencyOk ? (gc_u8)SERVICE_FAN_HANDBACK_EMERGENCY_MAX
-                              : (gc_u8)SERVICE_FAN_HANDBACK_FAILED),
+    const gc_u8 handback = autoOk ? (gc_u8)SERVICE_FAN_HANDBACK_DRIVER_AUTO
+        : (emergencyOk ? (gc_u8)SERVICE_FAN_HANDBACK_EMERGENCY_MAX
+                       : (gc_u8)SERVICE_FAN_HANDBACK_FAILED);
+    const bool hadIntent = g_hasActiveDesired;
+    const int previousMode = fan_owned_intent_mode(
+        hadIntent && g_activeDesired.hasFan, g_activeDesired.fanMode,
+        g_activeDesired.fanAuto != 0);
+    const GpuAdapterInfo recordTarget = g_activeTarget.valid
+        ? g_activeTarget : g_gpu.selectedGpu;
+    if (autoOk) {
+        // The driver has the fan back: stop claiming the failed/stalled fan so
+        // snapshots and later non-fan Applies cannot resurrect it.
+        g_activeDesired.hasFan = 0;
+        g_activeDesired.fanAuto = 1;
+        g_activeDesired.fanMode = FAN_MODE_AUTO;
+        g_activeDesired.fanPercent = 0;
+    } else {
+        // Driver refused auto: own the emergency duty, never the failed curve.
+        if (!hadIntent) {
+            g_activeDesired = {};
+            g_activeDesired.lockCi = -1;
+            g_activeDesired.powerLimitPct = POWER_LIMIT_DEFAULT_PCT;
+            g_activeTarget = recordTarget;
+        }
+        g_activeDesired.hasFan = 1;
+        g_activeDesired.fanAuto = 0;
+        g_activeDesired.fanMode = FAN_MODE_FIXED;
+        g_activeDesired.fanPercent = FAN_RUNTIME_EMERGENCY_PERCENT;
+    }
+    g_hasActiveDesired = service_scoped_has_owned_intent(g_activeDesired);
+    if (!g_hasActiveDesired) g_activeTarget = {};
+    char stateErr[256] = {};
+    store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &recordTarget,
+                        &g_activeDesired, stateErr, sizeof(stateErr));
+    dlog("daemon: %s; auto=%d handback=%u fanIntent=%d->%d owned=%d state=%s\n",
+         why, autoOk ? 1 : 0, (unsigned int)handback, previousMode,
+         fan_owned_intent_mode(g_hasActiveDesired && g_activeDesired.hasFan,
+             g_activeDesired.fanMode, g_activeDesired.fanAuto != 0),
+         g_hasActiveDesired ? 1 : 0,
+         stateErr[0] ? stateErr : "persisted");
+    daemon_fan_fault_record(kind, handback,
         fanIndex, commandedPercent, stalledForMs, why);
     daemon_enter_uncertain_after_fan_lockout(why, autoOk);
 }
@@ -193,12 +225,11 @@ static pl_thread_ret fan_reassert_thread(void*) {
             }
         }
         observedGeneration = fan_runtime_generation();
-        bool active = g_gpuReady && g_hasActiveDesired && !g_stateUncertain &&
-                      linux_gpu_identity_matches(
-                          &g_activeTarget, &g_gpu.selectedGpu) &&
-                      g_activeDesired.hasFan &&
-                      (g_activeDesired.fanMode == FAN_MODE_CURVE ||
-                       g_activeDesired.fanMode == FAN_MODE_FIXED);
+        bool active = linux_daemon_fan_runtime_active(g_gpuReady,
+            g_hasActiveDesired, g_stateUncertain,
+            linux_gpu_identity_matches(&g_activeTarget, &g_gpu.selectedGpu),
+            g_activeDesired.hasFan != 0, g_activeDesired.fanMode,
+            g_activeDesired.fanAuto != 0);
         if (active && g_activeDesired.fanMode == FAN_MODE_FIXED) {
             pollMs = LINUX_FAN_FIXED_MAINTENANCE_INTERVAL_MS;
         } else if (active) {
@@ -265,12 +296,11 @@ static pl_thread_ret fan_reassert_thread(void*) {
                  observedGeneration);
             continue;
         }
-        active = g_gpuReady && g_hasActiveDesired && !g_stateUncertain &&
-                 linux_gpu_identity_matches(
-                     &g_activeTarget, &g_gpu.selectedGpu) &&
-                 g_activeDesired.hasFan &&
-                 (g_activeDesired.fanMode == FAN_MODE_CURVE ||
-                  g_activeDesired.fanMode == FAN_MODE_FIXED);
+        active = linux_daemon_fan_runtime_active(g_gpuReady,
+            g_hasActiveDesired, g_stateUncertain,
+            linux_gpu_identity_matches(&g_activeTarget, &g_gpu.selectedGpu),
+            g_activeDesired.hasFan != 0, g_activeDesired.fanMode,
+            g_activeDesired.fanAuto != 0);
         if (active && g_activeDesired.fanMode == FAN_MODE_FIXED) {
             const char* reason = "";
             FanRuntimeOutcome outcome = daemon_fixed_fan_maintain(&reason);

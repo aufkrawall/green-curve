@@ -582,9 +582,20 @@ def check_fan_fault_reporting(ctx, require_text, forbid_text, require_order):
                  "a stateless refusal carries no fan fault")
     require_text(_p(ctx, "linux_daemon_snapshot_runtime.cpp"), "s->fanFault = g_daemonFanFault;",
                  "the Linux snapshot carries the fan fault record")
-    for command in ("Apply", "Reset"):
-        require_text(_p(ctx, "linux_daemon.cpp"), f'daemon_fan_runtime_note_commit("a committed {command}");',
-                     f"a committed Linux {command} clears the fan fault record")
+    require_text(_p(ctx, "linux_daemon_snapshot_runtime.cpp"),
+                 "linux_daemon_fan_runtime_active(g_gpuReady,",
+                 "the Linux snapshot derives fan runtime activity with the worker's own predicate")
+    require_text(_p(ctx, "linux_fan_runtime.h"), "g_activeDesired.hasFan = 0;",
+                 "a Linux driver-auto fan lockout stops claiming the released fan")
+    require_text(_p(ctx, "linux_fan_runtime.h"),
+                 "g_activeDesired.fanPercent = FAN_RUNTIME_EMERGENCY_PERCENT;",
+                 "a Linux refused fan lockout owns the emergency duty, never the failed curve")
+    require_text(_p(ctx, "linux_daemon.cpp"),
+                 'if (req->desired.hasFan) daemon_fan_runtime_note_commit("a committed Apply");',
+                 "only a Linux Apply that sets the fan clears the fan fault record")
+    require_text(_p(ctx, "linux_daemon.cpp"),
+                 'daemon_fan_runtime_note_commit("a committed Reset");',
+                 "a committed Linux Reset clears the fan fault record")
     require_text(_p(ctx, "linux_fan_runtime.h"), "    daemon_fan_fault_record(kind,",
                  "every Linux worker lockout records the fan fault")
     require_text(_p(ctx, "linux_tui_refresh.cpp"),

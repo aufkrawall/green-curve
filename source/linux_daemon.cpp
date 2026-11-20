@@ -441,7 +441,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                     g_activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
                 }
                 g_stateUncertain = false;
-                daemon_fan_runtime_note_commit("a committed Apply");
+                if (req->desired.hasFan) daemon_fan_runtime_note_commit("a committed Apply"); else g_fanFailureCount = 0;
                 if (g_fanOwnershipMarkerCommitted &&
                     ((d.hasFan && d.fanMode == FAN_MODE_AUTO) ||
                      (d.applicationScope != DESIRED_SCOPE_LEGACY && !committedDesired.hasFan)))
