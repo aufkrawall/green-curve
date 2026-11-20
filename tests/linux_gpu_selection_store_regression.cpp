@@ -550,6 +550,25 @@ void test_voltage_bound_profile_load_and_output() {
                selectedSlot == 5 && selectedDesired.lockCi == 61,
            "default/selected loader also resolves voltage-bound selected slot via daemon");
 
+    // Lazy target resolution: an ordinary offline slot never resolves a
+    // PENDING [gpu] selection against the daemon, while a voltage-bound write
+    // load fails closed on a malformed [gpu] selection instead of mapping
+    // against the daemon's current GPU.
+    LinuxConfiguredGpu pendingGpu{};
+    pendingGpu.status = LINUX_CONFIGURED_GPU_PENDING;
+    DesiredSettings offlineDesired{};
+    expect(linux_load_profile_with_daemon_fallback(
+               path.c_str(), 3, &pendingGpu, false, &offlineDesired, err, sizeof(err)) &&
+               pendingGpu.status == LINUX_CONFIGURED_GPU_PENDING,
+           "ordinary INI slot loads offline without resolving PENDING GPU selection");
+    LinuxConfiguredGpu malformedGpu{};
+    malformedGpu.status = LINUX_CONFIGURED_GPU_MALFORMED;
+    err[0] = '\0';
+    expect(!linux_load_profile_with_daemon_fallback(
+               path.c_str(), 5, &malformedGpu, true, &offlineDesired, err, sizeof(err)) &&
+               strstr(err, "Not sent to the daemon") != nullptr,
+           "write-mode voltage-bound load refuses malformed GPU target before daemon query");
+
     const std::string textPath = path_in_root("dump.txt");
     FILE* tf = fopen(textPath.c_str(), "wb");
     expect(tf != nullptr, "text dump temp file opened");

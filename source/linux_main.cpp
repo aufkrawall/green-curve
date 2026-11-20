@@ -596,7 +596,7 @@ static int linux_main_impl(int argc, char** argv) {
     const bool needsLoadedProfile = opts.dump || opts.json || opts.saveConfig || (opts.applyConfig && !opts.reset);
     if (needsLoadedProfile) {
         if (!linux_load_default_or_selected_profile_with_daemon_fallback(configPath, &slot,
-                linux_gpu_target_for_read(configPath, &gpuSelection), &desired, err, sizeof(err))) {
+                &gpuSelection, opts.applyConfig && !opts.reset, &desired, err, sizeof(err))) {
             fprintf(stderr, "%s\n", err[0] ? err : "Failed to load config");
             return 1;
         }
@@ -705,7 +705,7 @@ static int linux_main_impl(int argc, char** argv) {
             DesiredSettings startupDesired = {};
             char loadErr[256] = {};
             if (!linux_load_profile_with_daemon_fallback(configPath, opts.startupPolicySlot,
-                    linux_gpu_target_for_read(configPath, &gpuSelection), &startupDesired, loadErr, sizeof(loadErr))) {
+                    &gpuSelection, true, &startupDesired, loadErr, sizeof(loadErr))) {
                 fprintf(stderr, "Cannot load profile %d for the startup policy: %s\n",
                         opts.startupPolicySlot, loadErr[0] ? loadErr : "profile unavailable");
                 return 1;

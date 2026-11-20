@@ -1336,6 +1336,10 @@ def check_profile_interchange_and_curve_correction(ctx, require_text, forbid_tex
                  "Linux TUI Apply prepares loaded-profile and curve-edit replacements")
     require_text(main_cpp, "linux_load_default_or_selected_profile_with_daemon_fallback(",
                  "Linux CLI resolves voltage-bound profile slots against the live daemon GPU")
+    require_text(cli_load_h, "linux_cli_resolve_profile_target(",
+                 "Linux CLI profile loader resolves the GPU target lazily only when live topology is needed")
+    require_text(cli_load_h, "linux_gpu_target_for_write(configPath, gpuSelection,",
+                 "write-mode Linux CLI voltage-bound loading enforces the write target gate before querying")
     require_text(cli_load_h, "load_profile_from_config_path_for_destination(",
                  "Linux daemon-fallback loader maps voltage-bound slots via live topology")
     require_text(_p(ctx, "linux_tui_startup_actions.cpp"), "load_profile_from_config_path_for_destination(",

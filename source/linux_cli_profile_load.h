@@ -23,14 +23,23 @@ static inline bool linux_profile_destination_from_snapshot(
     return profile_destination_from_vf_curve(snapshot->curve, floor, *out);
 }
 
-static inline bool linux_load_profile_with_daemon_fallback(
+static inline bool linux_cli_resolve_profile_target(
+    const char* configPath, LinuxConfiguredGpu* gpuSelection,
+    bool requireWriteTarget, const GpuAdapterInfo** targetOut,
+    char* err, size_t errSize) {
+    if (targetOut) *targetOut = nullptr;
+    if (!gpuSelection) return true;
+    if (requireWriteTarget) {
+        return linux_gpu_target_for_write(configPath, gpuSelection,
+                                          targetOut, err, errSize);
+    }
+    if (targetOut) *targetOut = linux_gpu_target_for_read(configPath, gpuSelection);
+    return true;
+}
+
+static inline bool linux_load_profile_from_live_daemon(
     const char* configPath, int slot, const GpuAdapterInfo* readTarget,
     DesiredSettings* desired, char* err, size_t errSize) {
-    bool needsLive = false;
-    if (load_profile_from_config_path_for_destination(
-            configPath, slot, nullptr, desired, err, errSize, &needsLive))
-        return true;
-    if (!needsLive) return false;
     auto live = std::make_unique<ServiceResponse>();
     char daemonErr[256] = {};
     if (!linux_daemon_get_state(readTarget, live.get(), daemonErr, sizeof(daemonErr))) {
@@ -48,14 +57,39 @@ static inline bool linux_load_profile_with_daemon_fallback(
         configPath, slot, topo.get(), desired, err, errSize, nullptr);
 }
 
-static inline bool linux_load_default_or_selected_profile_with_daemon_fallback(
-    const char* configPath, int* slot, const GpuAdapterInfo* readTarget,
+static inline bool linux_load_profile_with_daemon_fallback(
+    const char* configPath, int slot, const GpuAdapterInfo* readTarget,
     DesiredSettings* desired, char* err, size_t errSize) {
     bool needsLive = false;
-    if (load_default_or_selected_profile_for_destination(
+    if (load_profile_from_config_path_for_destination(
             configPath, slot, nullptr, desired, err, errSize, &needsLive))
         return true;
     if (!needsLive) return false;
+    return linux_load_profile_from_live_daemon(
+        configPath, slot, readTarget, desired, err, errSize);
+}
+
+static inline bool linux_load_profile_with_daemon_fallback(
+    const char* configPath, int slot, LinuxConfiguredGpu* gpuSelection,
+    bool requireWriteTarget, DesiredSettings* desired, char* err, size_t errSize) {
+    bool needsLive = false;
+    if (load_profile_from_config_path_for_destination(
+            configPath, slot, nullptr, desired, err, errSize, &needsLive))
+        return true;
+    if (!needsLive) return false;
+    const GpuAdapterInfo* target = nullptr;
+    if (!linux_cli_resolve_profile_target(configPath, gpuSelection,
+            requireWriteTarget, &target, err, errSize))
+        return false;
+    linux_debug_logf("profile load: slot %d resolved live topology target lazily (forWrite=%d targetValid=%d)",
+        slot, requireWriteTarget ? 1 : 0, (target && target->valid) ? 1 : 0);
+    return linux_load_profile_from_live_daemon(
+        configPath, slot, target, desired, err, errSize);
+}
+
+static inline bool linux_load_default_or_selected_from_live_daemon(
+    const char* configPath, int* slot, const GpuAdapterInfo* readTarget,
+    DesiredSettings* desired, char* err, size_t errSize) {
     auto live = std::make_unique<ServiceResponse>();
     char daemonErr[256] = {};
     if (!linux_daemon_get_state(readTarget, live.get(), daemonErr, sizeof(daemonErr))) {
@@ -70,6 +104,36 @@ static inline bool linux_load_default_or_selected_profile_with_daemon_fallback(
     }
     return load_default_or_selected_profile_for_destination(
         configPath, slot, topo.get(), desired, err, errSize, nullptr);
+}
+
+static inline bool linux_load_default_or_selected_profile_with_daemon_fallback(
+    const char* configPath, int* slot, const GpuAdapterInfo* readTarget,
+    DesiredSettings* desired, char* err, size_t errSize) {
+    bool needsLive = false;
+    if (load_default_or_selected_profile_for_destination(
+            configPath, slot, nullptr, desired, err, errSize, &needsLive))
+        return true;
+    if (!needsLive) return false;
+    return linux_load_default_or_selected_from_live_daemon(
+        configPath, slot, readTarget, desired, err, errSize);
+}
+
+static inline bool linux_load_default_or_selected_profile_with_daemon_fallback(
+    const char* configPath, int* slot, LinuxConfiguredGpu* gpuSelection,
+    bool requireWriteTarget, DesiredSettings* desired, char* err, size_t errSize) {
+    bool needsLive = false;
+    if (load_default_or_selected_profile_for_destination(
+            configPath, slot, nullptr, desired, err, errSize, &needsLive))
+        return true;
+    if (!needsLive) return false;
+    const GpuAdapterInfo* target = nullptr;
+    if (!linux_cli_resolve_profile_target(configPath, gpuSelection,
+            requireWriteTarget, &target, err, errSize))
+        return false;
+    linux_debug_logf("profile load: selected slot resolved live topology target lazily (forWrite=%d targetValid=%d)",
+        requireWriteTarget ? 1 : 0, (target && target->valid) ? 1 : 0);
+    return linux_load_default_or_selected_from_live_daemon(
+        configPath, slot, target, desired, err, errSize);
 }
 
 #endif  // GREEN_CURVE_LINUX_CLI_PROFILE_LOAD_H
