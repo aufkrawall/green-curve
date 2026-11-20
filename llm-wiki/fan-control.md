@@ -1,5 +1,84 @@
 # Fan Control
 
+## A profile switch never releases an owned fan curve (2026-11-20)
+
+Source anchors: `source/service_scoped_apply_policy.h`
+(`service_upgrade_legacy_scalar_scope()`, `ServiceLegacyUpgradeKept`),
+`source/main_runtime_capture.cpp` + `source/gui_apply_shape_policy.h`
+(`gui_full_apply_carries_fan()`), `source/fan_intent_policy.h`,
+`source/main_gpu_state.cpp` (`current_green_curve_fan_intent_mode()`),
+`source/main_fan_runtime.cpp` (`initialize_gui_fan_settings_from_live_state()`),
+`source/main_service_fan_intent.cpp`, `source/main_service_apply_runtime.cpp`,
+`source/profile_ownership_policy.h`, `source/linux_daemon_scoped_apply.h`,
+`source/linux_backend_mutation.cpp`, `source/linux_daemon_snapshot_runtime.cpp`,
+`tests/fan_intent_tests.cpp` (12720-12769), `tools/fan_gates.py`
+(`check_fan_intent_consistency()`).
+
+Observed on Windows: Profile 4 (fan curve) applied, then Profile 3 (same
+curve, zero-RPM off) applied from the GUI. The fan stopped at idle while the GUI
+and tray showed Profile 3 and its curve as active. The debug log showed
+`fan ownership differs profile=1 active=0`, `apply-scope: scope=2`,
+`service_apply_desired_settings: ... fanMode=0`, `apply fan auto: restored
+driver auto, runtime stopped` and then `service response APPLY: ... fanMode=2`.
+
+Four faults combined:
+
+1. **Contract change in the scope upgrade (both platforms).** The GUI's full
+   (reset-before-apply) request omitted an unchanged fan; in a LEGACY request
+   that means "keep". `service_upgrade_legacy_scalar_scope()` turned the
+   request into `DESIRED_SCOPE_REPLACE_PROFILE` whenever the previous intent
+   held exact memory/power/authoring, and an explicit replacement reads an
+   omitted owned domain as a release: the scoped plan wrote driver Auto and
+   dropped the fan from the owned intent. The upgrade now copies omitted
+   memory, power and fan ownership from the previous intent for a
+   non-replacement reset request, which is what both legacy backends always
+   did (`service_merge_desired_after_mutation()`, `reset_oc_before_gui_apply()`
+   never touch those domains). A verified named-profile replacement still
+   releases omitted domains.
+2. **GUI request shape.** A full GUI Apply now always carries an owned
+   Fixed/Curve fan (`gui_full_apply_carries_fan()`); only an unchanged Auto is
+   omitted, so an external fan controller is not disturbed. The service writes
+   nothing when the selection already holds (`fan_setting_matches_current()`).
+3. **Stale reported mode (Windows service).** The post-write
+   `refresh_global_state()` ran `initialize_gui_fan_settings_from_live_state()`,
+   which set `g_app.activeFanMode` from the still-published OUTGOING intent
+   (Curve). `current_green_curve_fan_intent_mode()` then fell back to that
+   mirror once the new intent no longer claimed the fan. Same class as
+   F-RESET-INTENT, now removed structurally: in the service the mirror follows
+   the running runtime (`fan_runtime_driven_mode()`) and the reported mode comes
+   from the owned intent, else the runtime (`service_reported_fan_intent_mode()`).
+4. **Relaxed profile match.** The post-write identity check and the tray
+   indicator accepted any profile fan against an unclaimed active fan. Only an
+   Auto profile may now match an unclaimed fan
+   (`profile_ownership_fan_mismatch_allowed()`).
+
+**Invariant (Windows service, every successful Apply):** after the intent is
+published, the fan runtime drives exactly what it owns: a Fixed/Curve intent
+has its runtime running with the same duty or normalized/clamped curve, and an
+Auto or unclaimed fan has none (`fan_runtime_intent_verdict()`). A violation is
+logged, repaired through the same `apply_fan_settings()` step, and raises the
+outcome to WARNING (repaired) or ERROR (not repaired) with a message, so it is
+never silent. Linux needs no separate check: its worker derives its state from
+`g_activeDesired` on every cycle. Its snapshot now reports Auto for an
+unclaimed fan instead of a stale `fanMode` field.
+
+Diagnostics: `apply-scope: legacy request upgraded to scope=N replacement=R kept
+mem=M power=P fan=F`, `capture_gui_apply_settings: OC reset-before-apply ...
+fanChanged=C fanCarried=F fanMode=N`, `fan intent: service activeFanMode X -> Y
+(follows the running fan runtime)`, `FAN INVARIANT VIOLATION: origin=apply
+verdict=...`, `fan intent invariant: apply repair SUCCEEDED|FAILED`, Linux
+`daemon apply: legacy request upgraded ...` and `apply: legacy request upgraded
+...`.
+
+Open questions / stale-risk: the invariant runs at transaction boundaries only.
+A deliberate runtime stop (failure escalation, update-install handback) keeps
+the owned intent and is not re-checked periodically, which is intended because
+the next Apply or restore re-establishes it. Verified by fixtures and the
+executable Windows fan step; the exact GUI sequence was not replayed on
+hardware.
+
+Last verified: 2026-11-20.
+
 ## GPUs without a controllable fan (F-FANLESS, 2026-11-18)
 
 Source anchors: `source/fan_request_policy.h` (the rule),
@@ -655,6 +734,13 @@ validates every byte of the summary as UTF-8 on Linux.
 
 ## Last Verified
 
+- 2026-11-20: Profile-switch fan release fix (top of page). Native Windows
+  `python build.py --test` and `--gates` passed; scratch-copy negative controls
+  failed at 12741 (scope upgrade), 12760 (invariant repair) and 12736 (profile
+  match) and passed once restored; the first commit's tree passed the pure
+  suite on its own; plain `python build.py` rebuilt all twelve 0.31.0 packages
+  with changed digests and the new diagnostics present in the service, GUI and
+  Linux binaries. No hardware replay of the GUI sequence.
 - 2026-11-18: Fanless-GPU fan requests (F-FANLESS, top of page). Windows fan
   step executed against a scripted driver (12120-12136, 12123 fails on the
   pre-fix predicate), Linux preflight cases 12140-12145, source gates and the

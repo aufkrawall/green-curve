@@ -5,6 +5,29 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-20: Profile switch released a running fan curve
+
+- Reported: after switching Profile 4 -> Profile 3 (both fan curve, zero-RPM
+  off) the fan stood still at idle while the GUI showed Profile 3 and its curve
+  as active. The debug log showed the GUI's reset-before-apply request without
+  the unchanged fan, `apply-scope: scope=2`, a driver-Auto fan write with the
+  curve runtime stopped, and then `service response APPLY: ... fanMode=2`.
+- Root causes and fix are in `fan-control.md` (top section): the shared legacy
+  scope upgrade read an omitted fan as a release (now keeps omitted fan,
+  memory and power for non-replacement reset requests, Windows and Linux); the
+  GUI now carries an owned Fixed/Curve fan in full requests; the Windows
+  service's fan mode follows its runtime and owned intent instead of a mirror
+  re-derived from the outgoing intent; only an Auto profile may match an
+  unclaimed fan; and every successful service Apply enforces the fan
+  runtime/intent invariant (logged, repaired, reported as warning/error).
+- Tests: `tests/fan_intent_tests.cpp` 12720-12769, relaxation cases
+  1364-1368 + 12737-12739 (12421 inverted), `tools/fan_gates.py`
+  (`check_fan_intent_consistency()`).
+- Verification: native Windows regression suite and source gates passed;
+  three scratch-copy negative controls failed at the new assertions; plain
+  `python build.py` refreshed all twelve 0.31.0 packages. Not replayed on
+  hardware.
+
 ## 2026-11-20: Curve correction, profile I/O and GPU binding
 
 - Linux VF correction requires a fresh snapshot, a retry-eligible write policy and convergence of projected offsets. Windows retargeting disambiguates identical boards, and Reset preserves fractional memory readback.

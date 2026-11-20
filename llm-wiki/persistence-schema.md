@@ -164,7 +164,9 @@ captured offsets.
   `resetOcBeforeApply`, while `DESIRED_SCOPE_LEGACY` retains reset-before-apply.
   `service_upgrade_legacy_scalar_scope()` and
   `service_build_profile_transition_request()` also upgrade legacy follow-ups
-  following authoring or captured intent. `profile_resolve_runtime()` resolves
+  following authoring or captured intent. A non-replacement reset request that
+  becomes `REPLACE_PROFILE` keeps the previous memory, power and fan ownership it
+  omitted (legacy reset never released them; see fan-control.md, 2026-11-20). `profile_resolve_runtime()` resolves
   `PROFILE_SCOPE_EXPLICIT_RELEASE` (skipping non-writable VF points and setting
   zero-offset `curvePointCaptured[ci] = 1` cleanup targets), and
   `profile_control_plan()` reports `PROFILE_CONTROL_CONDITIONAL` with

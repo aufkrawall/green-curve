@@ -1473,6 +1473,16 @@ offset, memory, XBAR/SYS/VIDEO, curve or lock change is FULL; memory stays FULL
 because a memory write can drop the VF curve outside the transition clamp.
 Diagnostic: `capture_gui_apply_settings: shape=...`.
 
+### Fan ownership relaxation (tightened 2026-11-20)
+
+The relaxed ownership read accepts a profile that claims the fan against an
+active intent that does not only when the profile's fan is Auto: both then
+leave the fan to the driver. A Fixed/Curve profile against an unclaimed fan
+means nothing drives the profile's fan setting, so the post-write identity
+check logs `fan ownership differs profile=1 (mode N) active=0` and the tray no
+longer ticks that profile (`profile_ownership_fan_mismatch_allowed()`; root
+cause and the rest of the fix in fan-control.md).
+
 ### Advanced-domain ownership relaxation
 
 A FULL apply claims every advanced ClkDomains field the GPU exposes (XBAR clock,

@@ -67,6 +67,17 @@ this fixture as well as the production planner.
   Linux INI decoding of zero-MHz projected points under `absolute_with_origin`
   into observation-free `PROFILE_POINT_PROJECTION` points and refusal of
   zero-MHz absolute/legacy points.
+- `tests/fan_intent_tests.cpp` (`12720-12769`) pins the profile-switch fan
+  release fix: the pure `fan_intent_policy.h` table, the legacy scope upgrade
+  keeping an omitted fan/memory/power (the exact Profile 4 -> Profile 3
+  transition, Linux merge, explicit Auto, named replacement, sparse and
+  non-upgraded requests), `gui_full_apply_carries_fan()`, and -- Windows only --
+  executes `main_service_fan_intent.cpp` over the production `main_fan_apply.h`
+  step (missing, unowned and stale runtimes repaired; consistent and fanless
+  states untouched; a failed repair reported).
+  `tests/profile_lock_tail_ownership_tests.cpp` 12421 now requires the relaxed
+  read to REFUSE a fan-curve profile against an unclaimed fan (it used to assert
+  the match), and 12739 keeps the Auto-profile match.
 - `tests/profile_lock_tail_ownership_tests.cpp` (`12580-12595`) executes
   `source/profile_ownership_policy.h` and `source/desired_settings_helpers.cpp`:
   the pure `profile_ownership_projected_point_mismatch_allowed()` and
@@ -3070,7 +3081,7 @@ The table below names the physical source shard that owns each rule:
 | `gpu_core.h` / `service_protocol.h` | `GpuAdapterInfo` / `targetGpu` | Protocol carries GPU identity |
 | `gpu_backend_apply.cpp` | `reset_oc_before_gui_apply` | GUI OC applies reset prior OC baseline before applying |
 | `ui_main_window.cpp` / `profile_save_policy.h` | `profile_save_uses_gui_capture` | Profile Save uses live hardware defaults only when neither the editor nor the applied state owns curve/lock intent; an applied pin/curve uses the GUI capture so the saved slot keeps matching the active profile and the tray tick survives |
-| `desired_settings_helpers.cpp` / `profile_ownership_policy.h` | `profile_ownership_fan_mismatch_allowed` | The post-apply/ownership checks ignore a fan domain the delta Apply deliberately did not claim; the strict pre-write profile claim check still requires full fan equality |
+| `desired_settings_helpers.cpp` / `profile_ownership_policy.h` | `profile_ownership_fan_mismatch_allowed` | The post-apply/ownership checks ignore an unclaimed fan domain only when the profile's fan is Auto (12737-12738: a Fixed/Curve profile never matches); the strict pre-write profile claim check still requires full fan equality |
 | `app_shared.h` | `guiHasUserModifiedValues` | Flag reset in populate_desired_into_gui, set in EN_CHANGE handlers; prevents stale loaded-profile values from being saved |
 | `main_runtime_gpu.cpp` | `resetOcBeforeApply = true` | GUI OC capture sends explicit reset-before-apply target |
 | `main_runtime_nvml.cpp` | `nvml_select_device_for_selected_gpu` | NVML/NVAPI matching prefers selected GPU PCI identity |

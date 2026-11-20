@@ -73,6 +73,7 @@ Curve editing, profile transfer and capture improve.
 - **Flatten detection:** find hidden plateau anchors.
 - **Tray minimize:** avoid crashes after profile actions.
 - **Notebook GPUs:** accept system-managed fans/power.
+- **Fan curves on profile switch:** keep running after a GUI Apply; profiles no longer show active while the fan is in driver control.
 - **GPU warnings:** report limited support.
 - **Reset:** restore external memory/power changes, including half-MHz memory offsets.
 - **Already-reset GPUs:** Reset completes promptly.
