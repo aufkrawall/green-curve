@@ -29,73 +29,73 @@
 
 ## Unreleased
 
-Curve checks, profile transfer and capture improve.
+Curve editing, profile transfer and capture improve.
 
 ### New
 
-- **Dialog text copying:** Ctrl+C copies confirmations, warnings and errors.
-- **Curve points below 700 mV:** writable points appear in the editor and graph.
-- **Prepare compatible curve:** preview lowering earlier points or searching the closest lower compatible lock frequency before Apply.
-- **Profile files:** export chosen slots to a file and import them into chosen slots on Windows, the Linux TUI and the CLI, without a GPU.
-- **Older settings files:** import profiles from older Green Curve settings, asked only when a file does not say how values were saved.
-- **Import current GPU settings:** save settings another tool set, memory overclocks included, into a slot as a flat curve, a clock lock or an exact copy; locks are read without GPU load.
-- **Profile checks (CLI):** preview how a profile file maps onto this GPU without changing anything.
-- **NVIDIA CMP mining cards (experimental):** a startup warning explains the modified-driver requirement; continue once, stop asking, or exit.
+- **Dialog copying:** Ctrl+C copies messages.
+- **Low-voltage points:** edit below 700 mV.
+- **Compatible curves:** preview adjustments before Apply.
+- **Profile files:** transfer slots without a GPU.
+- **Older settings:** import Windows/Linux configurations.
+- **Capture:** import external curves, locks and memory.
+- **CLI checks:** preview profiles without writes.
+- **CMP cards:** experimental modified-driver startup guidance.
 
 ### Improved
 
-- **Curve checks before Apply:** conflicts name frequency, voltage or range and guard transition peaks.
-- **Curves set by another tool:** the editor shows an external flatten as its lock, keeps it unless changed, and offers to import the whole curve on Save.
-- **Profile storage:** saved profiles retain exact sub-MHz curve points, captured offsets, power ratios and domain scope across local slots and editor Load, Apply and Save.
-- **Linux profile switching:** replaced points clear first; flatten and lock readback are verified.
-- **Linux memory clocks:** curve-only changes preserve memory; failed preparation restores prior curves.
-- **Changes made in other tools:** switching back to the window re-reads live GPU settings; nothing polls in the background.
-- **Profile matching:** exact offsets and power ratios remain matched as previews change.
+- **Curve checks:** clearer conflicts and transition protection.
+- **External curves:** retain and save flattening.
+- **Profile storage:** retain precision and ownership.
+- **Linux switching:** verify flattened and locked curves.
+- **Linux memory:** curve-only edits preserve memory.
+- **Window activation:** refresh external GPU changes.
+- **Profile matching:** stable despite preview drift.
 
 ### Fixed
 
-- **Linux curve Apply:** scoped profile changes preserve unrelated VF offsets, and corrections keep hard-lock tail offsets intact.
-- **Profile export and import:** whole-number profiles keep their apply scope, and precise graphics offsets keep their selected control.
-- **Windows advanced clock edits:** loading a profile preserves omitted external clock and voltage settings.
-- **Windows power reset:** custom targets that display as 100% return to the exact board default.
-- **Linux startup apply can select any saved slot.** This includes profiles imported from Windows.
-- **TUI numeric edits:** memory and power edits replace retained precise values.
-- **Unicode profile banks:** imports preserve existing text and encoding.
-- **Unsaved drafts:** profile loading asks before discarding edits, including invalid input.
-- **Graphics recovery:** retain exact controls across restarts and verify protected control handoffs.
-- **Installer recovery:** shared readers of leftover temporary files no longer block replacement or rollback.
-- **Fixed clock-floor points:** Apply refuses fixed-point edits and locks; Capture retains observations.
-- **Linux power limits:** out-of-range requests refuse before changes.
-- **Partial profiles:** point replacement requires included curves; scalar captures retain omitted curves.
-- **Clock and memory recovery:** exact fractional offsets restore on both platforms; verification failures report mismatches without switching controls.
-- **Memory changes:** preserve exact curves on both platforms or refuse cleanly.
-- **Flatten editing:** retyping a selected target preserves typing and caret position.
-- **Flatten detection:** selects the true plateau start, including hidden low-voltage points.
-- **Minimize to tray:** minimizing after profile actions no longer crashes.
-- **Notebook GPUs:** undervolts and profiles apply when the system manages the fan or power limit.
-- **GPU support warnings:** warnings for unrecognized GPUs and boards with fewer controls now appear at startup when they apply.
-- **Reset after changes by another tool:** memory and power settings changed elsewhere since the last refresh also return to default.
-- **Reset after another tool reset the GPU:** Reset finishes in about a second instead of stalling and reporting an unknown outcome.
-- **Curve reading on modified drivers:** the curve loads on drivers that refuse points past the editable range, such as the CMP 40HX's.
-- **Tray profile checkmark:** loading and applying an older locked profile, saving active settings to a slot, or restoring an active or imported profile across an update now marks the matching slot active in the tray menu and tooltip.
-- **External flatten offset reading:** a tail flattened in another tool no longer reports a large negative GPU offset or excluded low-voltage points.
-- **Curve range errors:** targets just past the driver's offset limit now report the exact required adjustment and anchor estimate before changing hardware instead of falling back to a generic range error.
-- **Profile import slots and range warnings:** importing a multi-profile file into partially occupied slots no longer swaps profiles into another slot's empty position, and out-of-range offsets in imported profiles now warn before import with the exact value and allowed bounds.
-- **Multi-GPU Windows systems:** Apply, Reset and logon profiles no longer leave a GPU's settings and fan untracked by moving to another GPU; reset that GPU first.
-- **GPU selector on Windows:** choosing another GPU now switches the live view instead of snapping back, and profiles act only on the GPU shown.
-- **Curve preview and loaded profiles:** previewing an offset profile over a flattened curve no longer spikes points pulled up by driver cross-talk or clamped tails, and loading imported offset profiles keeps valid draft values for Apply and Save.
-- **Older flattened profiles:** profiles saved or imported with a large negative graphics offset left over from an external flattened tail now load cleanly with a 0 MHz core offset instead of failing with an out-of-range error.
-- **Linux flattened and cross-platform profiles:** profiles exported from Windows now converge to their target lock frequency on Linux, switch cleanly between flattened and hard-locked curves, and resolve voltage-bound slots in the CLI, TUI and startup policy.
-- **Linux profile inspection and TUI preview:** CLI config dumps now report lock modes and captured curve points, and the TUI previews captured and projected points against the live curve with accurate flatten-tail floor (`-1000 MHz`) and live driver offsets.
-- **Cross-platform profile export and Linux settings import:** unlocked profiles now export cleanly on both Linux and Windows instead of failing with a lock-format error, and Windows automatically recognizes imported Linux settings files.
+- **Scoped Linux curves:** preserve unrelated offsets and hard-lock tails.
+- **Profile transfer:** retain scope and graphics controls.
+- **Windows advanced edits:** preserve omitted external settings.
+- **Windows power reset:** restore defaults even when displaying 100%.
+- **Linux startup:** accept all slots.
+- **TUI numeric edits:** replace precise values.
+- **Unicode banks:** preserve text and encoding.
+- **Unsaved drafts:** confirm replacement, including invalid input.
+- **Graphics recovery:** verify restored controls.
+- **Installer recovery:** tolerate shared temporary-file readers.
+- **Fixed curve points:** refuse unavailable edits/locks.
+- **Linux power:** refuse out-of-range requests.
+- **Partial profiles:** preserve omitted curves.
+- **Clock recovery:** restore and verify fractional offsets.
+- **Memory changes:** preserve exact curves.
+- **Flatten editing:** retain typing and caret.
+- **Flatten detection:** find hidden plateau anchors.
+- **Tray minimize:** avoid crashes after profile actions.
+- **Notebook GPUs:** accept system-managed fans/power.
+- **GPU warnings:** report limited support.
+- **Reset:** restore external memory/power changes.
+- **Already-reset GPUs:** Reset completes promptly.
+- **Modified drivers:** accept shorter curve tables.
+- **Tray checkmark:** match after save/restore/upgrade.
+- **External flatten:** avoid false negative core offsets.
+- **Curve errors:** identify out-of-range targets.
+- **Profile imports:** retain slot assignments and range warnings.
+- **Multi-GPU ownership:** retain settings until explicit Reset.
+- **GPU selector:** switch views and writes together.
+- **Curve previews:** avoid spikes; retain drafts.
+- **Older flatten profiles:** load erroneous negative-offset records.
+- **Linux cross-platform profiles:** converge and resolve voltage-bound curves.
+- **Linux inspection:** show locks, captures and actual offsets.
+- **Cross-platform transfer:** export unlocked profiles; recognize Linux settings.
 
 ### Compatibility notes
 
-Configuration and profiles remain compatible. Update clients and services together.
+Profiles remain compatible. Update clients and services together.
 
 ### Downloads and verification
 
-In development. Downloads and verification remain in the latest release section below.
+In development. Downloads remain in the latest release below.
 
 **Full changelog:** [0.31.0...HEAD](https://github.com/aufkrawall/green-curve/compare/0.31.0...HEAD)
 

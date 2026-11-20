@@ -5,6 +5,36 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-20: Release-range review fixes verified and packaged
+
+- Completed the seven review corrections: planner-fixture request lifetime;
+  scoped Linux VF baseline writes; hard-pin tail isolation during correction;
+  explicit replacement scope and named graphics controls across profile
+  transfer; untouched advanced-field projection in the Windows editor; and
+  exact milliwatt comparison and verification during Windows power Reset.
+- Source/test anchors: `tests/curve_plan_tests.cpp`,
+  `tests/linux_vf_write_tests.cpp` (12683-12684),
+  `tests/profile_slot_runtime_tests.cpp` (12685-12688),
+  `tests/gui_editor_base_tests.cpp` (12681-12682),
+  `tests/external_oc_change_tests.cpp` (12680). Production invariants and
+  diagnostics are in `clock-transition-audit.md`, `profile-document.md`,
+  `config-profiles.md` and `gpu-backend.md`.
+- Verification: native Windows `python build.py --test` and
+  `python build.py --test --asan` passed, including installer and named-pipe
+  fixtures, Linux cross-link checks and source/Python checks.
+  `python build.py --tidy` passed with no new findings. The profile codec
+  completed 5,000 fuzz runs. Six scratch-copy negative controls independently
+  restored the faulty behavior and failed at the intended new assertions;
+  each fixed fixture passed.
+- Plain `python build.py` completed the full Windows/Linux x64/ARM64 matrix.
+  All 12 current packages have fresh timestamps and changed content digests;
+  checksum files, archive contents, installer payloads and packaged executable
+  bytes match the rebuilt outputs. New diagnostics are present in the binaries.
+  Hardware Apply/Reset behavior was verified with simulated driver data only;
+  this task did not perform a physical GPU replay.
+- Reconciled stale captured-replay and advanced-field projection claims in the
+  topic pages. Condensed the unreleased notes while retaining all 49 topics.
+
 ## 2026-11-20: Linux TUI flatten-tail delta display & Linux -> Windows profile export/capture parity
 
 - Reported / audited:
