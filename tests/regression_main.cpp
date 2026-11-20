@@ -960,6 +960,7 @@ int run_clock_transition_tests();
 // Service registration / install-location suite (tests/service_install_tests.cpp).
 int run_service_install_tests();
 int run_advanced_apply_tests();
+// Linux fan worker fixture, incl. fault record and stall check (12890-12897).
 int run_fan_runtime_followup_tests();
 int run_linux_fan_ownership_tests();
 int run_memory_recovery_tests();

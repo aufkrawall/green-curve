@@ -6,6 +6,7 @@
 #include "fan_curve.h"
 #include "fan_runtime_policy.h"
 #include "fan_fixed_maintenance_policy.h"
+#include "fan_stall_policy.h"
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -16,6 +17,8 @@ struct LinuxGpuState {
     NvmlApi nvml = {};
     nvmlDevice_t nvmlDevice = nullptr;
     GpuAdapterInfo selectedGpu = {};
+    int fanMinPct = 0, fanMaxPct = 100;
+    bool fanRangeKnown = false;
 };
 static LinuxGpuState g_gpu;
 static DesiredSettings g_activeDesired;
@@ -29,11 +32,24 @@ static bool g_fanOwnershipHandbackDeferred;
 static ServiceFanFault g_daemonFanFault;
 static gc_u32 g_daemonFanFaultSerial;
 static int deferredHandbacks;
-enum Schedule { IDLE, APPLY_BEFORE_WAIT, APPLY_BEFORE_POLL, NORMAL, TELEMETRY_LOST };
+enum Schedule { IDLE, APPLY_BEFORE_WAIT, APPLY_BEFORE_POLL, NORMAL, TELEMETRY_LOST,
+                // Stall schedules (12893-12897) run many polls on a simulated clock.
+                STALL_FIXED, STALL_UNSUPPORTED, STALL_ZERO_RPM, STALL_REAPPLY };
 static Schedule schedule;
 static bool injected, afterTimedWait, stateLocked, wakeLocked;
 static bool lockOrderValid, autoRefused, lockoutAutoOk;
 static int waits, polls, writes, lastDuty, iterations, lockouts;
+static unsigned long long nowMs, lockoutAtMs;
+static int stallSamples;
+
+static bool stall_schedule() { return schedule >= STALL_FIXED; }
+static void commit_fixed(int duty) {
+    g_hasActiveDesired = true;
+    g_activeDesired.hasFan = true;
+    g_activeDesired.fanMode = FAN_MODE_FIXED;
+    g_activeDesired.fanPercent = duty;
+    ++g_fanWakeGeneration;
+}
 
 static void commit_curve(int duty) {
     g_hasActiveDesired = true;
@@ -47,13 +63,18 @@ static void commit_curve(int duty) {
 static void pl_mutex_lock(int*) {
     if (wakeLocked) lockOrderValid = false;
     stateLocked = true;
-    if (++iterations > 8) g_running = 0;
+    if (++iterations > (stall_schedule() ? 400 : 8)) g_running = 0;
 }
 static void pl_mutex_unlock(int*) {
     stateLocked = false;
     if (schedule == APPLY_BEFORE_WAIT && !injected) {
         injected = true;
         commit_curve(70);
+    }
+    // A new Apply of the same duty lands while a stall window is open.
+    if (schedule == STALL_REAPPLY && stallSamples == 3 && !injected) {
+        injected = true;
+        commit_fixed(40);
     }
 }
 static int fixture_mutex_lock(int*) { wakeLocked = true; return 0; }
@@ -71,18 +92,51 @@ static int fixture_cond_wait(int*, int*) {
     g_running = 0;
     return 0;
 }
-static int fixture_cond_timedwait(int*, int*, const timespec*) {
+// Waiting until the deadline is what moves the simulated monotonic clock.
+static int fixture_cond_timedwait(int*, int*, const timespec* deadline) {
     afterTimedWait = true;
+    const unsigned long long at = (unsigned long long)deadline->tv_sec * 1000ull +
+        (unsigned long long)(deadline->tv_nsec / 1000000L);
+    if (at > nowMs) nowMs = at;
     return ETIMEDOUT;
 }
-static int fixture_clock_gettime(int, timespec* value) { *value = {}; return 0; }
+static int fixture_clock_gettime(int, timespec* value) {
+    *value = {};
+    value->tv_sec = (time_t)(nowMs / 1000ull);
+    value->tv_nsec = (long)(nowMs % 1000ull) * 1000000L;
+    return 0;
+}
 static int temperature(nvmlDevice_t, unsigned int, unsigned int* value) {
     ++polls;
-    *value = 80;
+    // Below the zero-RPM curve's 30C start: driver-automatic phase.
+    *value = schedule == STALL_ZERO_RPM ? 20u : 80u;
     // Lost telemetry keeps failing until the worker locks itself out.
     if (schedule == TELEMETRY_LOST) return 3;
+    if (stall_schedule()) return NVML_SUCCESS;
     if (schedule != APPLY_BEFORE_POLL || polls == 2) g_running = 0;
     return NVML_SUCCESS;
+}
+// Two fans; fan 2 turns for the first reading (proving its sensors), then
+// stops.  The zero-RPM schedule keeps the driver reporting a manual 40% so
+// only the worker's own driver-automatic phase keeps it from being judged.
+static bool linux_backend_fan_stall_sample(LinuxGpuState*, FanStallFanSample* samples,
+                                           unsigned int* fanCount) {
+    *fanCount = 0;
+    if (!stall_schedule()) return true;
+    ++stallSamples;
+    for (unsigned int fan = 0; fan < 2; ++fan) {
+        FanStallFanSample s = {};
+        s.policyKnown = s.policyManual = true;
+        s.intentKnown = true;
+        s.intentPercent = 40;
+        const bool turning = fan == 0 || stallSamples == 1;
+        s.rpmKnown = s.measuredKnown = schedule != STALL_UNSUPPORTED;
+        s.rpm = s.rpmKnown && turning ? 1100u : 0u;
+        s.measuredPercent = s.measuredKnown && turning ? 41 : 0;
+        samples[fan] = s;
+    }
+    *fanCount = 2;
+    return true;
 }
 static bool linux_gpu_identity_matches(const GpuAdapterInfo*, const GpuAdapterInfo*) { return true; }
 static FanFixedMaintenanceDecision linux_backend_fixed_fan_check(LinuxGpuState*, int) {
@@ -105,6 +159,7 @@ static void dlog(const char*, ...) {}
 static bool store_daemon_record(int, const GpuAdapterInfo*, const DesiredSettings*, char*, size_t) { return true; }
 static void daemon_enter_uncertain_after_fan_lockout(const char*, bool autoOk) {
     ++lockouts;
+    lockoutAtMs = nowMs;
     lockoutAutoOk = autoOk;
     g_stateUncertain = true;
 }
@@ -149,7 +204,50 @@ static void initialize(Schedule next) {
     lockOrderValid = true;
     autoRefused = lockoutAutoOk = false;
     waits = polls = writes = lastDuty = iterations = lockouts = 0;
+    nowMs = lockoutAtMs = 0;
+    stallSamples = 0;
     schedule = next;
+}
+
+// The worker's stall check, 12893-12897.
+static int run_stall() {
+    // A proven fan stops under a fixed 40% duty: locked out as a stall on the
+    // reading that completes 20 s (5 s cadence: proof at 5 s, stopped from 10 s).
+    initialize(STALL_FIXED);
+    commit_fixed(40);
+    fan_reassert_thread(nullptr);
+    if (lockouts != 1 || !lockoutAutoOk || lockoutAtMs != 30000 || writes ||
+        g_daemonFanFault.kind != SERVICE_FAN_FAULT_STALL || g_daemonFanFault.fanIndex != 1 ||
+        g_daemonFanFault.commandedPercent != 40 || g_daemonFanFault.stalledForMs != 20000 ||
+        g_daemonFanFault.handback != SERVICE_FAN_HANDBACK_DRIVER_AUTO ||
+        !std::strstr(g_daemonFanFault.detail, "Fan 2 did not turn at 40%") ||
+        !service_fan_fault_wire_valid(&g_daemonFanFault) || !lockOrderValid) return 12893;
+    // No tach or measured duty: never judged, however long.
+    initialize(STALL_UNSUPPORTED);
+    commit_fixed(40);
+    fan_reassert_thread(nullptr);
+    if (lockouts || stallSamples < 20) return 12894;
+    // A zero-RPM curve below its start temperature commands no manual duty.
+    initialize(STALL_ZERO_RPM);
+    commit_curve(40);
+    g_activeDesired.fanCurve.zeroRpmEnabled = true;
+    fan_reassert_thread(nullptr);
+    if (lockouts || stallSamples < 20) return 12895;
+    // A new Apply restarts the window: confirmed 20 s after its first stopped
+    // reading (20 s), not 20 s after the first stopped reading overall (10 s).
+    initialize(STALL_REAPPLY);
+    commit_fixed(40);
+    fan_reassert_thread(nullptr);
+    if (!injected || lockouts != 1 || lockoutAtMs != 40000 ||
+        g_daemonFanFault.kind != SERVICE_FAN_FAULT_STALL) return 12896;
+    // The driver refuses the fan back: forced to 100%, reported as such.
+    initialize(STALL_FIXED);
+    autoRefused = true;
+    commit_fixed(40);
+    fan_reassert_thread(nullptr);
+    if (lockouts != 1 || writes != 1 || lastDuty != FAN_RUNTIME_EMERGENCY_PERCENT ||
+        g_daemonFanFault.handback != SERVICE_FAN_HANDBACK_EMERGENCY_MAX) return 12897;
+    return 0;
 }
 static int run() {
     initialize(IDLE);
@@ -207,7 +305,7 @@ static int run() {
     g_fanFailureCount = 2;
     daemon_fan_runtime_note_commit("test");
     if (g_fanFailureCount || g_daemonFanFault.kind != SERVICE_FAN_FAULT_NONE) return 12892;
-    return 0;
+    return run_stall();
 }
 } // namespace fan_runtime_fixture
 

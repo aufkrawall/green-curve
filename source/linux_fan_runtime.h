@@ -100,8 +100,78 @@ static void daemon_fan_runtime_lockout(gc_u32 kind, const char* reason,
     daemon_enter_uncertain_after_fan_lockout(why, autoOk);
 }
 
+// Monotonic milliseconds: the clock the worker's waits use.
+static unsigned long long daemon_fan_monotonic_ms() {
+    struct timespec now = {};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (unsigned long long)now.tv_sec * 1000ull +
+           (unsigned long long)(now.tv_nsec / 1000000L);
+}
+
+// After a successful poll: the shared stall check (fan_stall_policy.h), on the
+// readings it takes at most every 2 s.  A confirmed stall locks the worker out
+// exactly like repeated failures and is reported as a stall.  `commandKey` is
+// the wake generation, so every Apply or Reset starts the windows over; sensor
+// proof belongs to the selected GPU's generation.  Caller holds g_lock.
+static void daemon_fan_stall_check(FanStallTracker* tracker, FanStallLogLimiter* limiter,
+                                   unsigned long long commandKey, bool manualCommanded,
+                                   int requestedPercent) {
+    const unsigned long long now = daemon_fan_monotonic_ms();
+    if (!fan_stall_sample_due(tracker, now)) return;
+    FanStallFanSample samples[MAX_GPU_FANS] = {};
+    unsigned int fanCount = 0;
+    if (!linux_backend_fan_stall_sample(&g_gpu, samples, &fanCount)) {
+        if (fan_stall_note_sample_unavailable(tracker, now))
+            dlog("daemon fan stall: fan read failed; open stall windows closed\n");
+        return;
+    }
+    FanStallCommand command = {};
+    command.manualCommanded = manualCommanded;
+    command.rangeKnown = g_gpu.fanRangeKnown;
+    command.minPercent = g_gpu.fanMinPct;
+    command.commandedPercent = fan_manual_effective_percent(requestedPercent,
+        g_gpu.fanMinPct, g_gpu.fanMaxPct, g_gpu.fanRangeKnown);
+    const FanStallReport r = fan_stall_observe(tracker,
+        (unsigned long long)g_daemonGpuGeneration, commandKey, now, &command,
+        samples, fanCount);
+    if (r.reset == FAN_STALL_RESET_DEVICE)
+        dlog("daemon fan stall: tracking restarted for another GPU; sensor proof dropped\n");
+    for (unsigned int fan = 0; fan < MAX_GPU_FANS; ++fan) {
+        const unsigned int bit = 1u << fan;
+        const FanStallFanSample* s = fan < fanCount ? &samples[fan] : nullptr;
+        if ((r.proofGainedMask & bit) && s)
+            dlog("daemon fan stall: fan %u sensors proven (rpm=%u%s measured=%d%%%s); "
+                 "stall detection armed\n", fan, s->rpm, s->rpmKnown ? "" : "?",
+                 s->measuredPercent, s->measuredKnown ? "" : "?");
+        if (r.verdict == FAN_STALL_VERDICT_CONFIRMED && r.fanIndex == fan) continue;
+        if (!((r.windowStartedMask | r.windowRestartedMask | r.windowClearedMask) & bit))
+            continue;
+        unsigned int suppressed = 0;
+        if (!fan_stall_log_allow(limiter, fan, now, &suppressed)) continue;
+        char line[192] = {};
+        const int judged = s ? fan_stall_judged_percent(&command, s) : command.commandedPercent;
+        if (fan_stall_format_window_event(&r, fan, s, judged, suppressed, line, sizeof(line)))
+            dlog("daemon fan stall: %s\n", line);
+    }
+    if (r.verdict != FAN_STALL_VERDICT_CONFIRMED) return;
+    const FanStallFanSample& s = samples[r.fanIndex];
+    char rpmText[24] = "n/a", measuredText[24] = "n/a";
+    if (r.rpmEvidence) snprintf(rpmText, sizeof(rpmText), "%u RPM", s.rpm);
+    if (r.measuredEvidence) snprintf(measuredText, sizeof(measuredText), "%d%%", s.measuredPercent);
+    char summary[SERVICE_FAN_FAULT_DETAIL_CHARS] = {};
+    snprintf(summary, sizeof(summary), "Fan %u did not turn at %d%% for %llu s (tach %s, measured %s)",
+             r.fanIndex + 1, r.judgedPercent, (r.stalledForMs + 500ull) / 1000ull,
+             rpmText, measuredText);
+    dlog("daemon FAN STALL: %s over %u readings; handing the fan back to the driver\n",
+         summary, r.observations);
+    daemon_fan_runtime_lockout(SERVICE_FAN_FAULT_STALL, summary, r.fanIndex,
+                               r.judgedPercent, r.stalledForMs);
+}
+
 static pl_thread_ret fan_reassert_thread(void*) {
     FanRuntimeState runtime = {};
+    FanStallTracker stall = {};
+    FanStallLogLimiter stallLog = {};
     unsigned long long observedGeneration = 0;
     unsigned long long runtimeGeneration = 0;
     while (g_running) {
@@ -215,6 +285,9 @@ static pl_thread_ret fan_reassert_thread(void*) {
             if (failure.escalation == FAN_RUNTIME_ESCALATION_RESTORE_AUTO) {
                 daemon_fan_runtime_lockout(SERVICE_FAN_FAULT_REPEATED_FAILURES,
                     "fixed fan maintenance locked out", 0, 0, 0);
+            } else if (outcome == FAN_RUNTIME_OUTCOME_SUCCESS) {
+                daemon_fan_stall_check(&stall, &stallLog, observedGeneration, true,
+                                       g_activeDesired.fanPercent);
             }
         } else if (active) {
             // Telemetry loss is escalated exactly like a refused write: either
@@ -222,6 +295,7 @@ static pl_thread_ret fan_reassert_thread(void*) {
             // stays pinned.  Silently skipping the read left the fan stuck
             // forever with no journal entry.
             FanRuntimeOutcome outcome = FAN_RUNTIME_OUTCOME_TELEMETRY_FAILED;
+            bool manualCommanded = false;
             int pct = -1;
             unsigned int t = 0;
             const char* reason = "temperature source unavailable";
@@ -256,6 +330,7 @@ static pl_thread_ret fan_reassert_thread(void*) {
                     }
                     if (writeOk) {
                         outcome = FAN_RUNTIME_OUTCOME_SUCCESS;
+                        manualCommanded = !decision.useDriverAuto;
                         if (decision.controlModeChanged) {
                             dlog("daemon: fan curve transition temp=%uC control=%s "
                                  "target=%d%% curveDownshift=%dC "
@@ -295,6 +370,9 @@ static pl_thread_ret fan_reassert_thread(void*) {
             if (failure.escalation == FAN_RUNTIME_ESCALATION_RESTORE_AUTO) {
                 daemon_fan_runtime_lockout(SERVICE_FAN_FAULT_REPEATED_FAILURES,
                     "fan curve runtime locked out", 0, 0, 0);
+            } else if (outcome == FAN_RUNTIME_OUTCOME_SUCCESS) {
+                daemon_fan_stall_check(&stall, &stallLog, observedGeneration,
+                                       manualCommanded, pct);
             }
         }
         pl_mutex_unlock(&g_lock);

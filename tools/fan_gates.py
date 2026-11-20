@@ -627,6 +627,24 @@ def check_fan_stall_detection(ctx, require_text, forbid_text, require_order):
                  "only a fan the driver reports under manual policy is judged")
     require_text(policy_h, "const bool rpmUsable = s->rpmKnown && rpmProven;",
                  "an unproven tach never judges a fan")
+    require_text(_p(ctx, "linux_backend.cpp"), '"nvmlDeviceGetFanSpeedRPM"',
+                 "the Linux backend loads the tach getter for the stall check")
+    require_text(_p(ctx, "linux_backend_fan_control.h"),
+                 "s.policyManual = s.policyKnown && value == NVML_FAN_POLICY_MANUAL;",
+                 "the Linux stall sample reports the driver's own fan policy")
+    linux_runtime_h = _p(ctx, "linux_fan_runtime.h")
+    require_text(linux_runtime_h,
+                 "daemon_fan_stall_check(&stall, &stallLog, observedGeneration, true,",
+                 "the Linux fixed-duty poll runs the stall check, keyed to the wake generation")
+    require_text(linux_runtime_h,
+                 "daemon_fan_stall_check(&stall, &stallLog, observedGeneration,\n"
+                 "                                       manualCommanded, pct);",
+                 "the Linux curve poll runs the stall check, keyed to the wake generation")
+    require_text(linux_runtime_h, "manualCommanded = !decision.useDriverAuto;",
+                 "a Linux zero-RPM curve's driver-automatic phase commands no manual duty")
+    require_text(linux_runtime_h,
+                 "daemon_fan_runtime_lockout(SERVICE_FAN_FAULT_STALL, summary, r.fanIndex,",
+                 "a confirmed Linux stall locks the worker out and is reported as a stall")
 
 
 def check_all(ctx, require_text, forbid_text, require_order, backend_surface):

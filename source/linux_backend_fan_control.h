@@ -53,6 +53,40 @@ FanFixedMaintenanceDecision linux_backend_fixed_fan_check(LinuxGpuState* g,
     return result;
 }
 
+bool linux_backend_fan_stall_sample(LinuxGpuState* g, FanStallFanSample* samples,
+                                    unsigned int* fanCountOut) {
+    if (fanCountOut) *fanCountOut = 0;
+    if (!g || !samples || !g->nvml.getNumFans) return false;
+    unsigned int fanCount = 0;
+    if (g->nvml.getNumFans(g->nvmlDevice, &fanCount) != NVML_SUCCESS) return false;
+    if (fanCount > MAX_GPU_FANS) fanCount = MAX_GPU_FANS;
+    for (unsigned int fan = 0; fan < fanCount; ++fan) {
+        FanStallFanSample s = {};
+        unsigned int value = 0;
+        s.policyKnown = g->nvml.getFanControlPolicy &&
+            g->nvml.getFanControlPolicy(g->nvmlDevice, fan, &value) == NVML_SUCCESS;
+        s.policyManual = s.policyKnown && value == NVML_FAN_POLICY_MANUAL;
+        value = 0;
+        s.intentKnown = g->nvml.getTargetFanSpeed &&
+            g->nvml.getTargetFanSpeed(g->nvmlDevice, fan, &value) == NVML_SUCCESS;
+        s.intentPercent = (int)value;
+        value = 0;
+        s.measuredKnown = g->nvml.getFanSpeed &&
+            g->nvml.getFanSpeed(g->nvmlDevice, fan, &value) == NVML_SUCCESS;
+        s.measuredPercent = (int)value;
+        if (g->nvml.getFanSpeedRpm) {
+            nvmlFanSpeedInfo_t info = {};
+            info.version = nvmlFanSpeedInfo_v1;
+            info.fan = fan;
+            s.rpmKnown = g->nvml.getFanSpeedRpm(g->nvmlDevice, &info) == NVML_SUCCESS;
+            s.rpm = s.rpmKnown ? info.speed : 0u;
+        }
+        samples[fan] = s;
+    }
+    if (fanCountOut) *fanCountOut = fanCount;
+    return true;
+}
+
 bool linux_backend_fans_are_auto(LinuxGpuState* g) {
     if (!g || !g->nvml.getNumFans || !g->nvml.getFanControlPolicy) return false;
     unsigned int fanCount = 0;

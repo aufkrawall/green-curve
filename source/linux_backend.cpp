@@ -137,6 +137,8 @@ static void nvml_resolve(LinuxGpuState* g) {
     // The *intended* duty, and the only real readback of a manual fan write.
     // getFanSpeed is measured telemetry; see fan_manual_write_confirmed().
     a->getTargetFanSpeed = sym<nvmlDeviceGetTargetFanSpeed_t>(h, "nvmlDeviceGetTargetFanSpeed");
+    // Tach, for the fan stall check (fan_stall_policy.h); optional.
+    a->getFanSpeedRpm = sym<nvmlDeviceGetFanSpeedRPM_t>(h, "nvmlDeviceGetFanSpeedRPM");
     a->setFanSpeed = sym<nvmlDeviceSetFanSpeed_v2_t>(h, "nvmlDeviceSetFanSpeed_v2");
     a->setDefaultFanSpeed = sym<nvmlDeviceSetDefaultFanSpeed_v2_t>(h, "nvmlDeviceSetDefaultFanSpeed_v2");
     a->getTemperature = sym<nvmlDeviceGetTemperature_t>(h, "nvmlDeviceGetTemperature");

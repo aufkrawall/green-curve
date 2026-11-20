@@ -28,6 +28,7 @@
 #include "linux_vf_layout_summary.h"
 #include "vf_writable_point_policy.h"
 #include "fan_fixed_maintenance_policy.h"
+#include "fan_stall_policy.h"
 #include "fan_request_policy.h"
 #include "service_inert_request_domains.h"
 #include "debug_log_steady_state_policy.h"
@@ -299,5 +300,10 @@ bool linux_backend_fans_are_auto(LinuxGpuState* g);
 // (fan_fixed_maintenance_policy.h).  Read-only.
 FanFixedMaintenanceDecision linux_backend_fixed_fan_check(LinuxGpuState* g,
                                                           int requestedPercent);
+// One stall-check sample per fan (policy, intent, tach, measured duty, each
+// with whether its getter answered).  Returns false when the fan count itself
+// is unreadable.  Read-only.
+bool linux_backend_fan_stall_sample(LinuxGpuState* g, FanStallFanSample* samples,
+                                    unsigned int* fanCountOut);
 
 #endif // GREEN_CURVE_LINUX_BACKEND_H
