@@ -168,6 +168,7 @@ struct TuiPointValues {
     unsigned int voltageMv;
     int baseMHz;
     int liveMHz;
+    int liveOffsetMHz;
     int targetMHz;
     int deltaMHz;
     TuiPointRule rule;

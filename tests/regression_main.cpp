@@ -8736,6 +8736,61 @@ static int run_all_tests(int argc, char** argv) {
             if (proj70.rule != TUI_POINT_GPU_OFFSET || proj70.targetMHz != proj70.baseMHz + 475)
                 return 12651;
         }
+        // 12652-12656: Flatten-tail rows report the programmed flatten floor
+        // offset (-1000 MHz fallback or probed minimum) instead of
+        // targetMHz - clampedBaseMHz (-5 MHz); live/excluded rows report real
+        // live/zero offsets rather than clamped-base artifacts.
+        {
+            auto flService = tuiService;
+            flService.snapshot.curve[76].freq_kHz = 2962000u;
+            flService.snapshot.freqOffsets[76] = 485000;
+            flService.snapshot.curve[77].freq_kHz = 2962000u;
+            flService.snapshot.freqOffsets[77] = -1000000;
+            flService.snapshot.curveOffsetRangeKnown = 0;
+            DesiredSettings flDesired{};
+            flDesired.hasGpuOffset = 1;
+            flDesired.gpuOffsetMHz = 475;
+            flDesired.gpuOffsetExcludeLowCount = 70;
+            flDesired.hasLock = 1;
+            flDesired.lockCi = 76;
+            flDesired.lockMHz = 2957;
+            flDesired.lockMode = LOCK_MODE_FLATTEN;
+            TuiViewModel flVm = vm;
+            flVm.service = &flService;
+            flVm.desired = &flDesired;
+            TuiPointValues tailDefault = tui_point_values(flVm, 77);
+            if (tailDefault.rule != TUI_POINT_FLATTEN_TAIL || tailDefault.deltaMHz != -1000 ||
+                tailDefault.liveOffsetMHz != -1000)
+                return 12652;
+            flService.snapshot.curveOffsetRangeKnown = 1;
+            flService.snapshot.curveOffsetMinkHz = -500000;
+            flService.snapshot.curveOffsetMaxkHz = 500000;
+            TuiPointValues tailProbed = tui_point_values(flVm, 77);
+            if (tailProbed.rule != TUI_POINT_FLATTEN_TAIL || tailProbed.deltaMHz != -500)
+                return 12653;
+            // Excluded low point reports deltaMHz=0 even if live hardware has an offset.
+            flService.snapshot.freqOffsets[69] = 250000;
+            TuiPointValues excl = tui_point_values(flVm, 69);
+            if (excl.rule != TUI_POINT_EXCLUDED || excl.deltaMHz != 0 || excl.liveOffsetMHz != 250)
+                return 12654;
+            // Untouched live row on an externally flattened tail reports live offset (-1000), not 0.
+            DesiredSettings emptyDesired{};
+            flVm.desired = &emptyDesired;
+            TuiPointValues liveClamped = tui_point_values(flVm, 77);
+            if (liveClamped.rule != TUI_POINT_LIVE || liveClamped.deltaMHz != -1000 ||
+                liveClamped.liveOffsetMHz != -1000)
+                return 12655;
+            // Selected-point header shows live driver offset when nonzero.
+            flVm.desired = &flDesired;
+            flVm.selectedPoint = 77;
+            TuiLayout flLayout;
+            build_tui_layout(flVm, 140, 40, &flLayout);
+            std::string allText;
+            for (const auto& cell : flLayout.cells) allText += cell.glyph;
+            if (allText.find("Live 2962 (-1000)") == std::string::npos ||
+                allText.find("-1000") == std::string::npos)
+                return 12656;
+        }
 
         TuiLayout graphLayout;
         build_tui_layout(vm, 160, 48, &graphLayout);

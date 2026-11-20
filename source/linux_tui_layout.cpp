@@ -6,6 +6,7 @@
 #include "linux_tui_authority.h"
 #include "vf_writable_point_policy.h"
 #include "vf_stock_base_policy.h"
+#include "vf_offset_range_policy.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -331,6 +332,8 @@ TuiPointValues tui_point_values(const TuiViewModel& vm, int pointIndex) {
           (long long)snapshot.freqOffsets[pointIndex];
     out.baseMHz = (int)((baseKHz >= 0 ? baseKHz + 500 : baseKHz - 500) / 1000);
     out.liveMHz = (int)((snapshot.curve[pointIndex].freq_kHz + 500u) / 1000u);
+    const int liveOffKHz = snapshot.freqOffsets[pointIndex];
+    out.liveOffsetMHz = (liveOffKHz >= 0 ? liveOffKHz + 500 : liveOffKHz - 500) / 1000;
     out.targetMHz = out.liveMHz;
     out.rule = TUI_POINT_LIVE;
 
@@ -361,7 +364,21 @@ TuiPointValues tui_point_values(const TuiViewModel& vm, int pointIndex) {
             out.rule = TUI_POINT_EXCLUDED;
         }
     }
-    out.deltaMHz = out.targetMHz - out.baseMHz;
+    if (out.rule == TUI_POINT_FLATTEN_TAIL) {
+        // Flatten tails are always programmed with the driver's flatten floor
+        // offset (typically -1000 MHz), not targetMHz - clampedBaseMHz.
+        const VfOffsetRange range = vf_offset_range_from_probe(
+            snapshot.curveOffsetRangeKnown != 0,
+            snapshot.curveOffsetMinkHz, snapshot.curveOffsetMaxkHz);
+        const int floorKHz = vf_offset_range_flatten_floor_khz(range);
+        out.deltaMHz = (floorKHz >= 0 ? floorKHz + 500 : floorKHz - 500) / 1000;
+    } else if (out.rule == TUI_POINT_EXCLUDED) {
+        out.deltaMHz = 0;
+    } else if (out.rule == TUI_POINT_LIVE) {
+        out.deltaMHz = out.liveOffsetMHz;
+    } else {
+        out.deltaMHz = out.targetMHz - out.baseMHz;
+    }
     return out;
 }
 

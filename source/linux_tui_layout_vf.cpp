@@ -407,9 +407,15 @@ void draw_vf_controls(TuiCanvas* c, const TuiRect& panel, bool horizontal) {
         TuiPointValues selected = tui_point_values(vm, vm.selectedPoint);
         char label[96] = {};
         if (selected.populated) {
-            snprintf(label, sizeof(label), "#%d • %u mV  Base %d  Live %d",
-                     vm.selectedPoint, selected.voltageMv,
-                     selected.baseMHz, selected.liveMHz);
+            if (selected.liveOffsetMHz != 0) {
+                snprintf(label, sizeof(label), "#%d • %u mV  Base %d  Live %d (%+d)",
+                         vm.selectedPoint, selected.voltageMv,
+                         selected.baseMHz, selected.liveMHz, selected.liveOffsetMHz);
+            } else {
+                snprintf(label, sizeof(label), "#%d • %u mV  Base %d  Live %d",
+                         vm.selectedPoint, selected.voltageMv,
+                         selected.baseMHz, selected.liveMHz);
+            }
         } else {
             snprintf(label, sizeof(label), "Select a populated VF point");
         }
