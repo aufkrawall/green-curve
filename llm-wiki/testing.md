@@ -1,5 +1,12 @@
 # Testing
 
+## Post-review follow-up hardening (2026-11-20)
+
+- **Linux fan lockout & Windows fan handback (`tests/fan_runtime_followup_tests.cpp` `12898-12899`, `tests/fan_handback_runtime_tests.cpp` `12857/12859/12860/12869`, `tools/fan_gates.py`):** pins Linux lockout dropping/updating `g_activeDesired`, `populate_snapshot()` gating on `intentMatchesSelected` + `!g_stateUncertain` + `linux_daemon_fan_runtime_active()`, non-fan Apply preserving `g_daemonFanFault`, and Windows `service_fan_runtime_handback_publish()` syncing `g_serviceActiveDesiredGpu`, profile metadata (`NONE/0` vs `AD_HOC/0`), canonical emergency defaults, and restart-reapply snapshot persistence.
+- **Linux VF `vfMask` intersection & scoped `vfBaselineReset` modeled review (`tests/linux_vf_write_tests.cpp` `12689-12691`, `tests/linux_clock_offset_tests.cpp` `9006-9008`, `tools/linux_gates.py`):** covers uneditable populated VF entries skipped on baseline reset/full Reset/rollback via `linux_vf_rollback_mask_policy.h` while preserving sub-450 MHz rollback placeholders, and pre-scalar scoped VF reset + deferred modeled review (`linux_apply_prepare_scoped_vf_before_scalar()`, `vfBaselineResetAttempted` rollback coverage).
+- **Windows GPU selection degraded recovery, transient deferral & single-sync switch (`tests/gpu_selection_sync_tests.cpp` `7100-7101`, `tools/gpu_support_gates.py`):** covers `gpu_selector_combo_enabled()` in `DEGRADED`/`DEVICE_MISSING`, `gpu_selection_refusal_is_transient()`, `service_prepare_requested_gpu()` rollback on init failure, and single full-sync advancement.
+- **Linux lazy CLI GPU target & INI flat-tail repair parity (`tests/linux_gpu_selection_store_regression.cpp`, `tools/linux_gates.py`, `tools/ui_gates.py`):** covers offline ordinary profile loading without GPU target resolution, malformed write-target refusal when `needsLive`, uniform `pointN_offset_khz` flat-tail repair, and `base_plus_gpu_offset` skip guard. Cross-linked for `x86_64-linux-gnu` on Windows (`python build.py --test`).
+
 ## Curve planner fixture lifetime (2026-11-20)
 
 `tests/curve_plan_tests.cpp` keeps the hard-lock request alive until the

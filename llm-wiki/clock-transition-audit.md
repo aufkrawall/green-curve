@@ -4,13 +4,32 @@
 
 `linux_backend_mutation.cpp` passes the compiled VF write set to the
 baseline reset in `linux_backend_apply_context.h`. It includes outgoing
-cleanup points. Unrelated offsets retain their raw values, and a fresh sample
-with surviving offsets carries shaped-baseline evidence. Legacy full baseline
-reset still includes every populated point. The correction planner in
+cleanup points and intersects every baseline reset, full Reset, snapshot
+capture, and rollback `exactMask` with `g->vfMask` via
+`linux_vf_baseline_reset_mask()` (`linux_vf_baseline_policy.h`) and
+`linux_vf_rollback_masks()` (`linux_vf_rollback_mask_policy.h`) so uneditable
+populated VF entries never fail closed, while rollback preserves sub-450 MHz
+placeholder tolerance (`tests/linux_vf_write_tests.cpp` `12689-12691`).
+Unrelated offsets retain their raw values, and a fresh sample with surviving
+offsets carries shaped-baseline evidence. Legacy full baseline reset still
+includes every editable populated point. The correction planner in
 `linux_backend_curve_correction.h` uses the uniform minimum only for a
 flatten within that write set. A correction before a hard pin leaves the
 pin's existing tail offsets intact. `tests/linux_vf_write_tests.cpp` covers
-the partial reset mask and a pre-tail correction on a simulated hard lock.
+the partial reset mask, editable-mask intersection, and a pre-tail correction
+on a simulated hard lock.
+
+Scoped `vfBaselineReset` also participates in modeled transition review:
+`linux_authoring_scalar_transition_precheck()` (`linux_graphics_offset_control.h`)
+treats `allowDeferredVfBaseline && incomingScalarZero` as `resetsToStock`,
+`authoring_modeled_transition_preflight()` defers locked curves over shaped
+baselines when `resetsToStock` is true, and
+`linux_apply_prepare_scoped_vf_before_scalar()` (`linux_apply_modeled_review.h`,
+invoked in `LINUX_MUTATION_GPU_OFFSET` before named scalar writes) runs the
+scoped VF reset + `linux_apply_post_reset_modeled_review()` once, tracking
+`vfBaselineResetAttempted` / `vfBaselineResetDone` so rollback restores the
+curve if a subsequent step fails (`tests/linux_clock_offset_tests.cpp`
+`9006-9008`).
 
 Linux correction requires a coherent post-write VF snapshot and a policy that permits another batch. Both correction paths require the offset writer to converge. Legacy projected offsets must also survive the full snapshot, subject to the existing idle-placeholder rule. The runtime fixture in `tests/linux_curve_correction_runtime_tests.cpp` covers these boundaries.
 

@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-20: Review-range hardening across fan handback, Linux VF masks/modeled review, GPU selection, and Linux INI/CLI loading
+
+- Verified and resolved seven code-review findings across `9f7e493..HEAD`:
+  1. **Linux fan lockout parity:** `daemon_fan_runtime_lockout()` now updates `g_activeDesired` / `g_hasActiveDesired` / `g_activeTarget` before writing `LINUX_DAEMON_RECORD_UNCERTAIN`; `populate_snapshot()` gates fan mode and runtime flags on `intentMatchesSelected`, `!g_stateUncertain`, and shared `linux_daemon_fan_runtime_active()` (`fan_intent_policy.h`); non-fan `SERVICE_CMD_APPLY` preserves `g_daemonFanFault` (`tests/fan_runtime_followup_tests.cpp` `12898-12899`).
+  2. **Windows fan handback state sync:** `service_fan_runtime_handback_publish()` initializes canonical defaults on `!hadIntent` emergency handback, clears/populates `g_serviceActiveDesiredGpu`, updates profile metadata (`NONE/0` vs `AD_HOC/0`), and clears/re-persists the restart-reapply snapshot outside `g_appLock` (`tests/fan_handback_runtime_tests.cpp` `12857/12859/12860/12869`).
+  3. **Linux VF `vfMask` intersection:** baseline reset, full Reset, snapshot capture, and rollback intersect exact masks with `g->vfMask` via `linux_vf_baseline_reset_mask()` and standalone `linux_vf_rollback_mask_policy.h` while preserving sub-450 MHz rollback placeholders (`tests/linux_vf_write_tests.cpp` `12689-12691`).
+  4. **Scoped Linux `vfBaselineReset` in modeled review:** `linux_authoring_scalar_transition_precheck()`, `authoring_modeled_transition_preflight()`, and `linux_apply_prepare_scoped_vf_before_scalar()` (`linux_apply_modeled_review.h`) run scoped VF baseline reset + post-reset modeled review before named scalar writes and mark `vfBaselineResetAttempted` for rollback (`tests/linux_clock_offset_tests.cpp` `9006-9008`).
+  5. **Windows GPU selection recovery:** `service_prepare_requested_gpu()` restores the previous selection on init failure/identity mismatch (`main_service_path_containment.h` split out to keep `main_service_request_policy.cpp` under 800 lines); `gpu_selector_combo_enabled()` keeps the combo usable in `DEGRADED`/`DEVICE_MISSING`; transient busy/transition refusals (`gpu_selection_refusal_is_transient()`) no longer latch reconciliation; and GPU switches enqueue a single full sync (`tests/gpu_selection_sync_tests.cpp` `7100-7101`).
+  6. **Linux CLI lazy GPU target resolution:** `linux_cli_profile_load.h` resolves the configured GPU target only when `needsLive` is true, enforcing `linux_gpu_target_for_write()` for mutating verbs and `linux_gpu_target_for_read()` for read-only verbs.
+  7. **Linux INI flat-tail repair parity:** `linux_profile_document_load.h` and `linux_port_profiles.cpp` skip `PROFILE_CURVE_DECODE_BASE_PLUS_GPU_OFFSET` and pass `pointN_offset_khz` into `profile_desired_has_legacy_flat_tail_offset_artifact()`.
+- Also fixed two `clang-tidy` findings (`linux_port.cpp` explicit `existingDestination != nullptr`, `main_state_sync.cpp` `(void)fromFullSync;` in service build).
+- Verification: `python build.py --gates`, `python build.py --test` (all pure tests, Windows pipe/loader/CLI fixtures, Linux `x86_64` cross-links, `wiki_public_gates`, and source gates), and `python build.py --tidy` (0 new findings, 34 baselined) all passed; Linux native runtime tests were cross-linked on Windows rather than executed on a Linux GPU host.
+
 ## 2026-11-20: Fan stall detection and reported fan handbacks
 
 - Follow-up to the profile-switch report: neither platform noticed a fan that

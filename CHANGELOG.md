@@ -55,7 +55,7 @@ Curve editing, profile transfer and capture improve.
 
 ### Fixed
 
-- **Scoped Linux curves:** preserve unrelated offsets and hard-lock tails. Require fresh readback before retrying eligible writes.
+- **Scoped Linux curves:** preserve unrelated offsets, hard-lock tails and read-only points across reset and rollback; check transitions before named offsets.
 - **Profile transfer:** retain scope, graphics controls and repeated-voltage point bindings.
 - **Windows advanced edits:** preserve omitted external settings.
 - **Windows power reset:** restore defaults even when displaying 100%.
@@ -75,7 +75,7 @@ Curve editing, profile transfer and capture improve.
 - **Tray minimize:** avoid crashes after profile actions.
 - **Notebook GPUs:** accept system-managed fans/power.
 - **Fan curves on profile switch:** keep running after a GUI Apply; profiles no longer show active while the fan is in driver control.
-- **Fan control errors:** stopping custom fan control is announced and no longer shown as active.
+- **Fan control errors:** handing a fan back to the driver clears active profile and restart state and stays cleared across non-fan applies.
 - **GPU warnings:** report limited support.
 - **Reset:** restore external memory/power changes, including half-MHz memory offsets.
 - **Already-reset GPUs:** Reset completes promptly.
@@ -85,10 +85,10 @@ Curve editing, profile transfer and capture improve.
 - **Curve errors:** identify out-of-range targets.
 - **Profile files:** import the reviewed contents and confirm before replacing any Linux export destination.
 - **Multi-GPU ownership:** prevent retargeting when identical cards cannot be distinguished.
-- **GPU selector:** switch views and writes together.
+- **GPU selector:** switch views and writes together, stay usable when a card fails to initialize, and retry after temporary busy refusals.
 - **Curve previews:** avoid spikes; retain drafts.
-- **Older flatten profiles:** load erroneous negative-offset records.
-- **Linux cross-platform profiles:** converge and resolve voltage-bound curves.
+- **Older flatten profiles:** load erroneous negative-offset records consistently across Windows and Linux.
+- **Linux cross-platform profiles:** converge, resolve voltage-bound curves, and load ordinary profiles offline without needing a GPU.
 - **Linux inspection:** show locks, captures and actual offsets.
 - **Cross-platform transfer:** export unlocked profiles; recognize Linux settings.
 

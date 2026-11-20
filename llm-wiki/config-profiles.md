@@ -52,7 +52,11 @@ Current behavior:
   use the shown daemon snapshot; Linux CLI (`--dump`, `--json`, `--apply-config`,
   `--startup-profile`) load
   position-based slots offline and fall back to fetching the live daemon VF
-  topology once (`linux_cli_profile_load.h`) when a slot reports `needsLive`.
+  topology once (`linux_cli_profile_load.h`) when a slot reports `needsLive`,
+  resolving the configured GPU target lazily only after `needsLive` is confirmed
+  (`requireWriteTarget` enforces `linux_gpu_target_for_write()` for mutating
+  verbs and `linux_gpu_target_for_read()` for read-only verbs so offline
+  ordinary profiles never fail on unrelated GPU config).
   Startup status uses the voltage table in the same policy response only when
   the boot resolver identifies the selected GPU. Otherwise the comparison is
   unknown. A voltage-mapped refresh checks the same GPU, generation, service
@@ -77,7 +81,9 @@ Current behavior:
   `lockTracksAnchor=0`) identically across `profile_desired_from_indexed_document()`,
   Windows ordinary INI load (`config_profile_repair.cpp` before IPC clamping),
   Linux ordinary INI load (`linux_profile_document_load.h` /
-  `linux_port_profiles.cpp`), and `profile_document_summary()`, with one-line
+  `linux_port_profiles.cpp`, skipping `PROFILE_CURVE_DECODE_BASE_PLUS_GPU_OFFSET`
+  records and reading `pointN_offset_khz` evidence identically to Windows),
+  and `profile_document_summary()`, with one-line
   repair diagnostics. All genuinely out-of-range offsets (no flatten lock,
   `excludeLowCount < lockCi`, projected points, hard lock, positive values, or
   contradictory/missing uniform proof) continue to be refused with exact MHz

@@ -53,18 +53,26 @@ stalled-for, and the outcome (driver auto, emergency 100%, or neither
 confirmed). Both trust paths validate it; a stateless refusal carries none.
 The GUI (status line plus an audible tray balloon), the TUI and the Linux
 status/JSON output announce each fault once (`gc_fan_fault_observe()`); a
-record that returns to NONE re-arms the observer. The Windows service clears
-it on an Apply that wrote the fan or a Reset; Linux on any committed Apply or
-Reset (they also clear the uncertainty).
+record that returns to NONE re-arms the observer. Both the Windows service and
+the Linux daemon clear it on a committed Apply that owns the fan domain or a
+Reset (non-fan Applies preserve `g_daemonFanFault` on Linux).
 
-**Honest state after a handback (Windows).** The service escalation used to
-keep the curve in the owned intent, so after repeated failures the GUI and tray
-went on showing it (the bug class fixed at the top of this page) and the next
-Apply's fan invariant would have restarted it on the failed fan.
-`service_fan_runtime_handback_publish()` now drops the fan from the owned
-intent when the driver took it back (retiring the ownership marker if nothing
-else is owned), or owns Fixed 100% when the driver refused, so every later
-repair aims at maximum cooling.
+**Honest state after a handback (Windows and Linux).** Both escalations used to
+leave the curve in the owned intent, so clients kept showing it and later
+non-fan Applies revived it. On Windows, `service_fan_runtime_handback_publish()`
+drops the fan from `g_serviceActiveDesired` on driver-auto handback (retiring
+the ownership marker, `g_serviceActiveDesiredGpu`, and profile metadata to
+`NONE/0` if nothing else is owned, or demoting to `AD_HOC/0` when other domains
+remain) or owns Fixed 100% with canonical defaults (`lockCi = -1`,
+`powerLimitPct = POWER_LIMIT_DEFAULT_PCT`) when the driver refused, and clears
+or re-persists the restart-reapply snapshot outside `g_appLock` so a controlled
+restart cannot replay the handed-back fan. On Linux,
+`daemon_fan_runtime_lockout()` applies the same owned-intent update to
+`g_activeDesired` / `g_hasActiveDesired` / `g_activeTarget` before writing
+`LINUX_DAEMON_RECORD_UNCERTAIN`; `populate_snapshot()` gates `activeFanMode`,
+`fanCurveRuntimeActive`, `fanFixedRuntimeActive`, and `control->fanMode` on
+`intentMatchesSelected`, `!g_stateUncertain`, and shared
+`linux_daemon_fan_runtime_active()` (`fan_intent_policy.h`).
 
 **Not done: a periodic runtime-vs-intent check.** Every deliberate runtime stop
 now updates the owned intent (handback) or happens inside a transaction that
@@ -83,8 +91,8 @@ driver-auto handback`; Linux uses the `daemon fan stall:` / `daemon FAN STALL:`
 fault notice`.
 
 Verified by fixtures only: policy table 12800-12831, record and notice
-12832-12855, Windows handback 12856-12868, Windows stall check 12870-12879 and
-12887-12888, GUI notice 12880-12884, Linux worker 12890-12897; scratch-copy
+12832-12855, Windows handback 12856-12869, Windows stall check 12870-12879 and
+12887-12888, GUI notice 12880-12884, Linux worker 12890-12899; scratch-copy
 mutations of each gate failed the matching case. No stalled fan on hardware.
 
 Last verified: 2026-11-20.
@@ -160,11 +168,10 @@ verdict=...`, `fan intent invariant: apply repair SUCCEEDED|FAILED`, Linux
 ...`.
 
 Open questions / stale-risk: the invariant runs at transaction boundaries only.
-A deliberate runtime stop (failure escalation, update-install handback) keeps
-the owned intent and is not re-checked periodically, which is intended because
-the next Apply or restore re-establishes it. Verified by fixtures and the
-executable Windows fan step; the exact GUI sequence was not replayed on
-hardware.
+Failure and stall handbacks update the owned intent directly (above), while an
+update-install handback immediately precedes service replacement. Verified by
+fixtures and the executable Windows fan step; the exact GUI sequence was not
+replayed on hardware.
 
 Last verified: 2026-11-20.
 

@@ -54,9 +54,14 @@ Three cross-platform profile parity gaps on Linux were root-caused and fixed:
    offline when a slot is voltage-bound, and `linux_cli_profile_load.h` falls
    back to querying the live daemon VF topology once across CLI (`--dump`,
    `--json`, `--apply-config`, `--startup-profile`), startup sync, and TUI
-   startup-policy bind. `linux_main.cpp` defers slot materialization for verbs
-   that do not require a profile (`--tui`, `--probe`, `--reset --apply-config`)
-   using `load_selected_profile_slot()`. `--dump` prints lock mode
+   startup-policy bind. In `linux_main.cpp`, the configured GPU target is
+   resolved lazily inside `linux_cli_profile_load.h` only after `needsLive` is
+   confirmed (`requireWriteTarget` distinguishes `linux_gpu_target_for_write()`
+   from `linux_gpu_target_for_read()`), so offline ordinary profiles never fail
+   on malformed/unrelated `[gpu]` state while write verbs still refuse malformed
+   write targets before querying live state. `linux_main.cpp` also defers slot
+   materialization for verbs that do not require a profile (`--tui`, `--probe`,
+   `--reset --apply-config`) using `load_selected_profile_slot()`. `--dump` prints lock mode
    (`(flatten)`/`(hard)`) and `captured(+X Hz)` points, `--json` emits
    `captured_offset_hz`, and `linux_tui_layout.cpp` previews captured and
    projected points against the live base curve, displays the real flatten-tail
