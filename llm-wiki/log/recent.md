@@ -5,6 +5,61 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-20: Windows-exported profiles failed on Linux (curve convergence, shaped-baseline transitions, voltage-bound CLI/startup loading)
+
+- Reported: five profiles exported from Windows and imported into Green Curve
+  on Linux (same multi-boot RTX 5070 Blackwell GPU, NVIDIA Linux driver
+  620.73.04) worked on Windows, but multiple profiles and cross-profile
+  transitions failed on Linux.
+- Root causes (confirmed live on hardware and from daemon/code inspection):
+  1. **Missing post-write curve correction loop on Linux.** Applying a
+     selective `+475 MHz` offset together with a `-1000 MHz` flattened tail
+     pulled the anchor (`ci=76`) to `2947 MHz` (`10 MHz` below the `2957 MHz`
+     target, outside the `8 MHz` verification tolerance). Windows converged in
+     pass 1 (`+475 -> +485 MHz`), whereas Linux stopped after one VF write and
+     rolled back.
+  2. **Shaped-VF baseline pollution and missing replacement preparation.**
+     Switching between flattened/captured curves and hard-locked or legacy
+     profiles without resetting the active VF baseline caused target building to
+     subtract offsets from monotonically clamped tail bases (`-1005 MHz` out of
+     range) or cross-talked pre-tail points, and caused legacy slots upgraded by
+     `service_upgrade_legacy_scalar_scope()` to inherit prior explicit-scope
+     captured points when `desired_prepare_replacement_request()` was omitted.
+  3. **Offline-only profile loader rejected voltage-bound slots.** Linux CLI
+     (`--dump`, `--json`, `--apply-config`, `--startup-profile`), startup sync,
+     and TUI startup bind always called `load_document_section()` with a null
+     destination topology, failing voltage-bound profiles and even blocking
+     `--tui`/`--probe`/`--reset` when `selected_slot` pointed to one.
+- Fixes (three commits: `63a6d04`, `7c22054`, `2bf64e6`):
+  1. Added `source/linux_backend_curve_correction.h` and
+     `source/linux_backend_curve_correction_runtime.h` implementing the
+     budget-bounded post-write correction loop for both legacy (reusing
+     `apply_correction_policy.h`) and exact authoring paths, with flat-tail
+     monotonicity verification and actual-Hz mismatch diagnostics.
+  2. Added `source/linux_vf_baseline_policy.h` to reset shaped VF baselines
+     inside `LINUX_MUTATION_CURVE` under an armed `LINUX_MUTATION_LOCK_CEILING`
+     with a post-baseline `curve_plan_evaluate()` backstop, and aligned Linux
+     CLI and TUI to call `desired_prepare_replacement_request()` on profile
+     replacement.
+  3. Added destination-aware loaders (`linux_profile_document_load.h`,
+     `linux_port_profiles.cpp`), live-daemon topology fallback
+     (`linux_cli_profile_load.h`), deferred slot materialization in
+     `linux_main.cpp`, lock-mode/captured-point output in
+     `linux_profile_output.cpp`, and captured/projected VF point preview in
+     `linux_tui_layout.cpp`.
+- Verified:
+  - Regression tests `12630-12648` (`tests/linux_vf_write_tests.cpp`),
+    `12650-12651` (`tests/regression_main.cpp`), native fixture
+    `test_voltage_bound_profile_load_and_output()`
+    (`tests/linux_gpu_selection_store_regression.cpp`), and
+    `tools/linux_gates.py::check_profile_interchange_and_curve_correction()`.
+  - `python3 build.py --test`, `python3 build.py --check --target all`,
+    `python3 build.py --gates`, and plain deliverable `python3 build.py`.
+  - Live hardware on RTX 5070 Linux: all five imported profiles, 13-step
+    cross-profile CLI sequence, interactive TUI load/apply cycle, and
+    `--startup-profile` bind succeeded with 0 failed phases and pass-1
+    correction in 10-22 ms.
+
 ## 2026-11-20: Loading an older saved flatten profile failed with "graphics offset (-1927 MHz) is out of range"
 
 - Reported: clicking Load on Profile 1 raised

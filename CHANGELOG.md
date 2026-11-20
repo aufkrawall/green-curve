@@ -80,6 +80,8 @@ Curve checks, profile transfer and capture improve.
 - **GPU selector on Windows:** choosing another GPU now switches the live view instead of snapping back, and profiles act only on the GPU shown.
 - **Curve preview and loaded profiles:** previewing an offset profile over a flattened curve no longer spikes points pulled up by driver cross-talk or clamped tails, and loading imported offset profiles keeps valid draft values for Apply and Save.
 - **Older flattened profiles:** profiles saved or imported with a large negative graphics offset left over from an external flattened tail now load cleanly with a 0 MHz core offset instead of failing with an out-of-range error.
+- **Linux flattened and cross-platform profiles:** profiles exported from Windows now converge to their target lock frequency on Linux, switch cleanly between flattened and hard-locked curves, and resolve voltage-bound slots in the CLI, TUI and startup policy.
+- **Linux profile inspection and TUI preview:** CLI config dumps now report lock modes and captured curve points, and the TUI previews captured and projected points against the live curve.
 
 ### Compatibility notes
 

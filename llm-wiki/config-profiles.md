@@ -39,9 +39,16 @@ Current behavior:
   Voltage-bound records map by exact voltage onto the live curve
   (`profile_destination_from_vf_curve()`, fixed floor points read-only) and refuse
   the whole record with a plain reason otherwise (needs the GPU / different GPU /
-  fixed point). Windows uses `g_app.curve`; the TUI Load uses the shown snapshot;
-  the Linux file-level loader (daemon startup) has no live curve, so a
-  voltage-bound slot refuses there until loaded once in the TUI and saved.
+  fixed point). Windows uses `g_app.curve`; the TUI Load and startup-policy bind
+  use the shown daemon snapshot; Linux CLI (`--dump`, `--json`, `--apply-config`,
+  `--startup-profile`) and startup sync (`linux_startup_sync.cpp`) load
+  position-based slots offline and fall back to fetching the live daemon VF
+  topology once (`linux_cli_profile_load.h`) when a slot reports `needsLive`.
+  `linux_main.cpp` also defers slot materialization for verbs that do not need a
+  configured profile (`--tui`, `--probe`, `--reset --apply-config`), reading
+  only `selected_slot` via `load_selected_profile_slot()` so a voltage-bound
+  selected slot never blocks offline startup or recovery. Purely offline callers
+  with no reachable daemon still refuse voltage-bound slots cleanly.
 - **Legacy flat-tail offset-artifact repair (2026-11-20).** Profiles saved
   before live VF offset detection excluded unowned external programmed flat
   tails (`vf_live_offset_policy.h`) could record a large negative graphics

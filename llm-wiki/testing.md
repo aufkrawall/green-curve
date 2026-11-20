@@ -1,5 +1,15 @@
 # Testing
 
+## Linux cross-platform profile interchange, curve correction and shaped-baseline reset (2026-11-20)
+
+- `tests/linux_vf_write_tests.cpp` (`12630-12648`):
+  - `12630-12639`: pure curve-correction budget derivation (`GC_DAEMON_HARDWARE_WRITE_BUDGET_MS` minus `2000 ms` reserve), authoring correction shape matching, flat-tail monotonicity verification (`linux_verify_authoring_flatten_monotonicity()`), and legacy correction loop convergence/budget/failure handling via `linux_run_legacy_curve_correction()`.
+  - `12640-12648`: shaped-VF baseline reset predicate (`linux_apply_needs_vf_baseline_reset()`), TUI curve/lock change detection (`linux_tui_curve_or_lock_changed()`), and TUI replacement-scope request preparation (`linux_tui_prepare_apply_request()`).
+- `tests/regression_main.cpp` (`12650-12651`): TUI VF point preview for captured zero/non-zero points and projected points over `base + gpuOffsetMHz` (`linux_tui_layout.cpp`).
+- `tests/linux_gpu_selection_store_regression.cpp`: native Linux fixture `test_voltage_bound_profile_load_and_output()` covering `load_selected_profile_slot()`, offline `needsLive=true` reporting, live-daemon voltage-bound resolution shifted from `sourceIndex` (`linux_load_profile_with_daemon_fallback()`, `linux_load_default_or_selected_profile_with_daemon_fallback()`), and CLI text/JSON output of lock mode and `captured_offset_hz`.
+- `tools/linux_gates.py` (`check_profile_interchange_and_curve_correction()`): pins the correction loop, shaped-baseline reset under armed transition ceiling, CLI/TUI replacement preparation, and live-daemon voltage-bound fallback across CLI, startup sync, and TUI startup bind.
+- Hardware verification (2026-11-20, Linux x86_64, RTX 5070 Blackwell, driver 620.73.04): live CLI, interactive TUI (`pty`), and `--startup-profile` runs across five Windows-exported profiles (legacy flatten, selective offset + flatten, hard lock, and voltage-bound captured curve + flatten) plus repeated cross-profile transitions and `--reset --apply-config` all succeeded with zero failed phases and pass-1 correction converging in 10-22 ms.
+
 ## Legacy flat-tail graphics offset artifact repair (2026-11-20)
 
 - `tests/profile_slot_runtime_tests.cpp` (`12600-12622`) executes

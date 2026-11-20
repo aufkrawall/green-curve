@@ -1,5 +1,70 @@
 # Linux Backend
 
+## Cross-platform profile interchange, curve correction loop and shaped-baseline reset (2026-11-20)
+
+Source anchors: `source/linux_backend_curve_correction.h`,
+`source/linux_backend_curve_correction_runtime.h`,
+`source/linux_vf_baseline_policy.h`, `source/linux_cli_profile_load.h`,
+`source/linux_backend_curve_build.h`, `source/linux_backend_apply_context.h`,
+`source/linux_backend_mutation.cpp`, `source/linux_curve_targets.h`,
+`source/linux_curve_authoring_targets.h`, `source/linux_graphics_offset_control.h`,
+`source/linux_profile_document_load.h`, `source/linux_port_profiles.cpp`,
+`source/linux_profile_output.cpp`, `source/linux_main.cpp`,
+`source/linux_startup_sync.cpp`, `source/linux_tui_layout.cpp`,
+`source/linux_tui_profile_load.h`, `source/linux_tui_actions.cpp`,
+`source/linux_tui_mutation_actions.cpp`, `tests/linux_vf_write_tests.cpp`
+(`12630-12648`), `tests/regression_main.cpp` (`12650-12651`),
+`tests/linux_gpu_selection_store_regression.cpp`, `tools/linux_gates.py`.
+
+Three cross-platform profile parity gaps on Linux were root-caused and fixed:
+
+1. **Post-write VF curve correction loop.** On Blackwell, applying a selective
+   graphics offset together with a `-1000 MHz` flattened tail pulls the anchor
+   point below its requested target by driver cross-talk (e.g., `2947 MHz` vs
+   `2957 MHz`, exceeding the `8 MHz` verification tolerance). Linux previously
+   performed only a single VF write pass and rolled back on cross-talk mismatch.
+   `linux_backend_curve_correction.h` / `linux_backend_curve_correction_runtime.h`
+   now run the shared `apply_correction_policy.h` correction loop on the legacy
+   path and a budget-bounded exact-Hz correction loop on the authoring path
+   (budget derived from `GC_DAEMON_HARDWARE_WRITE_BUDGET_MS` minus a `2000 ms`
+   reserve; flat-tail monotonicity verified via
+   `linux_verify_authoring_flatten_monotonicity()`). Both paths check shape
+   agreement before re-writing and log pass count, elapsed ms, and actual vs
+   requested Hz on failure.
+2. **Shaped-VF baseline reset and replacement-scope preparation.** When a new
+   curve or lock replaces an already-shaped VF curve (non-zero active offsets)
+   without `resetOcBeforeApply` (such as explicit-scope updates or legacy slots
+   upgraded by `service_upgrade_legacy_scalar_scope()`), computing target deltas
+   from monotonically clamped tail bases or cross-talked neighbors produced
+   out-of-range offsets or false pre-tail violations.
+   `linux_vf_baseline_policy.h` now detects shaped-baseline conflicts
+   (`linux_apply_needs_vf_baseline_reset()`), arms the scoped transition
+   ceiling (`LINUX_MUTATION_LOCK_CEILING`) before zeroing VF offsets inside
+   `LINUX_MUTATION_CURVE`, and re-runs `curve_plan_evaluate()` on the clean
+   stock curve before writing targets. Both Linux CLI (`--apply-config`) and
+   TUI (`linux_tui_prepare_apply_request()`) now call
+   `desired_prepare_replacement_request()` on loaded profile replacement so
+   legacy profiles do not inherit prior explicit-scope captured points.
+3. **Voltage-bound profile loading and preview.** Destination-aware loaders
+   (`load_profile_from_config_path_for_destination()`,
+   `load_default_or_selected_profile_for_destination()`) report `needsLive=true`
+   offline when a slot is voltage-bound, and `linux_cli_profile_load.h` falls
+   back to querying the live daemon VF topology once across CLI (`--dump`,
+   `--json`, `--apply-config`, `--startup-profile`), startup sync, and TUI
+   startup-policy bind. `linux_main.cpp` defers slot materialization for verbs
+   that do not require a profile (`--tui`, `--probe`, `--reset --apply-config`)
+   using `load_selected_profile_slot()`. `--dump` prints lock mode
+   (`(flatten)`/`(hard)`) and `captured(+X Hz)` points, `--json` emits
+   `captured_offset_hz`, and `linux_tui_layout.cpp` previews captured and
+   projected points against the live base curve.
+
+Verified live on Linux x86_64 with an RTX 5070 (Blackwell, NVIDIA driver
+620.73.04): five Windows-exported profiles (legacy flatten, selective offset +
+flatten, hard lock, and voltage-bound captured curve + flatten) applied cleanly
+across CLI, interactive TUI, startup-policy bind, and repeated cross-profile
+transitions with pass-1 correction converging in 10-22 ms and zero failed
+phases.
+
 ## Exact authoring curve targets (2026-11-13)
 
 Source anchors: `source/linux_backend_curve_build.h`,

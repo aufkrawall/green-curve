@@ -415,11 +415,23 @@ live Pascal apply/Reset/recovery sequence remain unverified.
   write, where those used to surface as a generic target error after the
   reset had run.
 - Linux gained the same pre-transaction refusal
-  (`linux_backend_curve_plan()` before `linux_execute_transaction()`); its
-  post-reset backstop is an open follow-up, not built yet.
+  (`linux_backend_curve_plan()` before `linux_execute_transaction()`). On
+  2026-11-20 Linux also gained:
+  - the post-baseline `curve_plan_evaluate()` backstop in
+    `linux_backend_apply_context.h` after a shaped-VF baseline reset
+    (`linux_vf_baseline_policy.h`, `resetVfBaselineBeforeCurve`), with
+    `LINUX_MUTATION_LOCK_CEILING` armed beforehand whenever a shaped baseline
+    is zeroed inside `LINUX_MUTATION_CURVE`;
+  - the post-write VF curve correction loop on both the legacy path (sharing
+    `apply_correction_policy.h`) and the exact authoring path
+    (`linux_backend_curve_correction.h`,
+    `linux_backend_curve_correction_runtime.h`), bounded by
+    `GC_DAEMON_HARDWARE_WRITE_BUDGET_MS` minus a `2000 ms` reserve.
 - Gates: `tools/apply_ceiling_gates.py` names the planner adapter
   (`apply_curve_plan_precheck_before_writes`, the shared pre-write input
-  builder, the Linux order).
+  builder, the Linux order); `tools/linux_gates.py`
+  (`check_profile_interchange_and_curve_correction()`) pins the Linux
+  correction loop, shaped-baseline reset, and replacement preparation wiring.
 
 ## 2026-09-24 lock pre-tail refusal moved ahead of reset-to-stock
 
