@@ -255,7 +255,11 @@ static inline bool linux_authoring_scalar_transition_precheck(const LinuxGpuStat
     }
     const gc_i64 beforeHz = review.beforeHz;
     const gc_i64 afterHz = incoming ? desired_graphics_hz(*d) : 0;
-    const bool resetsToStock = d->resetOcBeforeApply != 0;
+    const bool incomingScalarZero = !incoming ||
+        (snapshot.gpuOffsetValid && snapshot.gpuOffsetExact &&
+         snapshot.gpuOffsetSurface == incoming && beforeHz == 0);
+    const bool resetsToStock = d->resetOcBeforeApply != 0 ||
+        (allowDeferredVfBaseline && incomingScalarZero);
     const bool hasHandoff = review.outgoingSurface && review.outgoingBeforeHz != 0;
     const bool multiStep = modeled ? modeled->multiStepCurve : false;
     const bool scalarRaisesBeforeCurve = incoming && preview.pointCount > 0 &&

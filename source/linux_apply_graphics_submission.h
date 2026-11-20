@@ -29,7 +29,18 @@ static bool linux_apply_graphics_submission(LinuxApplyTransactionContext* contex
     const auto* d = context->desired;
     auto& review = context->scalarReview;
     if (!linux_release_graphics_handoff(g, d, review, g_linuxCeilingArmed)) return false;
-    if (desired_named_graphics_surface(*d)) return linux_apply_named_graphics_offset(g, d, &review);
+    if (desired_named_graphics_surface(*d)) {
+        if (context->resetVfBaselineBeforeCurve && !d->resetOcBeforeApply &&
+            !context->vfBaselineResetDone) {
+            lb_log("apply: running scoped VF baseline reset and modeled review before named graphics scalar\n");
+            context->vfBaselineResetAttempted = true;
+            if (!linux_apply_reset_baseline_vf_curve(g, context->plannedBuild.pointMask))
+                return false;
+            context->vfBaselineResetDone = true;
+            if (!linux_apply_post_reset_modeled_review(context)) return false;
+        }
+        return linux_apply_named_graphics_offset(g, d, &review);
+    }
     // The owned named control was released explicitly. A VF component must
     // not also zero an unrelated preferred scalar through legacy routing.
     if (review.outgoingSurface && context->composedGpuOffset) return true;

@@ -317,10 +317,10 @@ static bool linux_power_request_is_inert(const DesiredSettings* d,
 #include "linux_backend_apply_context.h"
 #include "linux_backend_curve_correction_runtime.h"
 #include "linux_apply_baseline.h"
-#include "linux_apply_graphics_submission.h"
 // Read-only feasibility of the built targets, before the first setter.
 #include "linux_backend_curve_plan.h"
 #include "linux_apply_modeled_review.h"
+#include "linux_apply_graphics_submission.h"
 
 static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
     LinuxApplyTransactionContext* context = (LinuxApplyTransactionContext*)opaque;
@@ -354,8 +354,15 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             return pairValid;
         }
         case LINUX_MUTATION_CURVE: {
-            if (context->resetVfBaselineBeforeCurve && !d->resetOcBeforeApply) {
+            if (context->resetVfBaselineBeforeCurve && !d->resetOcBeforeApply &&
+                !context->vfBaselineResetDone) {
+                context->vfBaselineResetAttempted = true;
                 if (!linux_apply_reset_baseline_vf_curve(g, context->plannedBuild.pointMask))
+                    return false;
+                context->vfBaselineResetDone = true;
+                if ((context->scalarReview.deferredModeledCheck ||
+                     context->modeledContext.multiStepCurve) &&
+                    !linux_apply_post_reset_modeled_review(context))
                     return false;
             }
             if (!linux_apply_rebuild_curve_targets(context)) return false;
@@ -412,6 +419,7 @@ static bool linux_apply_transaction_rollback(void* opaque, unsigned int phases) 
     LinuxApplyTransactionContext* context = (LinuxApplyTransactionContext*)opaque;
     char rollback[256] = {};
     phases = scalar_curve_rollback_phases(context->scalarReview, phases, LINUX_MUTATION_GPU_OFFSET);
+    if (context->vfBaselineResetAttempted) phases |= LINUX_MUTATION_CURVE;
     if (!phases) return true;
     return linux_backend_restore_snapshot(context->gpu, context->snapshot, phases,
                                           rollback, sizeof(rollback));
@@ -504,7 +512,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     }
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
     LinuxApplyTransactionContext context = {g, d, &snapshot, committedIntent,
-        previousIntent, {}, {}, d->fanPercent, false, false, false, vfBaselineReset, false, graphicsRouteOverride, {}, {}, {}};
+        previousIntent, {}, {}, d->fanPercent, false, false, false, vfBaselineReset, false, false, false, graphicsRouteOverride, {}, {}, {}};
     context.scalarReview = scalarReview;
     context.modeledContext = modeledCtx;
     gc_u32 requestedDomains = service_desired_mutation_domains(d);

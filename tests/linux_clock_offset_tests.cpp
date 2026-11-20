@@ -471,6 +471,28 @@ int run_linux_clock_offset_tests() {
         if (!linux_authoring_scalar_transition_precheck(&lg, &req, snap, rev, msg, sizeof(msg)) ||
             !rev.deferredModeledCheck || rev.modeledCeiling.arm ||
             sd.p0Writes || sd.globalWrites || sd.capWrites) return 9002;
+
+        // Scoped VF baseline reset (allowDeferredVfBaseline without resetOcBeforeApply)
+        // defers modeled review when the incoming named scalar starts at 0, refuses when
+        // the incoming scalar is nonzero, and also defers locked curves over shaped VF.
+        req.resetOcBeforeApply = 0;
+        if (!linux_authoring_scalar_transition_precheck(&lg, &req, snap, rev, msg, sizeof(msg), nullptr, true) ||
+            !rev.deferredModeledCheck || rev.modeledCeiling.arm) return 9006;
+        snap.gpuOffsetMHz = 50;
+        if (linux_authoring_scalar_transition_precheck(&lg, &req, snap, rev, msg, sizeof(msg), nullptr, true))
+            return 9007;
+        snap.gpuOffsetMHz = 0;
+        DesiredSettings lockedReq = req;
+        lockedReq.hasLock = 1; lockedReq.lockCi = 5; lockedReq.lockMHz = 1500;
+        lockedReq.lockMode = LOCK_MODE_FLATTEN;
+        lockedReq.authoring.lockFrequencyPrecise = 1;
+        lockedReq.authoring.lockFrequencyHz = 1500000000LL;
+        for (int i = 5; i < 8; ++i) {
+            lockedReq.curvePointCaptured[i] = 0;
+            lockedReq.curvePointCapturedOffsetHz[i] = 0;
+        }
+        if (!linux_authoring_scalar_transition_precheck(&lg, &lockedReq, snap, rev, msg, sizeof(msg), nullptr, true) ||
+            !rev.deferredModeledCheck || rev.modeledCeiling.arm) return 9008;
     }
 
     // Daemon rollback preimage captures released/changed previous named graphics surfaces

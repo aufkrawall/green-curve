@@ -153,6 +153,9 @@ static inline bool authoring_modeled_transition_preflight(
                 return authoring_modeled_transition_refuse(
                     review, why, whySize, authoring_modeled_status_message(outcome.plan.status));
             }
+        } else if (in.resetsToStock && !curve_plan_baseline_proves(in.baseline->evidence)) {
+            review.deferredModeledCheck = true;
+            outcome.deferredToBaseline = true;
         }
         outcome.allowed = true;
         return true;

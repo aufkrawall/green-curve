@@ -1324,6 +1324,12 @@ def check_profile_interchange_and_curve_correction(ctx, require_text, forbid_tex
     require_text(_p(ctx, "linux_backend_rollback.h"),
                  "linux_vf_rollback_masks(g->curve, g->vfMask,",
                  "Linux VF rollback intersects the editable vfMask and preserves placeholder tolerance")
+    require_text(_p(ctx, "linux_apply_graphics_submission.h"),
+                 "linux_apply_post_reset_modeled_review(context)",
+                 "scoped VF baseline reset runs post-reset modeled review before raising a named scalar")
+    require_text(mutation_cpp,
+                 "if (context->vfBaselineResetAttempted) phases |= LINUX_MUTATION_CURVE;",
+                 "rollback restores the VF table if a pre-scalar scoped VF baseline reset ran")
     require_text(main_cpp, "desired_prepare_replacement_request(&desired);",
                  "Linux CLI --apply-config prepares profile replacement like Windows")
     require_text(tui_mut_cpp, "linux_tui_prepare_apply_request(",

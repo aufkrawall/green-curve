@@ -36,6 +36,8 @@ struct LinuxApplyTransactionContext {
     // Scoped VF replacement zeros its own write set under the transition
     // ceiling before rebuilding targets.
     bool resetVfBaselineBeforeCurve;
+    bool vfBaselineResetAttempted;
+    bool vfBaselineResetDone;
     bool transitionBuild;
     int graphicsRouteOverride; // 0=legacy inference, 1=independent scalar, 2=VF component
     // The build the phase plan was made from; a rebuild must keep its shape.
