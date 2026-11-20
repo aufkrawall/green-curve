@@ -181,7 +181,9 @@ static bool linux_apply_verify_curve_write(LinuxApplyTransactionContext* context
     bool ok = linux_verify_curve_absolute_targets(g->curve, context->plannedBuild,
         detail, sizeof(detail), g->curveFrequencyHz, g->vfFrequenciesHzValid) &&
         linux_verify_curve_captured_targets(g->freqOffsetsHz,
-            context->plannedBuild, detail, sizeof(detail), g->vfOffsetsHzValid);
+            context->plannedBuild, detail, sizeof(detail), g->vfOffsetsHzValid) &&
+        linux_verify_projected_offsets(g->curve, g->freqOffsets, context->plannedBuild,
+            context->curveTargets, intended, detail, sizeof(detail));
     if (ok && intended && curve_authoring_needs_exact_targets(intended)) {
         ok = linux_verify_authoring_flatten_monotonicity(
             g->curve, g->curveFrequencyHz, g->freqOffsetsHz,

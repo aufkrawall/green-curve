@@ -54,7 +54,7 @@ Curve editing, profile transfer and capture improve.
 
 ### Fixed
 
-- **Scoped Linux curves:** preserve unrelated offsets and hard-lock tails.
+- **Scoped Linux curves:** preserve unrelated offsets and hard-lock tails. Require fresh readback before retrying eligible writes.
 - **Profile transfer:** retain scope and graphics controls.
 - **Windows advanced edits:** preserve omitted external settings.
 - **Windows power reset:** restore defaults even when displaying 100%.

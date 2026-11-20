@@ -9,10 +9,6 @@
 static bool linux_apply_correct_authoring_curve(LinuxApplyTransactionContext* context,
     const DesiredSettings* intended, VfControlWritePolicy policy,
     unsigned long long curveStartMs) {
-    if (policy == VF_WRITE_SINGLE_BATCH) {
-        lb_log("curve-authoring: correction suppressed by single-batch policy\n");
-        return false;
-    }
     LinuxGpuState* g = context->gpu;
     const LinuxCurveTargetBuildResult original = context->plannedBuild;
     unsigned long long passStartMs = 0;
@@ -32,7 +28,7 @@ static bool linux_apply_correct_authoring_curve(LinuxApplyTransactionContext* co
             return false;
         },
         [&](int pass) {
-            if (!g->vfFrequenciesHzValid || !g->vfOffsetsHzValid) {
+            if (!g->vfSnapshotFresh || !g->vfFrequenciesHzValid || !g->vfOffsetsHzValid) {
                 lb_log("curve-authoring correction: exact readback unavailable before pass %d\n", pass + 1);
                 compileFailed = true;
                 return false;
@@ -67,6 +63,11 @@ static bool linux_apply_correct_authoring_curve(LinuxApplyTransactionContext* co
             }
             const bool written = apply_curve_offsets_verified(
                 g, nextOffsets, nextMask, batchPasses, targetsHz, exactMask, policy);
+            if (!written) {
+                lb_log("curve-authoring correction: pass %d offset write did not converge\n", pass + 1);
+                compileFailed = true;
+                return false;
+            }
             memcpy(context->curveTargets, nextOffsets, sizeof(context->curveTargets));
             memcpy(context->curveMask, nextMask, sizeof(context->curveMask));
             context->plannedBuild = next;
@@ -92,6 +93,11 @@ static bool linux_apply_correct_authoring_curve(LinuxApplyTransactionContext* co
 static bool linux_apply_correct_curve_write(LinuxApplyTransactionContext* context,
     VfControlWritePolicy policy, unsigned long long curveStartMs) {
     LinuxGpuState* g = context->gpu;
+    if (!g->vfSnapshotFresh || policy == VF_WRITE_SINGLE_BATCH) {
+        lb_log("curve correction: suppressed (fresh=%d singleBatch=%d)\n",
+            g->vfSnapshotFresh ? 1 : 0, policy == VF_WRITE_SINGLE_BATCH ? 1 : 0);
+        return false;
+    }
     const DesiredSettings* intended = context->transitionBuild ? context->committedIntent : context->desired;
     if (intended && curve_authoring_needs_exact_targets(intended))
         return linux_apply_correct_authoring_curve(context, intended, policy, curveStartMs);
@@ -106,7 +112,10 @@ static bool linux_apply_correct_curve_write(LinuxApplyTransactionContext* contex
     const ApplyCorrectionLoopOutcome outcome = linux_run_legacy_curve_correction(
         intended, context->plannedBuild, context->curveTargets, range, curveStartMs,
         [&](const int* offsets, const bool* mask, const gc_i64* exactHz, const bool* exactMask) {
-            (void)apply_curve_offsets_verified(g, offsets, mask, batchPasses, exactHz, exactMask, policy);
+            if (!apply_curve_offsets_verified(g, offsets, mask, batchPasses, exactHz, exactMask, policy)) {
+                lb_log("curve correction: offset write did not converge\n");
+                return false;
+            }
             char why[160] = {};
             if (!nvapi_read_vf_snapshot(g, why, sizeof(why))) {
                 lb_log("curve correction: curve re-read failed (%s)\n", why);
@@ -120,7 +129,9 @@ static bool linux_apply_correct_curve_write(LinuxApplyTransactionContext* contex
             return linux_verify_curve_absolute_targets(g->curve, context->plannedBuild,
                 detail, detailSize, g->curveFrequencyHz, g->vfFrequenciesHzValid) &&
                 linux_verify_curve_captured_targets(g->freqOffsetsHz, context->plannedBuild,
-                    detail, detailSize, g->vfOffsetsHzValid);
+                    detail, detailSize, g->vfOffsetsHzValid) &&
+                linux_verify_projected_offsets(g->curve, g->freqOffsets, context->plannedBuild,
+                    context->curveTargets, intended, detail, detailSize);
         },
         []() -> unsigned long long { return pl_monotonic_ms(); },
         [](const char* line) { lb_log("%s", line ? line : ""); });

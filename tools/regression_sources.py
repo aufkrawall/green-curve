@@ -79,6 +79,7 @@ REGRESSION_SOURCES = (
     'precise_scalar_schema_tests.cpp',
     'linux_vf_read_tests.cpp',
     'linux_vf_write_tests.cpp',
+    'linux_curve_correction_runtime_tests.cpp',
     'windows_vf_exact_tests.cpp',
     'windows_vf_verified_write_tests.cpp',
     'external_oc_change_tests.cpp',

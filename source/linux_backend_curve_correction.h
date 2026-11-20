@@ -93,12 +93,30 @@ static inline bool linux_verify_authoring_flatten_monotonicity(
     return true;
 }
 
+// Projected points retain their programmed offset across a frequency correction.
+static inline bool linux_verify_projected_offsets(const VFCurvePoint* curve, const int* offsets,
+    const LinuxCurveTargetBuildResult& build, const int* targets, const DesiredSettings* intended,
+    char* detail, size_t detailSize) {
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        if (!build.pointMask[ci] || build.pointAbsoluteIntent[ci] || build.pointCapturedIntent[ci] ||
+            build.pointExactOffset[ci]) continue;
+        if (intended && intended->hasLock && intended->lockMode == LOCK_MODE_HARD &&
+            ci >= intended->lockCi) continue;
+        if (offsets[ci] == targets[ci] || vf_offset_zero_readback_is_benign(targets[ci],
+                offsets[ci], curve[ci].freq_kHz, VF_PLACEHOLDER_MAX_FREQ_MHz * 1000u)) continue;
+        gc_snprintf(detail, detailSize, "projected VF point %d offset %d kHz, expected %d kHz",
+            ci, offsets[ci], targets[ci]);
+        return false;
+    }
+    return true;
+}
+
 // Pure legacy correction pass harness, reusable by both the Linux daemon
 // transaction and unit tests with fake driver callbacks.
 //
 // `writeAndReadback(offsetsKHz, mask, exactHz, exactMask)` writes the pass and
 // updates `g->curve` / `g->freqOffsets` (or fake readback arrays); returns false
-// only on fatal readback failure.
+// if the write or readback fails.
 // `verifyReadback(detail, detailSize)` checks post-write verification.
 // `nowMs()` supplies monotonic milliseconds for budget accounting.
 template <typename WriteAndReadback, typename ReadFreqKHz, typename ReadOffsetKHz,
