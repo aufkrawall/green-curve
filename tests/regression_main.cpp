@@ -968,6 +968,8 @@ int run_fan_request_apply_tests();
 // Profile switches never leave a released fan curve reported as active
 // (tests/fan_intent_tests.cpp, 12720-12779).
 int run_fan_intent_tests();
+// Fan stall detection policy table (tests/fan_stall_tests.cpp, 12800-12829).
+int run_fan_stall_tests();
 int run_debug_log_identity_tests();
 int run_service_client_identity_failure_child();
 int run_security_audit_tests();
@@ -2026,6 +2028,7 @@ int main(int argc, char** argv) {
     if (int powerFailure = run_power_recovery_tests()) return powerFailure;
     if (int fanRequestFailure = run_fan_request_apply_tests()) return fanRequestFailure;
     if (int fanIntentFailure = run_fan_intent_tests()) return fanIntentFailure;
+    if (int fanStallFailure = run_fan_stall_tests()) return fanStallFailure;
     if (int logFailure = run_debug_log_identity_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", logFailure);
         return logFailure;
