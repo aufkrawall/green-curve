@@ -9,7 +9,7 @@
 // process's newer file generation, writes a slot or invokes the daemon.
 template<class Bind>
 static inline void tui_install_profile_load(TuiState& state, const DesiredSettings& loaded, int slot, Bind bind) {
-    state.desired = loaded; state.currentSlot = slot; state.edit = {};
+    state.desired = loaded; state.currentSlot = slot; state.edit = {}; state.loadedProfile = true;
     bind(state);
     if (state.draftAttached)
         snprintf(state.status, sizeof(state.status), "Loaded slot %d into the staged editor", slot);

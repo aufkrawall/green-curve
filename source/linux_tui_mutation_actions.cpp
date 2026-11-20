@@ -33,6 +33,11 @@ void apply_to_gpu(TuiState* state) {
     DesiredSettings normalized = state->desired;
     if (normalized.hasFan && normalized.fanMode == FAN_MODE_CURVE)
         fan_curve_normalize(&normalized.fanCurve);
+    if (linux_tui_prepare_apply_request(state->loadedProfile, &state->acceptedDesired, &normalized)) {
+        linux_debug_logf("tui-apply: prepared replacement loadedProfile=%d scope=%u reset=%d",
+            state->loadedProfile ? 1 : 0, (unsigned)normalized.applicationScope,
+            normalized.resetOcBeforeApply ? 1 : 0);
+    }
     gc_u32 requestedDomains = service_desired_mutation_domains(&normalized);
     gc_u32 missingDomains = service_snapshot_missing_mutation_domains(
         &normalized, &state->service.snapshot);
@@ -93,6 +98,7 @@ void apply_to_gpu(TuiState* state) {
     state->acceptedDesired = state->desired;
     bind_current_draft(state);
     state->dirty = false;
+    state->loadedProfile = false;
     snprintf(state->status, sizeof(state->status), "%s",
              result[0] ? result : "Applied staged settings");
 }
@@ -144,6 +150,7 @@ void reset_gpu(TuiState* state) {
     state->acceptedDesired = state->desired;
     bind_current_draft(state);
     state->dirty = false;
+    state->loadedProfile = false;
     snprintf(state->status, sizeof(state->status), "%s",
              result[0] ? result : "GPU reset to driver defaults");
 }

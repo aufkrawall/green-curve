@@ -6,6 +6,7 @@
 #include "linux_debug_log.h"
 #include "linux_gpu_selection.h"
 #include "linux_transaction.h"
+#include "linux_vf_baseline_policy.h"
 // The lockout notice tui_refresh_service() puts on the status line.
 #include "linux_auto_restore_policy.h"
 #include "auto_apply_failure_notice_policy.h"
@@ -649,6 +650,7 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
         case ACTION_RESET_DRAFT:
             state->desired = state->acceptedDesired;
             state->dirty = false;
+            state->loadedProfile = false;
             bind_current_draft(state);
             snprintf(state->status, sizeof(state->status),
                      "Discarded staged changes and restored accepted live intent");

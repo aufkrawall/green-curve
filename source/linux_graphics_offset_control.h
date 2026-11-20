@@ -156,7 +156,7 @@ static inline CurvePlanInput linux_authoring_modeled_plan_input(const LinuxGpuSt
 
 static inline bool linux_authoring_scalar_transition_precheck(const LinuxGpuState* g, const DesiredSettings* d,
     const LinuxHardwareSnapshot& snapshot, ScalarCurveSubmissionReview& review, char* why, size_t size,
-    const AuthoringModeledPrecheckContext* modeled = nullptr) {
+    const AuthoringModeledPrecheckContext* modeled = nullptr, bool allowDeferredVfBaseline = false) {
     review = {};
     if (!d) return false;
     const bool clampCap = modeled && modeled->clampAvailabilityExplicit
@@ -248,7 +248,7 @@ static inline bool linux_authoring_scalar_transition_precheck(const LinuxGpuStat
     CurveAuthoringTargets preview;
     CurveAuthoringTargetIssue issue;
     if (!curve_authoring_build_targets(in, g->backend, g->vfMask, composed,
-            preview, issue, d->resetOcBeforeApply != 0)) {
+            preview, issue, d->resetOcBeforeApply != 0 || allowDeferredVfBaseline)) {
         if (why && size)
             snprintf(why, size, "Exact curve preflight could not resolve point %d. Nothing was changed.", issue.ci);
         return false;

@@ -757,6 +757,8 @@ static int linux_main_impl(int argc, char** argv) {
             // `--reset --apply-config` releases OC/UV to driver defaults.
             ok = linux_daemon_reset(writeTarget, result, sizeof(result));
         } else if (ok) {
+            desired_prepare_replacement_request(&desired);
+            linux_debug_logf("cli apply-config: prepared replacement scope=%u reset=%d", (unsigned)desired.applicationScope, desired.resetOcBeforeApply ? 1 : 0);
             ok = linux_daemon_apply(writeTarget,
                                     &desired, true, result, sizeof(result));
         }

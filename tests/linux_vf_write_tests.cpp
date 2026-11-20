@@ -21,6 +21,7 @@ static const unsigned int LB_CONTROL_BUF_SIZE = 0x4000;
 #include "vf_offset_range_policy.h"
 #include "linux_backend_vf_write.h"
 #include "linux_backend_curve_correction.h"
+#include "linux_vf_baseline_policy.h"
 #include "vf_exact_control_write.h"
 static bool nvml_set_clock_offset(LinuxGpuState*, unsigned int, int, gc_u32);
 #include "linux_memory_curve_preservation.h"
@@ -636,6 +637,71 @@ int run_linux_vf_write_tests() {
         if (linux_verify_curve_absolute_targets(authCurve, orig, detail, sizeof(detail), authFreqHz, true) ||
             strstr(detail, "2947000000") == nullptr || strstr(detail, "2957000000") == nullptr)
             return 12639;
+    }
+    // Linux shaped-curve VF baseline reset & TUI apply preparation (12640-12644).
+    {
+        VFCurvePoint c[VF_NUM_POINTS] = {};
+        int offsKHz[VF_NUM_POINTS] = {};
+        gc_i64 offsHz[VF_NUM_POINTS] = {};
+        c[5] = {2482000u, 925000u};
+        if (linux_curve_has_nonzero_offsets(c, offsKHz, offsHz, true)) return 12640;
+        offsHz[5] = 500; // sub-kHz exact offset with zero kHz projection
+        if (!linux_curve_has_nonzero_offsets(c, offsKHz, offsHz, true)) return 12641;
+        offsKHz[5] = -1000000;
+        if (!linux_curve_has_nonzero_offsets(c, offsKHz, nullptr, false)) return 12642;
+
+        DesiredSettings dReplace{};
+        dReplace.applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+        DesiredSettings dUpdateVf{};
+        dUpdateVf.applicationScope = DESIRED_SCOPE_UPDATE_INCLUDED | DESIRED_SCOPE_REPLACE_VF_POINTS;
+        DesiredSettings dSparse{};
+        dSparse.applicationScope = DESIRED_SCOPE_UPDATE_INCLUDED;
+        DesiredSettings dRelease{};
+        dRelease.applicationScope = DESIRED_SCOPE_EXPLICIT_RELEASE;
+        DesiredSettings dLegacyReset{};
+        dLegacyReset.applicationScope = DESIRED_SCOPE_LEGACY;
+        dLegacyReset.resetOcBeforeApply = 1;
+        if (!linux_apply_needs_vf_baseline_reset(&dReplace, true, true) ||
+            !linux_apply_needs_vf_baseline_reset(&dUpdateVf, true, true) ||
+            linux_apply_needs_vf_baseline_reset(&dSparse, true, true) ||
+            linux_apply_needs_vf_baseline_reset(&dRelease, true, true) ||
+            linux_apply_needs_vf_baseline_reset(&dLegacyReset, true, true) ||
+            linux_apply_needs_vf_baseline_reset(&dReplace, true, false) ||
+            linux_apply_needs_vf_baseline_reset(&dReplace, false, true))
+            return 12643;
+
+        // TUI preparation + Profile 5 -> Profile 4 transition:
+        DesiredSettings accepted{};
+        accepted.hasPowerLimit = 1; accepted.powerLimitPct = 85;
+        accepted.hasLock = 1; accepted.lockMode = LOCK_MODE_FLATTEN; accepted.lockCi = 76; accepted.lockMHz = 2962;
+        DesiredSettings powerEdit = accepted;
+        powerEdit.powerLimitPct = 100;
+        if (linux_tui_prepare_apply_request(false, &accepted, &powerEdit) || powerEdit.resetOcBeforeApply)
+            return 12644;
+        DesiredSettings lockEdit = accepted;
+        lockEdit.lockMode = LOCK_MODE_HARD; lockEdit.lockMHz = 2957;
+        if (!linux_tui_prepare_apply_request(false, &accepted, &lockEdit) || !lockEdit.resetOcBeforeApply)
+            return 12645;
+        DesiredSettings p5{};
+        p5.applicationScope = DESIRED_SCOPE_UPDATE_INCLUDED | DESIRED_SCOPE_REPLACE_VF_POINTS;
+        p5.hasMemOffset = 1; p5.memOffsetMHz = 3000; p5.memOffsetPrecise = 1; p5.memOffsetHz = 3000000000LL;
+        p5.hasLock = 1; p5.lockMode = LOCK_MODE_FLATTEN; p5.lockCi = 76; p5.lockMHz = 2962;
+        DesiredSettings p5Apply = p5;
+        if (!linux_tui_prepare_apply_request(true, &accepted, &p5Apply) ||
+            p5Apply.applicationScope != DESIRED_SCOPE_REPLACE_PROFILE || p5Apply.resetOcBeforeApply)
+            return 12646;
+        // Switching from explicit Profile 5 -> legacy Profile 4 upgrades Profile 4 to
+        // REPLACE_PROFILE (clearing resetOcBeforeApply), and linux_apply_needs_vf_baseline_reset
+        // still triggers the VF baseline reset over the shaped live curve.
+        DesiredSettings p4{};
+        p4.applicationScope = DESIRED_SCOPE_LEGACY;
+        p4.hasLock = 1; p4.lockMode = LOCK_MODE_HARD; p4.lockCi = 76; p4.lockMHz = 2957;
+        if (!linux_tui_prepare_apply_request(true, &p5, &p4) || !p4.resetOcBeforeApply)
+            return 12647;
+        service_upgrade_legacy_scalar_scope(&p5, &p4);
+        if (p4.applicationScope != DESIRED_SCOPE_REPLACE_PROFILE || p4.resetOcBeforeApply ||
+            !linux_apply_needs_vf_baseline_reset(&p4, true, true))
+            return 12648;
     }
     return run_linux_memory_curve_tests();
 }

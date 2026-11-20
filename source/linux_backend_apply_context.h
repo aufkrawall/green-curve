@@ -31,6 +31,9 @@ struct LinuxApplyTransactionContext {
     // A non-zero NVML offset is zeroed before the curve write: rebuild the
     // curve targets from a fresh readback in the CURVE phase.
     bool rebuildCurveTargets;
+    // Scoped VF replacement over a shaped live curve resets only the VF table
+    // to 0 under the armed clock ceiling before rebuilding targets.
+    bool resetVfBaselineBeforeCurve;
     bool transitionBuild;
     int graphicsRouteOverride; // 0=legacy inference, 1=independent scalar, 2=VF component
     // The build the phase plan was made from; a rebuild must keep its shape.
@@ -48,26 +51,35 @@ static LinuxCurveTargetBuildResult linux_apply_build_curve(
     if (context->transitionBuild)
         return build_curve_transition_targets(context->gpu, context->previousIntent,
             context->committedIntent, context->curveTargets, context->curveMask,
-            cleanupPointCountOut, rebuilding, useTransactionBaseline);
+            cleanupPointCountOut, rebuilding, useTransactionBaseline,
+            context->resetVfBaselineBeforeCurve);
     return build_curve_targets(context->gpu, context->desired,
         context->curveTargets, context->curveMask, context->graphicsRouteOverride,
-        rebuilding, nullptr, useTransactionBaseline);
+        rebuilding, nullptr, useTransactionBaseline,
+        context->resetVfBaselineBeforeCurve);
 }
 
 // Curve targets are built before any phase runs.  When an earlier phase
-// zeroed a non-zero NVML graphics offset, rebuild them from a fresh VF
-// readback (see linux_curve_targets_rebuild_after_scalar()).
+// zeroed a non-zero NVML graphics offset or reset the VF baseline, rebuild
+// them from a fresh VF readback (see linux_curve_targets_rebuild_after_scalar()).
 static bool linux_apply_rebuild_curve_targets(LinuxApplyTransactionContext* context) {
     if (!context->rebuildCurveTargets) return true;
     LinuxGpuState* g = context->gpu;
     if (!nvapi_read_curve(g)) {
-        lb_log("apply: curve re-read after NVML offset clear failed;"
-               " refusing to write targets built over the old offset\n");
+        lb_log("apply: curve re-read after baseline/offset clear failed;"
+               " refusing to write targets built over the old baseline\n");
         return false;
     }
+    const bool freshBaseline = context->desired->resetOcBeforeApply ||
+        context->resetVfBaselineBeforeCurve;
+    const bool scalarZero = context->desired->resetOcBeforeApply ||
+        context->composedGpuOffset ||
+        (context->snapshot && context->snapshot->gpuOffsetValid &&
+         context->snapshot->gpuOffsetMHz == 0);
+    const bool transactionBaseline = freshBaseline && scalarZero;
     int cleanup = 0;
     LinuxCurveTargetBuildResult rebuilt =
-        linux_apply_build_curve(context, &cleanup, true, context->desired->resetOcBeforeApply != 0);
+        linux_apply_build_curve(context, &cleanup, true, transactionBaseline);
     if (rebuilt.failed || rebuilt.deferred) {
         lb_log("curve-authoring: fresh target compilation remains unresolved; refusing VF write\n");
         return false;
@@ -75,7 +87,7 @@ static bool linux_apply_rebuild_curve_targets(LinuxApplyTransactionContext* cont
     const LinuxCurveTargetBuildResult& planned = context->plannedBuild;
     if (!linux_curve_rebuild_keeps_shape(planned, rebuilt)) {
         const int ci = linux_curve_rebuild_first_changed_point(planned, rebuilt);
-        lb_log("apply: curve rebuild after NVML offset clear changed shape"
+        lb_log("apply: curve rebuild after baseline/offset clear changed shape"
                " (points %d->%d composed %d->%d lockTail %d->%d"
                " firstCi=%d write=%d->%d voltageUv=%u->%u); refusing to write it\n",
                planned.pointCount, rebuilt.pointCount,
@@ -88,20 +100,25 @@ static bool linux_apply_rebuild_curve_targets(LinuxApplyTransactionContext* cont
         return false;
     }
     const DesiredSettings* intended = context->transitionBuild ? context->committedIntent : context->desired;
-    if (curve_authoring_needs_exact_targets(intended)) {
-        DesiredSettings rebound{}; char why[160]{};
-        if (!desired_rebind_topology(*intended, g->curve, g->vfFloor.floor, &rebound, why, sizeof(why))) {
-            lb_log("curve-authoring: rebuilt intent binding refused (%s)\n", why); return false;
+    if (intended && (curve_authoring_needs_exact_targets(intended) || transactionBaseline)) {
+        DesiredSettings rebound{};
+        const DesiredSettings* planIntent = intended;
+        if (curve_authoring_needs_exact_targets(intended)) {
+            char why[160]{};
+            if (!desired_rebind_topology(*intended, g->curve, g->vfFloor.floor, &rebound, why, sizeof(why))) {
+                lb_log("curve-authoring: rebuilt intent binding refused (%s)\n", why); return false;
+            }
+            planIntent = &rebound;
         }
         int componentKHz[VF_NUM_POINTS]{};
         gc_i64 componentHz[VF_NUM_POINTS]{};
         bool stockMask[VF_NUM_POINTS]{};
-        auto in = linux_backend_curve_plan_input(g, &rebound, context->snapshot,
+        auto in = linux_backend_curve_plan_input(g, planIntent, context->snapshot,
             context->curveTargets, context->curveMask, componentKHz, componentHz, stockMask);
-        if (context->desired->resetOcBeforeApply) {
+        if (transactionBaseline) {
             in.evidence = CURVE_PLAN_EVIDENCE_TRANSACTION_BASELINE;
-            const bool vfComponent = !intended->authoring.graphicsPrecise ||
-                intended->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT;
+            const bool vfComponent = !planIntent->authoring.graphicsPrecise ||
+                planIntent->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT;
             in.provenanceMode = apply_lock_pretail_provenance_mode(vfComponent, true);
         }
         const CurvePlanResult checked = curve_plan_evaluate(in);
@@ -109,9 +126,10 @@ static bool linux_apply_rebuild_curve_targets(LinuxApplyTransactionContext* cont
         if (checked.disposition == CURVE_PLAN_REFUSED || checked.disposition == CURVE_PLAN_UNAVAILABLE || rebuilt.deferred)
             return false;
     }
-    lb_log("apply: curve targets rebuilt after NVML offset clear"
-           " (points=%d cleanup=%d composed=%d)\n",
-           rebuilt.pointCount, cleanup, rebuilt.composedGpuOffset ? 1 : 0);
+    lb_log("apply: curve targets rebuilt after baseline/offset clear"
+           " (points=%d cleanup=%d composed=%d vfBaselineReset=%d)\n",
+           rebuilt.pointCount, cleanup, rebuilt.composedGpuOffset ? 1 : 0,
+           context->resetVfBaselineBeforeCurve ? 1 : 0);
     context->plannedBuild = rebuilt;
     return true;
 }

@@ -37,6 +37,7 @@ struct TuiState {
     bool draftAttached;
     LinuxTuiDraftBinding draftBinding;
     bool dirty;
+    bool loadedProfile;
     bool profileLoadPending;
     bool profileLoadPresented;
     int pendingProfileSlot;

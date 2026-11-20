@@ -7,6 +7,7 @@
 // before anything that can raise a clock.
 #include "linux_apply_ceiling.h"
 #include "linux_graphics_offset_control.h"
+#include "linux_vf_baseline_policy.h"
 
 // ===========================================================================
 // Apply / reset  (ports apply_desired_settings_service ordering)
@@ -351,6 +352,10 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             return pairValid;
         }
         case LINUX_MUTATION_CURVE: {
+            if (context->resetVfBaselineBeforeCurve && !d->resetOcBeforeApply) {
+                lb_log("apply: resetting shaped VF curve to stock baseline under transition ceiling before curve rebuild\n");
+                if (!linux_apply_reset_baseline_vf_curve(g)) return false;
+            }
             if (!linux_apply_rebuild_curve_targets(context)) return false;
             if (context->plannedBuild.failed || context->plannedBuild.deferred) {
                 lb_log("curve-authoring: refusing unresolved targets before VF write\n");
@@ -465,13 +470,21 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         if (result) gc_strlcpy(result, resultSize, preflight);
         return mutation;
     }
+    const bool liveCurveShaped = linux_curve_has_nonzero_offsets(
+        g->curve, g->freqOffsets,
+        g->vfOffsetsHzValid ? g->freqOffsetsHz : nullptr, g->vfOffsetsHzValid);
+    const bool hasCurveWorkPre = desired_has_curve_write(d) ||
+        (committedIntent && desired_has_curve_write(committedIntent));
+    const bool vfBaselineReset = linux_apply_needs_vf_baseline_reset(
+        d, hasCurveWorkPre, liveCurveShaped);
+    if (vfBaselineReset) g_linuxScopedCurveCeilingTransition = true;
     g_linuxOutgoingCeilingMHz = linux_outgoing_ceiling_mhz(g, previousIntent);
     AuthoringModeledPrecheckContext modeledCtx = linux_apply_build_modeled_context(
         g, d, snapshot, g_linuxOutgoingCeilingMHz, g_linuxScopedCurveCeilingTransition);
     ScalarCurveSubmissionReview scalarReview{};
     const gc_u32 graphicsDomains = SERVICE_MUTATION_DOMAIN_GPU_OFFSET | SERVICE_MUTATION_DOMAIN_VF_CURVE |
         SERVICE_MUTATION_DOMAIN_LOCK | SERVICE_MUTATION_DOMAIN_RESET_BASELINE;
-    if (!linux_authoring_scalar_transition_precheck(g, d, snapshot, scalarReview, preflight, sizeof(preflight), &modeledCtx) ||
+    if (!linux_authoring_scalar_transition_precheck(g, d, snapshot, scalarReview, preflight, sizeof(preflight), &modeledCtx, vfBaselineReset) ||
         !linux_graphics_apply_precheck(g, d, (service_desired_mutation_domains(d) & graphicsDomains) != 0,
             preflight, sizeof(preflight), scalarReview.outgoingSurface != 0)) {
         LinuxMutationResult mutation{};
@@ -485,7 +498,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     }
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
     LinuxApplyTransactionContext context = {g, d, &snapshot, committedIntent,
-        previousIntent, {}, {}, d->fanPercent, false, false, false, false, graphicsRouteOverride, {}, {}, {}};
+        previousIntent, {}, {}, d->fanPercent, false, false, false, vfBaselineReset, false, graphicsRouteOverride, {}, {}, {}};
     context.scalarReview = scalarReview;
     context.modeledContext = modeledCtx;
     gc_u32 requestedDomains = service_desired_mutation_domains(d);
@@ -538,13 +551,14 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     // curve/lock apply over a reset baseline must rebuild from that fresh
     // readback regardless of the scalar's prior value.
     context.rebuildCurveTargets = curveBuild.pointCount > 0 &&
-        (d->resetOcBeforeApply || desired_named_graphics_surface(*d) || scalarReview.outgoingSurface ||
+        (d->resetOcBeforeApply || vfBaselineReset || desired_named_graphics_surface(*d) || scalarReview.outgoingSurface ||
          linux_curve_targets_rebuild_after_scalar(snapshot.gpuOffsetValid,
             snapshot.gpuOffsetMHz, d->resetOcBeforeApply, clearStaleGpuOffset));
     lb_log("apply: gpu offset routing composed=%d nvmlOffset=%d MHz (known=%d)"
-           " reset=%d clearStale=%d rebuildCurve=%d\n",
+           " reset=%d vfBaselineReset=%d clearStale=%d rebuildCurve=%d\n",
            curveBuild.composedGpuOffset ? 1 : 0, snapshot.gpuOffsetMHz,
            snapshot.gpuOffsetValid ? 1 : 0, d->resetOcBeforeApply ? 1 : 0,
+           vfBaselineReset ? 1 : 0,
            clearStaleGpuOffset ? 1 : 0, context.rebuildCurveTargets ? 1 : 0);
     if (clearStaleGpuOffset && !g->nvml.setGpcClkVfOffset && !g->nvml.setClockOffsets) {
         LinuxMutationResult mutation = {};
