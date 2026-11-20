@@ -88,6 +88,12 @@ int retarget_tests() {
     // 7065: identical cards are told apart by location.
     if (verdict(true, a, twin, twins, 2, true, false) !=
         GPU_INTENT_OWNER_REFUSE_OTHER_GPU) return 7065;
+    GpuAdapterInfo unlocated = a;
+    unlocated.pciDomain = unlocated.pciBus = unlocated.pciDevice = unlocated.pciFunction = 0;
+    if (verdict(true, unlocated, twin, twins, 2, true, false) != GPU_INTENT_OWNER_REFUSE_OTHER_GPU ||
+        verdict(true, a, unlocated, twins, 2, true, true) != GPU_INTENT_OWNER_REFUSE_OTHER_GPU ||
+        verdict(true, unlocated, a, pair, 2, true, false) != GPU_INTENT_OWNER_ALLOW_OWNER)
+        return 12705;
     // 7066: retargeting back to the owner is allowed.
     if (verdict(true, a, a, pair, 2, true, false) !=
         GPU_INTENT_OWNER_ALLOW_OWNER) return 7066;

@@ -58,6 +58,17 @@ static inline bool memory_clock_effective_offset_khz(unsigned int runningMaxMHz,
     return true;
 }
 
+// Running maxima are in whole MHz. A fresh getter resolves the fraction
+// when both readings lie within one step of that measurement.
+static inline bool memory_clock_getter_agrees(gc_i64 getterHz, gc_i64 runningHz) {
+    return getterHz > runningHz - 1000000 && getterHz < runningHz + 1000000;
+}
+
+static inline int memory_clock_resolve_live_khz(int runningKHz, bool getterValid, int getterKHz) {
+    return getterValid && memory_clock_getter_agrees((gc_i64)getterKHz * 1000, (gc_i64)runningKHz * 1000)
+        ? getterKHz : runningKHz;
+}
+
 struct MemoryClockReading {
     bool pstatesValid = false, boardValid = false;
     int pstatesStatus = -100001;   // NvAPI status; -100001: getter unavailable

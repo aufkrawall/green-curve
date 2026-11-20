@@ -235,7 +235,7 @@ static bool vf_curve_global_gpu_offset_supported();
 static bool vf_backend_is_best_guess(const VfBackendSpec* backend);
 static bool should_show_best_guess_warning();
 static bool show_best_guess_support_warning(HWND parent);
-static void detect_clock_offsets();
+static void detect_clock_offsets(bool freshMemoryGetter = false);
 static int uniform_curve_offset_khz();
 static void set_curve_offset_range_khz(int minkHz, int maxkHz);
 static bool get_curve_offset_range_khz(int* minkHz, int* maxkHz);

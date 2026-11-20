@@ -377,7 +377,7 @@ static int uniform_curve_offset_khz() {
     }
     return offsetKHz;
 }
-static void detect_clock_offsets() {
+static void detect_clock_offsets(bool freshMemoryGetter) {
     // Detect global offsets from generic driver-visible sources.
     // GPU: only use uniform VF control deltas on write-supported backends where
     // the control-table layout is validated. Probe-only/read-only backends may
@@ -405,6 +405,7 @@ static void detect_clock_offsets() {
     // Same running-clock rule passive capture uses (memory_clock_evidence.h).
     int memOffsetkHz = 0;
     if (memory_clock_effective_offset_khz(g_app.pstateMemMaxMHz, g_app.nvmlMemMaxMHz, &memOffsetkHz)) {
+        memOffsetkHz = memory_clock_resolve_live_khz(memOffsetkHz, freshMemoryGetter, g_app.memClockOffsetkHz);
         g_app.memClockOffsetkHz = memOffsetkHz;
         g_app.readback.memOffset = true;  // upgrade only; NVML's read survives
         if (!g_app.memOffsetRangeKnown && memOffsetkHz != 0) {
@@ -540,7 +541,7 @@ static bool nvapi_set_gpu_offset(int offsetkHz, bool forceWrite) {
         const bool freshGpuMatch = g_app.readback.gpuOffset &&
             g_app.gpuClockOffsetkHz == offsetkHz;
         nvapi_read_pstates();
-        detect_clock_offsets();
+        detect_clock_offsets(g_app.readback.memOffset);
         nvapi_read_offsets();
         if (nvapi_read_curve()) rebuild_visible_map();
         return exact || freshGpuMatch;

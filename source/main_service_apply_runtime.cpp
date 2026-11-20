@@ -351,7 +351,7 @@ static bool service_reset_all(char* result, size_t resultSize,
     char liveDetail[128] = {};
     nvml_read_clock_offsets(liveDetail, sizeof(liveDetail));
     nvapi_read_pstates();
-    detect_clock_offsets();
+    detect_clock_offsets(g_app.readback.memOffset);
     const bool memLiveOk = g_app.readback.memOffset;
     const bool powerLiveOk = nvml_read_power_limit();
     if (g_app.xbarProbeValid) xbar_refresh_live_state();

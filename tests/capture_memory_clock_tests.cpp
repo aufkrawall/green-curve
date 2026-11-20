@@ -194,6 +194,14 @@ int run_capture_memory_clock_tests() {
     f.ver3Status = f.ver2Status = 0;
     f.getterEffectiveMHz = 0;
 
+    // Reset uses the same resolution on signed physical kHz. A failed
+    // getter cannot preserve a cached fraction and a full MHz wins outright.
+    if (memory_clock_resolve_live_khz(0, true, 500) != 500 ||
+        memory_clock_resolve_live_khz(-1000, true, -500) != -500 ||
+        memory_clock_resolve_live_khz(0, false, 500) != 0 ||
+        memory_clock_resolve_live_khz(0, true, 1000) != 0)
+        return 12706;
+
     // A failed getter keeps the domain unread: replay writes the getter's
     // surface, so the running clock alone is not a capture.
     HardwareCaptureObservation unread{};

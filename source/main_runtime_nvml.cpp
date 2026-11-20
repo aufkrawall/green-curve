@@ -809,7 +809,7 @@ static bool refresh_global_state(char* detail, size_t detailSize) {
     bool ok4 = nvml_read_fans(detail, detailSize);
     bool okXbar = xbar_refresh_live_state();
     if (!ok3 && !ok1) ok1 = nvapi_read_pstates();
-    detect_clock_offsets();
+    detect_clock_offsets(g_app.readback.memOffset);
     detect_locked_tail_from_curve();
     (void)current_applied_gpu_offset_excludes_low_points();
     (void)current_applied_gpu_offset_mhz();

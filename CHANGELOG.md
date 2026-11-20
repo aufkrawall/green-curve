@@ -74,14 +74,14 @@ Curve editing, profile transfer and capture improve.
 - **Tray minimize:** avoid crashes after profile actions.
 - **Notebook GPUs:** accept system-managed fans/power.
 - **GPU warnings:** report limited support.
-- **Reset:** restore external memory/power changes.
+- **Reset:** restore external memory/power changes, including half-MHz memory offsets.
 - **Already-reset GPUs:** Reset completes promptly.
 - **Modified drivers:** accept shorter curve tables.
 - **Tray checkmark:** match after save/restore/upgrade.
 - **External flatten:** avoid false negative core offsets.
 - **Curve errors:** identify out-of-range targets.
 - **Profile imports:** retain slot assignments and range warnings.
-- **Multi-GPU ownership:** retain settings until explicit Reset.
+- **Multi-GPU ownership:** prevent retargeting when identical cards cannot be distinguished.
 - **GPU selector:** switch views and writes together.
 - **Curve previews:** avoid spikes; retain drafts.
 - **Older flatten profiles:** load erroneous negative-offset records.

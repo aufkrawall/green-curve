@@ -114,8 +114,18 @@ static inline GpuIntentOwnerVerdict gpu_intent_owner_verdict(
             : GPU_INTENT_OWNER_ALLOW_CURRENT_NOT_OWNER;
     }
     if (!ownerKnown) return GPU_INTENT_OWNER_REFUSE_UNKNOWN_OWNER;
-    if (gpu_adapter_is_same_write_target(owner, target, adapterCount))
-        return GPU_INTENT_OWNER_ALLOW_OWNER;
+    if (gpu_adapter_is_same_write_target(owner, target, adapterCount)) {
+        if (adapterCount == 1 || (gpu_adapter_has_valid_pci_location(owner) &&
+            gpu_adapter_has_valid_pci_location(target))) return GPU_INTENT_OWNER_ALLOW_OWNER;
+        // Either identity lacks a location. An unreadable sibling could be
+        // another copy of this board, so the inventory must identify each one.
+        if (!adapters || !adapterCount || adapterCount > MAX_GPU_ADAPTERS)
+            return GPU_INTENT_OWNER_REFUSE_OTHER_GPU;
+        for (unsigned int i = 0; i < adapterCount; ++i)
+            if (!adapters[i].valid || !adapters[i].pciInfoValid) return GPU_INTENT_OWNER_REFUSE_OTHER_GPU;
+        return gpu_adapter_pci_base_identity_is_unique(owner, adapters, adapterCount)
+            ? GPU_INTENT_OWNER_ALLOW_OWNER : GPU_INTENT_OWNER_REFUSE_OTHER_GPU;
+    }
     if (gpu_intent_owner_present(owner, adapters, adapterCount))
         return GPU_INTENT_OWNER_REFUSE_OTHER_GPU;
     return releasesIntent ? GPU_INTENT_OWNER_ALLOW_RELEASE_ABSENT_OWNER

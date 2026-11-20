@@ -959,3 +959,5 @@ cannot be driven from a test and is verified by hand.
 - 2026-06-14: Documented machine-wide default logon profile, machine-wide profile bank, and user-profile install warning (Build 284). Verified `python build.py --test`/`--asan`/`--target linux --check`.
 - 2026-06-07: Added GUI repaint-robustness section (message-pumping service/helper waits via `wait_object_pumping_ui`/`UiInputGuard`, redraw-suppressed `rebuild_edit_controls`). Verified against source and `python build.py --test`/`--asan`/`--target linux --check` (Build 271).
 - 2026-05-20: Cross-checked pipe ACL fail-closed behavior, pipe-thread startup failure handling, response protocol validation, message-mode checks, and connect-retry summary logging against source and `python build.py --check`.
+
+A retarget to an owner missing its PCI location requires one matching board in a fully identified live inventory. Reset reconciles a fresh memory getter with whole-MHz running clocks using the same resolution as passive capture. Owner refusals and Reset decisions include identity evidence and physical kHz in the existing service diagnostics.

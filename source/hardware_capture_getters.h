@@ -194,8 +194,7 @@ static inline void hardware_capture_apply_memory_clock(const MemoryClockReading&
     out.memoryEvidence = CAPTURE_MEMORY_EVIDENCE_GETTER;
     gc_i64 runningHz = 0;
     if (!out.memory.valid || !memory_clock_reading_offset_hz(reading, &runningHz)) return;
-    const gc_i64 delta = out.memory.value - runningHz;
-    if (delta > -1000000 && delta < 1000000) {
+    if (memory_clock_getter_agrees(out.memory.value, runningHz)) {
         out.memoryEvidence = CAPTURE_MEMORY_EVIDENCE_AGREES;
         return;
     }
