@@ -55,7 +55,7 @@ Curve editing, profile transfer and capture improve.
 ### Fixed
 
 - **Scoped Linux curves:** preserve unrelated offsets and hard-lock tails. Require fresh readback before retrying eligible writes.
-- **Profile transfer:** retain scope and graphics controls.
+- **Profile transfer:** retain scope, graphics controls and repeated-voltage point bindings.
 - **Windows advanced edits:** preserve omitted external settings.
 - **Windows power reset:** restore defaults even when displaying 100%.
 - **Linux startup:** accept all slots.
@@ -66,7 +66,7 @@ Curve editing, profile transfer and capture improve.
 - **Installer recovery:** tolerate shared temporary-file readers.
 - **Fixed curve points:** refuse unavailable edits/locks.
 - **Linux power:** refuse out-of-range requests.
-- **Partial profiles:** preserve omitted curves.
+- **Partial profiles:** preserve omitted curves and load explicit curve and lock releases.
 - **Clock recovery:** restore and verify fractional offsets.
 - **Memory changes:** preserve exact curves.
 - **Flatten editing:** retain typing and caret.

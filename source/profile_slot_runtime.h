@@ -41,6 +41,9 @@ static inline bool profile_destination_from_vf_curve(const VFCurvePoint* curve, 
 }
 
 static inline bool profile_document_requires_destination(const ProfileDocument& d) {
+    if (d.applicationScope == PROFILE_SCOPE_EXPLICIT_RELEASE &&
+        (d.domains & (PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK)) &&
+        (!d.legacyIndicesUnresolved || !d.topologyCount)) return true;
     if (d.legacyIndicesUnresolved) return false;
     if (d.lock.present) return true;
     for (int i = 0; i < d.topologyCount && i < VF_NUM_POINTS; ++i)

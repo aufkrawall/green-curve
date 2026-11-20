@@ -39,7 +39,8 @@ static inline bool profile_document_from_legacy_desired(const DesiredSettings& i
         const auto kind = desired_curve_point_kind(&in, ci);
         if (kind == DESIRED_CURVE_INVALID) return fail("invalid legacy point tags");
         const bool excluded = identities && in.authoring.graphicsExcluded[ci];
-        if (kind == DESIRED_CURVE_ABSENT && !(in.hasLock && in.lockCi == ci) && !excluded) continue;
+        const bool savedVoltage = bound && in.authoring.voltageUv[ci] > 0;
+        if (!savedVoltage && kind == DESIRED_CURVE_ABSENT && !(in.hasLock && in.lockCi == ci) && !excluded) continue;
         const int index = d.topologyCount++;
         d.topology[index] = {ci, ci, 0, 0};
         if (bound) {
@@ -67,8 +68,13 @@ static inline bool profile_document_from_legacy_desired(const DesiredSettings& i
                 (long long)in.curvePointMHz[ci] * 1000000;
         }
     }
+    if (bound && (!d.topologyCount || d.topologyCount != in.authoring.topologyCount))
+        return fail("the saved voltage topology is incomplete");
+    d.sourceTopologyComplete = bound;
     d.legacyIndicesUnresolved = !bound && d.topologyCount != 0;
-    if (in.hasLock) {
+    if (in.hasLock && scope == DESIRED_SCOPE_EXPLICIT_RELEASE && in.lockMode == LOCK_MODE_NONE) {
+        d.domains |= PROFILE_DOMAIN_LOCK;
+    } else if (in.hasLock) {
         d.domains |= PROFILE_DOMAIN_LOCK; d.lock.present = true;
         d.lock.mode = in.lockMode; d.lock.anchorTopologyId = in.lockCi;
         d.lock.targetFrequencyHz = in.authoring.lockPrecise ? in.authoring.lockFrequencyHz :

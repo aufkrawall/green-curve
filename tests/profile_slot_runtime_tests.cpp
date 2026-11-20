@@ -173,6 +173,30 @@ int run_profile_slot_runtime_tests() {
         back->authoring.voltageUv[61] != 600000 + 61 * 6250 || !desired_authoring_valid(back.get()) ||
         back->applicationScope != DESIRED_SCOPE_REPLACE_PROFILE)
         return 9962;
+    {
+        ProfileDestinationTopology duplicate{};
+        duplicate.available = duplicate.complete = true;
+        duplicate.count = 2;
+        duplicate.points[0] = {5, 800000, true, true};
+        duplicate.points[1] = {6, 800000, true, false};
+        auto release = profile_document_make_empty();
+        release.applicationScope = PROFILE_SCOPE_EXPLICIT_RELEASE;
+        release.domains = PROFILE_DOMAIN_LOCK | PROFILE_DOMAIN_VF_CURVE;
+        if (profile_slot_document_runtime(release, nullptr, *back, why, sizeof(why)) ||
+            !profile_slot_document_runtime(release, &duplicate, *back, why, sizeof(why)) ||
+            !back->hasLock || back->lockMode != LOCK_MODE_NONE || !back->curvePointCaptured[5] ||
+            back->curvePointCaptured[6] || back->curvePointCapturedOffsetHz[5]) return 12707;
+        // Only point 5 is owned. Point 6 disambiguates its voltage on reimport.
+        if (!profile_document_from_legacy_desired(*back, bank->documents[0], why, sizeof(why)) ||
+            !profile_bank_encode(*bank, bytes) || !profile_bank_decode(bytes, *decoded) ||
+            !decoded->documents[0].sourceTopologyComplete || decoded->documents[0].topologyCount != 2 ||
+            decoded->documents[0].points[1].kind != PROFILE_POINT_ABSENT ||
+            !profile_slot_document_runtime(decoded->documents[0], &duplicate, *back, why, sizeof(why)) ||
+            !back->hasLock || !back->curvePointCaptured[5] || back->curvePointCaptured[6]) return 12708;
+        duplicate.points[1].index = 7;
+        if (profile_slot_document_runtime(decoded->documents[0], &duplicate, *back, why, sizeof(why)))
+            return 12709;
+    }
     // 9963: without a GPU it refuses with an actionable reason, never a guess.
     why[0] = 0;
     if (profile_slot_document_runtime(*capture, nullptr, *back, why, sizeof(why)) || !strstr(why, "needs the GPU"))
