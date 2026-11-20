@@ -1,5 +1,12 @@
 # Testing
 
+## Curve planner fixture lifetime (2026-11-20)
+
+`tests/curve_plan_tests.cpp` keeps the hard-lock request alive until the
+near-range plan is evaluated. `plan_input_windows()` in
+`tests/curve_plan_fixtures.h` borrows the request. The sanitizer suite covers
+this fixture as well as the production planner.
+
 ## Linux startup picker (2026-11-20)
 
 - `tests/tui_profile_tools_tests.cpp` (12670–12673) checks the startup control

@@ -405,7 +405,8 @@ int run_planner_cases() {
     if (r.disposition != CURVE_PLAN_REFUSED || !point || !point->proven ||
         point->adjustmentKHz != 1010000) return 12486;
     // Linux absolute-target tail out of range by less than one bin step is also proven.
-    CurvePlanInput linuxHard = plan_input_windows(nearCap, flatten_request(24, 2400),
+    const DesiredSettings hardRequest = flatten_request(24, 2400);
+    CurvePlanInput linuxHard = plan_input_windows(nearCap, hardRequest,
                                                   CURVE_PLAN_EVIDENCE_UNSHAPED_LIVE,
                                                   nvml_range(-1000, 1000));
     linuxHard.lockMode = LOCK_MODE_HARD;
