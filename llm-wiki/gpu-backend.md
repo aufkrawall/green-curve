@@ -1,5 +1,13 @@
 # GPU Backend
 
+## Exact Windows power reset (2026-11-20)
+
+`main_service_apply_runtime.cpp` compares the live current and default power
+limits in milliwatts. On a read failure it examines the previous raw pair.
+Reset verifies the exact default after a write and logs the live and cached
+pairs. `tests/external_oc_change_tests.cpp` covers a fractional target whose
+percent display rounds to 100%.
+
 ## Summary
 
 The GPU backend handles VF-curve read/write, clock offsets, power limit, and fan control through dynamically loaded NVIDIA driver interfaces (NVAPI private + NVML public).
@@ -487,9 +495,9 @@ XBAR clock and MSVDD are two independently owned scalar fields:
   silently clamping a hand-edited record.
 - A supported Windows profile save emits both effective values (owned value if
   present, otherwise current control/live state). On an unsupported surface it
-  emits neither key. Loading projects an omitted key as explicit zero intent so
-  a profile without XBAR restores stock rather than preserving whatever the
-  previous profile owned.
+  emits neither key. Legacy slots project an omitted key as zero. Explicit
+  scoped records display the current value without acquiring ownership until
+  edited; their transitions still clean up fields owned by the previous profile.
 - Sparse merging, active-intent ownership comparison, manual no-change/fan-only
   decisions, and named-profile identity all account for both fields.
 - Named-profile transitions clean up exactly each previously owned field omitted

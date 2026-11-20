@@ -190,6 +190,28 @@ int run_gui_editor_base_tests() {
     current.gpuOffsetMHz = 0;
     editor->gpuOffsetMHz = 0;
 
+    // A scoped profile omits all advanced fields. Their projected values
+    // can lag live state without acquiring ownership in Apply or Save.
+    auto sparseBase = std::make_unique<DesiredSettings>(*base);
+    sparseBase->hasXbarOffsetKhz = sparseBase->hasXbarMsvddOffsetUv = 0;
+    sparseBase->hasSysClkOffsetKhz = sparseBase->hasVideoClkOffsetKhz = 0;
+    auto advancedEditor = editor_after_load(*sparseBase);
+    advancedEditor->hasXbarOffsetKhz = advancedEditor->hasXbarMsvddOffsetUv = 1;
+    advancedEditor->hasSysClkOffsetKhz = advancedEditor->hasVideoClkOffsetKhz = 1;
+    GuiEditorCurrentScalars advanced;
+    advanced.xbarOffsetKhz = 50000; advanced.xbarMsvddOffsetUv = 12000;
+    advanced.sysClkOffsetKhz = -20000; advanced.videoClkOffsetKhz = 30000;
+    advanced.xbarProjected = advanced.xbarMsvddProjected = true;
+    advanced.sysClkProjected = advanced.videoClkProjected = true;
+    if (!overlay(*sparseBase, *advancedEditor, advanced, typed, *out, &edits) ||
+        edits.xbar || edits.xbarMsvdd || edits.sysClk || edits.videoClk ||
+        out->hasXbarOffsetKhz || out->hasXbarMsvddOffsetUv ||
+        out->hasSysClkOffsetKhz || out->hasVideoClkOffsetKhz) return 12681;
+    advanced.xbarProjected = false;
+    if (!overlay(*sparseBase, *advancedEditor, advanced, typed, *out, &edits) ||
+        !edits.xbar || !out->hasXbarOffsetKhz || out->xbarOffsetKhz ||
+        out->hasXbarMsvddOffsetUv || out->hasSysClkOffsetKhz || out->hasVideoClkOffsetKhz) return 12682;
+
     // A typed point equal to the record's own explicit point is no edit.
     auto explicitBase = imported_flatten();
     explicitBase->curvePointCaptured[60] = 0;

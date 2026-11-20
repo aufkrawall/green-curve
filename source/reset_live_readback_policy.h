@@ -21,6 +21,10 @@ static inline bool reset_scalar_domain_needs_write(bool writeUncertain,
     return liveReadOk ? !liveAtStock : !cachedAtStock;
 }
 
+static inline bool reset_power_target_differs(int currentMw, int defaultMw) {
+    return currentMw > 0 && defaultMw > 0 && currentMw != defaultMw;
+}
+
 // For the one-line diagnostic: where the decision came from.
 static inline const char* reset_scalar_decision_source(bool writeUncertain,
     bool liveReadOk) {

@@ -40,6 +40,7 @@ struct XbarDialogState {
     HBRUSH hBgBrush;
     HBRUSH hInputBrush;
     bool active;
+    int shownXbarMHz, shownMsvddMv, shownSysMHz, shownVideoMHz;
 };
 
 static XbarDialogState g_xbarDialog = {};
@@ -111,6 +112,8 @@ static void xbar_dialog_sync_controls() {
     EnableWindow(g_xbarDialog.hResetBtn, TRUE);
 
     // Populate edits with pending values (what the user will apply next).
+    g_xbarDialog.shownXbarMHz = pendingKhz / 1000;
+    g_xbarDialog.shownMsvddMv = pendingUv / 1000;
     begin_programmatic_edit_update();
     StringCchPrintfA(buf, 32, "%d", pendingKhz / 1000);
     SetWindowTextA(g_xbarDialog.hOffsetEdit, buf);
@@ -135,6 +138,7 @@ static void xbar_dialog_sync_controls() {
     }
     begin_programmatic_edit_update();
     StringCchPrintfA(buf, 32, "%d", pendingSysKhz / 1000);
+    g_xbarDialog.shownSysMHz = pendingSysKhz / 1000;
     SetWindowTextA(g_xbarDialog.hSysEdit, buf);
     end_programmatic_edit_update();
 
@@ -154,6 +158,7 @@ static void xbar_dialog_sync_controls() {
         char vbuf[32] = {};
         begin_programmatic_edit_update();
         StringCchPrintfA(vbuf, 32, "%d", pendingVideoKhz / 1000);
+        g_xbarDialog.shownVideoMHz = pendingVideoKhz / 1000;
         SetWindowTextA(g_xbarDialog.hVideoEdit, vbuf);
         end_programmatic_edit_update();
     }
@@ -215,6 +220,13 @@ static void xbar_dialog_update_live_values() {
     SetWindowTextA(g_xbarDialog.hVideoNowLabel, buf);
 }
 
+static void xbar_dialog_adopt_edit(int entered, int& value, bool& fromProfile,
+    char (&text)[32]) {
+    value = entered * 1000;
+    fromProfile = false;
+    StringCchPrintfA(text, ARRAY_COUNT(text), "%d", entered);
+}
+
 static bool xbar_dialog_commit(HWND hwnd) {
     char offsetBuf[64] = {};
     char msvddBuf[64] = {};
@@ -255,15 +267,13 @@ static bool xbar_dialog_commit(HWND hwnd) {
         gc_message_box(hwnd, "SYS clock offset must be between -1000 and 1000 MHz.", "Green Curve", MB_OK | MB_ICONERROR);
         return false;
     }
-    int offsetKhz = offsetMhz * 1000;
-    int msvddUv = msvddMv * 1000;
-    int sysKhz = sysMhz * 1000;
-    if (g_xbarDialog.hVideoEdit && IsWindowEnabled(g_xbarDialog.hVideoEdit)) {
+    int videoMhz = 0;
+    const bool videoEnabled = g_xbarDialog.hVideoEdit && IsWindowEnabled(g_xbarDialog.hVideoEdit);
+    if (videoEnabled) {
         char videoBuf[64] = {};
         GetWindowTextA(g_xbarDialog.hVideoEdit, videoBuf, 64);
         trim_ascii(videoBuf);
         if (!videoBuf[0]) StringCchCopyA(videoBuf, 64, "0");
-        int videoMhz = 0;
         if (!parse_int_strict(videoBuf, &videoMhz)) {
             gc_message_box(hwnd, "Invalid VIDEO clock offset. Use integer MHz.", "Green Curve", MB_OK | MB_ICONERROR);
             return false;
@@ -272,27 +282,27 @@ static bool xbar_dialog_commit(HWND hwnd) {
             gc_message_box(hwnd, "VIDEO clock offset must be between -1000 and 1000 MHz.", "Green Curve", MB_OK | MB_ICONERROR);
             return false;
         }
-        g_app.guiVideoClkOffsetKhz = videoMhz * 1000;
-        g_app.guiVideoClkOffsetFromProfileLoad = false;
-        StringCchPrintfA(g_app.guiDraft.videoClkOffsetText, 32, "%d", videoMhz);
     }
 
     // Write into draft and gui fields. This marks the editor dirty and makes
     // the Advanced button show pending orange until the user presses Apply.
-    g_app.guiXbarOffsetKhz = offsetKhz;
-    g_app.guiXbarMsvddOffsetUv = msvddUv;
-    g_app.guiXbarOffsetFromProfileLoad = false;
-    g_app.guiXbarMsvddOffsetFromProfileLoad = false;
+    const bool xbarChanged = offsetMhz != g_xbarDialog.shownXbarMHz;
+    const bool msvddChanged = msvddMv != g_xbarDialog.shownMsvddMv;
+    const bool sysChanged = g_app.sysClkProbeValid && sysMhz != g_xbarDialog.shownSysMHz;
+    const bool videoChanged = videoEnabled && videoMhz != g_xbarDialog.shownVideoMHz;
+    if (!xbarChanged && !msvddChanged && !sysChanged && !videoChanged) return true;
     g_app.guiHasUserModifiedValues = true;
     set_gui_state_dirty(true);
-    StringCchPrintfA(g_app.guiDraft.xbarOffsetText, 32, "%d", offsetMhz);
-    StringCchPrintfA(g_app.guiDraft.xbarMsvddOffsetText, 32, "%d", msvddMv);
-    if (g_app.sysClkProbeValid) {
-        g_app.guiSysClkOffsetKhz = sysKhz;
-        g_app.guiSysClkOffsetFromProfileLoad = false;
-        StringCchPrintfA(g_app.guiDraft.sysClkOffsetText, 32, "%d", sysMhz);
-    }
-    debug_log("xbar dialog: committed offset %d MHz (%d kHz) msvdd %d mV (%d uV)\n", offsetMhz, offsetKhz, msvddMv, msvddUv);
+    if (xbarChanged) xbar_dialog_adopt_edit(offsetMhz, g_app.guiXbarOffsetKhz,
+        g_app.guiXbarOffsetFromProfileLoad, g_app.guiDraft.xbarOffsetText);
+    if (msvddChanged) xbar_dialog_adopt_edit(msvddMv, g_app.guiXbarMsvddOffsetUv,
+        g_app.guiXbarMsvddOffsetFromProfileLoad, g_app.guiDraft.xbarMsvddOffsetText);
+    if (sysChanged) xbar_dialog_adopt_edit(sysMhz, g_app.guiSysClkOffsetKhz,
+        g_app.guiSysClkOffsetFromProfileLoad, g_app.guiDraft.sysClkOffsetText);
+    if (videoChanged) xbar_dialog_adopt_edit(videoMhz, g_app.guiVideoClkOffsetKhz,
+        g_app.guiVideoClkOffsetFromProfileLoad, g_app.guiDraft.videoClkOffsetText);
+    debug_log("advanced editor: committed edited fields xbar=%d msvdd=%d sys=%d video=%d\n",
+        xbarChanged ? 1 : 0, msvddChanged ? 1 : 0, sysChanged ? 1 : 0, videoChanged ? 1 : 0);
     gui_pending_changes_refresh();
     return true;
 }

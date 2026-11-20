@@ -1,5 +1,14 @@
 # Config and Profiles
 
+## Advanced fields omitted from a scoped profile (2026-11-20)
+
+`config_profiles_gui_state.cpp` projects the current advanced values for
+omitted fields on explicit-scope Load. The per-field profile projection flags
+keep these controls out of Apply and Save overlays even if live values drift.
+`xbar_dialog.cpp` clears each flag only when its displayed value is edited.
+`tests/gui_editor_base_tests.cpp` covers an untouched overlay and an explicit
+edit of one field with its three siblings still omitted.
+
 ## Profile tools: capture, import and export end in ordinary slots (2026-11-19)
 
 Source anchors: `source/profile_slot_runtime.h`, `source/profile_legacy_flat_tail_offset_policy.h`,
@@ -196,7 +205,8 @@ Source anchors: `source/gui_editor_base_policy.h`, `source/gui_editor_base.cpp`,
   discarded draft resets to the active intent.
 - **Overlay.** `gui_editor_edits()` decides per domain: an owned domain is
   edited when the field differs from the record's value, an omitted one when it
-  differs from what the GPU runs. A point is edited only when the user typed it
+  differs from what the GPU runs. Advanced fields also require a user edit
+  once projected by Load. A point is edited only when the user typed it
   (`g_app.guiCurvePointTyped`, set in the VF field EN_CHANGE handler, cleared by
   every projection), so projected values and an unchanged lock's tail never
   count. An edited lock takes the editor's lock and every point from the lower

@@ -191,6 +191,10 @@ static GuiEditorCurrentScalars gui_editor_current_scalars(const DesiredSettings&
     c.xbarMsvddOffsetUv = have && control.hasXbarMsvddOffset ? control.xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv;
     c.sysClkOffsetKhz = have && control.hasSysClkOffset ? control.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz;
     c.videoClkOffsetKhz = have && control.hasVideoClkOffset ? control.videoClkOffsetKhz : g_app.videoClkFreqOffsetKhz;
+    c.xbarProjected = g_app.guiXbarOffsetFromProfileLoad;
+    c.xbarMsvddProjected = g_app.guiXbarMsvddOffsetFromProfileLoad;
+    c.sysClkProjected = g_app.guiSysClkOffsetFromProfileLoad;
+    c.videoClkProjected = g_app.guiVideoClkOffsetFromProfileLoad;
     c.fanChanged = editor.hasFan && !fan_setting_matches_current(editor.fanMode, editor.fanPercent, &editor.fanCurve);
     return c;
 }

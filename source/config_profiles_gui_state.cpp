@@ -80,14 +80,13 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
         if (g_app.hPowerLimitEdit)
             set_edit_value(g_app.hPowerLimitEdit, desired->powerLimitPct);
     }
-    // XBAR (Blackwell).  A loaded profile is the editor's declaration: an
-    // omitted field means zero, including records written before this domain
-    // existed. Projecting the hardware value here would turn "no XBAR" into a
-    // preserve-current request and defeat named-profile transition cleanup.
+    // A scoped profile leaves omitted external controls alone. Show their
+    // live values without claiming them. Legacy slots still project zero.
+    const bool scoped = desired->applicationScope != DESIRED_SCOPE_LEGACY;
     int projectedXbarFreqKhz = desired->hasXbarOffsetKhz
-        ? desired->xbarOffsetKhz : 0;
+        ? desired->xbarOffsetKhz : (scoped ? g_app.xbarFreqOffsetKhz : 0);
     int projectedXbarMsvddUv = desired->hasXbarMsvddOffsetUv
-        ? desired->xbarMsvddOffsetUv : 0;
+        ? desired->xbarMsvddOffsetUv : (scoped ? g_app.xbarMsvddOffsetUv : 0);
     g_app.guiXbarOffsetKhz = projectedXbarFreqKhz;
     g_app.guiXbarOffsetFromProfileLoad = true;
     g_app.guiXbarMsvddOffsetUv = projectedXbarMsvddUv;
@@ -98,13 +97,13 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
                      projectedXbarMsvddUv / 1000);
     // SYS clock rides the same profile-load projection rules as XBAR.
     int projectedSysClkKhz = desired->hasSysClkOffsetKhz
-        ? desired->sysClkOffsetKhz : 0;
+        ? desired->sysClkOffsetKhz : (scoped ? g_app.sysClkFreqOffsetKhz : 0);
     g_app.guiSysClkOffsetKhz = projectedSysClkKhz;
     g_app.guiSysClkOffsetFromProfileLoad = true;
     StringCchPrintfA(g_app.guiDraft.sysClkOffsetText, 32, "%d",
                      projectedSysClkKhz / 1000);
     int projectedVideoClkKhz = desired->hasVideoClkOffsetKhz
-        ? desired->videoClkOffsetKhz : 0;
+        ? desired->videoClkOffsetKhz : (scoped ? g_app.videoClkFreqOffsetKhz : 0);
     g_app.guiVideoClkOffsetKhz = projectedVideoClkKhz;
     g_app.guiVideoClkOffsetFromProfileLoad = true;
     StringCchPrintfA(g_app.guiDraft.videoClkOffsetText, 32, "%d",

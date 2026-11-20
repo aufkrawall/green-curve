@@ -56,6 +56,8 @@ Curve checks, profile transfer and capture improve.
 
 - **Linux curve Apply:** scoped profile changes preserve unrelated VF offsets, and corrections keep hard-lock tail offsets intact.
 - **Profile export and import:** whole-number profiles keep their apply scope, and precise graphics offsets keep their selected control.
+- **Windows advanced clock edits:** loading a profile preserves omitted external clock and voltage settings.
+- **Windows power reset:** custom targets that display as 100% return to the exact board default.
 - **Linux startup apply can select any saved slot.** This includes profiles imported from Windows.
 - **TUI numeric edits:** memory and power edits replace retained precise values.
 - **Unicode profile banks:** imports preserve existing text and encoding.

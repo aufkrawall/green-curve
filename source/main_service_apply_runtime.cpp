@@ -346,7 +346,8 @@ static bool service_reset_all(char* result, size_t resultSize,
     // offset can leave the NVML getter at 0.  XBAR/SYS/VIDEO below act on the
     // refreshed values; a failed ClkDomains read keeps their last-known ones.
     const bool cachedMemAtStock = g_app.memClockOffsetkHz == 0;
-    const int cachedPowerPct = g_app.powerLimitPct;
+    const int cachedPowerCurrentMw = g_app.powerLimitCurrentmW;
+    const int cachedPowerDefaultMw = g_app.powerLimitDefaultmW;
     char liveDetail[128] = {};
     nvml_read_clock_offsets(liveDetail, sizeof(liveDetail));
     nvapi_read_pstates();
@@ -359,15 +360,16 @@ static bool service_reset_all(char* result, size_t resultSize,
         cachedMemAtStock);
     const bool resetPower = reset_scalar_domain_needs_write(
         g_app.powerLimitWriteUncertain, powerLiveOk,
-        g_app.powerLimitPct == POWER_LIMIT_DEFAULT_PCT,
-        cachedPowerPct == POWER_LIMIT_DEFAULT_PCT);
+        !reset_power_target_differs(g_app.powerLimitCurrentmW, g_app.powerLimitDefaultmW),
+        !reset_power_target_differs(cachedPowerCurrentMw, cachedPowerDefaultMw));
     debug_log("service_reset_all: scalar readback memory=%s live=%d kHz cached=%s write=%d;"
-              " power=%s live=%d%% cached=%d%% write=%d\n",
+              " power=%s live=%d/%d mW cached=%d/%d mW write=%d\n",
         reset_scalar_decision_source(g_app.memOffsetWriteUncertain, memLiveOk),
         g_app.memClockOffsetkHz, cachedMemAtStock ? "stock" : "offset",
         resetMemory ? 1 : 0,
         reset_scalar_decision_source(g_app.powerLimitWriteUncertain, powerLiveOk),
-        g_app.powerLimitPct, cachedPowerPct, resetPower ? 1 : 0);
+        g_app.powerLimitCurrentmW, g_app.powerLimitDefaultmW,
+        cachedPowerCurrentMw, cachedPowerDefaultMw, resetPower ? 1 : 0);
     if (resetMemory) {
         if (nvapi_set_mem_offset(0, true)) successCount++;
         else {
@@ -376,8 +378,10 @@ static bool service_reset_all(char* result, size_t resultSize,
         }
     }
     if (resetPower) {
-        if (nvapi_set_power_limit(POWER_LIMIT_DEFAULT_PCT, true)) successCount++;
+        if (nvapi_set_power_limit(POWER_LIMIT_DEFAULT_PCT, true) &&
+            !reset_power_target_differs(g_app.powerLimitCurrentmW, g_app.powerLimitDefaultmW)) successCount++;
         else {
+            g_app.powerLimitWriteUncertain = true;
             failCount++;
             append_failure("Power limit did not reset to default");
         }

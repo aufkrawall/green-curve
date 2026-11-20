@@ -54,6 +54,8 @@ struct GuiEditorCurrentScalars {
     int gpuOffsetMHz = 0, gpuOffsetExcludeLowCount = 0;
     int memOffsetMHz = 0, powerLimitPct = 0;
     int xbarOffsetKhz = 0, xbarMsvddOffsetUv = 0, sysClkOffsetKhz = 0, videoClkOffsetKhz = 0;
+    bool xbarProjected = false, xbarMsvddProjected = false;
+    bool sysClkProjected = false, videoClkProjected = false;
     bool fanChanged = false;  // the editor's fan differs from the running fan
 };
 
@@ -101,14 +103,14 @@ static inline GuiEditorEdits gui_editor_edits(const DesiredSettings& base, const
               (editor.fanMode == FAN_MODE_CURVE && !fan_curve_equals(&editor.fanCurve, &base.fanCurve))
             : current.fanChanged;
     }
-    if (editor.hasXbarOffsetKhz)
+    if (editor.hasXbarOffsetKhz && !current.xbarProjected)
         e.xbar = editor.xbarOffsetKhz != (base.hasXbarOffsetKhz ? base.xbarOffsetKhz : current.xbarOffsetKhz);
-    if (editor.hasXbarMsvddOffsetUv)
+    if (editor.hasXbarMsvddOffsetUv && !current.xbarMsvddProjected)
         e.xbarMsvdd = editor.xbarMsvddOffsetUv !=
             (base.hasXbarMsvddOffsetUv ? base.xbarMsvddOffsetUv : current.xbarMsvddOffsetUv);
-    if (editor.hasSysClkOffsetKhz)
+    if (editor.hasSysClkOffsetKhz && !current.sysClkProjected)
         e.sysClk = editor.sysClkOffsetKhz != (base.hasSysClkOffsetKhz ? base.sysClkOffsetKhz : current.sysClkOffsetKhz);
-    if (editor.hasVideoClkOffsetKhz)
+    if (editor.hasVideoClkOffsetKhz && !current.videoClkProjected)
         e.videoClk = editor.videoClkOffsetKhz !=
             (base.hasVideoClkOffsetKhz ? base.videoClkOffsetKhz : current.videoClkOffsetKhz);
 

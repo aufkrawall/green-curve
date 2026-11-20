@@ -185,8 +185,8 @@ def check_xbar_profile_contract(ctx, require_text, forbid_text):
                 "desired->hasXbarOffsetKhz ? desired->xbarOffsetKhz : 0",
                 "profile saves must not fabricate XBAR stock ownership")
     require_text(gui_state_cpp,
-                 "int projectedXbarFreqKhz = desired->hasXbarOffsetKhz",
-                 "loaded profiles make omitted XBAR fields explicit stock intent")
+                 "desired->xbarOffsetKhz : (scoped ? g_app.xbarFreqOffsetKhz : 0)",
+                 "scoped profile projection shows omitted XBAR at live values")
     require_text(live_cpp,
                  "desired->hasXbarOffsetKhz = g_app.xbarProbeValid &&",
                  "live-state profile saves preserve effective XBAR values")
@@ -220,8 +220,8 @@ def check_xbar_profile_contract(ctx, require_text, forbid_text):
                  "base->hasSysClkOffsetKhz = true;",
                  "Windows sparse merging carries SYS clock ownership")
     require_text(gui_state_cpp,
-                 "projectedSysClkKhz",
-                 "loaded profiles make omitted SYS fields explicit stock intent")
+                 "desired->sysClkOffsetKhz : (scoped ? g_app.sysClkFreqOffsetKhz : 0)",
+                 "scoped profile projection shows omitted SYS at live values")
     require_text(helpers_cpp,
                  "sys clock ownership differs profile=%d active=%d",
                  "profile identity compares SYS clock ownership")

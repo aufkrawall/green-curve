@@ -3,6 +3,7 @@
 // Clock settings changed outside Green Curve: Reset decides from a live
 // readback, and the GUI re-reads on activation without ever polling.
 #include "gui_activation_resync_policy.h"
+#include "control_readback_policy.h"
 #include "reset_live_readback_policy.h"
 
 namespace {
@@ -23,6 +24,14 @@ int reset_live_readback_cases() {
     if (__builtin_strcmp(reset_scalar_decision_source(false, false), "cached") != 0 ||
         __builtin_strcmp(reset_scalar_decision_source(false, true), "live") != 0 ||
         __builtin_strcmp(reset_scalar_decision_source(true, false), "uncertain") != 0) return 12385;
+    // A real milliwatt difference can round to the same displayed percentage.
+    constexpr int boardMw = 250000;
+    constexpr int targetMw = 250500;
+    if (power_limit_pct_from_mw(targetMw, boardMw) != POWER_LIMIT_DEFAULT_PCT ||
+        !reset_power_target_differs(targetMw, boardMw) ||
+        !reset_power_target_differs(boardMw - 500, boardMw) ||
+        reset_power_target_differs(boardMw, boardMw) ||
+        reset_power_target_differs(0, boardMw)) return 12680;
     return 0;
 }
 
