@@ -56,7 +56,23 @@ Three cross-platform profile parity gaps on Linux were root-caused and fixed:
    using `load_selected_profile_slot()`. `--dump` prints lock mode
    (`(flatten)`/`(hard)`) and `captured(+X Hz)` points, `--json` emits
    `captured_offset_hz`, and `linux_tui_layout.cpp` previews captured and
-   projected points against the live base curve.
+   projected points against the live base curve, displays the real flatten-tail
+   floor offset (`vf_offset_range_flatten_floor_khz`, typically `-1000 MHz`) in
+   `DELTA` instead of `targetMHz - clampedBaseMHz`, reports live driver offsets
+   on untouched rows and the selected-point header, and keeps excluded low
+   points at `0 MHz`.
+4. **Linux -> Windows export, legacy INI auto-detection, and capture parity.**
+   Unlocked INI savers (`linux_port_profiles.cpp`, `config_profiles.cpp`,
+   `main_runtime_capture.cpp`) now write `lock_tracks_anchor=0` when no lock is
+   present, and `profile_legacy_ini.h` accepts an explicit no-lock triple
+   (`lock_ci=-1`, `lock_mhz=0`, `lock_mode=0`) with a leftover
+   `lock_tracks_anchor=1` from earlier files so unlocked profiles export cleanly
+   on both platforms. `profile_editor_transfer.h` auto-detects legacy Linux
+   `config.ini` files (via `[meta] linux_mem_migrated` or bare `pointN=` keys)
+   so Windows imports them without manual format switching. `linux_backend.cpp`
+   resolves `nvmlDeviceGetMaxClockInfo` and `linux_backend_capture.h` wires
+   `hardware_capture_memory_clock` + changed-only logging to match Windows
+   running-clock memory capture evidence.
 
 Verified live on Linux x86_64 with an RTX 5070 (Blackwell, NVIDIA driver
 620.73.04): five Windows-exported profiles (legacy flatten, selective offset +

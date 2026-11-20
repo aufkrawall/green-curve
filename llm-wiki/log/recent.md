@@ -5,6 +5,48 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-20: Linux TUI flatten-tail delta display & Linux -> Windows profile export/capture parity
+
+- Reported / audited:
+  1. In the Linux TUI VF table, flatten-tail rows after the knee (`ci=77..126`)
+     showed `-5` in `DELTA` (`targetMHz 2957 - clampedBaseMHz 2962`) even though
+     the driver was correctly programmed with `-1000 MHz` (verified via live
+     `--json-live` readback across all flattened profiles).
+  2. Auditing Linux -> Windows export/import uncovered three real gaps:
+     - **Unlocked profiles failed export on both Linux and Windows:**
+       `linux_port_profiles.cpp`, `config_profiles.cpp`, and
+       `main_runtime_capture.cpp` wrote `lock_tracks_anchor=1` alongside
+       `lock_ci=-1, lock_mhz=0, lock_mode=0`, which `profile_legacy_ini.h`
+       rejected with `legacy lock needs an explicit anchor, frequency and mode`.
+     - **Raw Linux `config.ini` import on Windows failed without manual format
+       selection:** `profile_editor_transfer_probe()` defaulted every legacy INI
+       to `PROFILE_LEGACY_WINDOWS_INI` even when `[meta] linux_mem_migrated=1`
+       or bare `pointN=` keys identified Linux.
+     - **Linux passive capture omitted running-clock memory evidence:**
+       `linux_backend.cpp` did not resolve `nvmlDeviceGetMaxClockInfo` and
+       `linux_backend_capture.h` left `memoryClockReader` null.
+- Fixes (`2a154e6`, `bc5dfe6`):
+  1. `linux_tui_layout.{h,cpp}` / `linux_tui_layout_vf.cpp`: compute
+     `TUI_POINT_FLATTEN_TAIL` `deltaMHz` from `vf_offset_range_flatten_floor_khz`
+     (typically `-1000 MHz`), report live offsets on `TUI_POINT_LIVE` and the
+     selected-point header, and keep `TUI_POINT_EXCLUDED` at `0 MHz`.
+  2. Gate `lock_tracks_anchor=1` on active lock presence in Linux/Windows INI
+     savers and accept the explicit no-lock triple with a leftover
+     `lock_tracks_anchor=1` in `profile_legacy_ini.h` (while keeping bare or
+     contradictory lock records refused).
+  3. Add `profile_editor_detect_legacy_ini_format()` in
+     `profile_editor_transfer.h` so legacy Linux `config.ini` files auto-detect
+     as `PROFILE_LEGACY_LINUX_INI`.
+  4. Resolve `nvmlDeviceGetMaxClockInfo` in `linux_backend.cpp` and wire
+     `hardware_capture_memory_clock` + changed-only logging in
+     `linux_backend_capture.h`.
+- Verified: regression cases `12652-12656` (`tests/regression_main.cpp`),
+  `12660-12663` (`tests/profile_legacy_ini_tests.cpp`), `12664-12667`
+  (`tests/profile_tools_tests.cpp`), unlocked save/export in
+  `tests/linux_gpu_selection_store_regression.cpp`, `tools/linux_gates.py`,
+  `python3 build.py --test`, `python3 build.py --check --target all`, plain
+  deliverable `python3 build.py`, and live hardware CLI/TUI/capture verification.
+
 ## 2026-11-20: Windows-exported profiles failed on Linux (curve convergence, shaped-baseline transitions, voltage-bound CLI/startup loading)
 
 - Reported: five profiles exported from Windows and imported into Green Curve
