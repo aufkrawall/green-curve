@@ -123,16 +123,21 @@ static inline ApplyCorrectionLoopOutcome linux_run_legacy_curve_correction(
     gc_bool8 fromGpuOffset[VF_NUM_POINTS] = {};
     int targetOffsetKHz[VF_NUM_POINTS] = {};
 
-    const bool hasLock = intended && intended->hasLock &&
-        intended->lockMode != LOCK_MODE_NONE && intended->lockMHz > 0 &&
+    const bool hasFlatten = intended && intended->hasLock &&
+        intended->lockMode == LOCK_MODE_FLATTEN && intended->lockMHz > 0 &&
         intended->lockCi >= 0 && intended->lockCi < VF_NUM_POINTS;
-    const int lockCi = hasLock ? intended->lockCi : -1;
-    const unsigned int lockMHz = hasLock ? intended->lockMHz : 0u;
+    const bool hasHardLock = intended && intended->hasLock &&
+        intended->lockMode == LOCK_MODE_HARD;
+    const int lockCi = hasFlatten ? intended->lockCi : -1;
+    const unsigned int lockMHz = hasFlatten ? intended->lockMHz : 0u;
 
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         const unsigned int f = readFreqKHz(ci);
         originalPopulated[ci] = f != 0;
-        lockedTailMask[ci] = hasLock && ci >= lockCi && f != 0;
+        // The shared correction planner uses the flatten floor for every
+        // tail entry beyond the anchor. A hard pin keeps its initial offsets.
+        lockedTailMask[ci] = hasFlatten && ci >= lockCi && f != 0 && build.pointMask[ci];
+        if (hasHardLock && ci >= intended->lockCi) continue;
         explicitCurveMask[ci] = !lockedTailMask[ci] && build.pointAbsoluteIntent[ci];
         hasCurvePoint[ci] = build.pointMask[ci] ? 1 : 0;
         if (build.pointAbsoluteIntent[ci])
@@ -148,7 +153,7 @@ static inline ApplyCorrectionLoopOutcome linux_run_legacy_curve_correction(
 
     ApplyCorrectionRequest req = {};
     req.pointCount = VF_NUM_POINTS;
-    req.hasLock = hasLock;
+    req.hasLock = hasFlatten;
     req.lockMHz = lockMHz;
     req.lockCi = lockCi;
     req.gpuPolicyViaCurveBatch = build.composedGpuOffset;
@@ -246,7 +251,7 @@ static inline ApplyCorrectionLoopOutcome linux_run_legacy_curve_correction(
         });
 
     if (readbackFailed) outcome.verified = false;
-    if (outcome.verified && hasLock && intended->lockMode == LOCK_MODE_FLATTEN) {
+    if (outcome.verified && hasFlatten) {
         snapshotReadback();
         unsigned int lastTargetMHz = 0;
         const int violationCi = apply_correction_tail_monotonic_violation(

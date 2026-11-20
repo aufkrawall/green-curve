@@ -20,6 +20,16 @@
 
 #include "gpu_core.h"
 
+static inline int linux_vf_baseline_reset_mask(const VFCurvePoint* curve,
+    const bool* writeMask, bool* resetMask) {
+    int count = 0;
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        resetMask[ci] = curve[ci].freq_kHz != 0 && (!writeMask || writeMask[ci]);
+        count += resetMask[ci] ? 1 : 0;
+    }
+    return count;
+}
+
 // True when any populated graphics VF point currently carries a nonzero
 // programmed offset.
 static inline bool linux_curve_has_nonzero_offsets(

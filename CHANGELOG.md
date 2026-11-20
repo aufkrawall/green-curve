@@ -54,6 +54,7 @@ Curve checks, profile transfer and capture improve.
 
 ### Fixed
 
+- **Linux curve Apply:** scoped profile changes preserve unrelated VF offsets, and corrections keep hard-lock tail offsets intact.
 - **Linux startup apply can select any saved slot.** This includes profiles imported from Windows.
 - **TUI numeric edits:** memory and power edits replace retained precise values.
 - **Unicode profile banks:** imports preserve existing text and encoding.

@@ -1313,6 +1313,8 @@ def check_profile_interchange_and_curve_correction(ctx, require_text, forbid_tex
                  "Linux scoped VF replacement over a shaped curve resets the VF baseline first")
     require_text(mutation_cpp, "if (vfBaselineReset) g_linuxScopedCurveCeilingTransition = true;",
                  "Linux VF baseline reset arms the transition clock ceiling before zeroing VF")
+    require_text(mutation_cpp, "linux_apply_reset_baseline_vf_curve(g, context->plannedBuild.pointMask)",
+                 "Linux scoped VF preparation uses the transaction write set")
     require_text(main_cpp, "desired_prepare_replacement_request(&desired);",
                  "Linux CLI --apply-config prepares profile replacement like Windows")
     require_text(tui_mut_cpp, "linux_tui_prepare_apply_request(",

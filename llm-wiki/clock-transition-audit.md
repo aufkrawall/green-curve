@@ -1,5 +1,17 @@
 # Clock transition hardening
 
+## Scoped Linux VF preparation and correction (2026-11-20)
+
+`linux_backend_mutation.cpp` passes the compiled VF write set to the
+baseline reset in `linux_backend_apply_context.h`. It includes outgoing
+cleanup points. Unrelated offsets retain their raw values, and a fresh sample
+with surviving offsets carries shaped-baseline evidence. Legacy full baseline
+reset still includes every populated point. The correction planner in
+`linux_backend_curve_correction.h` uses the uniform minimum only for a
+flatten within that write set. A correction before a hard pin leaves the
+pin's existing tail offsets intact. `tests/linux_vf_write_tests.cpp` covers
+the partial reset mask and a pre-tail correction on a simulated hard lock.
+
 ## Modeled lockless transition protection (2026-11-15)
 
 Source anchors: `source/modeled_curve_transition.h`,

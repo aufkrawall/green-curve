@@ -40,9 +40,11 @@ Three cross-platform profile parity gaps on Linux were root-caused and fixed:
    out-of-range offsets or false pre-tail violations.
    `linux_vf_baseline_policy.h` now detects shaped-baseline conflicts
    (`linux_apply_needs_vf_baseline_reset()`), arms the scoped transition
-   ceiling (`LINUX_MUTATION_LOCK_CEILING`) before zeroing VF offsets inside
-   `LINUX_MUTATION_CURVE`, and re-runs `curve_plan_evaluate()` on the clean
-   stock curve before writing targets. Both Linux CLI (`--apply-config`) and
+   ceiling (`LINUX_MUTATION_LOCK_CEILING`) before zeroing the transaction's
+   VF write set inside `LINUX_MUTATION_CURVE`, and re-runs
+   `curve_plan_evaluate()` on the fresh VF sample before writing targets.
+   See [scoped Linux preparation](clock-transition-audit.md#scoped-linux-vf-preparation-and-correction-2026-11-20).
+   Both Linux CLI (`--apply-config`) and
    TUI (`linux_tui_prepare_apply_request()`) now call
    `desired_prepare_replacement_request()` on loaded profile replacement so
    legacy profiles do not inherit prior explicit-scope captured points.

@@ -541,6 +541,42 @@ int run_linux_vf_write_tests() {
             curve_display_mhz_from_khz(simCurve[5].freq_kHz) != 2957)
             return 12632;
 
+        DesiredSettings hardPin{};
+        hardPin.hasLock = 1;
+        hardPin.lockMode = LOCK_MODE_HARD;
+        hardPin.lockCi = 5;
+        hardPin.lockMHz = 2700;
+        hardPin.hasCurvePoint[4] = 1;
+        hardPin.curvePointMHz[4] = 2350;
+        VFCurvePoint hardCurve[VF_NUM_POINTS]{};
+        int hardOffsets[VF_NUM_POINTS]{}, hardTargets[VF_NUM_POINTS]{};
+        bool hardMask[VF_NUM_POINTS]{};
+        for (int ci = 0; ci < 8; ++ci) hardCurve[ci].freq_kHz = stockKHz[ci];
+        const auto hardBuild = linux_build_curve_targets(
+            hardCurve, hardOffsets, &hardPin, -1000000, hardTargets, hardMask);
+        for (int ci = 0; ci < 8; ++ci) {
+            hardOffsets[ci] = hardTargets[ci];
+            hardCurve[ci].freq_kHz = (unsigned int)((int)stockKHz[ci] + hardOffsets[ci]);
+        }
+        hardCurve[4].freq_kHz -= 20000;
+        bool wroteHardTail = false;
+        const auto hardOutcome = linux_run_legacy_curve_correction(
+            &hardPin, hardBuild, hardTargets, simRange, 0,
+            [&](const int* offs, const bool* msk, const gc_i64*, const bool*) {
+                for (int ci = 5; ci < 8; ++ci) wroteHardTail |= msk[ci];
+                hardOffsets[4] = offs[4];
+                hardCurve[4].freq_kHz = (unsigned int)((int)stockKHz[4] - 20000 + offs[4]);
+                return true;
+            },
+            [&](int ci) { return hardCurve[ci].freq_kHz; },
+            [&](int ci) { return hardOffsets[ci]; },
+            [&](char* det, size_t detSz) {
+                return linux_verify_curve_absolute_targets(hardCurve, hardBuild, det, detSz);
+            },
+            [&]() { return fakeClock; }, [](const char*) {});
+        if (!hardOutcome.verified || hardOutcome.passesRun != 1 || wroteHardTail)
+            return 12683;
+
         // Fixed-point stop when driver ignores anchor offset changes and stays at 2947 MHz.
         applySimDriver(initTargets, initMask, initBuild.pointCapturedOffsetHz, initBuild.pointCapturedIntent);
         int stuckWrites = 0;
@@ -669,6 +705,17 @@ int run_linux_vf_write_tests() {
             linux_apply_needs_vf_baseline_reset(&dReplace, true, false) ||
             linux_apply_needs_vf_baseline_reset(&dReplace, false, true))
             return 12643;
+
+        // A replacement zeroes its new point and outgoing cleanup point,
+        // preserving the external point whose live offset is still present.
+        VFCurvePoint resetCurve[VF_NUM_POINTS]{};
+        bool planned[VF_NUM_POINTS]{}, reset[VF_NUM_POINTS]{};
+        for (int ci = 10; ci <= 12; ++ci) resetCurve[ci].freq_kHz = 1500000;
+        planned[10] = planned[12] = planned[13] = true;
+        if (linux_vf_baseline_reset_mask(resetCurve, planned, reset) != 2 ||
+            !reset[10] || reset[11] || !reset[12] || reset[13] ||
+            linux_vf_baseline_reset_mask(resetCurve, nullptr, reset) != 3 ||
+            !reset[11]) return 12684;
 
         // TUI preparation + Profile 5 -> Profile 4 transition:
         DesiredSettings accepted{};

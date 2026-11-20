@@ -354,8 +354,8 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
         }
         case LINUX_MUTATION_CURVE: {
             if (context->resetVfBaselineBeforeCurve && !d->resetOcBeforeApply) {
-                lb_log("apply: resetting shaped VF curve to stock baseline under transition ceiling before curve rebuild\n");
-                if (!linux_apply_reset_baseline_vf_curve(g)) return false;
+                if (!linux_apply_reset_baseline_vf_curve(g, context->plannedBuild.pointMask))
+                    return false;
             }
             if (!linux_apply_rebuild_curve_targets(context)) return false;
             if (context->plannedBuild.failed || context->plannedBuild.deferred) {

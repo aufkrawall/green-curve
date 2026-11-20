@@ -11,6 +11,7 @@
 #include "authoring_modeled_transition_review.h"
 #include "vf_control_write_policy.h"
 #include "linux_backend_curve_correction.h"
+#include "linux_vf_baseline_policy.h"
 
 struct LinuxApplyTransactionContext {
     LinuxGpuState* gpu;
@@ -32,8 +33,8 @@ struct LinuxApplyTransactionContext {
     // A non-zero NVML offset is zeroed before the curve write: rebuild the
     // curve targets from a fresh readback in the CURVE phase.
     bool rebuildCurveTargets;
-    // Scoped VF replacement over a shaped live curve resets only the VF table
-    // to 0 under the armed clock ceiling before rebuilding targets.
+    // Scoped VF replacement zeros its own write set under the transition
+    // ceiling before rebuilding targets.
     bool resetVfBaselineBeforeCurve;
     bool transitionBuild;
     int graphicsRouteOverride; // 0=legacy inference, 1=independent scalar, 2=VF component
@@ -77,7 +78,11 @@ static bool linux_apply_rebuild_curve_targets(LinuxApplyTransactionContext* cont
         context->composedGpuOffset ||
         (context->snapshot && context->snapshot->gpuOffsetValid &&
          context->snapshot->gpuOffsetMHz == 0);
-    const bool transactionBaseline = freshBaseline && scalarZero;
+    // A scoped reset can leave externally owned offsets in the live sample.
+    // Use shaped evidence for that sample, including the unowned prefix.
+    const bool unshapedVf = !linux_curve_has_nonzero_offsets(g->curve, g->freqOffsets,
+        g->freqOffsetsHz, g->vfOffsetsHzValid);
+    const bool transactionBaseline = freshBaseline && scalarZero && unshapedVf;
     int cleanup = 0;
     LinuxCurveTargetBuildResult rebuilt =
         linux_apply_build_curve(context, &cleanup, true, transactionBaseline);
@@ -101,7 +106,7 @@ static bool linux_apply_rebuild_curve_targets(LinuxApplyTransactionContext* cont
         return false;
     }
     const DesiredSettings* intended = context->transitionBuild ? context->committedIntent : context->desired;
-    if (intended && (curve_authoring_needs_exact_targets(intended) || transactionBaseline)) {
+    if (intended && (curve_authoring_needs_exact_targets(intended) || freshBaseline)) {
         DesiredSettings rebound{};
         const DesiredSettings* planIntent = intended;
         if (curve_authoring_needs_exact_targets(intended)) {
@@ -135,21 +140,15 @@ static bool linux_apply_rebuild_curve_targets(LinuxApplyTransactionContext* cont
     return true;
 }
 
-// LINUX_MUTATION_RESET_BASELINE's per-point VF curve reset-to-zero (parity
-// with Windows reset_oc_before_gui_apply()): a point this apply does not
-// re-boost would otherwise keep the PREVIOUS profile's raw offset, since a
-// point outside this transaction's write set never appears in
-// curveTargets/curveMask at all. Always runs when resetOcBeforeApply is
-// requested, not only when a scalar was nonzero, matching the unconditional
-// Windows contract. Re-reads the full curve afterward so every curve/lock
-// target this apply computes next is measured from the settled baseline,
-// not the pre-reset sample.
-static bool linux_apply_reset_baseline_vf_curve(LinuxGpuState* g) {
+// Legacy full reset uses every populated point. Scoped preparation receives
+// the already planned write set, including points released by the old profile.
+// A fresh sample measures the curve after the selected offsets settle.
+static bool linux_apply_reset_baseline_vf_curve(LinuxGpuState* g, const bool* writeMask = nullptr) {
     int vfResetTargets[VF_NUM_POINTS] = {};
     gc_i64 vfResetHz[VF_NUM_POINTS] = {};
     bool vfResetMask[VF_NUM_POINTS] = {};
-    for (int i = 0; i < VF_NUM_POINTS; i++)
-        vfResetMask[i] = g->curve[i].freq_kHz != 0;
+    const int count = linux_vf_baseline_reset_mask(g->curve, writeMask, vfResetMask);
+    lb_log("apply: VF baseline reset scope=%s points=%d\n", writeMask ? "scoped" : "full", count);
     if (!apply_curve_offsets_verified(g, vfResetTargets, vfResetMask, 2, vfResetHz, vfResetMask)) {
         lb_log("apply: VF curve offsets did not reset to stock baseline\n");
         return false;
