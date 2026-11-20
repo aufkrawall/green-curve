@@ -1315,6 +1315,15 @@ def check_profile_interchange_and_curve_correction(ctx, require_text, forbid_tex
                  "Linux VF baseline reset arms the transition clock ceiling before zeroing VF")
     require_text(mutation_cpp, "linux_apply_reset_baseline_vf_curve(g, context->plannedBuild.pointMask)",
                  "Linux scoped VF preparation uses the transaction write set")
+    require_text(_p(ctx, "linux_backend_apply_context.h"),
+                 "linux_vf_baseline_reset_mask(g->curve, writeMask, vfResetMask, g->vfMask)",
+                 "Linux VF baseline reset intersects the editable vfMask")
+    require_text(mutation_cpp,
+                 "linux_vf_baseline_reset_mask(g->curve, nullptr, mask, g->vfMask)",
+                 "Linux full Reset intersects the editable vfMask")
+    require_text(_p(ctx, "linux_backend_rollback.h"),
+                 "linux_vf_rollback_masks(g->curve, g->vfMask,",
+                 "Linux VF rollback intersects the editable vfMask and preserves placeholder tolerance")
     require_text(main_cpp, "desired_prepare_replacement_request(&desired);",
                  "Linux CLI --apply-config prepares profile replacement like Windows")
     require_text(tui_mut_cpp, "linux_tui_prepare_apply_request(",

@@ -33,6 +33,7 @@ struct Driver {
     int setCalls;
     bool onePointPerCall;
     bool ignoreWrites;
+    bool ignoreMask[VF_NUM_POINTS];
     bool bufferValid;
     bool afterMemory, moveTopology, memoryFails;
     int memoryWrites, memoryEffective;
@@ -67,7 +68,7 @@ static int set_control(void* handle, void* buffer) {
             d->bufferValid &= value == d->raw[i];
             continue;
         }
-        if (d->ignoreWrites || (d->onePointPerCall && wrote)) continue;
+        if (d->ignoreWrites || d->ignoreMask[i] || (d->onePointPerCall && wrote)) continue;
         d->raw[i] = value;
         wrote = true;
     }
@@ -716,6 +717,42 @@ int run_linux_vf_write_tests() {
             !reset[10] || reset[11] || !reset[12] || reset[13] ||
             linux_vf_baseline_reset_mask(resetCurve, nullptr, reset) != 3 ||
             !reset[11]) return 12684;
+
+        // Editable-mask intersection keeps populated non-vfMask entries from
+        // failing closed during baseline reset, full Reset, or VF rollback.
+        initialize(&d, &g, &g_vfBackendBlackwell);
+        g.vfMask[0] &= (unsigned char)~(1u << 2);
+        d.raw[1] = 100000;
+        bool plannedAll[VF_NUM_POINTS]{};
+        for (int ci = 0; ci < 8; ++ci) plannedAll[ci] = true;
+        int resetZeros[VF_NUM_POINTS]{};
+        gc_i64 resetZerosHz[VF_NUM_POINTS]{};
+        if (linux_vf_baseline_reset_mask(g.curve, plannedAll, reset, g.vfMask) != 7 || reset[2] ||
+            !apply_curve_offsets_verified(&g, resetZeros, reset, 2, resetZerosHz, reset) ||
+            d.raw[1] != 0) return 12689;
+
+        // Rollback mask skips unavailable points and preserves benign
+        // zero-readback tolerance on sub-450 MHz idle placeholders while
+        // keeping exact verification on operating points.
+        initialize(&d, &g, &g_vfBackendBlackwell);
+        g.curve[0].freq_kHz = 210000u;
+        g.vfMask[0] &= (unsigned char)~(1u << 2);
+        d.ignoreMask[0] = true;
+        bool capturedMask[VF_NUM_POINTS]{};
+        int capturedKHz[VF_NUM_POINTS]{};
+        gc_i64 capturedHz[VF_NUM_POINTS]{};
+        capturedMask[0] = capturedMask[1] = capturedMask[2] = true;
+        capturedKHz[0] = 75000; capturedHz[0] = 75000000LL;
+        capturedKHz[1] = 120000; capturedHz[1] = 120000000LL;
+        capturedKHz[2] = 50000; capturedHz[2] = 50000000LL;
+        bool restoreMask[VF_NUM_POINTS]{}, exactRestoreMask[VF_NUM_POINTS]{};
+        int skipped = 0;
+        if (linux_vf_rollback_masks(g.curve, g.vfMask, capturedMask, capturedHz, true,
+                restoreMask, exactRestoreMask, &skipped) != 2 ||
+            skipped != 1 || restoreMask[2] || exactRestoreMask[0] || !exactRestoreMask[1])
+            return 12690;
+        if (!apply_curve_offsets_verified(&g, capturedKHz, restoreMask, 3, capturedHz, exactRestoreMask) ||
+            d.raw[1] != 120000) return 12691;
 
         // TUI preparation + Profile 5 -> Profile 4 transition:
         DesiredSettings accepted{};

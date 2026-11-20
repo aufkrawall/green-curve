@@ -147,8 +147,10 @@ static bool linux_apply_reset_baseline_vf_curve(LinuxGpuState* g, const bool* wr
     int vfResetTargets[VF_NUM_POINTS] = {};
     gc_i64 vfResetHz[VF_NUM_POINTS] = {};
     bool vfResetMask[VF_NUM_POINTS] = {};
-    const int count = linux_vf_baseline_reset_mask(g->curve, writeMask, vfResetMask);
-    lb_log("apply: VF baseline reset scope=%s points=%d\n", writeMask ? "scoped" : "full", count);
+    const int unmaskedCount = linux_vf_baseline_reset_mask(g->curve, writeMask, vfResetMask);
+    const int count = linux_vf_baseline_reset_mask(g->curve, writeMask, vfResetMask, g->vfMask);
+    lb_log("apply: VF baseline reset scope=%s points=%d skippedUneditable=%d\n",
+           writeMask ? "scoped" : "full", count, unmaskedCount - count);
     if (!apply_curve_offsets_verified(g, vfResetTargets, vfResetMask, 2, vfResetHz, vfResetMask)) {
         lb_log("apply: VF curve offsets did not reset to stock baseline\n");
         return false;

@@ -127,7 +127,8 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
         for (int i = 0; i < VF_NUM_POINTS; ++i) {
             snapshot->curveOffsets[i] = g->freqOffsets[i];
             snapshot->curveOffsetsHz[i] = g->freqOffsetsHz[i];
-            snapshot->curveMask[i] = g->curve[i].freq_kHz != 0;
+            snapshot->curveMask[i] = g->curve[i].freq_kHz != 0 &&
+                (g->vfMask[i / 8] & (1u << (i % 8))) != 0;
         }
     }
     unsigned int fans = 0;
@@ -713,9 +714,8 @@ static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
         case LINUX_MUTATION_CURVE: {
             int targets[VF_NUM_POINTS] = {};
             gc_i64 targetsHz[VF_NUM_POINTS] = {};
-            bool mask[VF_NUM_POINTS];
-            for (int i = 0; i < VF_NUM_POINTS; ++i)
-                mask[i] = g->curve[i].freq_kHz != 0;
+            bool mask[VF_NUM_POINTS] = {};
+            (void)linux_vf_baseline_reset_mask(g->curve, nullptr, mask, g->vfMask);
             return apply_curve_offsets_verified(g, targets, mask, 25, targetsHz, mask);
         }
         case LINUX_MUTATION_FAN:

@@ -21,12 +21,45 @@
 #include "gpu_core.h"
 
 static inline int linux_vf_baseline_reset_mask(const VFCurvePoint* curve,
-    const bool* writeMask, bool* resetMask) {
+    const bool* writeMask, bool* resetMask,
+    const unsigned char* editableMask = nullptr) {
     int count = 0;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
-        resetMask[ci] = curve[ci].freq_kHz != 0 && (!writeMask || writeMask[ci]);
+        const bool editable = !editableMask ||
+            (editableMask[ci / 8] & (unsigned char)(1u << (ci % 8))) != 0;
+        resetMask[ci] = curve[ci].freq_kHz != 0 && editable &&
+            (!writeMask || writeMask[ci]);
         count += resetMask[ci] ? 1 : 0;
     }
+    return count;
+}
+
+// Build rollback write and exact-verification masks intersected with the live
+// editable VF membership mask. Sub-450 MHz idle placeholders with integer-kHz
+// offsets leave exactMask clear so apply_curve_offsets_verified() retains its
+// benign driver-pinned-zero tolerance during rollback.
+static inline int linux_vf_rollback_masks(const VFCurvePoint* curve,
+    const unsigned char* editableMask, const bool* capturedMask,
+    const gc_i64* capturedHz, bool offsetsExact,
+    bool* restoreMask, bool* exactMask, int* skippedUnavailableOut = nullptr) {
+    int count = 0;
+    int skipped = 0;
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        const bool want = capturedMask && capturedMask[ci];
+        const bool editable = !editableMask ||
+            (editableMask[ci / 8] & (unsigned char)(1u << (ci % 8))) != 0;
+        const bool usable = want && curve && curve[ci].freq_kHz != 0 && editable;
+        if (want && !usable) ++skipped;
+        if (restoreMask) restoreMask[ci] = usable;
+        if (exactMask) {
+            const bool placeholderNonZeroWholeKHz = usable && offsetsExact &&
+                curve[ci].freq_kHz <= VF_PLACEHOLDER_MAX_FREQ_MHz * 1000u &&
+                capturedHz && capturedHz[ci] != 0 && (capturedHz[ci] % 1000LL) == 0;
+            exactMask[ci] = usable && offsetsExact && !placeholderNonZeroWholeKHz;
+        }
+        if (usable) ++count;
+    }
+    if (skippedUnavailableOut) *skippedUnavailableOut = skipped;
     return count;
 }
 

@@ -119,10 +119,20 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
     }
     // Baseline preparation itself writes the VF table, even when failure
     // prevents the later CURVE phase from starting.
-    if ((baseline || (phaseMask & (LINUX_MUTATION_CURVE | LINUX_MUTATION_MEM_OFFSET))) && snapshot->curveValid)
-        ok &= apply_curve_offsets_verified(g, snapshot->curveOffsets, snapshot->curveMask, 25,
+    if ((baseline || (phaseMask & (LINUX_MUTATION_CURVE | LINUX_MUTATION_MEM_OFFSET))) && snapshot->curveValid) {
+        bool restoreMask[VF_NUM_POINTS] = {};
+        bool exactRestoreMask[VF_NUM_POINTS] = {};
+        int skippedUnavailable = 0;
+        (void)linux_vf_rollback_masks(g->curve, g->vfMask, snapshot->curveMask,
+            snapshot->curveOffsetsHz, snapshot->curveOffsetsExact,
+            restoreMask, exactRestoreMask, &skippedUnavailable);
+        if (skippedUnavailable > 0)
+            lb_log("rollback: skipped %d captured VF point(s) outside current editable vfMask\n",
+                   skippedUnavailable);
+        ok &= apply_curve_offsets_verified(g, snapshot->curveOffsets, restoreMask, 25,
             snapshot->curveOffsetsExact ? snapshot->curveOffsetsHz : nullptr,
-            snapshot->curveOffsetsExact ? snapshot->curveMask : nullptr);
+            snapshot->curveOffsetsExact ? exactRestoreMask : nullptr);
+    }
     if ((phaseMask & LINUX_MUTATION_FAN) && snapshot->fanValid) {
         for (unsigned int i = 0; i < snapshot->fanCount; ++i) {
             bool fanOk = false;
