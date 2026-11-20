@@ -30,6 +30,8 @@ static bool load_profile_document_slot(const std::string& body, int slot, Desire
     auto live = std::make_unique<ProfileDestinationTopology>();
     const bool needsGpu = profile_document_requires_destination(*document);
     const bool haveLive = needsGpu && profile_live_destination_topology(*live);
+    const bool repairedFlatTailOffset = !needsGpu &&
+        profile_indexed_document_has_legacy_flat_tail_offset_artifact(*document);
     char why[192] = {};
     auto converted = std::make_unique<DesiredSettings>();
     if (!profile_slot_document_runtime(*document, haveLive ? live.get() : nullptr, *converted, why, sizeof(why))) {
@@ -37,6 +39,14 @@ static bool load_profile_document_slot(const std::string& body, int slot, Desire
         debug_log("profile load: slot %d document refused kind=%s live=%d points=%d reason=%s\n", slot,
             needsGpu ? "voltage" : "indexed", haveLive ? live->count : 0, document->topologyCount, why);
         return false;
+    }
+    if (repairedFlatTailOffset) {
+        debug_log("profile load: slot %d repaired legacy flat-tail graphics offset artifact "
+                  "(rawOffsetHz=%lld exclude=%d lockCi=%d lockMHz=%u -> 0 MHz)\n",
+            slot, document->graphicsOffset.offsetHz,
+            document->graphicsOffset.exclusionPolicy == PROFILE_EXCLUDE_LEGACY_COUNT
+                ? document->graphicsOffset.excludeLowCount : 0,
+            converted->lockCi, converted->lockMHz);
     }
     *desired = *converted;
     if (desired->applicationScope == DESIRED_SCOPE_LEGACY && mode == PROFILE_READ_FOR_EDITOR &&

@@ -1907,6 +1907,33 @@ def check_import_transfer_slots_and_runtime_check(ctx, require_text, forbid_text
     forbid_text(_p(ctx, "gui_profile_transfer.cpp"),
                 "if (!profile_document_requires_destination(document)) continue;",
                 "Windows import note must not skip indexed records")
+    require_text(_p(ctx, "profile_slot_runtime.h"),
+                 "profile_indexed_document_has_legacy_flat_tail_offset_artifact(",
+                 "indexed document slot loader repairs pre-fix flat-tail graphics offset artifacts")
+    require_text(_p(ctx, "profile_summary.h"),
+                 "profile_indexed_document_has_legacy_flat_tail_offset_artifact(",
+                 "profile document summary reflects repaired legacy flat-tail graphics offset")
+    require_text(_p(ctx, "config_profiles.cpp"),
+                 "repair_profile_legacy_flat_tail_offset_artifact(",
+                 "Windows ordinary INI loader clears pre-fix flat-tail offset artifacts before IPC clamping")
+    require_text(_p(ctx, "config_profile_repair.cpp"),
+                 "profile_desired_has_legacy_flat_tail_offset_artifact(",
+                 "Windows ordinary INI repair uses the shared flat-tail offset artifact policy")
+    require_text(_p(ctx, "config_profile_document_load.h"),
+                 "profile_indexed_document_has_legacy_flat_tail_offset_artifact(",
+                 "Windows document slot loader logs legacy flat-tail offset artifact repairs")
+    require_text(_p(ctx, "linux_port_profiles.cpp"),
+                 "linux_repair_legacy_flat_tail_offset_artifact(",
+                 "Linux ordinary INI loader clears pre-fix flat-tail offset artifacts before IPC clamping")
+    require_text(_p(ctx, "linux_profile_document_load.h"),
+                 "profile_desired_has_legacy_flat_tail_offset_artifact(",
+                 "Linux ordinary INI repair uses the shared flat-tail offset artifact policy")
+    require_text(_p(ctx, "linux_profile_document_load.h"),
+                 "profile_indexed_document_has_legacy_flat_tail_offset_artifact(",
+                 "Linux document slot loader logs legacy flat-tail offset artifact repairs")
+    require_text(_p(ctx, "linux_tui_actions.cpp"),
+                 "profile_indexed_document_has_legacy_flat_tail_offset_artifact(",
+                 "Linux TUI document loader logs legacy flat-tail offset artifact repairs")
 
 
 def check_preview_stock_base_crosstalk_protection(ctx, require_text, forbid_text):

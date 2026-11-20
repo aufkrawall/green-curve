@@ -566,7 +566,18 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
                 const auto& snapshot = state->service.snapshot;
                 const bool haveLive = state->serviceOnline && profile_destination_from_vf_curve(snapshot.curve,
                     vf_floor_topology_compute(snapshot.curve, snapshot.freqOffsets, VF_NUM_POINTS), *live);
+                const bool repairedFlatTailOffset =
+                    !profile_document_requires_destination(*source) &&
+                    profile_indexed_document_has_legacy_flat_tail_offset_artifact(*source);
                 if (!profile_slot_document_runtime(*source, haveLive ? live.get() : nullptr, loaded, why, size)) return false;
+                if (repairedFlatTailOffset) {
+                    linux_debug_logf("profile load: slot %d repaired legacy flat-tail graphics offset artifact "
+                                     "(rawOffsetHz=%lld exclude=%d lockCi=%d lockMHz=%u -> 0 MHz)",
+                        slot, source->graphicsOffset.offsetHz,
+                        source->graphicsOffset.exclusionPolicy == PROFILE_EXCLUDE_LEGACY_COUNT
+                            ? source->graphicsOffset.excludeLowCount : 0,
+                        loaded.lockCi, loaded.lockMHz);
+                }
                 normalize_desired_settings_for_ui(&loaded);
                 linux_debug_logf("profile load: slot %d converted portable record live=%d", slot, haveLive ? 1 : 0);
                 return true;

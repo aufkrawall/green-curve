@@ -294,6 +294,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
     // restore_curve_points_from_base_plus_gpu_offset with implementation-
     // defined results.  Legit saved values are always within these ranges.
     if (desired->applicationScope == DESIRED_SCOPE_LEGACY) {
+        repair_profile_legacy_flat_tail_offset_artifact(path, curveSection, slot, desired);
         validate_desired_settings_for_ipc(desired);
 
         // Per-point provenance first: a section this build wrote carries it, and a

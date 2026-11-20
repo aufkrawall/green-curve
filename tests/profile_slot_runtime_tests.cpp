@@ -6,6 +6,8 @@
 #include "profile_slot_runtime.h"
 #include "profile_legacy_document.h"
 #include "profile_codec.h"
+#include "profile_summary.h"
+#include <climits>
 #include <memory>
 #include <cstring>
 
@@ -236,5 +238,254 @@ int run_profile_slot_runtime_tests() {
         !back->memOffsetPrecise || back->memOffsetHz != 3000000000LL || back->memOffsetSurface != CLOCK_OFFSET_SURFACE_P0 ||
         !back->powerLimitRatio || back->powerRatioNumerator != 17 || back->powerRatioDenominator != 20)
         return 12504;
+
+    // 12600-12622: legacy pre-2026-11-19 flat-tail graphics offset artifact
+    // repair (e.g. -1927 MHz with exclude_low_count=76 alongside a flatten lock
+    // at ci=76 -> 2962 MHz and absolute tail points 76..126) and strict
+    // rejection of every non-artifact out-of-range case.
+    {
+        auto makeFlatTailArtifactDoc = []() {
+            ProfileDocument d = profile_document_make_empty();
+            d.documentId = 1;
+            d.applicationScope = PROFILE_SCOPE_REPLACE_PROFILE;
+            d.pointSetPolicy = PROFILE_POINTS_REPLACE;
+            d.legacyIndicesUnresolved = true;
+            d.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_GRAPHICS_OFFSET |
+                        PROFILE_DOMAIN_MEMORY | PROFILE_DOMAIN_POWER |
+                        PROFILE_DOMAIN_LOCK | PROFILE_DOMAIN_FAN;
+            d.graphicsOffset.present = true;
+            d.graphicsOffset.offsetHz = -1927000000LL;
+            d.graphicsOffset.exclusionPolicy = PROFILE_EXCLUDE_LEGACY_COUNT;
+            d.graphicsOffset.excludeLowCount = 76;
+            d.hasMemoryOffset = true;
+            d.memoryOffsetHz = 3000000000LL;
+            d.power.present = true;
+            d.power.ratio = {17, 20};
+            d.fan.present = true;
+            d.fan.fanMode = FAN_MODE_AUTO;
+            d.fan.fanAuto = true;
+            d.lock.present = true;
+            d.lock.mode = LOCK_MODE_FLATTEN;
+            d.lock.anchorTopologyId = 76;
+            d.lock.targetFrequencyHz = 2962000000LL;
+            d.lock.trackAnchor = true;
+            for (int ci = 76; ci <= 126; ++ci) {
+                const int idx = d.topologyCount++;
+                d.topology[idx] = {ci, ci, 0, 0};
+                d.points[idx].kind = PROFILE_POINT_ABSOLUTE_FREQUENCY;
+                d.points[idx].absoluteFrequencyHz = 2962000000LL;
+                d.points[idx].hasObservedOffset = true;
+                d.points[idx].observedOffsetHz = (ci == 76) ? 480000000LL : -1927000000LL;
+            }
+            return d;
+        };
+
+        // 12600-12602: exact user Profile 1 shape loads cleanly, survives
+        // portable bank round-trip, clears the dead -1927 MHz / exclude 76 /
+        // lockTracksAnchor=1 artifact, and summarizes as core 0 MHz.
+        auto artifact = std::make_unique<ProfileDocument>(makeFlatTailArtifactDoc());
+        if (!profile_indexed_document_has_legacy_flat_tail_offset_artifact(*artifact))
+            return 12600;
+        why[0] = 0;
+        if (!profile_slot_document_runtime(*artifact, nullptr, *back, why, sizeof(why)) ||
+            back->applicationScope != DESIRED_SCOPE_LEGACY ||
+            !back->hasGpuOffset || back->gpuOffsetMHz != 0 || back->gpuOffsetExcludeLowCount != 0 ||
+            !back->hasLock || back->lockCi != 76 || back->lockMode != LOCK_MODE_FLATTEN ||
+            back->lockMHz != 2962 || back->lockTracksAnchor ||
+            !back->hasMemOffset || back->memOffsetMHz != 3000 ||
+            !back->hasPowerLimit || back->powerLimitPct != 85 ||
+            !back->hasCurvePoint[76] || back->curvePointMHz[76] != 2962 ||
+            !back->hasCurvePoint[126] || back->curvePointMHz[126] != 2962 ||
+            back->hasCurvePoint[75])
+            return 12601;
+        bank->count = 1; bank->documents[0] = *artifact;
+        bytes.clear();
+        if (!profile_bank_encode(*bank, bytes) || !profile_bank_decode(bytes, *decoded) ||
+            decoded->count != 1 ||
+            !profile_slot_document_runtime(decoded->documents[0], nullptr, *again, why, sizeof(why)) ||
+            again->gpuOffsetMHz != 0 || again->gpuOffsetExcludeLowCount != 0 ||
+            again->lockMHz != 2962 || again->lockTracksAnchor)
+            return 12602;
+        const std::string summary = profile_document_summary(*artifact);
+        if (summary.find("core 0 MHz") == std::string::npos ||
+            summary.find("-1927") != std::string::npos)
+            return 12603;
+
+        // 12604: excludeLowCount == lockCi + 1 (77) also repairs cleanly.
+        auto excl77 = std::make_unique<ProfileDocument>(makeFlatTailArtifactDoc());
+        excl77->graphicsOffset.excludeLowCount = 77;
+        if (!profile_slot_document_runtime(*excl77, nullptr, *back, why, sizeof(why)) ||
+            back->gpuOffsetMHz != 0 || back->gpuOffsetExcludeLowCount != 0 || back->lockTracksAnchor)
+            return 12604;
+
+        // 12605: selective artifact without per-point observed offsets (e.g.
+        // exported from Linux INI) still repairs because excludeLowCount >= lockCi
+        // excludes every pre-tail point and the flatten owns the entire tail.
+        auto noObs = std::make_unique<ProfileDocument>(makeFlatTailArtifactDoc());
+        for (int i = 0; i < noObs->topologyCount; ++i) {
+            noObs->points[i].hasObservedOffset = false;
+            noObs->points[i].observedOffsetHz = 0;
+        }
+        if (!profile_slot_document_runtime(*noObs, nullptr, *back, why, sizeof(why)) ||
+            back->gpuOffsetMHz != 0 || back->gpuOffsetExcludeLowCount != 0)
+            return 12605;
+
+        // 12606: uniform pre-fix flat-tail artifact (excludeLowCount == 0, low
+        // lockCi, zero pre-tail points, anchor observed offset != tail, >= 4
+        // matching tail observed offsets) repairs cleanly.
+        auto uniformArt = std::make_unique<ProfileDocument>(makeFlatTailArtifactDoc());
+        uniformArt->graphicsOffset.exclusionPolicy = PROFILE_EXCLUDE_NONE;
+        uniformArt->graphicsOffset.excludeLowCount = 0;
+        if (!profile_slot_document_runtime(*uniformArt, nullptr, *back, why, sizeof(why)) ||
+            back->gpuOffsetMHz != 0 || back->gpuOffsetExcludeLowCount != 0 || back->lockTracksAnchor)
+            return 12606;
+
+        // 12607: excludeLowCount < lockCi leaves pre-tail points governed by
+        // -1927 MHz and MUST still be refused.
+        auto excl70 = std::make_unique<ProfileDocument>(makeFlatTailArtifactDoc());
+        excl70->graphicsOffset.excludeLowCount = 70;
+        why[0] = 0;
+        if (profile_slot_document_runtime(*excl70, nullptr, *back, why, sizeof(why)) ||
+            !strstr(why, "-1927 MHz"))
+            return 12607;
+
+        // 12608: any projected point depends on graphicsOffset -> MUST refuse.
+        auto withProj = std::make_unique<ProfileDocument>(makeFlatTailArtifactDoc());
+        withProj->points[1].kind = PROFILE_POINT_PROJECTION;
+        withProj->points[1].absoluteFrequencyHz = 0;
+        withProj->points[1].hasObservedFrequency = true;
+        withProj->points[1].observedFrequencyHz = 2962000000LL;
+        why[0] = 0;
+        if (!profile_document_structurally_valid(*withProj, why, sizeof(why)) ||
+            profile_slot_document_runtime(*withProj, nullptr, *back, why, sizeof(why)) ||
+            !strstr(why, "-1927 MHz"))
+            return 12608;
+
+        // 12609: HARD lock is not a VF tail flatten -> MUST refuse.
+        auto hardLock = std::make_unique<ProfileDocument>(makeFlatTailArtifactDoc());
+        hardLock->lock.mode = LOCK_MODE_HARD;
+        why[0] = 0;
+        if (profile_slot_document_runtime(*hardLock, nullptr, *back, why, sizeof(why)) ||
+            !strstr(why, "-1927 MHz"))
+            return 12609;
+
+        // 12610: anchor-only curve with no tail points above lockCi -> MUST refuse.
+        auto anchorOnly = std::make_unique<ProfileDocument>(makeFlatTailArtifactDoc());
+        for (int i = 1; i < anchorOnly->topologyCount; ++i) {
+            anchorOnly->topology[i] = {};
+            anchorOnly->points[i] = {};
+        }
+        anchorOnly->topologyCount = 1;
+        why[0] = 0;
+        if (!profile_document_structurally_valid(*anchorOnly, why, sizeof(why)) ||
+            profile_slot_document_runtime(*anchorOnly, nullptr, *back, why, sizeof(why)) ||
+            !strstr(why, "-1927 MHz"))
+            return 12610;
+
+        // 12611: recorded tail observed offsets contradicting -1927 MHz -> MUST refuse.
+        auto wrongObs = std::make_unique<ProfileDocument>(makeFlatTailArtifactDoc());
+        for (int i = 1; i < wrongObs->topologyCount; ++i)
+            wrongObs->points[i].observedOffsetHz = -200000000LL;
+        why[0] = 0;
+        if (!profile_document_structurally_valid(*wrongObs, why, sizeof(why)) ||
+            profile_slot_document_runtime(*wrongObs, nullptr, *back, why, sizeof(why)) ||
+            !strstr(why, "-1927 MHz"))
+            return 12611;
+
+        // 12612: positive out-of-range offset -> MUST refuse.
+        auto positiveOor = std::make_unique<ProfileDocument>(makeFlatTailArtifactDoc());
+        positiveOor->graphicsOffset.offsetHz = 1927000000LL;
+        why[0] = 0;
+        if (!profile_document_structurally_valid(*positiveOor, why, sizeof(why)) ||
+            profile_slot_document_runtime(*positiveOor, nullptr, *back, why, sizeof(why)) ||
+            !strstr(why, "+1927 MHz"))
+            return 12612;
+
+        // 12613: uniform (exclude=0) without observed-offset proof -> MUST refuse.
+        auto uniformNoObs = std::make_unique<ProfileDocument>(*uniformArt);
+        for (int i = 0; i < uniformNoObs->topologyCount; ++i) {
+            uniformNoObs->points[i].hasObservedOffset = false;
+            uniformNoObs->points[i].observedOffsetHz = 0;
+        }
+        why[0] = 0;
+        if (!profile_document_structurally_valid(*uniformNoObs, why, sizeof(why)) ||
+            profile_slot_document_runtime(*uniformNoObs, nullptr, *back, why, sizeof(why)) ||
+            !strstr(why, "-1927 MHz"))
+            return 12613;
+
+        // 12614: uniform (exclude=0) with a pre-tail point -> MUST refuse.
+        auto uniformPreTail = std::make_unique<ProfileDocument>(*uniformArt);
+        for (int i = uniformPreTail->topologyCount; i > 0; --i) {
+            uniformPreTail->topology[i] = uniformPreTail->topology[i - 1];
+            uniformPreTail->points[i] = uniformPreTail->points[i - 1];
+        }
+        uniformPreTail->topologyCount++;
+        uniformPreTail->topology[0] = {75, 75, 0, 0};
+        uniformPreTail->points[0] = {};
+        uniformPreTail->points[0].kind = PROFILE_POINT_ABSOLUTE_FREQUENCY;
+        uniformPreTail->points[0].absoluteFrequencyHz = 2400000000LL;
+        why[0] = 0;
+        if (!profile_document_structurally_valid(*uniformPreTail, why, sizeof(why)) ||
+            profile_slot_document_runtime(*uniformPreTail, nullptr, *back, why, sizeof(why)) ||
+            !strstr(why, "-1927 MHz"))
+            return 12614;
+
+        // 12615: uniform (exclude=0) where anchor also carries -1927 MHz -> MUST refuse.
+        auto uniformAnchorSame = std::make_unique<ProfileDocument>(*uniformArt);
+        uniformAnchorSame->points[0].observedOffsetHz = -1927000000LL;
+        why[0] = 0;
+        if (!profile_document_structurally_valid(*uniformAnchorSame, why, sizeof(why)) ||
+            profile_slot_document_runtime(*uniformAnchorSame, nullptr, *back, why, sizeof(why)) ||
+            !strstr(why, "-1927 MHz"))
+            return 12615;
+
+        // 12616: extreme LLONG_MIN/LLONG_MAX values do not overflow or trigger UB.
+        auto extreme = std::make_unique<ProfileDocument>(makeFlatTailArtifactDoc());
+        extreme->graphicsOffset.offsetHz = LLONG_MIN;
+        extreme->points[1].observedOffsetHz = LLONG_MAX;
+        if (profile_indexed_document_has_legacy_flat_tail_offset_artifact(*extreme))
+            return 12616;
+
+        // 12617-12622: DesiredSettings ordinary-INI helper (Windows & Linux).
+        DesiredSettings iniArt;
+        initialize_desired_settings_defaults(&iniArt);
+        iniArt.applicationScope = DESIRED_SCOPE_LEGACY;
+        iniArt.hasGpuOffset = 1;
+        iniArt.gpuOffsetMHz = -1927;
+        iniArt.gpuOffsetExcludeLowCount = 76;
+        iniArt.hasLock = 1;
+        iniArt.lockCi = 76;
+        iniArt.lockMHz = 2962;
+        iniArt.lockMode = LOCK_MODE_FLATTEN;
+        iniArt.lockTracksAnchor = 1;
+        bool hasObs[VF_NUM_POINTS]{};
+        int obsKHz[VF_NUM_POINTS]{};
+        for (int ci = 76; ci <= 126; ++ci) {
+            iniArt.hasCurvePoint[ci] = 1;
+            iniArt.curvePointMHz[ci] = 2962;
+            hasObs[ci] = true;
+            obsKHz[ci] = (ci == 76) ? 480000 : -1927000;
+        }
+        if (!profile_desired_has_legacy_flat_tail_offset_artifact(&iniArt, hasObs, obsKHz))
+            return 12617;
+        if (!profile_desired_has_legacy_flat_tail_offset_artifact(&iniArt, nullptr, nullptr))
+            return 12618;
+        DesiredSettings inRange = iniArt;
+        inRange.gpuOffsetMHz = -500;
+        if (profile_desired_has_legacy_flat_tail_offset_artifact(&inRange, hasObs, obsKHz))
+            return 12619;
+        DesiredSettings partialExcl = iniArt;
+        partialExcl.gpuOffsetExcludeLowCount = 70;
+        if (profile_desired_has_legacy_flat_tail_offset_artifact(&partialExcl, hasObs, obsKHz))
+            return 12620;
+        DesiredSettings withIniProj = iniArt;
+        withIniProj.curvePointFromGpuOffset[80] = 1;
+        if (profile_desired_has_legacy_flat_tail_offset_artifact(&withIniProj, hasObs, obsKHz))
+            return 12621;
+        profile_desired_repair_legacy_flat_tail_offset(&iniArt);
+        if (!iniArt.hasGpuOffset || iniArt.gpuOffsetMHz != 0 ||
+            iniArt.gpuOffsetExcludeLowCount != 0 || iniArt.lockTracksAnchor != 0)
+            return 12622;
+    }
     return 0;
 }

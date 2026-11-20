@@ -30,12 +30,23 @@ static bool load_document_section(const char* path, const char* section, const c
         set_message(err, errSize, "%s could not be read: %s", context, error.message[0] ? error.message : "no profile data");
         return false;
     }
+    const bool repairedFlatTailOffset =
+        !profile_document_requires_destination(*document) &&
+        profile_indexed_document_has_legacy_flat_tail_offset_artifact(*document);
     char why[192] = {};
     auto converted = std::make_unique<DesiredSettings>();
     if (!profile_slot_document_runtime(*document, nullptr, *converted, why, sizeof(why))) {
         set_message(err, errSize, "%s: %s", context, why);
         linux_debug_logf("profile load: %s document refused points=%d reason=%s\n", context, document->topologyCount, why);
         return false;
+    }
+    if (repairedFlatTailOffset) {
+        linux_debug_logf("profile load: %s repaired legacy flat-tail graphics offset artifact "
+                         "(rawOffsetHz=%lld exclude=%d lockCi=%d lockMHz=%u -> 0 MHz)\n",
+            context, document->graphicsOffset.offsetHz,
+            document->graphicsOffset.exclusionPolicy == PROFILE_EXCLUDE_LEGACY_COUNT
+                ? document->graphicsOffset.excludeLowCount : 0,
+            converted->lockCi, converted->lockMHz);
     }
     *desired = *converted;
     linux_debug_logf("profile load: %s converted portable record scope=0x%X points=%d\n", context,
@@ -52,4 +63,15 @@ static bool load_profile_sections_any(const char* path, const IniDocument* doc, 
     const char* curve, const char* fan, DesiredSettings* desired, const char* context, char* err, size_t errSize) {
     if (section_holds_profile_document(doc, controls)) return load_document_section(path, controls, context, desired, err, errSize);
     return load_desired_settings_from_sections(doc, controls, curve, fan, desired, context, err, errSize);
+}
+
+static inline void linux_repair_legacy_flat_tail_offset_artifact(DesiredSettings* desired, const char* context) {
+    if (!profile_desired_has_legacy_flat_tail_offset_artifact(desired, nullptr, nullptr)) return;
+    const int rawGpuOffsetMHz = desired->gpuOffsetMHz;
+    const int rawExclude = desired->gpuOffsetExcludeLowCount;
+    profile_desired_repair_legacy_flat_tail_offset(desired);
+    linux_debug_logf("profile: cleared legacy flat-tail graphics offset artifact in %s "
+                     "(rawGpuOffset=%d rawExclude=%d lockCi=%d lockMHz=%u -> 0 MHz)\n",
+                     context ? context : "config", rawGpuOffsetMHz, rawExclude,
+                     desired->lockCi, desired->lockMHz);
 }

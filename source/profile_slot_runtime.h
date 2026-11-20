@@ -19,6 +19,7 @@
 // Nothing here grants write authority or proves feasibility; the service
 // validates and plans every apply as it does for any other slot.
 #include "profile_runtime_resolution.h"
+#include "profile_legacy_flat_tail_offset_policy.h"
 #include "desired_settings_ui_policy.h"
 #include "vf_writable_point_policy.h"
 
@@ -86,7 +87,8 @@ static inline bool profile_indexed_document_needs_explicit_scope(const ProfileDo
         if (p.kind == PROFILE_POINT_CAPTURED_OFFSET) return true;
         if (p.kind == PROFILE_POINT_ABSOLUTE_FREQUENCY && p.absoluteFrequencyHz % 1000000) return true;
     }
-    if (d.graphicsOffset.present && d.graphicsOffset.offsetHz % 1000000) return true;
+    if (d.graphicsOffset.present && d.graphicsOffset.offsetHz % 1000000 &&
+        !profile_indexed_document_has_legacy_flat_tail_offset_artifact(d)) return true;
     if (d.lock.present && d.lock.targetFrequencyHz % 1000000) return true;
     if (d.hasMemoryOffset && (d.memorySurface || d.memoryOffsetHz % 1000000)) return true;
     if (d.power.present && !profile_power_ratio_is_whole_percent(d.power.ratio, nullptr)) return true;
@@ -122,18 +124,26 @@ static inline bool profile_desired_from_indexed_document(const ProfileDocument& 
         next.applicationScope = explicitScope ? DESIRED_SCOPE_REPLACE_PROFILE : DESIRED_SCOPE_LEGACY;
     }
     const bool legacyScope = next.applicationScope == DESIRED_SCOPE_LEGACY;
+    const bool legacyFlatTailOffsetArtifact =
+        profile_indexed_document_has_legacy_flat_tail_offset_artifact(s);
     if (s.graphicsOffset.present) {
         const auto& g = s.graphicsOffset;
-        if (g.offsetHz < -1000000000LL || g.offsetHz > 1000000000LL) {
-            char mhz[32]{}, detail[128]{};
-            profile_slot_runtime_format_mhz(g.offsetHz, mhz, sizeof(mhz));
-            snprintf(detail, sizeof(detail), "graphics offset (%s MHz) is out of range (-1000..1000 MHz)", mhz);
-            return fail(detail);
+        if (legacyFlatTailOffsetArtifact) {
+            next.hasGpuOffset = 1;
+            next.gpuOffsetMHz = 0;
+            next.gpuOffsetExcludeLowCount = 0;
+        } else {
+            if (g.offsetHz < -1000000000LL || g.offsetHz > 1000000000LL) {
+                char mhz[32]{}, detail[128]{};
+                profile_slot_runtime_format_mhz(g.offsetHz, mhz, sizeof(mhz));
+                snprintf(detail, sizeof(detail), "graphics offset (%s MHz) is out of range (-1000..1000 MHz)", mhz);
+                return fail(detail);
+            }
+            if (g.exclusionPolicy == PROFILE_EXCLUDE_IDENTITIES) return fail("this profile needs the GPU it will run on");
+            next.hasGpuOffset = 1; next.gpuOffsetMHz = (int)(g.offsetHz / 1000000);
+            if (g.exclusionPolicy == PROFILE_EXCLUDE_LEGACY_COUNT) next.gpuOffsetExcludeLowCount = g.excludeLowCount;
+            if (g.offsetHz % 1000000) { next.authoring.graphicsPrecise = 1; next.authoring.graphicsOffsetHz = g.offsetHz; }
         }
-        if (g.exclusionPolicy == PROFILE_EXCLUDE_IDENTITIES) return fail("this profile needs the GPU it will run on");
-        next.hasGpuOffset = 1; next.gpuOffsetMHz = (int)(g.offsetHz / 1000000);
-        if (g.exclusionPolicy == PROFILE_EXCLUDE_LEGACY_COUNT) next.gpuOffsetExcludeLowCount = g.excludeLowCount;
-        if (g.offsetHz % 1000000) { next.authoring.graphicsPrecise = 1; next.authoring.graphicsOffsetHz = g.offsetHz; }
     }
     bool used[VF_NUM_POINTS]{};
     for (int i = 0; i < s.topologyCount; ++i) {
@@ -163,7 +173,7 @@ static inline bool profile_desired_from_indexed_document(const ProfileDocument& 
         if (s.lock.targetFrequencyHz <= 0 || s.lock.targetFrequencyHz > 5000000000LL) return fail("the clock lock is out of range");
         next.hasLock = 1; next.lockCi = ci; next.lockMode = s.lock.mode;
         next.lockMHz = (unsigned)(s.lock.targetFrequencyHz / 1000000);
-        next.lockTracksAnchor = s.lock.trackAnchor;
+        next.lockTracksAnchor = legacyFlatTailOffsetArtifact ? 0 : s.lock.trackAnchor;
         if (s.lock.targetFrequencyHz % 1000000 && s.lock.mode != LOCK_MODE_NONE) {
             next.authoring.lockPrecise = 1; next.authoring.lockFrequencyHz = s.lock.targetFrequencyHz;
         }

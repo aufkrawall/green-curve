@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 #include "profile_curve_origin_io.h"
+#include "profile_legacy_flat_tail_offset_policy.h"
 
 static bool curve_section_uses_base_plus_gpu_offset_semantics(const char* path, const char* section, const DesiredSettings* desired) {
     if (!path || !section || !desired) return false;
@@ -199,4 +200,44 @@ static void repair_profile_locked_curve_readback_artifacts(const char* path, con
             slot, section, removedStockScaffold, removedReadbackArtifact ? 1 : 0,
             firstIntentCi, desired->lockCi, visibleTailCount);
     }
+}
+
+static void repair_profile_legacy_flat_tail_offset_artifact(
+    const char* path, const char* section, int slot, DesiredSettings* desired) {
+    if (!path || !section || !desired) return;
+    if (desired->applicationScope != DESIRED_SCOPE_LEGACY) return;
+    if (!desired->hasGpuOffset ||
+        desired->gpuOffsetMHz >= PROFILE_LEGACY_FLAT_TAIL_OFFSET_LIMIT_MHZ)
+        return;
+    const ProfileCurveDecode decode = profile_curve_section_decode(path, section);
+    if (decode == PROFILE_CURVE_DECODE_BASE_PLUS_GPU_OFFSET) return;
+    if (decode == PROFILE_CURVE_DECODE_ABSOLUTE_WITH_ORIGIN) {
+        for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+            if (!desired->hasCurvePoint[ci]) continue;
+            int originValue = 0;
+            if (read_profile_point_int(path, section, ci,
+                                       PROFILE_CURVE_POINT_ORIGIN_SUFFIX,
+                                       &originValue) &&
+                originValue != 0) {
+                return;
+            }
+        }
+    }
+    bool hasObserved[VF_NUM_POINTS] = {};
+    int observedKHz[VF_NUM_POINTS] = {};
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        if (!desired->hasCurvePoint[ci]) continue;
+        observedKHz[ci] = profile_point_saved_offset_khz(
+            path, section, ci, &hasObserved[ci]);
+    }
+    if (!profile_desired_has_legacy_flat_tail_offset_artifact(
+            desired, hasObserved, observedKHz))
+        return;
+    const int rawGpuOffsetMHz = desired->gpuOffsetMHz;
+    const int rawExclude = desired->gpuOffsetExcludeLowCount;
+    profile_desired_repair_legacy_flat_tail_offset(desired);
+    debug_log("profile repair: cleared legacy flat-tail graphics offset artifact "
+              "slot=%d section=%s rawGpuOffset=%d rawExclude=%d lockCi=%d lockMHz=%u -> 0 MHz\n",
+        slot, section, rawGpuOffsetMHz, rawExclude, desired->lockCi,
+        desired->lockMHz);
 }

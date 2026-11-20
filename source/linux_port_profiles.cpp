@@ -485,6 +485,7 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
         }, desired, err, errSize)) return false;
 
     if (!desired_ini_validate_loaded(desired, err, errSize)) return false;
+    linux_repair_legacy_flat_tail_offset_artifact(desired, messageContext);
 
     // IPC trust boundary: clamp hostile stored values on load. Pre-fix
     // effective-unit values were already halved by the stored-unit migration

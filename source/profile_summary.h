@@ -7,6 +7,7 @@
 // decides what is saved or applied.
 #include "profile_capture_proposals.h"
 #include "profile_document_domains.h"
+#include "profile_legacy_flat_tail_offset_policy.h"
 #include <string>
 
 // "+75", "-12.5", "0" -- MHz with at most three decimals, sign for nonzero.
@@ -56,7 +57,11 @@ static inline std::string profile_document_summary(const ProfileDocument& d) {
     for (int i = 0; i < d.topologyCount && i < VF_NUM_POINTS; ++i)
         if (d.points[i].kind != PROFILE_POINT_ABSENT) ++points;
     if (points) profile_summary_append(out, std::to_string(points) + (points == 1 ? " curve point" : " curve points"));
-    if (d.graphicsOffset.present) profile_summary_append(out, "core " + profile_summary_mhz(d.graphicsOffset.offsetHz) + " MHz");
+    if (d.graphicsOffset.present) {
+        const long long offsetHz = profile_indexed_document_has_legacy_flat_tail_offset_artifact(d)
+            ? 0LL : d.graphicsOffset.offsetHz;
+        profile_summary_append(out, "core " + profile_summary_mhz(offsetHz) + " MHz");
+    }
     if (d.hasMemoryOffset) profile_summary_append(out, "memory " + profile_summary_mhz(d.memoryOffsetHz) + " MHz");
     if (d.power.present) profile_summary_append(out, "power " + profile_summary_percent(d.power.ratio));
     if (d.fan.present) {
