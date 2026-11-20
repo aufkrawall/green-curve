@@ -332,6 +332,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
         case LINUX_MUTATION_RESET_BASELINE:
             return linux_apply_graphics_baseline(context) && linux_apply_post_reset_modeled_review(context);
         case LINUX_MUTATION_GPU_OFFSET:
+            if (!linux_apply_prepare_scoped_vf_before_scalar(context)) return false;
             return linux_apply_graphics_submission(context);
         case LINUX_MUTATION_MEM_OFFSET: {
             return linux_apply_memory_preserving_curve(g, d, context->snapshot,

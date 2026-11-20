@@ -240,14 +240,14 @@ bool write_text_file_atomic(const char* path, const std::string& data, char* err
         if (close(fd) != 0 && ok) { step = "close"; ok = false; ioError = errno; }
         if (ok) {
             step = "rename";
-            if (existingDestination) {
+            if (existingDestination != nullptr) {
                 ok = syscall(SYS_renameat2, dirfd, temporary, dirfd, name.c_str(), RENAME_NOREPLACE) == 0;
             } else {
                 ok = renameat(dirfd, temporary, dirfd, name.c_str()) == 0;
             }
             if (!ok) {
                 ioError = errno;
-                if (existingDestination) *existingDestination = ioError == EEXIST;
+                if (existingDestination != nullptr) *existingDestination = ioError == EEXIST;
             }
         }
         if (ok) {

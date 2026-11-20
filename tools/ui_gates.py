@@ -693,7 +693,7 @@ def check_applied_profile_projection_order(ctx, require_text, forbid_text):
     sync_cpp = _p(ctx, "main_state_sync.cpp")
     gui_state = _p(ctx, "gui_service_state.cpp")
     gpu_state = _p(ctx, "main_gpu_state.cpp")
-    require_text(sync_cpp, "bool activeDesiredValid, const DesiredSettings* activeDesired) {",
+    require_text(sync_cpp, "bool activeDesiredValid, const DesiredSettings* activeDesired, bool fromFullSync) {",
                  "the snapshot projection takes its envelope's active intent")
     ctx.require_order_in_operation(
         sync_cpp, "static void apply_service_snapshot_to_app(",
@@ -701,7 +701,7 @@ def check_applied_profile_projection_order(ctx, require_text, forbid_text):
         "sync_applied_profile_from_service_metadata();",
         "the intent is projected before the applied-profile sync judges it")
     for path in (sync_cpp, gui_state):
-        require_text(path, "response->state.activeDesiredValid, &response->desired);",
+        require_text(path, "response->state.activeDesiredValid, &response->desired",
                      "envelope adoption hands the snapshot projection its own intent")
         forbid_text(path, "g_app.serviceActiveDesiredValid = response->state.activeDesiredValid;",
                     "no caller projects the intent after the identity was synced")

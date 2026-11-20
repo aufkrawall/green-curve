@@ -325,6 +325,7 @@ static void populate_control_state(ControlState* state) {
 
 static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot,
     bool activeDesiredValid, const DesiredSettings* activeDesired, bool fromFullSync) {
+    (void)fromFullSync;
     if (!snapshot) return;
     EnterCriticalSection(&g_appLock);
 #ifndef GREEN_CURVE_SERVICE_BINARY

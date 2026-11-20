@@ -11,6 +11,8 @@
 #ifndef GREEN_CURVE_LINUX_BACKEND_ROLLBACK_H
 #define GREEN_CURVE_LINUX_BACKEND_ROLLBACK_H
 
+#include "linux_vf_rollback_mask_policy.h"
+
 bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapshot* snapshot,
                                     unsigned int phaseMask, char* err, size_t errSize) {
     if (err && errSize) err[0] = 0;

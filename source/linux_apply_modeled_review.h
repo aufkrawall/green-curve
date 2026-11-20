@@ -97,4 +97,23 @@ static inline bool linux_apply_post_reset_modeled_review(LinuxApplyTransactionCo
     return true;
 }
 
+// When a scoped VF baseline reset accompanies a named graphics scalar, zero
+// the planned VF write set and run the post-reset modeled transition review
+// before raising the scalar (so the modeled ceiling is armed first).
+static inline bool linux_apply_prepare_scoped_vf_before_scalar(LinuxApplyTransactionContext* context) {
+    if (!context || !context->gpu || !context->desired) return true;
+    const DesiredSettings* d = context->desired;
+    if (!desired_named_graphics_surface(*d) || !context->resetVfBaselineBeforeCurve ||
+        d->resetOcBeforeApply || context->vfBaselineResetDone)
+        return true;
+    if (!linux_release_graphics_handoff(context->gpu, d, context->scalarReview, g_linuxCeilingArmed))
+        return false;
+    lb_log("apply: running scoped VF baseline reset and modeled review before named graphics scalar\n");
+    context->vfBaselineResetAttempted = true;
+    if (!linux_apply_reset_baseline_vf_curve(context->gpu, context->plannedBuild.pointMask))
+        return false;
+    context->vfBaselineResetDone = true;
+    return linux_apply_post_reset_modeled_review(context);
+}
+
 #endif // GREEN_CURVE_LINUX_APPLY_MODELED_REVIEW_H

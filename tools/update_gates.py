@@ -609,6 +609,8 @@ def check_machine_state_is_machine_scoped(ctx, require_text, forbid_text):
                 "the manifest cache must not use the caller-profile writer")
     # The machine scope is a DIFFERENT containment root, not an absent one.
     policy = _p(ctx, "main_service_request_policy.cpp")
+    require_text(policy, '#include "main_service_path_containment.h"',
+                 "service request policy uses the canonical path-containment helper")
     require_text(policy, "service_path_is_within_machine_config",
                  "the machine scope still confines the write to a root")
     require_text(policy, "resolve_machine_config_dir_w",

@@ -485,7 +485,7 @@ int run_linux_clock_offset_tests() {
         DesiredSettings lockedReq = req;
         lockedReq.hasLock = 1; lockedReq.lockCi = 5; lockedReq.lockMHz = 1500;
         lockedReq.lockMode = LOCK_MODE_FLATTEN;
-        lockedReq.authoring.lockFrequencyPrecise = 1;
+        lockedReq.authoring.lockPrecise = 1;
         lockedReq.authoring.lockFrequencyHz = 1500000000LL;
         for (int i = 5; i < 8; ++i) {
             lockedReq.curvePointCaptured[i] = 0;

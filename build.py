@@ -3833,7 +3833,7 @@ def run_source_regression_checks():
                 "backbuffer paint never clears the physical window before the final blit")
     require_text(gui_service_state_cpp, "g_app.visibleMap[vi]",
                  "GUI render topology includes every visible-map entry")
-    require_text(gui_service_state_cpp, "bool canSelectGpu = ready",
+    require_text(gui_service_state_cpp, "bool canSelectGpu = gpu_selector_combo_enabled(ready,",
                  "a detached draft can reselect its original GPU while writes stay blocked")
     require_text(gui_selected_gpu_pnp_cpp, "CM_Register_Notification",
                  "GUI subscribes to the exact selected-device PnP lifecycle")
@@ -4023,7 +4023,7 @@ def run_source_regression_checks():
                   "hardware capture precedes caller-scoped destination writes")
     require_text(secure_write_cpp, "BCryptGenRandom",
                  "Windows secure-write temporary names use the OS CSPRNG")
-    require_text(service_request_policy_cpp, "CompareStringOrdinal",
+    require_text(os.path.join(SOURCE_DIR, "main_service_path_containment.h"), "CompareStringOrdinal",
                  "Windows canonical containment uses ordinal UTF-16 comparison")
 
     # UTF-8 is the internal path encoding; all path/profile boundaries use W APIs.
