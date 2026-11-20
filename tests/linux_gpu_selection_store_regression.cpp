@@ -16,6 +16,7 @@
 #include "linux_port.h"
 #include "linux_port_internal.h"
 #include "linux_cli_profile_load.h"
+#include "linux_tui_internal.h"
 #include "profile_slot_codec.h"
 #include "profile_ini_slot.h"
 #include "posix_test_environment.h"
@@ -30,6 +31,7 @@
 #include <unistd.h>
 
 #include <string>
+#include <memory>
 
 // linux_gpu_target_config.cpp's other half talks to this scripted daemon.
 static bool g_daemonReachable;
@@ -38,7 +40,34 @@ static bool g_serveScriptedSnapshot;
 static ServiceSnapshot g_scriptedSnapshot;
 static int g_targetedReads;
 static GpuAdapterInfo g_liveGpu;
+static struct {
+    int writes;
+    unsigned int mode;
+    int slot;
+    GpuAdapterInfo target;
+    DesiredSettings desired;
+} g_startupPolicy;
+
 void linux_debug_logf(const char*, ...) {}
+bool linux_daemon_set_startup_policy(unsigned int mode, int slot, const char*,
+                                     const GpuAdapterInfo* target, const DesiredSettings* desired,
+                                     char*, size_t) {
+    ++g_startupPolicy.writes;
+    g_startupPolicy.mode = mode;
+    g_startupPolicy.slot = slot;
+    g_startupPolicy.target = target ? *target : GpuAdapterInfo{};
+    g_startupPolicy.desired = desired ? *desired : DesiredSettings{};
+    return true;
+}
+bool tui_configured_gpu_allows_write(TuiState*, const char*) { return true; }
+bool tui_refresh_service(TuiState* state, bool, const GpuAdapterInfo*) {
+    state->service.state.startupPolicyMode = g_startupPolicy.mode;
+    state->service.state.startupPolicySlot = (unsigned int)g_startupPolicy.slot;
+    return true;
+}
+void tui_refresh_startup_snapshot(TuiState* state) {
+    state->startupSnapshot = g_startupPolicy.desired;
+}
 bool linux_daemon_snapshot(ServiceSnapshot* snapshot, char* err, size_t errSize) {
     if (g_daemonReachable) {
         if (snapshot) *snapshot = g_serveScriptedSnapshot ? g_scriptedSnapshot : ServiceSnapshot{};
@@ -71,6 +100,11 @@ bool linux_daemon_get_state(const GpuAdapterInfo* target, ServiceResponse* respo
 }
 
 namespace {
+
+void set_daemon_failure(TuiState* state, const char* fallback, const char* detail) {
+    linux_tui_format_failure(state->status, sizeof(state->status), fallback, detail);
+}
+#include "linux_tui_startup_actions.cpp"
 
 int g_failures = 0;
 char g_root[256] = {};
@@ -350,10 +384,49 @@ void test_config_storage_lock() {
     unlink(lockPath.c_str());
 }
 
+void test_startup_picker_binding(const std::string& path) {
+    auto state = std::make_unique<TuiState>();
+    state->serviceOnline = true;
+    state->currentSlot = 2;
+    state->dirty = true;
+    state->desired.hasMemOffset = true;
+    state->desired.memOffsetMHz = 77;
+    state->targetGpu = selected_gpu();
+    state->service.snapshot = g_scriptedSnapshot;
+    state->service.state.startupPolicyMode = SERVICE_STARTUP_POLICY_PROFILE;
+    state->service.state.startupPolicySlot = 3;
+    snprintf(state->configPath, sizeof(state->configPath), "%s", path.c_str());
+
+    open_startup_picker(state.get());
+    const bool (&saved)[CONFIG_NUM_SLOTS] = state->startupPicker.savedSlots;
+    expect(state->startupPicker.open && state->startupPicker.bankReadable &&
+               saved[0] && !saved[1] && saved[2] && saved[3] && saved[4],
+           "startup picker lists legacy zero, curve-only, fan-curve-only and imported slots");
+    expect(g_startupPolicy.writes == 0, "opening the picker does not change the startup policy");
+    expect(apply_startup_policy(state.get(), SERVICE_STARTUP_POLICY_PROFILE, 5) &&
+               g_startupPolicy.writes == 1 && state->service.state.startupPolicySlot == 5 &&
+               g_startupPolicy.target.pciBus == state->targetGpu.pciBus &&
+               state->startupSnapshot.lockCi == 61 && state->startupSnapshot.memOffsetMHz == 3000,
+           "startup binding uses the selected Windows profile and maps its lock on the shown GPU");
+    expect(state->currentSlot == 2 && state->dirty && state->desired.memOffsetMHz == 77,
+           "startup binding leaves the editor draft and slot intact");
+    expect(!apply_startup_policy(state.get(), SERVICE_STARTUP_POLICY_PROFILE, 2) &&
+               g_startupPolicy.writes == 1 && strstr(state->status, "Profile 2 is empty"),
+           "the startup action rejects an empty slot without writing the policy");
+    expect(apply_startup_policy(state.get(), SERVICE_STARTUP_POLICY_NONE, 0) &&
+               g_startupPolicy.writes == 2 && state->service.state.startupPolicyMode == SERVICE_STARTUP_POLICY_NONE &&
+               !g_startupPolicy.target.valid && !g_startupPolicy.desired.hasLock,
+           "Nothing clears the startup profile binding");
+    expect(apply_startup_policy(state.get(), SERVICE_STARTUP_POLICY_RESTORE_LAST, 0) &&
+               g_startupPolicy.writes == 3 && state->service.state.startupPolicyMode == SERVICE_STARTUP_POLICY_RESTORE_LAST,
+           "Last applied can be selected directly");
+}
+
 void test_voltage_bound_profile_load_and_output() {
     const std::string path = path_in_root("voltage-bound.ini");
     ProfileDocument doc = profile_document_make_empty();
     doc.documentId = 5;
+    doc.source.osFamily = PROFILE_SOURCE_OS_WINDOWS;
     snprintf(doc.displayName, sizeof(doc.displayName), "%s", "Voltage-bound");
     doc.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK |
                   PROFILE_DOMAIN_MEMORY | PROFILE_DOMAIN_POWER;
@@ -384,7 +457,9 @@ void test_voltage_bound_profile_load_and_output() {
     expect(profile_slot_encode(doc, 5, slotSection, nullptr),
            "voltage-bound profile document encodes into INI section");
 
-    std::string iniText = "[profiles]\nselected_slot=5\n\n" + slotSection;
+    std::string iniText = "[profiles]\nselected_slot=5\n[meta]\nlinux_mem_migrated=1\n"
+        "[controls]\nmem_offset_mhz=0\n[profile2]\n# empty\n"
+        "[profile3_curve]\npoint40=1500\n[profile4_fan_curve]\npoint0=30,20,1\n" + slotSection;
     FILE* wf = fopen(path.c_str(), "wb");
     expect(wf != nullptr, "voltage-bound config.ini opened for write");
     if (wf) {
@@ -424,6 +499,8 @@ void test_voltage_bound_profile_load_and_output() {
     expect(desired.hasLock && desired.lockCi == 61 &&
                desired.lockMode == LOCK_MODE_FLATTEN && desired.lockMHz == 2962,
            "flatten lock resolves by voltage to destination index 61 @ 2962 MHz");
+
+    test_startup_picker_binding(path);
 
     int selectedSlot = 0;
     DesiredSettings selectedDesired{};

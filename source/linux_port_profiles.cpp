@@ -528,13 +528,6 @@ static void migrate_profile_bank_mem_units(const char* /*path*/, IniDocument* do
                      context ? context : "", rewritten);
 }
 
-static void format_slot_sections(int slot, char* controls, size_t controlsSize,
-    char* curve, size_t curveSize, char* fan, size_t fanSize) {
-    snprintf(controls, controlsSize, "profile%d", slot);
-    snprintf(curve, curveSize, "profile%d_curve", slot);
-    snprintf(fan, fanSize, "profile%d_fan_curve", slot);
-}
-
 static int clamp_optional_slot(const IniDocument* doc, const char* key, int fallback) {
     int v = get_section_int(doc, "profiles", key, fallback);
     return (v < 0 || v > CONFIG_NUM_SLOTS) ? fallback : v;
@@ -564,13 +557,10 @@ bool load_profile_from_config_path_for_destination(const char* path, int slot,
     if (!load_ini_document(path, &doc, err, errSize)) return false;
     migrate_profile_bank_mem_units(path, &doc, "load");
     char controlsSection[32] = {}, curveSection[32] = {}, fanCurveSection[32] = {};
-    format_slot_sections(slot, controlsSection, sizeof(controlsSection), curveSection, sizeof(curveSection), fanCurveSection, sizeof(fanCurveSection));
-    bool hasSlotSections = section_has_keys(&doc, controlsSection) || section_has_keys(&doc, curveSection) || section_has_keys(&doc, fanCurveSection);
-    if (!hasSlotSections && slot == 1 && (section_has_keys(&doc, "controls") || section_has_keys(&doc, "curve") || section_has_keys(&doc, "fan_curve"))) {
-        snprintf(controlsSection, sizeof(controlsSection), "controls");
-        snprintf(curveSection, sizeof(curveSection), "curve");
-        snprintf(fanCurveSection, sizeof(fanCurveSection), "fan_curve");
-    } else if (!hasSlotSections) { set_message(err, errSize, "Profile %d is empty", slot); return false; }
+    if (!find_saved_slot_sections(&doc, slot, controlsSection, curveSection, fanCurveSection)) {
+        set_message(err, errSize, "Profile %d is empty", slot);
+        return false;
+    }
     char context[32] = {};
     snprintf(context, sizeof(context), "profile %d", slot);
     return load_sections_normalized(path, &doc, controlsSection, curveSection, fanCurveSection, destination, desired, context, err, errSize, needsLiveOut);
@@ -590,7 +580,7 @@ bool load_default_or_selected_profile_for_destination(const char* path, int* slo
     migrate_profile_bank_mem_units(path, &doc, "default-load");
     int selectedSlot = slot && *slot >= 1 && *slot <= CONFIG_NUM_SLOTS ? *slot : get_selected_profile_slot(&doc);
     char controlsSection[32] = {}, curveSection[32] = {}, fanCurveSection[32] = {};
-    format_slot_sections(selectedSlot, controlsSection, sizeof(controlsSection), curveSection, sizeof(curveSection), fanCurveSection, sizeof(fanCurveSection));
+    format_slot_sections(selectedSlot, controlsSection, curveSection, fanCurveSection);
     bool hasSelectedSections = section_has_keys(&doc, controlsSection) || section_has_keys(&doc, curveSection) || section_has_keys(&doc, fanCurveSection);
     if (hasSelectedSections) {
         char context[32] = {};
@@ -726,8 +716,7 @@ bool save_profile_to_config_path(const char* path, int slot, const DesiredSettin
     set_section_int(&doc, "profiles", "logon_slot", logonSlot);
 
     char controlsSection[32] = {}, curveSection[32] = {}, fanCurveSection[32] = {};
-    format_slot_sections(slot, controlsSection, sizeof(controlsSection),
-        curveSection, sizeof(curveSection), fanCurveSection, sizeof(fanCurveSection));
+    format_slot_sections(slot, controlsSection, curveSection, fanCurveSection);
     write_profile_sections(&doc, controlsSection, curveSection, fanCurveSection, &normalized);
 
     if (slot == 1) {
@@ -765,7 +754,7 @@ bool clear_profile_from_config_path(const char* path, int slot,
     IniDocument doc;
     if (!load_ini_document(path, &doc, err, errSize)) return false;
     char controls[32] = {}, curve[32] = {}, fan[32] = {};
-    format_slot_sections(slot, controls, sizeof(controls), curve, sizeof(curve), fan, sizeof(fan));
+    format_slot_sections(slot, controls, curve, fan);
     std::vector<IniSection> retained;
     retained.reserve(doc.sections.size());
     for (const IniSection& section : doc.sections) {

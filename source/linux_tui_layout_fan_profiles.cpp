@@ -274,6 +274,30 @@ void draw_service_panel(TuiCanvas* c, const TuiRect& panel) {
     c->box(panel, "DAEMON / INPUT", "no control is mouse-only");
     int x = panel.x + 3;
     int y = panel.y + 2;
+
+    c->text(x, y, 16, "Startup apply", TUI_STYLE_TEXT);
+    const bool profile = vm.startupPolicyMode == SERVICE_STARTUP_POLICY_PROFILE;
+    const bool stale = startup_snapshot_state_is_stale(vm.startupSnapshotState);
+    char label[24] = {};
+    const char* hint = "Applied at daemon start";
+    if (!vm.serviceOnline) {
+        snprintf(label, sizeof(label), "UNAVAILABLE");
+        hint = "Daemon is offline";
+    } else if (profile) {
+        snprintf(label, sizeof(label), "PROFILE %u%s", vm.startupPolicySlot,
+                 stale ? " STALE" : "");
+        if (vm.startupSnapshotState == STARTUP_SNAPSHOT_STATE_PROFILE_MISSING)
+            hint = "Bound slot no longer loads";
+        else if (stale)
+            hint = "Saved profile has changed";
+    } else {
+        snprintf(label, sizeof(label), "%s", vm.startupPolicyMode == SERVICE_STARTUP_POLICY_NONE
+                     ? "NOTHING" : "LAST APPLIED");
+    }
+    c->button({x + 17, y, 18, 1}, label, ACTION_STARTUP_POLICY_OPEN);
+    c->text(x + 36, y, panel.width - 42, hint, stale ? TUI_STYLE_RED : TUI_STYLE_MUTED);
+
+    if (panel.height < 6) return;
     char state[192] = {};
     if (vm.serviceOnline && vm.service) {
         snprintf(state, sizeof(state),
@@ -285,52 +309,15 @@ void draw_service_panel(TuiCanvas* c, const TuiRect& panel) {
     } else {
         snprintf(state, sizeof(state), "Daemon unavailable — edits remain local");
     }
-    c->text(x, y, panel.width - 6, state,
+    c->text(x, y + 2, panel.width - 6, state,
             vm.serviceOnline ? TUI_STYLE_GREEN : TUI_STYLE_RED);
-    c->text(x, y + 2, panel.width - 6,
+    if (panel.height < 9) return;
+    c->text(x, y + 4, panel.width - 6,
             "Mouse: click fields, checkboxes, tabs, graph points and buttons",
             TUI_STYLE_TEXT);
-    c->text(x, y + 3, panel.width - 6,
+    c->text(x, y + 5, panel.width - 6,
             "Keyboard: Tab/Shift+Tab • arrows • Enter/Space • PgUp/PgDn • Home/End",
             TUI_STYLE_TEXT);
-    c->text(x, y + 4, panel.width - 6,
-            "Resize: layout and hitboxes are rebuilt atomically from terminal cells",
-            TUI_STYLE_MUTED);
-    // The boot-apply policy lives here rather than on the PROFILE panel because
-    // it is daemon state, not editor state: it survives this process and is what
-    // the GPU gets at the next boot.
-    if (panel.height >= 9) {
-        c->text(x, y + 6, 16, "Startup apply", TUI_STYLE_TEXT);
-        // The daemon boot-applies a snapshot it took of the profile, not the
-        // profile itself.  When the two have drifted apart, "PROFILE N" alone
-        // would claim something untrue, so the label says so.
-        bool snapshotStale =
-            startup_snapshot_state_is_stale(vm.startupSnapshotState);
-        char label[24] = {};
-        if (vm.startupPolicyMode == SERVICE_STARTUP_POLICY_PROFILE)
-            snprintf(label, sizeof(label), "PROFILE %u%s", vm.startupPolicySlot,
-                     snapshotStale ? " STALE" : "");
-        else
-            snprintf(label, sizeof(label), "%s",
-                     vm.startupPolicyMode == SERVICE_STARTUP_POLICY_NONE
-                         ? "NOTHING" : "LAST APPLIED");
-        c->button(TuiRect{x + 17, y + 6, 16, 1}, label,
-                  ACTION_STARTUP_POLICY_CYCLE);
-        const char* hint =
-            vm.startupPolicyMode == SERVICE_STARTUP_POLICY_PROFILE
-                ? (vm.startupSnapshotState ==
-                       STARTUP_SNAPSHOT_STATE_PROFILE_MISSING
-                       ? "the bound slot no longer loads; re-bind or disable it"
-                       : (snapshotStale
-                              ? "what boots differs from the slot; Save it again"
-                              : "saved profile is applied when the daemon starts"))
-                : (vm.startupPolicyMode == SERVICE_STARTUP_POLICY_NONE
-                       ? "the GPU is left untouched when the daemon starts"
-                       : "the last applied settings are restored at daemon start");
-        if (panel.width > 42)
-            c->text(x + 34, y + 6, panel.width - 40, hint,
-                    snapshotStale ? TUI_STYLE_RED : TUI_STYLE_MUTED);
-    }
 }
 
 void draw_advanced_stepper(TuiCanvas* c, int x, int y, const char* label,
@@ -494,10 +481,46 @@ void tui_draw_profiles_tab(TuiCanvas* canvas, const TuiRect& content) {
             TuiRect{2, content.y + profileHeight,
                     content.width - 2, toolsHeight});
         int serviceHeight = content.height - profileHeight - toolsHeight;
-        if (serviceHeight >= 5)
-            draw_service_panel(canvas,
-                TuiRect{2, content.y + profileHeight + toolsHeight,
-                        content.width - 2, serviceHeight});
+        draw_service_panel(canvas,
+            TuiRect{2, content.y + profileHeight + toolsHeight,
+                    content.width - 2, serviceHeight});
+    }
+}
+
+void tui_draw_startup_picker(TuiCanvas* canvas) {
+    const TuiViewModel& vm = canvas->view();
+    TuiLayout* layout = canvas->layout();
+    layout->actions.clear();
+    layout->startupPickerVisible = true;
+    const int width = 54, height = CONFIG_NUM_SLOTS + 7;
+    const TuiRect panel{(layout->width - width) / 2 + 1,
+                        (layout->height - height) / 2 + 1, width, height};
+    const int x = panel.x + 3, y = panel.y + 2;
+    canvas->fill(panel.x, panel.y, panel.width, panel.height, TUI_STYLE_PANEL);
+    canvas->box(panel, "STARTUP APPLY");
+    canvas->text(x, y, width - 6, "Choose what to apply when the daemon starts.", TUI_STYLE_TEXT);
+    // Cancel gets the initial focus so opening the picker cannot select a policy.
+    canvas->button({x + 38, panel.y + height - 2, 10, 1}, "CANCEL", ACTION_STARTUP_POLICY_CANCEL);
+    canvas->button({x, y + 2, 16, 1}, "LAST APPLIED", ACTION_STARTUP_POLICY_SET, 0,
+                   SERVICE_STARTUP_POLICY_RESTORE_LAST,
+                   vm.serviceOnline && vm.startupPolicyMode == SERVICE_STARTUP_POLICY_RESTORE_LAST);
+    canvas->button({x + 18, y + 2, 12, 1}, "NOTHING", ACTION_STARTUP_POLICY_SET, 0,
+                   SERVICE_STARTUP_POLICY_NONE,
+                   vm.serviceOnline && vm.startupPolicyMode == SERVICE_STARTUP_POLICY_NONE);
+    for (int slot = 1; slot <= CONFIG_NUM_SLOTS; ++slot) {
+        const int row = y + 3 + slot;
+        const bool active = vm.serviceOnline && vm.startupPolicyMode == SERVICE_STARTUP_POLICY_PROFILE &&
+                            vm.startupPolicySlot == (unsigned int)slot;
+        char label[24] = {};
+        snprintf(label, sizeof(label), "PROFILE %d", slot);
+        if (vm.startupPicker.savedSlots[slot - 1]) {
+            canvas->button({x, row, 16, 1}, label, ACTION_STARTUP_POLICY_SET, slot,
+                           SERVICE_STARTUP_POLICY_PROFILE, active);
+        } else {
+            canvas->text(x + 1, row, 16, label, TUI_STYLE_DIM);
+            canvas->text(x + 18, row, 14, vm.startupPicker.bankReadable ? "Empty" : "Unavailable",
+                         TUI_STYLE_DIM);
+        }
     }
 }
 

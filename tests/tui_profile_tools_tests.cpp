@@ -6,6 +6,7 @@
 #include "linux_debug_log.h"
 #include "profile_capture_proposal_fixture.h"
 #include "profile_ini_slot.h"
+#include <algorithm>
 #include <map>
 #include <cstring>
 
@@ -44,6 +45,48 @@ static HardwareCaptureObservation snapshot() {
     o.revision = service_control_review_revision(o.fingerprint, nullptr);
     return o;
 }
+
+static int startup_picker_layout() {
+    DesiredSettings desired{};
+    for (const auto size : {TuiRect{0, 0, 72, 24}, TuiRect{0, 0, 100, 32}, TuiRect{0, 0, 160, 48}}) {
+        TuiViewModel vm{};
+        vm.desired = &desired;
+        vm.tab = TUI_TAB_PROFILES;
+        vm.currentSlot = 3;
+        vm.serviceOnline = true;
+        vm.startupPolicyMode = SERVICE_STARTUP_POLICY_PROFILE;
+        vm.startupPolicySlot = 5;
+        vm.startupSnapshotState = STARTUP_SNAPSHOT_STATE_DIVERGED;
+        TuiLayout layout{};
+        build_tui_layout(vm, size.width, size.height, &layout);
+        if (!tui_layout_actions_valid(layout) || layout.startupPickerVisible ||
+            std::count_if(layout.actions.begin(), layout.actions.end(), [](const ClickAction& action) {
+                return action.type == ACTION_STARTUP_POLICY_OPEN;
+            }) != 1) return 12670;
+        std::string displayed;
+        for (const TuiCell& cell : layout.cells) displayed += cell.glyph;
+        if (displayed.find("PROFILE 5 STALE") == std::string::npos) return 12671;
+
+        vm.startupPicker.open = true;
+        vm.startupPicker.bankReadable = true;
+        vm.startupPicker.savedSlots[1] = true;
+        vm.startupPicker.savedSlots[4] = true;
+        build_tui_layout(vm, size.width, size.height, &layout);
+        if (!tui_layout_actions_valid(layout) || !layout.startupPickerVisible ||
+            layout.actions.size() != 5 || layout.actions[0].type != ACTION_STARTUP_POLICY_CANCEL)
+            return 12672;
+        const int modes[] = {SERVICE_STARTUP_POLICY_RESTORE_LAST, SERVICE_STARTUP_POLICY_NONE,
+                             SERVICE_STARTUP_POLICY_PROFILE, SERVICE_STARTUP_POLICY_PROFILE};
+        const int slots[] = {0, 0, 2, 5};
+        for (size_t i = 0; i < 4; ++i) {
+            const ClickAction& action = layout.actions[i + 1];
+            if (action.type != ACTION_STARTUP_POLICY_SET || action.index != slots[i] ||
+                action.value != modes[i]) return 12673;
+        }
+    }
+    return 0;
+}
+
 static int run() {
     auto state = std::make_unique<TuiState>(); auto& s = *state;
     std::strcpy(s.configPath, "bank.ini"); s.currentSlot = 2; s.dirty = true;
@@ -197,4 +240,7 @@ static int run() {
     return 0;
 }
 }  // namespace tui_profile_tools_fixture
-int run_tui_profile_tools_tests() { return tui_profile_tools_fixture::run(); }
+int run_tui_profile_tools_tests() {
+    if (int result = tui_profile_tools_fixture::startup_picker_layout()) return result;
+    return tui_profile_tools_fixture::run();
+}

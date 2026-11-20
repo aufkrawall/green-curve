@@ -122,6 +122,9 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts);
 void print_linux_help();
 struct ProfileDestinationTopology;
 int load_selected_profile_slot(const char* path);
+// The first element represents slot 1. Reads slot presence without decoding profiles.
+bool load_saved_profile_slots(const char* path, bool (&saved)[CONFIG_NUM_SLOTS],
+                              char* err, size_t errSize);
 bool load_profile_from_config_path_for_destination(const char* path, int slot,
     const ProfileDestinationTopology* destination, DesiredSettings* desired,
     char* err, size_t errSize, bool* needsLiveOut = nullptr);

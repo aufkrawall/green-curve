@@ -201,7 +201,9 @@ The TUI supports full keyboard navigation and mouse interactions (clicks and scr
 
 ### Startup apply behavior
 
-By default, the Linux daemon re-applies the last active settings on startup. You can configure startup behavior via the TUI (**Profiles & Tools** tab) or CLI:
+By default, the Linux daemon re-applies the last active settings on startup. In the TUI, open **Profiles & Tools → Startup apply** to choose any saved slot, **Last applied**, or **Nothing**. Imported profiles appear in their saved slots.
+
+You can also set the startup policy from the CLI:
 
 ```bash
 greencurve --show-startup            # show configured boot action and status

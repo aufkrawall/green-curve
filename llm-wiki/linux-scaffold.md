@@ -12,7 +12,8 @@ Source anchors: `source/linux_backend_curve_correction.h`,
 `source/linux_profile_output.cpp`, `source/linux_main.cpp`,
 `source/linux_startup_sync.cpp`, `source/linux_tui_layout.cpp`,
 `source/linux_tui_profile_load.h`, `source/linux_tui_actions.cpp`,
-`source/linux_tui_mutation_actions.cpp`, `tests/linux_vf_write_tests.cpp`
+`source/linux_tui_mutation_actions.cpp`, `source/linux_tui_startup_actions.cpp`,
+`tests/linux_vf_write_tests.cpp`
 (`12630-12648`), `tests/regression_main.cpp` (`12650-12651`),
 `tests/linux_gpu_selection_store_regression.cpp`, `tools/linux_gates.py`.
 
@@ -426,7 +427,8 @@ once, stamped by `[meta] linux_mem_migrated`:
 | `source/linux_daemon_client.h` | The client half's shared machinery — which adapter a response is authoritative about, and how a request is built, sent, and its outcome recovered after a transport failure. Split out of `linux_daemon.cpp` for the source-size ratchet. |
 | `source/linux_daemon_client_verbs.cpp` | The individual client request verbs (`linux_daemon_apply/reset/resume_restore/..._checked`, `get_state`, `get_state_ex`, `resolve_write_target`), each deciding what its request must be attached to before it is sent. Split out of `linux_daemon.cpp` along the seam the file already had: unprivileged client code before the include site, root GPU ownership after it. An included `.cpp` rather than a header because the definitions are externally linked, the same rule `linux_startup_policy.h` follows. |
 | `source/linux_daemon_deadline_policy.h` | **The ONE place Linux client deadlines and daemon bounds are written down** (F-DAEMON-DEADLINE). Per-role budgets, the four command classes, the derived response deadlines with `static_assert`s, the recovery-retry and connect-reachability rules. The Linux counterpart of `service_request_deadline_policy.h`, and it reuses that header's `service_phase_remaining_ms()` rather than reimplementing the phase/total arithmetic. |
-| `source/linux_tui_mutation_actions.cpp` | The TUI actions that change something outside the editor: Apply/Reset, the daemon's boot-apply policy, and the live exports. Split out of `linux_tui_actions.cpp` for the source-size ratchet along the seam "edits a draft in memory" versus "leaves the process"; included inside that file's anonymous namespace. Owns the rule that an Apply/Reset whose outcome could not be read back is reported as UNKNOWN, never as failed. |
+| `source/linux_tui_mutation_actions.cpp` | TUI Apply/Reset, startup snapshot sync after profile writes, and live exports. Included by `linux_tui_actions.cpp`. An Apply/Reset whose outcome could not be read back is reported as unknown. |
+| `source/linux_tui_startup_actions.cpp` | Reads the saved slots when the startup picker opens and binds the explicit selection. Included by `linux_tui_actions.cpp`. |
 | `source/linux_daemon_lifecycle.h`, `source/linux_daemon_serve.h` | Daemon run state, monotonic fan wake condition, async-signal-safe SIGTERM/SIGINT stop handling, listener construction, the poll-driven shutdown-aware accept loop with classified `accept()` failures, and the shutdown fan handback. Included by `linux_daemon.cpp`; guards address them as one logical surface via `require_text_in_surface`. |
 | `source/linux_service_install.cpp`, `source/linux_service_install_policy.h`, `source/linux_systemd_notify.cpp` | Protected binary staging, injected deterministic systemd sequencing/verification, and dependency-free readiness notification. |
 | `source/linux_daemon_state.{h,cpp}` | Backward-readable checksummed active-state and operation-result records with root-owned atomic persistence. |
@@ -1349,14 +1351,20 @@ behaves exactly as every pre-v13 build did.
   the envelope; reading them back is the deliberate extra round trip that the
   staleness check makes only when something can have moved.
 - CLI: `--show-startup` (also reports snapshot-vs-profile divergence),
-  `--startup-profile N|last|none`. TUI: the **Startup apply** control on
-  Profiles & Tools cycles the three modes and shows `PROFILE N STALE` when the
-  snapshot no longer matches the slot.
+  `--startup-profile N|last|none`. **Startup apply** on the TUI's Profiles &
+  Tools tab opens a picker for Last applied, Nothing, and each populated slot.
+  `load_saved_profile_slots()` reads the bank once at open and shares the
+  explicit slot loader's section presence check, including curve-only and
+  fan-curve-only slots, unnumbered legacy slot 1, and imported documents.
+  Selecting a slot reloads that slot from disk and resolves portable profiles
+  against the shown GPU before binding. The editor's current slot, its draft,
+  and active GPU settings are independent of the choice. The control shows
+  `PROFILE N STALE` when the saved slot and daemon snapshot diverge.
 - Diagnostics: the daemon logs the boot-applied snapshot's own values
   (`fanMode`/`fanPct`/`pollMs`/`hysteresisC`/offsets/power) on every set,
-  refresh and boot apply, and the client logs each refresh and every detected
-  divergence. Before that, a stale snapshot was only visible by hex-dumping
-  `/var/lib/greencurve/startup.bin`.
+  refresh and boot apply. The client logs slot load failures and update
+  results with the requested mode or slot, as well as refreshes and detected
+  divergence.
 
 ## Debug log and crash breadcrumbs
 

@@ -1290,11 +1290,12 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
     forbid_text(refresh_cpp,
                 "if (linux_configured_gpu_request_target(&state->configuredGpu, true,",
                 "the TUI write gate must not accept a selection that is not shown")
-    for action in ('tui_configured_gpu_allows_write(state, "Apply")',
-                   'tui_configured_gpu_allows_write(state, "Reset")',
-                   'tui_configured_gpu_allows_write(state, "Startup profile bind")'):
-        require_text(mutation_cpp, action,
+    for action in ("Apply", "Reset"):
+        require_text(mutation_cpp, f'tui_configured_gpu_allows_write(state, "{action}")',
                      "TUI writes stop while config.ini's GPU is unresolved")
+    require_text(_p(ctx, "linux_tui_startup_actions.cpp"),
+                 'tui_configured_gpu_allows_write(state, "Startup profile bind")',
+                 "TUI startup binding stops while config.ini's GPU is unresolved")
     require_text(startup_h, "re-bound from %04x:%02x:%02x.%u",
                  "a startup-profile record follows a renumbered GPU after it "
                  "booted on it")
@@ -1320,7 +1321,7 @@ def check_profile_interchange_and_curve_correction(ctx, require_text, forbid_tex
                  "Linux CLI resolves voltage-bound profile slots against the live daemon GPU")
     require_text(cli_load_h, "load_profile_from_config_path_for_destination(",
                  "Linux daemon-fallback loader maps voltage-bound slots via live topology")
-    require_text(tui_mut_cpp, "load_profile_from_config_path_for_destination(",
+    require_text(_p(ctx, "linux_tui_startup_actions.cpp"), "load_profile_from_config_path_for_destination(",
                  "Linux TUI startup policy bind resolves voltage-bound slots via live snapshot")
     require_text(_p(ctx, "linux_port_profiles.cpp"),
                  'addInt("lock_tracks_anchor", desired->hasLock && desired->lockTracksAnchor ? 1 : 0);',

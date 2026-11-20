@@ -4,6 +4,7 @@
 #include "linux_tui_internal.h"
 
 #include "linux_debug_log.h"
+#include "linux_cli_profile_load.h"
 #include "linux_gpu_selection.h"
 #include "linux_transaction.h"
 #include "linux_vf_baseline_policy.h"
@@ -333,6 +334,7 @@ void set_daemon_failure(TuiState* state, const char* fallback,
 }
 
 #include "linux_tui_mutation_actions.cpp"
+#include "linux_tui_startup_actions.cpp"
 
 }  // namespace
 
@@ -424,6 +426,15 @@ void tui_handle_character(TuiState* state, char character) {
 
 void tui_apply_action(TuiState* state, const ClickAction& action) {
     if (!state) return;
+    if (state->startupPicker.open) {
+        if (action.type == ACTION_STARTUP_POLICY_CANCEL ||
+            (action.type == ACTION_STARTUP_POLICY_SET && state->layout.startupPickerVisible &&
+             apply_startup_policy(state, (unsigned int)action.value, action.index))) {
+            state->startupPicker.open = false;
+            state->focusIndex = -1;
+        }
+        return;
+    }
     LinuxProfileSlotIO transferStorage;
     if (tui_transfer_action(*state, action, transferStorage,
         [](TuiState& draft) { bind_current_draft(&draft); tui_recompute_dirty(&draft); })) return;
@@ -685,8 +696,8 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
         case ACTION_EXPORT_LIVE_JSON:
             export_live(state, true);
             break;
-        case ACTION_STARTUP_POLICY_CYCLE:
-            apply_startup_policy_cycle(state);
+        case ACTION_STARTUP_POLICY_OPEN:
+            open_startup_picker(state);
             break;
         default:
             break;

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 //
 // linux_tui_mutation_actions.cpp -- the TUI actions that change something
-// outside the editor: the GPU (Apply/Reset), the daemon's boot-apply policy,
-// and the live exports written to disk.
+// outside the editor: the GPU (Apply/Reset), startup snapshots after profile
+// writes, and the live exports written to disk.
 //
 // Split out of linux_tui_actions.cpp for the source-size ratchet, along the
 // seam that already existed: everything before it edits a draft in memory,
@@ -153,67 +153,6 @@ void reset_gpu(TuiState* state) {
     state->loadedProfile = false;
     snprintf(state->status, sizeof(state->status), "%s",
              result[0] ? result : "GPU reset to driver defaults");
-}
-
-// Cycle the daemon's boot-apply policy.  Choosing "profile N" snapshots the
-// *saved* profile, never the unsaved draft: what gets written at the next boot
-// has to be something the user can read back out of config.ini.
-void apply_startup_policy_cycle(TuiState* state) {
-    if (!state->serviceOnline) {
-        snprintf(state->status, sizeof(state->status),
-                 "Startup policy requires a reachable daemon");
-        return;
-    }
-    unsigned int current = state->service.state.startupPolicyMode;
-    unsigned int next =
-        current == SERVICE_STARTUP_POLICY_RESTORE_LAST ? SERVICE_STARTUP_POLICY_NONE
-        : current == SERVICE_STARTUP_POLICY_NONE ? SERVICE_STARTUP_POLICY_PROFILE
-        : SERVICE_STARTUP_POLICY_RESTORE_LAST;
-
-    char result[512] = {};
-    bool ok = false;
-    if (next == SERVICE_STARTUP_POLICY_PROFILE) {
-        if (!tui_configured_gpu_allows_write(state, "Startup profile bind"))
-            return;
-        if (!state->targetGpu.valid) {
-            snprintf(state->status, sizeof(state->status),
-                     "Select a GPU before binding a startup profile to it");
-            return;
-        }
-        DesiredSettings saved = {};
-        char error[256] = {};
-        auto liveTopo = std::make_unique<ProfileDestinationTopology>();
-        const VfFloorTopology floor = vf_floor_topology_compute(
-            state->service.snapshot.curve, state->service.snapshot.freqOffsets, VF_NUM_POINTS);
-        const bool haveLive = profile_destination_from_vf_curve(
-            state->service.snapshot.curve, floor, *liveTopo);
-        if (!load_profile_from_config_path_for_destination(state->configPath,
-                                           state->currentSlot,
-                                           haveLive ? liveTopo.get() : nullptr,
-                                           &saved, error, sizeof(error))) {
-            set_daemon_failure(state, "Startup profile load failed", error);
-            return;
-        }
-        normalize_desired_settings_for_ui(&saved);
-        char label[64] = {};
-        snprintf(label, sizeof(label), "profile %d", state->currentSlot);
-        ok = linux_daemon_set_startup_policy(next, state->currentSlot, label,
-                                             &state->targetGpu, &saved,
-                                             result, sizeof(result));
-    } else {
-        ok = linux_daemon_set_startup_policy(next, 0, nullptr, nullptr, nullptr,
-                                             result, sizeof(result));
-    }
-    if (!ok) {
-        set_daemon_failure(state, "Startup policy update failed", result);
-        return;
-    }
-    // Re-read rather than assume: the envelope the daemon publishes is the only
-    // authority for what the control now shows.
-    tui_refresh_service(state, false);
-    tui_refresh_startup_snapshot(state);
-    snprintf(state->status, sizeof(state->status), "%s",
-             result[0] ? result : "Startup policy updated");
 }
 
 // A profile write is only half the job while the daemon boot-applies that same

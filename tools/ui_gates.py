@@ -1616,7 +1616,7 @@ def check_profile_draft_replacement(ctx, require_text):
 # document editing mode.
 _TUI_SOURCE_MODE_FILES = (
     "linux_tui_actions.cpp", "linux_tui_render.cpp", "linux_tui_refresh.cpp",
-    "linux_tui_mutation_actions.cpp", "linux_tui_authority_runtime.cpp",
+    "linux_tui_mutation_actions.cpp", "linux_tui_startup_actions.cpp", "linux_tui_authority_runtime.cpp",
     "linux_tui_internal.h", "linux_tui_layout.h", "linux_tui_layout.cpp",
     "linux_tui_layout_fan_profiles.cpp", "linux_tui_profile_load.h",
     "linux_tui_edit_policy.h",

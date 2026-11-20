@@ -1,5 +1,15 @@
 # Testing
 
+## Linux startup picker (2026-11-20)
+
+- `tests/tui_profile_tools_tests.cpp` (12670–12673) checks the startup control
+  at 72×24, 100×32, and 160×48, its stale label, and the hitboxes for only
+  saved slots, Last applied, Nothing, and Cancel in the picker.
+- `tests/linux_gpu_selection_store_regression.cpp` opens the real picker over
+  a mixed profile bank and binds a voltage-bound Windows profile while the
+  editor is on an empty slot. A scripted daemon verifies the mapped lock,
+  selected GPU, policy writes, and direct choices of the two non-profile modes.
+
 ## Linux cross-platform profile interchange, curve correction and shaped-baseline reset (2026-11-20)
 
 - `tests/linux_vf_write_tests.cpp` (`12630-12648`):

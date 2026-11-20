@@ -606,4 +606,5 @@ void build_tui_layout(const TuiViewModel& vm, int width, int height,
     }
     if (vm.capture.active) tui_draw_capture_dialog(&canvas);
     if (vm.transfer.active) tui_draw_transfer_dialog(&canvas);
+    if (vm.startupPicker.open) tui_draw_startup_picker(&canvas);
 }

@@ -44,6 +44,9 @@ void set_section_value(IniDocument* doc, const char* sectionName, const char* ke
 void set_section_int(IniDocument* doc, const char* sectionName, const char* key, int value);
 void replace_section(IniDocument* doc, const char* sectionName, const std::vector<IniEntry>& entries);
 bool section_has_keys(const IniDocument* doc, const char* sectionName);
+void format_slot_sections(int slot, char (&controls)[32], char (&curve)[32], char (&fan)[32]);
+bool find_saved_slot_sections(const IniDocument* doc, int slot,
+                              char (&controls)[32], char (&curve)[32], char (&fan)[32]);
 std::string get_section_value(const IniDocument* doc, const char* sectionName, const char* key);
 int get_section_int(const IniDocument* doc, const char* sectionName, const char* key, int defaultValue);
 bool parse_fan_mode_config_value(const char* text, int* mode);

@@ -134,6 +134,7 @@ void populate_view_model(const TuiState& state, TuiViewModel* vm,
         : (unsigned int)SERVICE_STARTUP_POLICY_RESTORE_LAST;
     vm->startupPolicySlot = state.serviceOnline
         ? state.service.state.startupPolicySlot : 0u;
+    vm->startupPicker = state.startupPicker;
     vm->startupSnapshotState = state.serviceOnline
         ? state.startupSnapshotState : STARTUP_SNAPSHOT_STATE_NOT_APPLICABLE;
     if (state.serviceOnline)
@@ -481,6 +482,31 @@ static int tui_action_index_at(const TuiState& state, int x, int y) {
 
 void tui_handle_event(TuiState* state, const TuiInputEvent& event) {
     if (!state || event.type == TUI_INPUT_NONE) return;
+    if (state->startupPicker.open) {
+        if (event.type == TUI_INPUT_ESCAPE) {
+            tui_apply_action(state, ClickAction{0, 0, 0, 0, ACTION_STARTUP_POLICY_CANCEL, 0, 0, 0});
+            return;
+        }
+        if (!state->layout.startupPickerVisible) return;
+        // Use the normal focus and hitbox handling, but keep editor shortcuts
+        // and tab switches out of the modal picker.
+        switch (event.type) {
+            case TUI_INPUT_MOUSE:
+            case TUI_INPUT_ENTER:
+            case TUI_INPUT_TAB:
+            case TUI_INPUT_SHIFT_TAB:
+            case TUI_INPUT_UP:
+            case TUI_INPUT_DOWN:
+            case TUI_INPUT_LEFT:
+            case TUI_INPUT_RIGHT: break;
+            case TUI_INPUT_CHARACTER:
+                if (event.character == ' ') break;
+                return;
+            default: return;
+        }
+    } else if (state->layout.startupPickerVisible) {
+        return; // The input batch still refers to the dismissed dialog's layout.
+    }
     if (tui_transfer_modal_event(*state, event,
         [&](const ClickAction& action) { tui_apply_action(state, action); },
         [&](int direction) { focus_linear(state, direction); },

@@ -124,9 +124,9 @@ enum ActionType {
     ACTION_WRITE_ASSETS,
     ACTION_EXPORT_LIVE_TEXT,
     ACTION_EXPORT_LIVE_JSON,
-    // Cycles the daemon's boot-apply policy: restore-last -> none ->
-    // profile <current slot> -> restore-last.
-    ACTION_STARTUP_POLICY_CYCLE,
+    ACTION_STARTUP_POLICY_OPEN,
+    ACTION_STARTUP_POLICY_SET,
+    ACTION_STARTUP_POLICY_CANCEL,
 };
 
 struct TuiRect {
@@ -197,6 +197,12 @@ struct TuiTransferView {
     const std::vector<std::string>* report = nullptr;
 };
 
+struct TuiStartupPickerView {
+    bool open;
+    bool bankReadable;
+    bool savedSlots[CONFIG_NUM_SLOTS];
+};
+
 struct TuiViewModel {
     const DesiredSettings* desired;
     const ServiceResponse* service;
@@ -230,6 +236,7 @@ struct TuiViewModel {
     // Daemon boot-apply policy as last published in the state envelope.
     unsigned int startupPolicyMode;
     unsigned int startupPolicySlot;
+    TuiStartupPickerView startupPicker;
     // Whether the snapshot the daemon would write at the next boot still equals
     // the profile it names. Rendered as a warning on the control itself,
     // because "PROFILE 1" otherwise reads as "profile 1 as it is now".
@@ -256,6 +263,7 @@ struct TuiLayout {
     int captureVisibleRows = 0, captureLineCount = 0;
     bool transferVisible = false;
     int transferVisibleRows = 0, transferLineCount = 0;
+    bool startupPickerVisible = false;
     // Rows the fan-point table can draw; zero when the fan tab is not laid out.
     // Used to stop wheel/page scrolling at the end of that list too.
     int fanVisibleRows;

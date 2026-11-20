@@ -386,6 +386,39 @@ bool section_has_keys(const IniDocument* doc, const char* sectionName) {
     return section && !section->entries.empty();
 }
 
+void format_slot_sections(int slot, char (&controls)[32], char (&curve)[32], char (&fan)[32]) {
+    snprintf(controls, sizeof(controls), "profile%d", slot);
+    snprintf(curve, sizeof(curve), "profile%d_curve", slot);
+    snprintf(fan, sizeof(fan), "profile%d_fan_curve", slot);
+}
+
+bool find_saved_slot_sections(const IniDocument* doc, int slot,
+                              char (&controls)[32], char (&curve)[32], char (&fan)[32]) {
+    format_slot_sections(slot, controls, curve, fan);
+    if (section_has_keys(doc, controls) || section_has_keys(doc, curve) || section_has_keys(doc, fan))
+        return true;
+    // Older configurations wrote slot 1 under these unnumbered section names.
+    if (slot != CONFIG_DEFAULT_SLOT ||
+        !(section_has_keys(doc, "controls") || section_has_keys(doc, "curve") || section_has_keys(doc, "fan_curve")))
+        return false;
+    snprintf(controls, sizeof(controls), "controls");
+    snprintf(curve, sizeof(curve), "curve");
+    snprintf(fan, sizeof(fan), "fan_curve");
+    return true;
+}
+
+bool load_saved_profile_slots(const char* path, bool (&saved)[CONFIG_NUM_SLOTS],
+                              char* err, size_t errSize) {
+    for (bool& occupied : saved) occupied = false;
+    IniDocument doc;
+    if (!load_ini_document(path, &doc, err, errSize)) return false;
+    for (int slot = 1; slot <= CONFIG_NUM_SLOTS; ++slot) {
+        char controls[32] = {}, curve[32] = {}, fan[32] = {};
+        saved[slot - 1] = find_saved_slot_sections(&doc, slot, controls, curve, fan);
+    }
+    return true;
+}
+
 std::string get_section_value(const IniDocument* doc, const char* sectionName, const char* key) {
     const IniSection* section = find_section(doc, sectionName);
     const IniEntry* entry = find_entry(section, key);
