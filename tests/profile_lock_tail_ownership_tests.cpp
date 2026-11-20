@@ -168,8 +168,18 @@ int production_matcher_cases() {
     guiApply.hasFan = 0;
     if (desired_settings_match_active_service_intent(&profile, &guiApply, detail, sizeof(detail), false))
         return 12420;
-    if (!desired_settings_match_active_service_intent(&profile, &guiApply, detail, sizeof(detail), true))
+    // A fan-curve profile never matches an intent that leaves the fan
+    // unclaimed, even on the relaxed read: nothing drives its curve then.
+    // That match once kept Profile 3 ticked while the fan sat in driver
+    // control (fan-control.md, 2026-11-20); a GUI Apply now carries the fan.
+    if (desired_settings_match_active_service_intent(&profile, &guiApply, detail, sizeof(detail), true) ||
+        !strstr(detail, "fan ownership differs"))
         return 12421;
+    DesiredSettings autoFanProfile = profile;
+    autoFanProfile.fanMode = FAN_MODE_AUTO;
+    autoFanProfile.fanAuto = 1;
+    if (!desired_settings_match_active_service_intent(&autoFanProfile, &guiApply, detail, sizeof(detail), true))
+        return 12739;
 
     // 12422: A legacy or imported slot omitting tail points (or a pre-fix
     // restart snapshot carrying projected tail flags) still fails strict

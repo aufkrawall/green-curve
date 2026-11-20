@@ -14,6 +14,7 @@ REGRESSION_SOURCES = (
     'memory_recovery_tests.cpp',
     'power_recovery_tests.cpp',
     'fan_request_apply_tests.cpp',
+    'fan_intent_tests.cpp',
     'security_audit_tests.cpp',
     'installer_fuzz_harness_tests.cpp',
     'review_followup_tests.cpp',

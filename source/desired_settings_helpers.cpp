@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
+#include "fan_request_policy.h"
 #include "profile_ownership_policy.h"
 #include "desired_advanced_domains_policy.h"
 
@@ -170,8 +171,13 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
 
     if (!desired_bool_equal(profile->hasFan, active->hasFan) &&
         !profile_ownership_fan_mismatch_allowed(relaxedOwnershipRead,
-            profile->hasFan, active->hasFan)) {
-        set_message(detail, detailSize, "fan ownership differs profile=%d active=%d", profile->hasFan ? 1 : 0, active->hasFan ? 1 : 0);
+            profile->hasFan,
+            fan_request_effective_mode(profile->fanMode, profile->fanAuto != 0),
+            active->hasFan)) {
+        set_message(detail, detailSize, "fan ownership differs profile=%d (mode %d) active=%d",
+            profile->hasFan ? 1 : 0,
+            profile->hasFan ? fan_request_effective_mode(profile->fanMode, profile->fanAuto != 0) : -1,
+            active->hasFan ? 1 : 0);
         return false;
     }
     if (profile->hasFan && active->hasFan) {

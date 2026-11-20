@@ -429,7 +429,12 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     DesiredSettings upgraded{};
     if (d) {
         upgraded = *d;
-        service_upgrade_legacy_scalar_scope(previousIntent, &upgraded);
+        const gc_u32 kept = service_upgrade_legacy_scalar_scope(previousIntent, &upgraded);
+        if (upgraded.applicationScope != d->applicationScope)
+            lb_log("apply: legacy request upgraded to scope=%u kept mem=%d power=%d fan=%d\n",
+                   (unsigned)upgraded.applicationScope, (kept & SERVICE_LEGACY_UPGRADE_KEPT_MEM) ? 1 : 0,
+                   (kept & SERVICE_LEGACY_UPGRADE_KEPT_POWER) ? 1 : 0,
+                   (kept & SERVICE_LEGACY_UPGRADE_KEPT_FAN) ? 1 : 0);
         d = &upgraded;
     }
     LinuxHardwareSnapshot snapshot = {};

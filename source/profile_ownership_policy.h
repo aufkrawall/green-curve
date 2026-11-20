@@ -3,21 +3,32 @@
 
 // Ownership comparison relaxation for the fan domain.
 //
-// A GUI Apply is a delta: when the fan was not changed, capture_gui_apply_settings()
-// intentionally leaves hasFan=false so the apply does not claim or rewrite fan
-// ownership (another tool may own it).  Saved profiles always carry fan fields,
-// so the strict record equality used for pre-write profile claims would clear
-// the tray tick after every ordinary OC apply.  The post-write/ownership check
-// therefore allows the profile to claim fan while the active intent does not.
+// A GUI Apply is a delta: when the editor shows an unchanged Auto fan,
+// capture_gui_apply_settings() leaves hasFan=false so the apply does not claim
+// or rewrite fan ownership (another tool may own it).  Saved profiles always
+// carry fan fields, so the strict record equality used for pre-write profile
+// claims would clear the tray tick after every ordinary OC apply.  The
+// post-write/ownership check therefore allows a profile whose fan is AUTO to
+// match an active intent that leaves the fan unclaimed: both leave the fan to
+// the driver.
+//
+// It never allows a Fixed or Curve profile to match an unclaimed fan.  That
+// combination means nothing drives the profile's fan setting, so the profile is
+// not what is in force; accepting it once kept "Profile N" ticked while the
+// fan sat in driver control after an Apply had released the curve.
 
 #ifndef GREEN_CURVE_PROFILE_OWNERSHIP_POLICY_H
 #define GREEN_CURVE_PROFILE_OWNERSHIP_POLICY_H
 
 #include "desired_curve_intent.h"
 
+// `profileFanMode` is the profile's effective fan mode
+// (fan_request_effective_mode()); it only matters when the profile claims fan.
 static inline bool profile_ownership_fan_mismatch_allowed(
-    bool allowUnclaimedFan, bool profileHasFan, bool activeHasFan) {
-    return allowUnclaimedFan && profileHasFan && !activeHasFan;
+    bool allowUnclaimedFan, bool profileHasFan, int profileFanMode,
+    bool activeHasFan) {
+    return allowUnclaimedFan && profileHasFan && !activeHasFan &&
+        profileFanMode == FAN_MODE_AUTO;
 }
 
 // The same ownership read, for the advanced ClkDomains fields (XBAR clock,

@@ -484,8 +484,34 @@ def check_fanless_request_rule(ctx, require_text, forbid_text, require_order):
                  "TUI keeps Auto selectable on a GPU without a controllable fan")
 
 
+def check_fan_intent_consistency(ctx, require_text, forbid_text, require_order):
+    """A profile switch never leaves a released fan curve reported as active.
+
+    The GUI omitted an unchanged fan from its reset-before-apply request (legacy
+    meaning: keep), the shared scope upgrade turned that request into a profile
+    replacement (meaning: release), the service wrote driver Auto, stopped the
+    curve and still reported Curve, and the relaxed profile match kept the
+    profile ticked.  service_scoped_apply_policy.h, the GUI capture and
+    profile_ownership_policy.h are the ownership part of the fix;
+    tests/fan_intent_tests.cpp executes them.
+    """
+    scoped_h = _p(ctx, "service_scoped_apply_policy.h")
+    require_text(scoped_h, "kept |= SERVICE_LEGACY_UPGRADE_KEPT_FAN;",
+                 "the legacy scope upgrade keeps an omitted owned fan")
+    require_text(scoped_h, "if (!replaceProfile || replacement) return kept;",
+                 "only a verified named-profile replacement releases omitted domains")
+    capture_cpp = _p(ctx, "main_runtime_capture.cpp")
+    require_text(capture_cpp, "gui_full_apply_carries_fan(fanChanged, editorSelectsManualFan)",
+                 "a full GUI Apply always carries an owned Fixed/Curve fan")
+    forbid_text(capture_cpp, "    if (!fanChanged) {\n        resetFull.hasFan = false;",
+                "an unchanged owned fan must not be stripped from a replacement request")
+    require_text(_p(ctx, "profile_ownership_policy.h"), "profileFanMode == FAN_MODE_AUTO;",
+                 "only an Auto profile may match an unclaimed fan")
+
+
 def check_all(ctx, require_text, forbid_text, require_order, backend_surface):
     check_fanless_request_rule(ctx, require_text, forbid_text, require_order)
+    check_fan_intent_consistency(ctx, require_text, forbid_text, require_order)
     check_manual_write_verification(ctx, require_text, forbid_text, backend_surface)
     check_service_fan_worker_serialization(ctx, require_text, forbid_text)
     check_runtime_failsafe(ctx, require_text, forbid_text, require_order)

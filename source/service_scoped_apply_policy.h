@@ -19,14 +19,57 @@ struct ServiceScopedApplyPlan {
     int remappedPoints;
 };
 
-static inline void service_upgrade_legacy_scalar_scope(const DesiredSettings* previous,
+// Domains a legacy reset-before-apply request kept from the previous intent
+// when service_upgrade_legacy_scalar_scope() turned it into a replacement.
+enum ServiceLegacyUpgradeKept : gc_u32 {
+    SERVICE_LEGACY_UPGRADE_KEPT_NONE = 0,
+    SERVICE_LEGACY_UPGRADE_KEPT_MEM = 1u << 0,
+    SERVICE_LEGACY_UPGRADE_KEPT_POWER = 1u << 1,
+    SERVICE_LEGACY_UPGRADE_KEPT_FAN = 1u << 2,
+};
+
+// A legacy request names what it CHANGES; an omitted domain keeps what Green
+// Curve already owns.  Its reset-before-apply prepares a clean VF baseline and
+// never touches memory, power (unless requested) or the fan, and both legacy
+// backends keep those domains' ownership across it
+// (service_merge_desired_after_mutation(), reset_oc_before_gui_apply()).
+//
+// An explicit REPLACE_PROFILE scope reads the same omission as a release, so
+// upgrading such a request without carrying those domains over silently
+// returned the fan to driver Auto and stopped a running fan curve whenever the
+// GUI applied an OC change with the fan unchanged.  A verified named-profile
+// `replacement` is a complete ownership declaration and keeps the release.
+//
+// Returns the ServiceLegacyUpgradeKept domains copied from `previous`.
+static inline gc_u32 service_upgrade_legacy_scalar_scope(const DesiredSettings* previous,
     DesiredSettings* requested, bool replacement = false) {
     if (!previous || !requested || requested->applicationScope != DESIRED_SCOPE_LEGACY ||
         (!previous->memOffsetPrecise && !previous->powerLimitRatio &&
-            desired_authoring_is_zero(previous->authoring) && !desired_curve_captured_any(previous))) return;
-    requested->applicationScope = replacement || requested->resetOcBeforeApply
+            desired_authoring_is_zero(previous->authoring) && !desired_curve_captured_any(previous)))
+        return SERVICE_LEGACY_UPGRADE_KEPT_NONE;
+    const bool replaceProfile = replacement || requested->resetOcBeforeApply;
+    requested->applicationScope = replaceProfile
         ? DESIRED_SCOPE_REPLACE_PROFILE : DESIRED_SCOPE_UPDATE_INCLUDED;
     requested->resetOcBeforeApply = false;
+    gc_u32 kept = SERVICE_LEGACY_UPGRADE_KEPT_NONE;
+    if (!replaceProfile || replacement) return kept;
+    if (!requested->hasMemOffset && previous->hasMemOffset) {
+        desired_memory_intent_copy(requested, previous);
+        kept |= SERVICE_LEGACY_UPGRADE_KEPT_MEM;
+    }
+    if (!requested->hasPowerLimit && previous->hasPowerLimit) {
+        desired_power_intent_copy(requested, previous);
+        kept |= SERVICE_LEGACY_UPGRADE_KEPT_POWER;
+    }
+    if (!requested->hasFan && previous->hasFan) {
+        requested->hasFan = previous->hasFan;
+        requested->fanAuto = previous->fanAuto;
+        requested->fanMode = previous->fanMode;
+        requested->fanPercent = previous->fanPercent;
+        requested->fanCurve = previous->fanCurve;
+        kept |= SERVICE_LEGACY_UPGRADE_KEPT_FAN;
+    }
+    return kept;
 }
 
 static inline bool service_bind_scoped_memory_surface(ServiceScopedApplyPlan* p,

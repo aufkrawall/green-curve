@@ -82,8 +82,19 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         }
     }
     sanitizedRequest = *desired;
-    service_upgrade_legacy_scalar_scope(g_serviceHasActiveDesired ? &g_serviceActiveDesired : nullptr,
+    const gc_u32 legacyRequestScope = sanitizedRequest.applicationScope;
+    const gc_u32 legacyKept = service_upgrade_legacy_scalar_scope(
+        g_serviceHasActiveDesired ? &g_serviceActiveDesired : nullptr,
         &sanitizedRequest, replaceActiveIntent);
+    if (legacyRequestScope != sanitizedRequest.applicationScope) {
+        debug_log("apply-scope: legacy request upgraded to scope=%lu replacement=%d kept mem=%d power=%d fan=%d"
+                  " (omitted domains a legacy reset-before-apply never releases; fanMode=%d)\n",
+            (unsigned long)sanitizedRequest.applicationScope, replaceActiveIntent ? 1 : 0,
+            (legacyKept & SERVICE_LEGACY_UPGRADE_KEPT_MEM) ? 1 : 0,
+            (legacyKept & SERVICE_LEGACY_UPGRADE_KEPT_POWER) ? 1 : 0,
+            (legacyKept & SERVICE_LEGACY_UPGRADE_KEPT_FAN) ? 1 : 0,
+            sanitizedRequest.hasFan ? sanitizedRequest.fanMode : -1);
+    }
     desired = &sanitizedRequest;
     ServiceScopedApplyPlan scopedPlan{};
     if (desired->applicationScope != DESIRED_SCOPE_LEGACY) {

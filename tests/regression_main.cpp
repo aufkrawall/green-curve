@@ -965,6 +965,9 @@ int run_linux_fan_ownership_tests();
 int run_memory_recovery_tests();
 int run_power_recovery_tests();
 int run_fan_request_apply_tests();
+// Profile switches never leave a released fan curve reported as active
+// (tests/fan_intent_tests.cpp, 12720-12779).
+int run_fan_intent_tests();
 int run_debug_log_identity_tests();
 int run_service_client_identity_failure_child();
 int run_security_audit_tests();
@@ -2022,6 +2025,7 @@ int main(int argc, char** argv) {
     if (int memoryFailure = run_memory_recovery_tests()) return memoryFailure;
     if (int powerFailure = run_power_recovery_tests()) return powerFailure;
     if (int fanRequestFailure = run_fan_request_apply_tests()) return fanRequestFailure;
+    if (int fanIntentFailure = run_fan_intent_tests()) return fanIntentFailure;
     if (int logFailure = run_debug_log_identity_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", logFailure);
         return logFailure;
@@ -11919,13 +11923,16 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
     }
 
     // The ownership check may ignore an unclaimed fan domain after a delta
-    // Apply, but the strict pre-write claim check must not.
+    // Apply when the profile's fan is Auto, but the strict pre-write claim
+    // check must not, and a Fixed/Curve profile never matches an unclaimed fan.
     {
-        if (!profile_ownership_fan_mismatch_allowed(true, true, false)) return 1364;
-        if (profile_ownership_fan_mismatch_allowed(false, true, false)) return 1365;
-        if (profile_ownership_fan_mismatch_allowed(true, false, true)) return 1366;
-        if (profile_ownership_fan_mismatch_allowed(true, false, false)) return 1367;
-        if (profile_ownership_fan_mismatch_allowed(true, true, true)) return 1368;
+        if (!profile_ownership_fan_mismatch_allowed(true, true, FAN_MODE_AUTO, false)) return 1364;
+        if (profile_ownership_fan_mismatch_allowed(false, true, FAN_MODE_AUTO, false)) return 1365;
+        if (profile_ownership_fan_mismatch_allowed(true, false, FAN_MODE_AUTO, true)) return 1366;
+        if (profile_ownership_fan_mismatch_allowed(true, false, FAN_MODE_AUTO, false)) return 1367;
+        if (profile_ownership_fan_mismatch_allowed(true, true, FAN_MODE_AUTO, true)) return 1368;
+        if (profile_ownership_fan_mismatch_allowed(true, true, FAN_MODE_CURVE, false)) return 12737;
+        if (profile_ownership_fan_mismatch_allowed(true, true, FAN_MODE_FIXED, false)) return 12738;
     }
 
     // accept() failure classification.  Treating every non-EINTR errno as

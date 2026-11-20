@@ -26,7 +26,13 @@ static bool daemon_resolve_scoped_ownership(const DesiredSettings* previous,
 
 static bool daemon_prepare_apply_ownership(const DesiredSettings* previous,
     DesiredSettings* requested, DesiredSettings* owned, char* why, size_t whySize) {
-    service_upgrade_legacy_scalar_scope(previous, requested);
+    const gc_u32 legacyScope = requested->applicationScope;
+    const gc_u32 kept = service_upgrade_legacy_scalar_scope(previous, requested);
+    if (legacyScope != requested->applicationScope)
+        dlog("daemon apply: legacy request upgraded to scope=%u kept mem=%d power=%d fan=%d (fanMode=%d)\n",
+             (unsigned)requested->applicationScope, (kept & SERVICE_LEGACY_UPGRADE_KEPT_MEM) ? 1 : 0,
+             (kept & SERVICE_LEGACY_UPGRADE_KEPT_POWER) ? 1 : 0, (kept & SERVICE_LEGACY_UPGRADE_KEPT_FAN) ? 1 : 0,
+             requested->hasFan ? requested->fanMode : -1);
     *owned = service_merge_desired_after_mutation(previous, requested);
     if (requested->applicationScope != DESIRED_SCOPE_LEGACY &&
         !daemon_resolve_scoped_ownership(previous, requested, owned, why, whySize)) return false;

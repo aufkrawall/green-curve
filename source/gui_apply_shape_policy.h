@@ -56,6 +56,22 @@ static inline GuiApplyShape gui_apply_shape(const GuiApplyChangeSet& changed) {
     return changed.fan ? GUI_APPLY_SHAPE_FAN_ONLY : GUI_APPLY_SHAPE_NO_CHANGE;
 }
 
+// Whether a FULL (reset-before-apply) request carries the fan domain.
+//
+// Omitting the fan means "leave it alone", which is right while the editor
+// shows Auto: another fan controller may own the fan and an Auto write would
+// take it away.  But a full request becomes a profile REPLACEMENT in the
+// service, where an omitted fan that Green Curve owns is released to driver
+// Auto.  Leaving an unchanged Fixed/Curve selection out therefore stopped the
+// running fan curve while the profile was still reported as active.  An owned
+// manual selection always rides along; the service writes nothing when it
+// already holds (fan_setting_matches_current()), so a running curve is not
+// disturbed.
+static inline bool gui_full_apply_carries_fan(bool fanChanged,
+                                              bool editorSelectsManualFan) {
+    return fanChanged || editorSelectsManualFan;
+}
+
 static inline const char* gui_apply_shape_name(GuiApplyShape shape) {
     switch (shape) {
         case GUI_APPLY_SHAPE_NO_CHANGE: return "no-change";

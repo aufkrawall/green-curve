@@ -401,19 +401,24 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
             resetFull.curvePointCapturedOffsetHz[i] = 0;
         }
     }
-    if (!fanChanged) {
+    const bool editorSelectsManualFan = resetFull.hasFan &&
+        fan_request_effective_mode(resetFull.fanMode, resetFull.fanAuto != 0) != FAN_MODE_AUTO;
+    const bool carriesFan = gui_full_apply_carries_fan(fanChanged, editorSelectsManualFan);
+    if (!carriesFan) {
         resetFull.hasFan = false;
         resetFull.fanAuto = false;
         resetFull.fanMode = FAN_MODE_AUTO;
         resetFull.fanPercent = 0;
     }
     resetFull.resetOcBeforeApply = true;
-    debug_log("capture_gui_apply_settings: OC reset-before-apply target gpu=%d exclude=%d mem=%d power=%d fanChanged=%d\n",
+    debug_log("capture_gui_apply_settings: OC reset-before-apply target gpu=%d exclude=%d mem=%d power=%d fanChanged=%d fanCarried=%d fanMode=%d\n",
         resetFull.gpuOffsetMHz,
         resetFull.gpuOffsetExcludeLowCount,
         resetFull.memOffsetMHz,
         resetFull.powerLimitPct,
-        fanChanged ? 1 : 0);
+        fanChanged ? 1 : 0,
+        carriesFan ? 1 : 0,
+        resetFull.hasFan ? resetFull.fanMode : -1);
     *desired = resetFull;
     return true;
 }
