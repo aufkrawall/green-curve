@@ -441,7 +441,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                     g_activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
                 }
                 g_stateUncertain = false;
-                g_fanFailureCount = 0;
+                daemon_fan_runtime_note_commit("a committed Apply");
                 if (g_fanOwnershipMarkerCommitted &&
                     ((d.hasFan && d.fanMode == FAN_MODE_AUTO) ||
                      (d.applicationScope != DESIRED_SCOPE_LEGACY && !committedDesired.hasFan)))
@@ -542,7 +542,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 g_activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
                 g_activeTargetUuid = {};
                 g_stateUncertain = false;
-                g_fanFailureCount = 0;
+                daemon_fan_runtime_note_commit("a committed Reset");
                 // Reset returned the fan to the driver: nothing to hand back.
                 daemon_fan_ownership_retire("reset committed", true);
                 char guardErr[256] = {};

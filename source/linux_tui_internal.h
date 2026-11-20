@@ -14,6 +14,7 @@
 #include "profile_editor_transfer.h"
 #include "profile_capture_proposals.h"
 #include "linux_tui_review_context.h"
+#include "fan_fault_notice_policy.h"
 
 #include <string>
 #include <vector>
@@ -84,6 +85,8 @@ struct TuiState {
     // The automatic-restore lockout this TUI last saw in an answered snapshot
     // (gc_auto_restore_notice_observe); a disconnect does not reset it.
     gc_u32 noticeObservedLockout;
+    // The v39 fan fault this TUI last announced (gc_fan_fault_observe).
+    GcFanFaultObserver fanFaultObserver;
     ProbeSummary probe;
     GpuAdapterInfo targetGpu;
     // config.ini's GPU, resolved against the first adapter list the daemon

@@ -774,6 +774,7 @@ struct AppData {
     // GUI copy of the v29 snapshot record behind an AUTOMATIC_APPLY_FAILED
     // lockout (what failed, and whether the clocks were recovered to stock).
     ServiceAutoApplyFailure serviceAutoApplyFailure;
+    ServiceFanFault serviceFanFault;  // v39: the last fan the service handed back
     bool serviceActiveDesiredValid;
     DesiredSettings serviceActiveDesired;
     // The editor's base record (gui_editor_base.cpp): guiEditorBaseRecord is

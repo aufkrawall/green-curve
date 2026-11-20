@@ -8,6 +8,7 @@
 // boot, so it belongs in the status a bug report is built from.
 #include "linux_auto_restore_policy.h"
 #include "auto_apply_failure_notice_policy.h"
+#include "fan_fault_notice_policy.h"
 
 #include <stdio.h>
 
@@ -152,6 +153,13 @@ void print_linux_live_state_text(FILE* out, const ServiceResponse* response) {
                          "  (Apply: greencurve --apply-config, or the TUI)\n", notice);
         }
     }
+    // Protocol v39: a fan the daemon handed back, until an Apply or Reset.
+    {
+        char notice[256] = {}, title[64] = {}, body[256] = {};
+        if (gc_fan_fault_compose(&snapshot.fanFault, notice, sizeof(notice),
+                title, sizeof(title), body, sizeof(body)))
+            fprintf(out, "Fan fault: %s\n", notice);
+    }
     fputc('\n', out);
     IntentReadbackStatus readback = compare_intent_to_readback(response);
     fprintf(out,
@@ -271,6 +279,17 @@ void print_linux_live_state_json(FILE* out, const ServiceResponse* response) {
     json_string(out, snapshot.autoApplyFailure.detail);
     fprintf(out, ",\n    \"clocks_returned_to_stock\": %s",
             snapshot.autoApplyFailure.coreRecovered ? "true" : "false");
+    // Protocol v39 fan fault record; kind "none" when there is none.
+    fputs("\n  },\n  \"fan_fault\": {\n    \"kind\": ", out);
+    json_string(out, gc_fan_fault_kind_name(snapshot.fanFault.kind));
+    fprintf(out, ",\n    \"serial\": %u,\n    \"fan\": %u,\n    \"commanded_percent\": %u,"
+                 "\n    \"stalled_ms\": %u,\n    \"handback\": ",
+            (unsigned int)snapshot.fanFault.serial, (unsigned int)snapshot.fanFault.fanIndex,
+            (unsigned int)snapshot.fanFault.commandedPercent,
+            (unsigned int)snapshot.fanFault.stalledForMs);
+    json_string(out, gc_fan_fault_handback_name(snapshot.fanFault.handback));
+    fputs(",\n    \"detail\": ", out);
+    json_string(out, snapshot.fanFault.detail);
     fprintf(out,
             "\n  },\n  \"active_intent\": %s,\n"
             "  \"intent_readback\": {\n    \"state\": ",

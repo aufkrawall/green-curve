@@ -968,8 +968,12 @@ int run_fan_request_apply_tests();
 // Profile switches never leave a released fan curve reported as active
 // (tests/fan_intent_tests.cpp, 12720-12779).
 int run_fan_intent_tests();
-// Fan stall detection policy table (tests/fan_stall_tests.cpp, 12800-12829).
+// Fan stall detection policy and the v39 fan fault record
+// (tests/fan_stall_tests.cpp, 12800-12855).
 int run_fan_stall_tests();
+// Windows fan runtime handback, record and owned intent
+// (tests/fan_handback_runtime_tests.cpp, 12856-12899).
+int run_fan_handback_runtime_tests();
 int run_debug_log_identity_tests();
 int run_service_client_identity_failure_child();
 int run_security_audit_tests();
@@ -2029,6 +2033,7 @@ int main(int argc, char** argv) {
     if (int fanRequestFailure = run_fan_request_apply_tests()) return fanRequestFailure;
     if (int fanIntentFailure = run_fan_intent_tests()) return fanIntentFailure;
     if (int fanStallFailure = run_fan_stall_tests()) return fanStallFailure;
+    if (int fanHandbackFailure = run_fan_handback_runtime_tests()) return fanHandbackFailure;
     if (int logFailure = run_debug_log_identity_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", logFailure);
         return logFailure;
@@ -4803,7 +4808,7 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 38) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 39) return 81;
         // These are release gates, not incidental layout observations. A field
         // addition that changes a fixed-size IPC structure must bump the wire
         // version; otherwise mixed old/new peers pass the header handshake and
@@ -4811,8 +4816,8 @@ static int run_all_tests(int argc, char** argv) {
         if (sizeof(ServiceRequest) != 5096 ||
             sizeof(ControlState) != 188 ||
             sizeof(DesiredSettings) != 4488 ||
-            sizeof(ServiceSnapshot) != 4440 ||
-            sizeof(ServiceResponse) != 19568) return 4521;
+            sizeof(ServiceSnapshot) != 4568 ||
+            sizeof(ServiceResponse) != 19696) return 4521;
         if (offsetof(ServiceRequest, expectedServiceInstanceId) <=
             offsetof(ServiceRequest, operationId) ||
             offsetof(ServiceResponse, state) <=

@@ -409,6 +409,17 @@ static bool tui_refresh_from_daemon(TuiState* state, bool userRequested,
             (unsigned int)next.snapshot.autoRestoreLockoutReason,
             (unsigned int)next.snapshot.autoApplyFailure.trigger, state->status);
     }
+    // A fan the daemon handed back speaks last: it is about cooling.
+    if (gc_fan_fault_observe(&state->fanFaultObserver, &next.snapshot.fanFault)) {
+        char title[64] = {}, body[256] = {};
+        if (gc_fan_fault_compose(&next.snapshot.fanFault, state->status,
+                sizeof(state->status), title, sizeof(title), body, sizeof(body)))
+            linux_debug_logf("tui: fan fault notice (kind=%s serial=%u handback=%s): %s\n",
+                gc_fan_fault_kind_name(next.snapshot.fanFault.kind),
+                (unsigned int)next.snapshot.fanFault.serial,
+                gc_fan_fault_handback_name(next.snapshot.fanFault.handback),
+                state->status);
+    }
     state->nextTelemetryMs = tui_monotonic_ms() + 1000;
     if (!requestedTarget) tui_adopt_configured_gpu(state, userRequested);
     tui_reconcile_capture(*state, "GPU session or ownership changed");

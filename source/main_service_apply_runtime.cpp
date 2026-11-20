@@ -264,6 +264,9 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
                 StringCchCatA(result, resultSize, fanInvariantNote);
             }
         }
+        // A successful Apply that wrote the fan re-established it on purpose:
+        // a previous runtime handback is history (main_service_fan_fault.cpp).
+        if (desired && desired->hasFan) service_fan_fault_clear("an Apply that set the fan");
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
         mark_service_telemetry_cache_updated("service apply");
@@ -660,6 +663,7 @@ static bool service_reset_all(char* result, size_t resultSize,
         // The GPU is at stock and the fan is the driver's: nothing Green Curve
         // owns remains for a later start to hand back.
         service_ownership_marker_clear("reset to stock succeeded");
+        service_fan_fault_clear("a successful Reset");
         // "Press Reset" has been answered.  Automatic restoration stays off
         // (only an explicit Apply re-arms it), but the GPU is no longer in an
         // unknown state, so the lockout stops saying that it is.

@@ -26,6 +26,8 @@ static unsigned long long g_fanWakeGeneration;
 static unsigned long long g_daemonGpuGeneration = 1;
 static unsigned int g_fanFailureCount;
 static bool g_fanOwnershipHandbackDeferred;
+static ServiceFanFault g_daemonFanFault;
+static gc_u32 g_daemonFanFaultSerial;
 static int deferredHandbacks;
 enum Schedule { IDLE, APPLY_BEFORE_WAIT, APPLY_BEFORE_POLL, NORMAL, TELEMETRY_LOST };
 static Schedule schedule;
@@ -140,6 +142,8 @@ static void initialize(Schedule next) {
     g_daemonGpuGeneration = 1;
     g_fanFailureCount = 0;
     g_fanOwnershipHandbackDeferred = false;
+    g_daemonFanFault = {};
+    g_daemonFanFaultSerial = 0;
     deferredHandbacks = 0;
     injected = afterTimedWait = stateLocked = wakeLocked = false;
     lockOrderValid = true;
@@ -184,6 +188,12 @@ static int run() {
     fan_reassert_thread(nullptr);
     if (lockouts != 1 || !lockoutAutoOk || !g_stateUncertain || writes ||
         polls != (int)FAN_RUNTIME_DEFAULT_FAILURE_LIMIT || !lockOrderValid) return 7546;
+    // Clients are told (protocol v39): which kind of handback, and its outcome.
+    if (g_daemonFanFault.kind != SERVICE_FAN_FAULT_REPEATED_FAILURES ||
+        g_daemonFanFault.handback != SERVICE_FAN_HANDBACK_DRIVER_AUTO ||
+        g_daemonFanFault.serial != 1 || g_daemonFanFault.fanIndex ||
+        std::strcmp(g_daemonFanFault.detail, "fan curve runtime locked out") != 0 ||
+        !service_fan_fault_wire_valid(&g_daemonFanFault)) return 12890;
     // A refused handback forces the emergency duty first and keeps the marker.
     initialize(TELEMETRY_LOST);
     autoRefused = true;
@@ -191,6 +201,12 @@ static int run() {
     fan_reassert_thread(nullptr);
     if (lockouts != 1 || lockoutAutoOk || writes != 1 ||
         lastDuty != FAN_RUNTIME_EMERGENCY_PERCENT) return 7547;
+    if (g_daemonFanFault.handback != SERVICE_FAN_HANDBACK_EMERGENCY_MAX ||
+        !service_fan_fault_wire_valid(&g_daemonFanFault)) return 12891;
+    // A committed Apply or Reset ends the lockout's bookkeeping.
+    g_fanFailureCount = 2;
+    daemon_fan_runtime_note_commit("test");
+    if (g_fanFailureCount || g_daemonFanFault.kind != SERVICE_FAN_FAULT_NONE) return 12892;
     return 0;
 }
 } // namespace fan_runtime_fixture

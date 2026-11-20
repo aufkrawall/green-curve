@@ -174,13 +174,16 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
     forbid_text(_p(ctx, "linux_fan_runtime.h"), "g_stateUncertain = true",
                 "the fan worker's lockout enters uncertainty through the ownership helper")
     require_text(_p(ctx, "linux_fan_runtime.h"),
-                 'daemon_enter_uncertain_after_fan_lockout(\n'
-                 '                    "fan curve runtime locked out", autoOk);',
-                 "a curve lockout retires the marker once the driver holds the fan")
+                 "    daemon_enter_uncertain_after_fan_lockout(why, autoOk);",
+                 "a worker lockout retires the marker once the driver holds the fan")
     require_text(_p(ctx, "linux_fan_runtime.h"),
-                 'daemon_enter_uncertain_after_fan_lockout(\n'
-                 '                    "fixed fan maintenance locked out", autoOk);',
-                 "a fixed-duty lockout retires the marker once the driver holds the fan")
+                 'daemon_fan_runtime_lockout(SERVICE_FAN_FAULT_REPEATED_FAILURES,\n'
+                 '                    "fan curve runtime locked out", 0, 0, 0);',
+                 "a curve lockout goes through the shared lockout helper")
+    require_text(_p(ctx, "linux_fan_runtime.h"),
+                 'daemon_fan_runtime_lockout(SERVICE_FAN_FAULT_REPEATED_FAILURES,\n'
+                 '                    "fixed fan maintenance locked out", 0, 0, 0);',
+                 "a fixed-duty lockout goes through the shared lockout helper")
     # A backend brought up by a request is recovered by the fan worker, outside
     # the request deadline. Automatic restore remains mutation-class and runs
     # the handback before selecting its restore target.
@@ -531,9 +534,70 @@ def check_fan_intent_consistency(ctx, require_text, forbid_text, require_order):
                  "the Linux snapshot never reports a stale fan mode for an unclaimed fan")
 
 
+def check_fan_fault_reporting(ctx, require_text, forbid_text, require_order):
+    """A fan the runtime hands back is reported, and no longer claimed.
+
+    The Windows service used to hand a failing fan to the driver silently: the
+    owned intent kept the curve, so the GUI and the tray went on showing it.
+    Both platforms now publish the protocol v39 ServiceFanFault record, the
+    service's intent stops claiming a fan the driver holds, and every client
+    announces the record (fan_fault_notice_policy.h).  Executed by
+    tests/fan_handback_runtime_tests.cpp and tests/fan_runtime_followup_tests.cpp.
+    """
+    failure_cpp = _p(ctx, "main_fan_runtime_failure.cpp")
+    require_text(failure_cpp,
+                 "if (app_is_service_process()) service_fan_runtime_handback_publish(&fault);",
+                 "every service handback publishes its record and updates the owned intent")
+    require_order(failure_cpp, "stop_fan_curve_runtime();",
+                  "service_fan_runtime_handback_publish(&fault);",
+                  "the record follows the handback it describes")
+    fault_cpp = _p(ctx, "main_service_fan_fault.cpp")
+    require_text(fault_cpp, "g_serviceActiveDesired.hasFan = 0;",
+                 "the service stops claiming a fan the driver took back")
+    require_text(fault_cpp, "g_serviceActiveDesired.fanPercent = FAN_RUNTIME_EMERGENCY_PERCENT;",
+                 "a refused handback owns the emergency duty, never the failed curve")
+    require_text(_p(ctx, "main_shell.cpp"), '#include "main_service_fan_fault.cpp"',
+                 "the fan fault shard is compiled")
+    require_text(_p(ctx, "main_state_sync.cpp"),
+                 "snapshot->fanFault = service_fan_fault_for_snapshot_locked();",
+                 "the Windows snapshot carries the fan fault record")
+    require_text(_p(ctx, "main_state_sync.cpp"), "g_app.serviceFanFault = snapshot->fanFault;",
+                 "the GUI adopts the fan fault record")
+    require_order(_p(ctx, "gui_service_state.cpp"), "gui_announce_auto_restore_lockout();",
+                  "gui_announce_fan_fault();",
+                  "the fan fault notice has the last word on the status line")
+    apply_runtime_cpp = _p(ctx, "main_service_apply_runtime.cpp")
+    require_text(apply_runtime_cpp,
+                 'if (desired && desired->hasFan) service_fan_fault_clear("an Apply that set the fan");',
+                 "only an Apply that set the fan clears the record")
+    require_text(apply_runtime_cpp, 'service_fan_fault_clear("a successful Reset");',
+                 "a Reset clears the record")
+    validation_h = _p(ctx, "service_protocol_validation.h")
+    require_text(validation_h,
+                 "if (!service_fan_fault_wire_valid(&s->fanFault)) s->fanFault = ServiceFanFault{};",
+                 "the canonicalizer voids a malformed fan fault record")
+    require_text(validation_h, "!service_fan_fault_wire_valid(&snapshot->fanFault)) return false;",
+                 "the strict envelope check refuses a malformed fan fault record")
+    require_text(validation_h, "if (!service_fan_fault_is_zero(snapshot.fanFault)) return false;",
+                 "a stateless refusal carries no fan fault")
+    require_text(_p(ctx, "linux_daemon_snapshot_runtime.cpp"), "s->fanFault = g_daemonFanFault;",
+                 "the Linux snapshot carries the fan fault record")
+    for command in ("Apply", "Reset"):
+        require_text(_p(ctx, "linux_daemon.cpp"), f'daemon_fan_runtime_note_commit("a committed {command}");',
+                     f"a committed Linux {command} clears the fan fault record")
+    require_text(_p(ctx, "linux_fan_runtime.h"), "    daemon_fan_fault_record(kind,",
+                 "every Linux worker lockout records the fan fault")
+    require_text(_p(ctx, "linux_tui_refresh.cpp"),
+                 "gc_fan_fault_observe(&state->fanFaultObserver, &next.snapshot.fanFault)",
+                 "the TUI announces each fan fault once")
+    require_text(_p(ctx, "linux_live_output.cpp"), '"Fan fault: %s' + chr(92) + 'n"',
+                 "the Linux status output names a fan fault")
+
+
 def check_all(ctx, require_text, forbid_text, require_order, backend_surface):
     check_fanless_request_rule(ctx, require_text, forbid_text, require_order)
     check_fan_intent_consistency(ctx, require_text, forbid_text, require_order)
+    check_fan_fault_reporting(ctx, require_text, forbid_text, require_order)
     check_manual_write_verification(ctx, require_text, forbid_text, backend_surface)
     check_service_fan_worker_serialization(ctx, require_text, forbid_text)
     check_runtime_failsafe(ctx, require_text, forbid_text, require_order)

@@ -502,6 +502,7 @@ static void clear_service_authoritative_state() {
     g_app.serviceLastLifecycleResult = SERVICE_LIFECYCLE_RESULT_NONE;
     g_app.serviceAutoRestoreLockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
     memset(&g_app.serviceAutoApplyFailure, 0, sizeof(g_app.serviceAutoApplyFailure));
+    memset(&g_app.serviceFanFault, 0, sizeof(g_app.serviceFanFault));
     g_app.serviceActiveDesiredValid = false;
     memset(&g_app.serviceActiveDesired, 0, sizeof(g_app.serviceActiveDesired));
     g_app.serviceControlStateValid = false;

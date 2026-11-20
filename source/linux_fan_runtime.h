@@ -30,6 +30,76 @@ static FanRuntimeOutcome daemon_fixed_fan_maintain(const char** reasonOut) {
     return ok ? FAN_RUNTIME_OUTCOME_SUCCESS : FAN_RUNTIME_OUTCOME_WRITE_FAILED;
 }
 
+static void daemon_fan_fault_clear(const char* why) {
+    if (g_daemonFanFault.kind == SERVICE_FAN_FAULT_NONE) return;
+    dlog("daemon fan fault: record kind=%u serial=%u cleared by %s\n",
+         (unsigned int)g_daemonFanFault.kind, (unsigned int)g_daemonFanFault.serial,
+         why ? why : "unspecified");
+    g_daemonFanFault = ServiceFanFault{};
+}
+
+// A committed Apply or Reset ends any worker lockout: its failure count and its
+// fault record are history.  Caller holds g_lock.
+static void daemon_fan_runtime_note_commit(const char* why) {
+    g_fanFailureCount = 0;
+    daemon_fan_fault_clear(why);
+}
+
+// The v39 record clients announce (service_fan_fault.h).  Caller holds g_lock.
+static void daemon_fan_fault_record(gc_u32 kind, gc_u8 handback, unsigned int fanIndex,
+                                    int commandedPercent, unsigned long long stalledForMs,
+                                    const char* detail) {
+    ServiceFanFault record = {};
+    record.kind = kind;
+    record.handback = handback;
+    if (kind == SERVICE_FAN_FAULT_STALL) {
+        record.fanIndex = fanIndex < MAX_GPU_FANS ? fanIndex : 0u;
+        record.commandedPercent = commandedPercent < 0 ? 0u
+            : (commandedPercent > 100 ? 100u : (gc_u32)commandedPercent);
+        record.stalledForMs = stalledForMs > 0xFFFFFFFFull ? 0xFFFFFFFFu
+                                                           : (gc_u32)stalledForMs;
+    }
+    gc_strlcpy(record.detail, sizeof(record.detail), detail ? detail : "");
+    if (g_daemonFanFaultSerial == 0xFFFFFFFFu) g_daemonFanFaultSerial = 0;
+    record.serial = ++g_daemonFanFaultSerial;
+    g_daemonFanFault = record;
+    dlog("daemon fan fault: recorded for clients kind=%u serial=%u fan=%u pct=%u stalledMs=%u handback=%u\n",
+         (unsigned int)record.kind, (unsigned int)record.serial,
+         (unsigned int)record.fanIndex, (unsigned int)record.commandedPercent,
+         (unsigned int)record.stalledForMs, (unsigned int)record.handback);
+}
+
+// The worker gives the fan up: driver automatic control first, maximum cooling
+// when the driver refuses it, an UNCERTAIN record, the v39 fault record, and
+// uncertainty through the ownership helper (which retires the marker only when
+// the driver took the fan back).  Every later fan write waits for an explicit
+// Apply or Reset.  Caller holds g_lock.
+static void daemon_fan_runtime_lockout(gc_u32 kind, const char* reason,
+                                       unsigned int fanIndex, int commandedPercent,
+                                       unsigned long long stalledForMs) {
+    const char* why = reason && reason[0] ? reason : "fan runtime locked out";
+    bool autoOk = linux_backend_set_fan_auto(&g_gpu);
+    char stateErr[256] = {};
+    store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_activeTarget,
+                        &g_activeDesired, stateErr, sizeof(stateErr));
+    dlog("daemon: %s; auto=%d state=%s\n", why, autoOk ? 1 : 0,
+         stateErr[0] ? stateErr : "persisted");
+    bool emergencyOk = false;
+    if (fan_runtime_escalation_after_auto_restore(autoOk) ==
+            FAN_RUNTIME_ESCALATION_EMERGENCY_MAX) {
+        emergencyOk = linux_backend_set_curve_fan_percent(
+            &g_gpu, (unsigned int)FAN_RUNTIME_EMERGENCY_PERCENT);
+        dlog("daemon: fan runtime emergency: driver auto restore failed, forced %d%% ok=%d\n",
+             FAN_RUNTIME_EMERGENCY_PERCENT, emergencyOk ? 1 : 0);
+    }
+    daemon_fan_fault_record(kind,
+        autoOk ? (gc_u8)SERVICE_FAN_HANDBACK_DRIVER_AUTO
+               : (emergencyOk ? (gc_u8)SERVICE_FAN_HANDBACK_EMERGENCY_MAX
+                              : (gc_u8)SERVICE_FAN_HANDBACK_FAILED),
+        fanIndex, commandedPercent, stalledForMs, why);
+    daemon_enter_uncertain_after_fan_lockout(why, autoOk);
+}
+
 static pl_thread_ret fan_reassert_thread(void*) {
     FanRuntimeState runtime = {};
     unsigned long long observedGeneration = 0;
@@ -143,23 +213,8 @@ static pl_thread_ret fan_reassert_thread(void*) {
                      g_activeDesired.fanPercent, reason ? reason : "unknown");
             }
             if (failure.escalation == FAN_RUNTIME_ESCALATION_RESTORE_AUTO) {
-                bool autoOk = linux_backend_set_fan_auto(&g_gpu);
-                char stateErr[256] = {};
-                store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_activeTarget,
-                                    &g_activeDesired, stateErr, sizeof(stateErr));
-                dlog("daemon: fixed fan maintenance locked out after repeated failures;"
-                     " auto=%d state=%s\n", autoOk ? 1 : 0,
-                     stateErr[0] ? stateErr : "persisted");
-                if (fan_runtime_escalation_after_auto_restore(autoOk) ==
-                        FAN_RUNTIME_ESCALATION_EMERGENCY_MAX) {
-                    bool emergencyOk = linux_backend_set_curve_fan_percent(
-                        &g_gpu, (unsigned int)FAN_RUNTIME_EMERGENCY_PERCENT);
-                    dlog("daemon: fan runtime emergency: driver auto restore failed,"
-                         " forced %d%% ok=%d\n", FAN_RUNTIME_EMERGENCY_PERCENT,
-                         emergencyOk ? 1 : 0);
-                }
-                daemon_enter_uncertain_after_fan_lockout(
-                    "fixed fan maintenance locked out", autoOk);
+                daemon_fan_runtime_lockout(SERVICE_FAN_FAULT_REPEATED_FAILURES,
+                    "fixed fan maintenance locked out", 0, 0, 0);
             }
         } else if (active) {
             // Telemetry loss is escalated exactly like a refused write: either
@@ -238,21 +293,8 @@ static pl_thread_ret fan_reassert_thread(void*) {
                      pct, t, reason);
             }
             if (failure.escalation == FAN_RUNTIME_ESCALATION_RESTORE_AUTO) {
-                bool autoOk = linux_backend_set_fan_auto(&g_gpu);
-                char stateErr[256] = {};
-                store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_activeTarget,
-                                    &g_activeDesired, stateErr, sizeof(stateErr));
-                dlog("daemon: fan runtime locked out after repeated failures; auto=%d state=%s\n",
-                     autoOk ? 1 : 0, stateErr[0] ? stateErr : "persisted");
-                if (fan_runtime_escalation_after_auto_restore(autoOk) ==
-                        FAN_RUNTIME_ESCALATION_EMERGENCY_MAX) {
-                    bool emergencyOk = linux_backend_set_curve_fan_percent(
-                        &g_gpu, (unsigned int)FAN_RUNTIME_EMERGENCY_PERCENT);
-                    dlog("daemon: fan runtime emergency: driver auto restore failed, forced %d%% ok=%d\n",
-                         FAN_RUNTIME_EMERGENCY_PERCENT, emergencyOk ? 1 : 0);
-                }
-                daemon_enter_uncertain_after_fan_lockout(
-                    "fan curve runtime locked out", autoOk);
+                daemon_fan_runtime_lockout(SERVICE_FAN_FAULT_REPEATED_FAILURES,
+                    "fan curve runtime locked out", 0, 0, 0);
             }
         }
         pl_mutex_unlock(&g_lock);

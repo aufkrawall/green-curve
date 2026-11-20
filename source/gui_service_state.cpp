@@ -9,7 +9,7 @@
 #include "gui_draft_desired_policy.h"
 #include "gui_service_io_queue_policy.h"
 #include "gui_service_resync_policy.h"
-#include "gui_auto_restore_notice.h"
+#include "gui_fan_fault_notice.h"  // includes gui_auto_restore_notice.h
 
 static bool g_guiRenderTransactionActive = false;
 static bool g_guiRebuildPreserveDraft = false;
@@ -723,9 +723,9 @@ static bool gui_service_accept_response_on_main_thread(
     }
     if (!g_app.logonServiceReadinessPending)
         KillTimer(g_app.hMainWnd, SERVICE_RECONNECT_TIMER_ID);
-    // Last: generic refresh/adoption and startup handlers can set the status
-    // line too. A newly observed lockout must keep its cause and action.
+    // Last, after every other status writer: a new lockout, then a fan fault.
     gui_announce_auto_restore_lockout();
+    gui_announce_fan_fault();
     return true;
 }
 

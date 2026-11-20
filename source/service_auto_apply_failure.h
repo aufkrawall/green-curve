@@ -22,4 +22,14 @@ struct ServiceAutoApplyFailure {
 static_assert(sizeof(ServiceAutoApplyFailure) == 192,
               "ServiceAutoApplyFailure is a fixed wire record");
 
+// Strict wire rule; `coreRecovered` is checked with the snapshot's other bools.
+static inline bool service_auto_apply_failure_wire_valid(const ServiceAutoApplyFailure* f) {
+    if (!f || f->trigger > SERVICE_LIFECYCLE_TRIGGER_DAEMON_START ||
+        f->reserved[0] || f->reserved[1] || f->reserved[2])
+        return false;
+    for (unsigned int i = 0; i < sizeof(f->detail); ++i)
+        if (f->detail[i] == '\0') return true;
+    return false;
+}
+
 #endif // GREEN_CURVE_SERVICE_AUTO_APPLY_FAILURE_H

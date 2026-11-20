@@ -74,6 +74,7 @@ Curve editing, profile transfer and capture improve.
 - **Tray minimize:** avoid crashes after profile actions.
 - **Notebook GPUs:** accept system-managed fans/power.
 - **Fan curves on profile switch:** keep running after a GUI Apply; profiles no longer show active while the fan is in driver control.
+- **Fan control errors:** stopping custom fan control is announced and no longer shown as active.
 - **GPU warnings:** report limited support.
 - **Reset:** restore external memory/power changes, including half-MHz memory offsets.
 - **Already-reset GPUs:** Reset completes promptly.

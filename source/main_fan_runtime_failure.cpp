@@ -17,6 +17,8 @@
 //    lock, from the worker itself, is what deadlocked the service against the
 //    telemetry request (fan_worker_lifecycle_policy.h).
 
+#include "fan_fault_notice_policy.h"
+
 static unsigned int fan_runtime_failure_limit() {
     UINT intervalMs = g_app.fanFixedRuntimeActive
         ? FAN_FIXED_RUNTIME_INTERVAL_MS
@@ -63,9 +65,22 @@ static bool note_fan_runtime_failure_locked(const char* action, const char* deta
     return g_app.fanRuntimeConsecutiveFailures >= limit;
 }
 
-// Hands the fan back to the driver after repeated failures.  Called WITHOUT
-// g_appLock (see the file header).
-static void escalate_fan_runtime_failure(const char* action, const char* detail) {
+// Why the runtime gives a fan up.  `kind` (ServiceFanFaultKind) selects the
+// wording; the stall fields stay zero for repeated failures.
+struct FanRuntimeHandbackCause {
+    gc_u32 kind;
+    const char* summary;
+    unsigned int fanIndex;
+    int commandedPercent;
+    unsigned long long stalledForMs;
+};
+
+// Hands the fan back to the driver, forcing maximum cooling when the driver
+// refuses it, stops the runtime and reports what happened: the error log, the
+// GUI status line in a GUI-run runtime, and in the service the v39 record plus
+// an owned intent that matches what Green Curve now holds
+// (main_service_fan_fault.cpp).  Called WITHOUT g_appLock (see the file header).
+static void escalate_fan_runtime_handback(const FanRuntimeHandbackCause* cause) {
     EnterCriticalSection(&g_appLock);
     bool stillActive = g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive;
     unsigned int failures = g_app.fanRuntimeConsecutiveFailures;
@@ -74,27 +89,25 @@ static void escalate_fan_runtime_failure(const char* action, const char* detail)
         debug_log("fan runtime escalation: runtime already stopped by another path; nothing to hand back\n");
         return;
     }
-    debug_log("fan runtime escalation: %u consecutive failures; handing the fan back to the driver"
-              " (outside g_appLock, thread=%lu)\n",
-        failures, GetCurrentThreadId());
-    char summary[512] = {};
-    if (action && action[0] && detail && detail[0]) {
-        set_message(summary, sizeof(summary), "%s: %s", action, detail);
-    } else if (action && action[0]) {
-        set_message(summary, sizeof(summary), "%s", action);
-    } else if (detail && detail[0]) {
-        set_message(summary, sizeof(summary), "%s", detail);
-    } else {
-        set_message(summary, sizeof(summary), "Custom fan runtime failed repeatedly");
-    }
+    const gc_u32 kind = cause ? cause->kind : (gc_u32)SERVICE_FAN_FAULT_REPEATED_FAILURES;
+    const char* summary = cause && cause->summary && cause->summary[0]
+        ? cause->summary : "Custom fan runtime failed repeatedly";
+    debug_log("fan runtime escalation: cause=%s failures=%u; handing the fan back to the driver"
+              " (outside g_appLock, thread=%lu): %s\n",
+        gc_fan_fault_kind_name(kind), failures, GetCurrentThreadId(), summary);
     char autoDetail[128] = {};
     bool autoRestored = nvml_set_fan_auto(autoDetail, sizeof(autoDetail));
+    bool emergencyOk = false;
+    char emergencyDetail[128] = {};
     if (!autoRestored) {
-        char emergencyDetail[128] = {};
-        if (nvml_set_fan_manual(100, nullptr, emergencyDetail, sizeof(emergencyDetail))) {
-            debug_log("fan runtime failure emergency: set fan to 100%% after auto-restore failed\n");
+        emergencyOk = nvml_set_fan_manual(FAN_RUNTIME_EMERGENCY_PERCENT, nullptr,
+            emergencyDetail, sizeof(emergencyDetail));
+        if (emergencyOk) {
+            debug_log("fan runtime failure emergency: set fan to %d%% after auto-restore failed\n",
+                FAN_RUNTIME_EMERGENCY_PERCENT);
         } else {
-            debug_log("fan runtime failure emergency: could not set fan to 100%% after auto-restore failed: %s\n", emergencyDetail);
+            debug_log("fan runtime failure emergency: could not set fan to %d%% after auto-restore failed: %s\n",
+                FAN_RUNTIME_EMERGENCY_PERCENT, emergencyDetail);
         }
     }
     // In the service this may be the fan worker stopping itself; that is a
@@ -108,27 +121,36 @@ static void escalate_fan_runtime_failure(const char* action, const char* detail)
     } else if (g_app.hMainWnd) {
         refresh_live_fan_telemetry(window_should_redraw_fan_controls());
     }
+
+    ServiceFanFault fault = {};
+    fault.kind = kind;
+    fault.handback = autoRestored ? SERVICE_FAN_HANDBACK_DRIVER_AUTO
+        : emergencyOk ? SERVICE_FAN_HANDBACK_EMERGENCY_MAX : SERVICE_FAN_HANDBACK_FAILED;
+    if (kind == SERVICE_FAN_FAULT_STALL && cause) {
+        fault.fanIndex = cause->fanIndex < MAX_GPU_FANS ? cause->fanIndex : 0;
+        fault.commandedPercent = (gc_u32)clamp_percent(cause->commandedPercent);
+        fault.stalledForMs = cause->stalledForMs > 0xFFFFFFFFull
+            ? 0xFFFFFFFFu : (gc_u32)cause->stalledForMs;
+    }
+    StringCchCopyA(fault.detail, ARRAY_COUNT(fault.detail), summary);
+    fault.serial = 1;  // the service numbers its own records
+    if (app_is_service_process()) service_fan_runtime_handback_publish(&fault);
+
     char reportDetails[768] = {};
     if (autoRestored) {
-        if (autoDetail[0]) {
-            set_message(reportDetails, sizeof(reportDetails),
-                "%s. Driver auto fan restored (%s).", summary, autoDetail);
-        } else {
-            set_message(reportDetails, sizeof(reportDetails),
-                "%s. Driver auto fan restored.", summary);
-        }
+        set_message(reportDetails, sizeof(reportDetails), "%s. Driver auto fan restored%s%s%s.",
+            summary, autoDetail[0] ? " (" : "", autoDetail, autoDetail[0] ? ")" : "");
     } else {
-        if (autoDetail[0]) {
-            set_message(reportDetails, sizeof(reportDetails),
-                "%s. Attempt to restore driver auto fan failed: %s", summary, autoDetail);
-        } else {
-            set_message(reportDetails, sizeof(reportDetails),
-                "%s. Attempt to restore driver auto fan failed.", summary);
-        }
+        set_message(reportDetails, sizeof(reportDetails),
+            "%s. Attempt to restore driver auto fan failed%s%s. %s",
+            summary, autoDetail[0] ? ": " : "", autoDetail,
+            emergencyOk ? "Fan forced to 100%." : "Forcing the fan to 100% also failed.");
     }
     char logErr[256] = {};
     if (!write_error_report_log(
-            "Fan control runtime disabled after repeated failures",
+            kind == SERVICE_FAN_FAULT_STALL
+                ? "Fan stopped turning; custom fan control disabled"
+                : "Fan control runtime disabled after repeated failures",
             reportDetails,
             logErr,
             sizeof(logErr)) &&
@@ -136,12 +158,30 @@ static void escalate_fan_runtime_failure(const char* action, const char* detail)
         debug_log("fan runtime error log failed: %s\n", logErr);
     }
     if (g_app.hProfileStatusLabel) {
-        set_profile_status_text(
-            autoRestored
-                ? "Custom fan runtime disabled after repeated failures. Driver auto fan restored. See the Green Curve error log."
-                : "Custom fan runtime disabled after repeated failures. Could not confirm driver auto fan restore. See the Green Curve error log.");
+        char status[256] = {}, title[64] = {}, body[256] = {};
+        if (gc_fan_fault_compose(&fault, status, sizeof(status), title, sizeof(title),
+                body, sizeof(body)))
+            set_profile_status_text("%s See the Green Curve error log.", status);
     }
     update_tray_icon();
+}
+
+// Repeated write or telemetry failures reached the limit.
+static void escalate_fan_runtime_failure(const char* action, const char* detail) {
+    char summary[512] = {};
+    if (action && action[0] && detail && detail[0]) {
+        set_message(summary, sizeof(summary), "%s: %s", action, detail);
+    } else if (action && action[0]) {
+        set_message(summary, sizeof(summary), "%s", action);
+    } else if (detail && detail[0]) {
+        set_message(summary, sizeof(summary), "%s", detail);
+    } else {
+        set_message(summary, sizeof(summary), "Custom fan runtime failed repeatedly");
+    }
+    FanRuntimeHandbackCause cause = {};
+    cause.kind = SERVICE_FAN_FAULT_REPEATED_FAILURES;
+    cause.summary = summary;
+    escalate_fan_runtime_handback(&cause);
 }
 
 // The one entry point for a failed tick.  Must be called WITHOUT g_appLock.

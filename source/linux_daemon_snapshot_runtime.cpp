@@ -26,6 +26,7 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
     if (s->autoRestoreLockoutReason ==
             SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED)
         s->autoApplyFailure = g_autoApplyFailure;
+    s->fanFault = g_daemonFanFault;  // v39
     s->health = g_gpu.health;
     if (g_stateUncertain) {
         s->health.reason = SERVICE_GPU_HEALTH_STATE_UNCERTAIN;

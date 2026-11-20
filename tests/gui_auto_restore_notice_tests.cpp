@@ -7,6 +7,7 @@
 #include <string.h>
 #include "gpu_core.h"
 #include "auto_apply_failure_notice_policy.h"
+#include "fan_fault_notice_policy.h"
 
 #ifndef ARRAY_COUNT
 #define ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
@@ -26,10 +27,13 @@ static struct {
     void* hMainWnd;
     ServiceAutoRestoreLockoutReason serviceAutoRestoreLockoutReason;
     ServiceAutoApplyFailure serviceAutoApplyFailure;
+    ServiceFanFault serviceFanFault;
 } g_app = {};
 static char status[256] = {};
 static int statusWrites = 0, balloonAttempts = 0, balloonsShown = 0;
 static bool shellAccepts = true;
+// Automatic-restore balloons are silent; a fan fault balloon is audible.
+static bool expectSound = false;
 
 static void StringCchCopyA(char* out, size_t size, const char* value) {
     snprintf(out, size, "%s", value);
@@ -46,16 +50,64 @@ static void set_profile_status_text(const char* format, ...) {
 }
 static bool Shell_NotifyIconA(unsigned int, const NOTIFYICONDATAA* info) {
     balloonAttempts++;
-    if (info->uFlags != NIF_INFO || !(info->dwInfoFlags & NIIF_NOSOUND) ||
+    if (info->uFlags != NIF_INFO || ((info->dwInfoFlags & NIIF_NOSOUND) == 0) != expectSound ||
         !info->szInfoTitle[0] || !info->szInfo[0]) return false;
     if (shellAccepts) balloonsShown++;
     return shellAccepts;
 }
 
 #include "gui_auto_restore_notice.h"
+#include "gui_fan_fault_notice.h"
 
 static void announce() {
     gui_announce_auto_restore_lockout();
+}
+
+// The v39 fan fault notice (gui_fan_fault_notice.h), 12880-12884.
+static int run_fan_fault_cases() {
+    g_app = {};
+    g_app.trayIconAdded = true;
+    shellAccepts = true;
+    expectSound = true;
+    ServiceFanFault& fault = g_app.serviceFanFault;
+    fault.kind = SERVICE_FAN_FAULT_STALL;
+    fault.serial = 1;
+    fault.fanIndex = 1;
+    fault.commandedPercent = 45;
+    fault.stalledForMs = 20000;
+    fault.handback = SERVICE_FAN_HANDBACK_DRIVER_AUTO;
+    snprintf(fault.detail, sizeof(fault.detail), "fan 2 did not turn");
+    int shown = balloonsShown;
+    gui_announce_fan_fault();
+    if (!strstr(status, "Fan 2 stopped turning at 45%") || balloonsShown != shown + 1 ||
+        strcmp(g_guiFanFaultBalloonTitle, "GPU fan stopped turning") != 0) return 12880;
+    // Announced once per fault.
+    int writes = statusWrites;
+    gui_announce_fan_fault();
+    if (statusWrites != writes || balloonsShown != shown + 1) return 12881;
+    // A new fault before the tray icon exists waits for it.
+    fault.serial = 2;
+    g_app.trayIconAdded = false;
+    gui_announce_fan_fault();
+    if (!g_guiFanFaultBalloonPending || balloonsShown != shown + 1) return 12882;
+    g_app.trayIconAdded = true;
+    gui_announce_fan_fault();
+    if (g_guiFanFaultBalloonPending || balloonsShown != shown + 2) return 12883;
+    // Cleared by an Apply or Reset, then the same producer serial again (a
+    // restarted service numbers from 1): news again.  Announced after the
+    // automatic-restore notice, the fan has the last word on the status line.
+    ServiceFanFault keep = fault;
+    fault = ServiceFanFault{};
+    gui_announce_fan_fault();
+    fault = keep;
+    g_app.serviceAutoRestoreLockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE;
+    expectSound = false;
+    gui_announce_auto_restore_lockout();
+    expectSound = true;
+    gui_announce_fan_fault();
+    if (!strstr(status, "Fan 2 stopped turning") || balloonsShown != shown + 3) return 12884;
+    expectSound = false;
+    return 0;
 }
 
 static int run() {
@@ -131,7 +183,7 @@ static int run() {
     g_app.trayIconAdded = true;
     announce();
     if (g_guiAutoApplyBalloonPending || balloonsShown != 3) return 6851;
-    return 0;
+    return run_fan_fault_cases();
 }
 } // namespace gui_notice_fixture
 

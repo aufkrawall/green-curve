@@ -175,6 +175,12 @@ static void daemon_enter_uncertain_state(const char* reason) {
 // forced the emergency duty if that failed), so this records the uncertainty
 // without writing the fan again.  A fan the driver took back is no longer
 // owned; one it refused keeps the marker for the next start's handback.
+// v39: the last fan the worker handed back (linux_fan_runtime.h).  In memory
+// only; guarded by g_lock.  An explicit Apply or Reset clears it, as it clears
+// the uncertainty the lockout entered.
+static ServiceFanFault g_daemonFanFault = {};
+static gc_u32 g_daemonFanFaultSerial = 0;
+
 static void daemon_enter_uncertain_after_fan_lockout(const char* reason,
                                                      bool autoOk) {
     const char* why = reason && reason[0] ? reason : "unspecified";

@@ -297,6 +297,8 @@ static void set_last_apply_phase(const char* phase, bool logPhase = true);
 #include "crash_artifacts_forward.h"
 static bool service_resolve_active_user_paths_for_startup(const char* context);
 static DWORD WINAPI service_fan_runtime_thread_proc(void*);
+// main_service_fan_fault.cpp; called by the fan runtime handback.
+static void service_fan_runtime_handback_publish(const ServiceFanFault* fault);
 static bool ensure_service_fan_runtime_thread();
 static void stop_service_fan_runtime_thread();
 static void service_runtime_pulse();

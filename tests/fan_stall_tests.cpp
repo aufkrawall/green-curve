@@ -1,11 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
-// Fan stall policy table (fan_stall_policy.h), cases 12800-12829.  Executed
+// Fan stall policy table (fan_stall_policy.h), cases 12800-12829, and the
+// protocol v39 fan fault record with its client notice, 12832-12855.  Executed
 // worker fixtures for the Windows runtime and the Linux daemon live with their
 // platform tests; this file proves the shared decisions, above all that a
 // healthy fan is never judged stalled.
 #include "fan_stall_policy.h"
+#include "gpu_core.h"
+#include "service_protocol.h"
+#include "fan_fault_notice_policy.h"
 
 #include <cstdio>
 #include <cstring>
@@ -253,8 +257,118 @@ static int run() {
 
 } // namespace fan_stall_table
 
+// Protocol v39 fan fault record and the words every client uses for it,
+// cases 12832-12849.
+namespace fan_fault_record {
+
+static ServiceFanFault stall_record(gc_u8 handback) {
+    ServiceFanFault f = {};
+    f.kind = SERVICE_FAN_FAULT_STALL;
+    f.serial = 1;
+    f.fanIndex = 1;
+    f.commandedPercent = 45;
+    f.stalledForMs = 20400;
+    f.handback = handback;
+    std::snprintf(f.detail, sizeof(f.detail), "fan 2 did not turn");
+    return f;
+}
+
+static int run() {
+    ServiceFanFault none = {};
+    if (!service_fan_fault_wire_valid(&none)) return 12832;
+    none.serial = 1;
+    if (service_fan_fault_wire_valid(&none)) return 12833;
+
+    const ServiceFanFault good = stall_record(SERVICE_FAN_HANDBACK_DRIVER_AUTO);
+    if (!service_fan_fault_wire_valid(&good)) return 12834;
+    ServiceFanFault bad = good;
+    bad.fanIndex = MAX_GPU_FANS;
+    if (service_fan_fault_wire_valid(&bad)) return 12835;
+    bad = good; bad.commandedPercent = 101;
+    if (service_fan_fault_wire_valid(&bad)) return 12836;
+    bad = good; bad.serial = 0;
+    if (service_fan_fault_wire_valid(&bad)) return 12837;
+    bad = good; bad.handback = SERVICE_FAN_HANDBACK_NONE;
+    if (service_fan_fault_wire_valid(&bad)) return 12838;
+    bad = good; bad.handback = SERVICE_FAN_HANDBACK_MAX + 1;
+    if (service_fan_fault_wire_valid(&bad)) return 12839;
+    bad = good; bad.kind = SERVICE_FAN_FAULT_KIND_MAX + 1;
+    if (service_fan_fault_wire_valid(&bad)) return 12840;
+    bad = good; bad.reserved[2] = 1;
+    if (service_fan_fault_wire_valid(&bad)) return 12841;
+    bad = good; std::memset(bad.detail, 'x', sizeof(bad.detail));
+    if (service_fan_fault_wire_valid(&bad)) return 12842;
+    // Only a stall names a fan, a duty and a duration.
+    bad = good; bad.kind = SERVICE_FAN_FAULT_REPEATED_FAILURES;
+    if (service_fan_fault_wire_valid(&bad)) return 12843;
+
+    // Both trust paths: the strict envelope check refuses a malformed record,
+    // the canonicalizer voids it, and a stateless refusal may not carry one.
+    ServiceStateEnvelope envelope = {};
+    envelope.serviceInstanceId = 11;
+    envelope.stateRevision = 4;
+    envelope.gpuGeneration = 1;
+    ServiceSnapshot snapshot = {};
+    DesiredSettings desired = {};
+    ControlState controls = {};
+    snapshot.fanFault = good;
+    if (!validate_service_state_envelope_for_ipc(&envelope, &snapshot, &desired, &controls))
+        return 12844;
+    snapshot.fanFault.fanIndex = MAX_GPU_FANS;
+    if (validate_service_state_envelope_for_ipc(&envelope, &snapshot, &desired, &controls))
+        return 12845;
+    validate_service_snapshot_for_ipc(&snapshot);
+    if (snapshot.fanFault.kind != SERVICE_FAN_FAULT_NONE || snapshot.fanFault.detail[0])
+        return 12846;
+    ServiceSnapshot empty = {};
+    empty.fanFault.detail[3] = 'x';
+    if (service_snapshot_is_zero(empty)) return 12847;
+
+    // Words: the fan is named from 1, with its duty, outcome and action.
+    char status[256] = {}, title[64] = {}, body[256] = {};
+    if (!gc_fan_fault_compose(&good, status, sizeof(status), title, sizeof(title),
+            body, sizeof(body)) ||
+        !std::strstr(status, "Fan 2 stopped turning at 45%") ||
+        !std::strstr(status, "the driver controls the fan again") ||
+        !std::strstr(status, "Check the fan.") ||
+        std::strcmp(title, "GPU fan stopped turning") != 0 ||
+        !std::strstr(body, "for 20 s at 45%")) return 12848;
+    const ServiceFanFault unconfirmed = stall_record(SERVICE_FAN_HANDBACK_FAILED);
+    if (!gc_fan_fault_compose(&unconfirmed, status, sizeof(status), title, sizeof(title),
+            body, sizeof(body)) || !std::strstr(status, "Check GPU cooling now.")) return 12849;
+    const ServiceFanFault forced = stall_record(SERVICE_FAN_HANDBACK_EMERGENCY_MAX);
+    if (!gc_fan_fault_compose(&forced, status, sizeof(status), title, sizeof(title),
+            body, sizeof(body)) || !std::strstr(status, "forced to 100%")) return 12850;
+    ServiceFanFault repeated = {};
+    repeated.kind = SERVICE_FAN_FAULT_REPEATED_FAILURES;
+    repeated.serial = 3;
+    repeated.handback = SERVICE_FAN_HANDBACK_DRIVER_AUTO;
+    std::snprintf(repeated.detail, sizeof(repeated.detail), "Fan curve runtime apply failed");
+    if (!gc_fan_fault_compose(&repeated, status, sizeof(status), title, sizeof(title),
+            body, sizeof(body)) ||
+        !std::strstr(status, "repeated fan errors") ||
+        !std::strstr(body, "Fan curve runtime apply failed")) return 12851;
+    ServiceFanFault zero = {};
+    if (gc_fan_fault_compose(&zero, status, sizeof(status), title, sizeof(title),
+            body, sizeof(body)) || status[0] || title[0] || body[0]) return 12852;
+
+    // Each fault is announced once; a cleared record re-arms the observer.
+    GcFanFaultObserver observer = {};
+    if (!gc_fan_fault_observe(&observer, &good) ||
+        gc_fan_fault_observe(&observer, &good)) return 12853;
+    ServiceFanFault next = good;
+    next.serial = 2;
+    if (!gc_fan_fault_observe(&observer, &next)) return 12854;
+    if (gc_fan_fault_observe(&observer, &zero) || !gc_fan_fault_observe(&observer, &next))
+        return 12855;
+    return 0;
+}
+
+} // namespace fan_fault_record
+
 int run_fan_stall_tests() {
     int result = fan_stall_table::run();
+    if (!result) result = fan_fault_record::run();
     if (result) std::fprintf(stderr, "regression assertion failed: %d\n", result);
     return result;
 }

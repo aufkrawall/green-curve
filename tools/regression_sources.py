@@ -16,6 +16,7 @@ REGRESSION_SOURCES = (
     'fan_request_apply_tests.cpp',
     'fan_intent_tests.cpp',
     'fan_stall_tests.cpp',
+    'fan_handback_runtime_tests.cpp',
     'security_audit_tests.cpp',
     'installer_fuzz_harness_tests.cpp',
     'review_followup_tests.cpp',
