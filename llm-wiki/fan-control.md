@@ -1,5 +1,94 @@
 # Fan Control
 
+## A stalled fan goes back to the driver, and the user is told (2026-11-20)
+
+Source anchors: `source/fan_stall_policy.h`, `source/main_fan_stall.cpp`,
+`source/main_runtime_nvml_fans.cpp`, `source/main_fan_runtime_failure.cpp`
+(`escalate_fan_runtime_handback()`), `source/main_service_fan_fault.cpp`,
+`source/service_fan_fault.h`, `source/fan_fault_notice_policy.h`,
+`source/gui_fan_fault_notice.h`, `source/linux_fan_runtime.h`
+(`daemon_fan_stall_check()`, `daemon_fan_runtime_lockout()`),
+`source/linux_backend_fan_control.h` (`linux_backend_fan_stall_sample()`),
+`tests/fan_stall_tests.cpp`, `tests/fan_handback_runtime_tests.cpp`,
+`tests/fan_runtime_followup_tests.cpp`, `tests/gui_auto_restore_notice_tests.cpp`,
+`tools/fan_gates.py` (`check_fan_fault_reporting()`, `check_fan_stall_detection()`).
+
+The failure ladder below reacts to a refused write or temperature read. It
+cannot see a fan that accepts every write and does not turn (seized bearing,
+unplugged fan, a duty that never reaches the motor). Under a manual duty the
+driver's own control is out of the loop, so both runtimes now run a shared
+stall check after every successful tick.
+
+**Decision (`fan_stall_policy.h`).** Per fan, from readings the runtime takes
+at most every 2 s:
+
+- Judged only while the runtime commands a manual duty (not a zero-RPM curve's
+  driver-automatic phase), the driver reports MANUAL policy for that fan, and
+  the duty (the driver's intent when it answers, else the command) is at least
+  the advertised minimum and never below 30%. Each of these is its own gate;
+  the fixtures break each one alone.
+- A tach (`nvmlDeviceGetFanSpeedRPM`) or measured duty (`nvmlDeviceGetFanSpeed_v2`)
+  counts only after it has read nonzero for that fan on this GPU in this
+  process, and only in a sample where its getter answered. Unsupported or
+  always-zero sensors never judge. Any proven sensor showing motion wins.
+- Stopped means every proven, answering sensor reads 0. A stall is confirmed
+  after 20 s and at least 3 consecutive stopped readings no more than 12 s
+  apart (spin-up takes a few seconds; 5 s is the slowest cadence). Motion, a
+  missing reading, a failed fan read, a new command (Windows runtime start,
+  Linux wake generation) or a gap closes the window; a GPU change also drops
+  the proof. Confirmation clears every window, so the handback runs once.
+
+**Reaction.** The existing handback, entered directly: driver automatic
+control, forced 100% if the driver refuses, runtime stopped. Driver auto, not
+100%, because it fixes the case where the manual duty never reaches the motor,
+is no worse for a physically dead fan, and is the validated default if a tach
+lies. Linux also writes the UNCERTAIN record and enters uncertainty (worker
+idles until an explicit Apply/Reset). Windows enters no lockout, matching its
+repeated-failure escalation; a re-Apply restarts the runtime and the retained
+proof re-detects a fan that is still stopped.
+
+**Reporting (protocol v39).** `ServiceSnapshot.fanFault` (`ServiceFanFault`,
+128 bytes): kind (repeated failures or stall), per-producer serial, fan, duty,
+stalled-for, and the outcome (driver auto, emergency 100%, or neither
+confirmed). Both trust paths validate it; a stateless refusal carries none.
+The GUI (status line plus an audible tray balloon), the TUI and the Linux
+status/JSON output announce each fault once (`gc_fan_fault_observe()`); a
+record that returns to NONE re-arms the observer. The Windows service clears
+it on an Apply that wrote the fan or a Reset; Linux on any committed Apply or
+Reset (they also clear the uncertainty).
+
+**Honest state after a handback (Windows).** The service escalation used to
+keep the curve in the owned intent, so after repeated failures the GUI and tray
+went on showing it (the bug class fixed at the top of this page) and the next
+Apply's fan invariant would have restarted it on the failed fan.
+`service_fan_runtime_handback_publish()` now drops the fan from the owned
+intent when the driver took it back (retiring the ownership marker if nothing
+else is owned), or owns Fixed 100% when the driver refused, so every later
+repair aims at maximum cooling.
+
+**Not done: a periodic runtime-vs-intent check.** Every deliberate runtime stop
+now updates the owned intent (handback) or happens inside a transaction that
+publishes one (Apply/Reset, checked by the post-Apply invariant); the
+update-install handback precedes the service's replacement. Either divergence
+direction leaves the fan under active control (driver or runtime), so a
+periodic check would be diagnostics only and was left out.
+
+Diagnostics: `fan stall: fan N sensors proven`, `fan stall: fan N reads stopped
+under a manual P% duty ...; confirming over 20 s`, `... stall window closed:
+<reason>` (per-fan, at most one per 30 s with a suppressed count), `FAN STALL:
+Fan N did not turn at P% for S s (tach ..., measured ...)`, `fan fault:
+recorded for clients ...`, `fan fault: owned fan intent Curve -> Auto after the
+driver-auto handback`; Linux uses the `daemon fan stall:` / `daemon FAN STALL:`
+/ `daemon fan fault:` prefixes; clients log `GUI: fan fault notice` / `tui: fan
+fault notice`.
+
+Verified by fixtures only: policy table 12800-12831, record and notice
+12832-12855, Windows handback 12856-12868, Windows stall check 12870-12879 and
+12887-12888, GUI notice 12880-12884, Linux worker 12890-12897; scratch-copy
+mutations of each gate failed the matching case. No stalled fan on hardware.
+
+Last verified: 2026-11-20.
+
 ## A profile switch never releases an owned fan curve (2026-11-20)
 
 Source anchors: `source/service_scoped_apply_policy.h`
@@ -731,9 +820,23 @@ validates every byte of the summary as UTF-8 on Linux.
   decision, not a fix.
 - The fan pulse cannot run while an Apply holds the runtime mutex (up to the
   ~20 s handler budget); the fan keeps its last duty for that time.
+- Stall detection needs sensor proof from this process: after a service or
+  daemon restart, a fan that never turns again is never proven and never
+  judged. Persisting proof per GPU would close that; not done.
+- Stall detection is fixture-verified only. If a board's advertised minimum
+  duty does not actually turn its fan while the tach reads 0, the check hands
+  that fan to the driver after 20 s with a notice (safe, but the custom
+  setting is lost); not observed on hardware.
 
 ## Last Verified
 
+- 2026-11-20: Fan stall detection and the v39 fan fault record (top of page).
+  Native Windows `python build.py --test` and `--gates` passed after each
+  commit; mutations of the policy's proof, driver-policy and gap rules, the
+  Windows runtime-phase, driver-policy and read-reuse rules, the service
+  publish call, and the Linux command key, zero-RPM phase and stall call each
+  failed their case; plain `python build.py` rebuilt every package. No stalled
+  fan on hardware.
 - 2026-11-20: Profile-switch fan release fix (top of page). Native Windows
   `python build.py --test` and `--gates` passed; scratch-copy negative controls
   failed at 12741 (scope upgrade), 12760 (invariant repair) and 12736 (profile

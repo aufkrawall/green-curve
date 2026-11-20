@@ -5,6 +5,23 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-20: Fan stall detection and reported fan handbacks
+
+- Follow-up to the profile-switch report: neither platform noticed a fan that
+  accepts its manual duty and does not turn. Both runtimes now run the shared
+  `fan_stall_policy.h` after each successful tick and hand a confirmed stall
+  back to the driver (else 100%) through their existing handback.
+- Found on the way: the Windows service's repeated-failure handback kept the
+  curve in the owned intent, so the GUI and tray kept showing it and the next
+  Apply's fan invariant would have restarted it. Protocol v39 adds the
+  `ServiceFanFault` snapshot record and the service now stops claiming a fan the
+  driver took back. Linux's two worker lockout copies became one helper.
+- Size ratchet: `service_gpu_health_reason_name()` moved to
+  `service_gpu_health_names.h`, `nvml_read_fans()` to
+  `main_runtime_nvml_fans.cpp`, and the v29 record check into its own header.
+- Details and limits: `fan-control.md` (top section). Fixture-verified with
+  per-gate mutations; no stalled fan on hardware.
+
 ## 2026-11-20: Profile switch released a running fan curve
 
 - Reported: after switching Profile 4 -> Profile 3 (both fan curve, zero-RPM

@@ -67,6 +67,14 @@ this fixture as well as the production planner.
   Linux INI decoding of zero-MHz projected points under `absolute_with_origin`
   into observation-free `PROFILE_POINT_PROJECTION` points and refusal of
   zero-MHz absolute/legacy points.
+- `tests/fan_stall_tests.cpp` (`12800-12855`) is the stall policy table and the
+  v39 fan fault record/notice table; `tests/fan_handback_runtime_tests.cpp`
+  (Windows only, `12856-12879`, `12887-12888`) executes the handback, the
+  service record/intent update and the stall check on a scripted driver and
+  clock; `tests/fan_runtime_followup_tests.cpp` adds Linux record and stall
+  schedules on a simulated monotonic clock (`12890-12897`);
+  `tests/gui_auto_restore_notice_tests.cpp` executes the GUI fan fault notice
+  (`12880-12884`).
 - `tests/fan_intent_tests.cpp` (`12720-12769`) pins the profile-switch fan
   release fix: the pure `fan_intent_policy.h` table, the legacy scope upgrade
   keeping an omitted fan/memory/power (the exact Profile 4 -> Profile 3
@@ -2934,7 +2942,7 @@ The table below names the physical source shard that owns each rule:
 | File | Required text | Purpose |
 |------|--------------|---------|
 | `app_shared.h` | `APP_DEBUG_DEFAULT_ENABLED 1` | Debug logging remains default-on |
-| `service_protocol.h` | `SERVICE_PROTOCOL_VERSION = 27` | Atomic generation-stamped health/state envelopes, explicit scalar/advanced-clock/fan readback validity, updater state, native zero-RPM fan intent with an independent fan-off gap, active XBAR voltage measurement, compact capability/topology carriage, domain-scoped mutation preconditions/result query, typed apply-origin, startup policy plus its content-only refresh and its own `startupProfile` response member, profile identity, lifecycle-state IPC ABI, and exact wire-size gates |
+| `service_protocol.h` | `SERVICE_PROTOCOL_VERSION = 39` | The v39 fan fault record (`service_fan_fault.h`), atomic generation-stamped health/state envelopes, explicit scalar/advanced-clock/fan readback validity, updater state, native zero-RPM fan intent with an independent fan-off gap, active XBAR voltage measurement, compact capability/topology carriage, domain-scoped mutation preconditions/result query, typed apply-origin, startup policy plus its content-only refresh and its own `startupProfile` response member, profile identity, lifecycle-state IPC ABI, and exact wire-size gates |
 | `app_shared.h` | `APP_BUILD_NUMBER` | Build number define exists |
 | `service_protocol.h` | `serviceBuildNumber` | Service response carries build number |
 | `service_protocol.h` | `serviceVersion[32]` | Service response carries app version |
