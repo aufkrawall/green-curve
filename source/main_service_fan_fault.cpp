@@ -22,6 +22,8 @@
 #include "service_scoped_apply_policy.h"
 
 static bool service_ownership_marker_clear(const char* reason);
+static void service_write_restart_reapply_snapshot();
+static void service_clear_restart_reapply_snapshot();
 
 // Guarded by g_appLock.
 static ServiceFanFault g_serviceFanFault = {};
@@ -66,6 +68,11 @@ static void service_fan_runtime_handback_publish(const ServiceFanFault* fault) {
         // Green Curve still holds the fan manually (forced to 100%), or could
         // not confirm either write: own the emergency duty, so every later
         // repair aims at maximum cooling rather than at the failed curve.
+        if (!hadIntent) {
+            g_serviceActiveDesired = {};
+            g_serviceActiveDesired.lockCi = -1;
+            g_serviceActiveDesired.powerLimitPct = POWER_LIMIT_DEFAULT_PCT;
+        }
         g_serviceActiveDesired.hasFan = 1;
         g_serviceActiveDesired.fanAuto = 0;
         g_serviceActiveDesired.fanMode = FAN_MODE_FIXED;
@@ -73,22 +80,61 @@ static void service_fan_runtime_handback_publish(const ServiceFanFault* fault) {
     }
     g_serviceHasActiveDesired = service_scoped_has_owned_intent(g_serviceActiveDesired);
     bool markerCleared = false;
-    if (hadIntent && !g_serviceHasActiveDesired)
-        markerCleared = service_ownership_marker_clear("fan runtime handback released the last owned domain");
-    debug_log("fan fault: owned fan intent %s -> %s after the %s handback (owned=%d markerCleared=%d)\n",
-        fan_mode_label(previousMode),
-        fan_mode_label(fan_owned_intent_mode(g_serviceActiveDesired.hasFan != 0,
-            g_serviceActiveDesired.fanMode, g_serviceActiveDesired.fanAuto != 0)),
-        gc_fan_fault_handback_name(fault->handback),
-        g_serviceHasActiveDesired ? 1 : 0, markerCleared ? 1 : 0);
+    if (!g_serviceHasActiveDesired) {
+        memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
+        if (hadIntent)
+            markerCleared = service_ownership_marker_clear("fan runtime handback released the last owned domain");
+    } else if (!g_serviceActiveDesiredGpu.valid) {
+        if (g_app.selectedGpu.valid) {
+            g_serviceActiveDesiredGpu = g_app.selectedGpu;
+        } else if (g_app.selectedGpuIndex < g_app.adapterCount &&
+                   g_app.selectedGpuIndex < MAX_GPU_ADAPTERS &&
+                   g_app.adapters[g_app.selectedGpuIndex].valid) {
+            g_serviceActiveDesiredGpu = g_app.adapters[g_app.selectedGpuIndex];
+        }
+    }
 
+    ServiceProfileSource publishedProfileSource = SERVICE_PROFILE_SOURCE_NONE;
+    int publishedProfileSlot = 0;
     EnterCriticalSection(&g_appLock);
+    if (!g_serviceHasActiveDesired) {
+        g_serviceActiveProfileSource = SERVICE_PROFILE_SOURCE_NONE;
+        g_serviceActiveProfileSlot = 0;
+    } else {
+        // The owned fan domain just diverged from any saved profile slot; drop
+        // slot attribution (and promote NONE on fresh emergency ownership) so
+        // snapshots and the restart snapshot stay canonical.
+        g_serviceActiveProfileSource = SERVICE_PROFILE_SOURCE_AD_HOC;
+        g_serviceActiveProfileSlot = 0;
+    }
+    publishedProfileSource = g_serviceActiveProfileSource;
+    publishedProfileSlot = g_serviceActiveProfileSlot;
     ServiceFanFault record = *fault;
     if (g_serviceFanFaultSerial == 0xFFFFFFFFu) g_serviceFanFaultSerial = 0;
     record.serial = ++g_serviceFanFaultSerial;
     record.detail[sizeof(record.detail) - 1] = '\0';
     g_serviceFanFault = record;
     LeaveCriticalSection(&g_appLock);
+
+    // Keep the on-disk restart reapply snapshot aligned with the post-handback
+    // intent so a later controlled restart/recovery cannot replay the faulted
+    // fan curve.
+    if (!g_serviceHasActiveDesired) {
+        service_clear_restart_reapply_snapshot();
+    } else {
+        service_write_restart_reapply_snapshot();
+    }
+
+    debug_log("fan fault: owned fan intent %s -> %s after the %s handback "
+              "(owned=%d markerCleared=%d ownerGpuValid=%d profileSource=%u slot=%d restartSnapshot=%s)\n",
+        fan_mode_label(previousMode),
+        fan_mode_label(fan_owned_intent_mode(g_serviceActiveDesired.hasFan != 0,
+            g_serviceActiveDesired.fanMode, g_serviceActiveDesired.fanAuto != 0)),
+        gc_fan_fault_handback_name(fault->handback),
+        g_serviceHasActiveDesired ? 1 : 0, markerCleared ? 1 : 0,
+        g_serviceActiveDesiredGpu.valid ? 1 : 0,
+        (unsigned int)publishedProfileSource, publishedProfileSlot,
+        g_serviceHasActiveDesired ? "updated" : "cleared");
     debug_log("fan fault: recorded for clients kind=%s serial=%u fan=%u pct=%u stalledMs=%u handback=%s detail=%s\n",
         gc_fan_fault_kind_name(record.kind), (unsigned int)record.serial,
         (unsigned int)record.fanIndex, (unsigned int)record.commandedPercent,

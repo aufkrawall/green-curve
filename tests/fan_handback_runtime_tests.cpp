@@ -25,11 +25,18 @@ static AppData g_app = {};
 static CRITICAL_SECTION g_appLock;
 static bool g_serviceHasActiveDesired;
 static DesiredSettings g_serviceActiveDesired;
+static GpuAdapterInfo g_serviceActiveDesiredGpu;
+static ServiceProfileSource g_serviceActiveProfileSource;
+static int g_serviceActiveProfileSlot;
 static gc_log_steady::Tracker g_fanRuntimeWriteLog = {};
 static const UINT FAN_FIXED_RUNTIME_INTERVAL_MS = 5000;
 static const ULONGLONG FAN_RUNTIME_FAILURE_WINDOW_MS = 10000;
 static bool serviceProcess, autoRefused, emergencyRefused;
 static int autoWrites, manualWrites, lastManualPct, markerClears, runtimeStops;
+static int restartSnapshotWrites, restartSnapshotClears;
+static DesiredSettings lastRestartSnapshotDesired;
+static ServiceProfileSource lastRestartSnapshotSource;
+static int lastRestartSnapshotSlot;
 static char lastErrorTitle[128], lastStatus[512];
 
 static void debug_log(const char*, ...) {}
@@ -79,6 +86,18 @@ static void set_profile_status_text(const char* fmt, ...) {
 static void update_tray_icon() {}
 static bool service_runtime_lock_held_by_current_thread() { return true; }
 static bool service_ownership_marker_clear(const char*) { ++markerClears; return true; }
+static void service_write_restart_reapply_snapshot() {
+    ++restartSnapshotWrites;
+    lastRestartSnapshotDesired = g_serviceActiveDesired;
+    lastRestartSnapshotSource = g_serviceActiveProfileSource;
+    lastRestartSnapshotSlot = g_serviceActiveProfileSlot;
+}
+static void service_clear_restart_reapply_snapshot() {
+    ++restartSnapshotClears;
+    lastRestartSnapshotDesired = {};
+    lastRestartSnapshotSource = SERVICE_PROFILE_SOURCE_NONE;
+    lastRestartSnapshotSlot = 0;
+}
 static void service_fan_runtime_handback_publish(const ServiceFanFault* fault);
 
 // Scripted fan readings (nvml_read_fans) and clock (GetTickCount64).
@@ -127,18 +146,33 @@ static void reset(bool service) {
     g_app.fanCount = 2;
     g_app.activeFanCurve.pollIntervalMs = 1000;
     g_app.hProfileStatusLabel = service ? nullptr : (HWND)1;
+    g_app.selectedGpu.valid = true;
+    g_app.selectedGpu.pciInfoValid = true;
+    g_app.selectedGpu.nvapiIndex = 0;
+    g_app.selectedGpu.deviceId = 0x2F0410DEu;
+    g_app.selectedGpu.pciBus = 1;
+    g_app.adapterCount = 1;
+    g_app.adapters[0] = g_app.selectedGpu;
     serviceProcess = service;
     autoRefused = emergencyRefused = false;
     autoWrites = manualWrites = lastManualPct = markerClears = runtimeStops = 0;
+    restartSnapshotWrites = restartSnapshotClears = 0;
+    lastRestartSnapshotDesired = {};
+    lastRestartSnapshotSource = SERVICE_PROFILE_SOURCE_NONE;
+    lastRestartSnapshotSlot = 0;
     lastErrorTitle[0] = lastStatus[0] = '\0';
     g_serviceHasActiveDesired = false;
     g_serviceActiveDesired = {};
+    g_serviceActiveDesiredGpu = {};
+    g_serviceActiveProfileSource = SERVICE_PROFILE_SOURCE_NONE;
+    g_serviceActiveProfileSlot = 0;
     g_serviceFanFault = {};
 }
 static void own_running_curve(bool alsoPower) {
     g_serviceHasActiveDesired = true;
     g_serviceActiveDesired = {};
     g_serviceActiveDesired.lockCi = -1;
+    g_serviceActiveDesired.powerLimitPct = POWER_LIMIT_DEFAULT_PCT;
     g_serviceActiveDesired.hasFan = 1;
     g_serviceActiveDesired.fanMode = FAN_MODE_CURVE;
     fan_curve_set_default(&g_serviceActiveDesired.fanCurve);
@@ -146,6 +180,9 @@ static void own_running_curve(bool alsoPower) {
         g_serviceActiveDesired.hasPowerLimit = 1;
         g_serviceActiveDesired.powerLimitPct = 90;
     }
+    g_serviceActiveDesiredGpu = g_app.selectedGpu;
+    g_serviceActiveProfileSource = SERVICE_PROFILE_SOURCE_USER_SLOT;
+    g_serviceActiveProfileSlot = 3;
     g_app.fanCurveRuntimeActive = true;
     g_app.activeFanMode = FAN_MODE_CURVE;
 }
@@ -301,6 +338,10 @@ static int run() {
     if (autoWrites != 1 || manualWrites || runtimeStops != 1 || g_app.fanCurveRuntimeActive)
         return 12856;
     if (g_serviceActiveDesired.hasFan || g_serviceHasActiveDesired || markerClears != 1 ||
+        restartSnapshotClears != 1 || restartSnapshotWrites != 0 ||
+        g_serviceActiveDesiredGpu.valid ||
+        g_serviceActiveProfileSource != SERVICE_PROFILE_SOURCE_NONE ||
+        g_serviceActiveProfileSlot != 0 ||
         fan_owned_intent_mode(g_serviceActiveDesired.hasFan != 0, g_serviceActiveDesired.fanMode,
             g_serviceActiveDesired.fanAuto != 0) != FAN_MODE_AUTO) return 12857;
     ServiceFanFault published = service_fan_fault_for_snapshot_locked();
@@ -310,12 +351,19 @@ static int run() {
         !service_fan_fault_wire_valid(&published) ||
         std::strcmp(lastErrorTitle, "Fan control runtime disabled after repeated failures") != 0)
         return 12858;
-    // Other owned domains stay owned; the ownership record stays with them.
+    // Other owned domains stay owned; the ownership record stays with them,
+    // the saved slot is demoted to AD_HOC, and the restart snapshot is updated.
     reset(true);
     own_running_curve(true);
     escalate_fan_runtime_failure("Fan curve temperature poll failed", "");
     if (!g_serviceHasActiveDesired || markerClears || g_serviceActiveDesired.hasFan ||
-        !g_serviceActiveDesired.hasPowerLimit) return 12859;
+        !g_serviceActiveDesired.hasPowerLimit || !g_serviceActiveDesiredGpu.valid ||
+        g_serviceActiveProfileSource != SERVICE_PROFILE_SOURCE_AD_HOC ||
+        g_serviceActiveProfileSlot != 0 ||
+        restartSnapshotWrites != 1 || restartSnapshotClears != 0 ||
+        lastRestartSnapshotDesired.hasFan || !lastRestartSnapshotDesired.hasPowerLimit ||
+        lastRestartSnapshotSource != SERVICE_PROFILE_SOURCE_AD_HOC ||
+        lastRestartSnapshotSlot != 0) return 12859;
     // The driver refuses the fan: 100%, and the intent owns that emergency duty.
     reset(true);
     own_running_curve(false);
@@ -326,8 +374,28 @@ static int run() {
         published.handback != SERVICE_FAN_HANDBACK_EMERGENCY_MAX ||
         !g_serviceHasActiveDesired || !g_serviceActiveDesired.hasFan ||
         g_serviceActiveDesired.fanMode != FAN_MODE_FIXED ||
-        g_serviceActiveDesired.fanPercent != FAN_RUNTIME_EMERGENCY_PERCENT || markerClears)
+        g_serviceActiveDesired.fanPercent != FAN_RUNTIME_EMERGENCY_PERCENT || markerClears ||
+        !g_serviceActiveDesiredGpu.valid ||
+        g_serviceActiveProfileSource != SERVICE_PROFILE_SOURCE_AD_HOC ||
+        g_serviceActiveProfileSlot != 0 ||
+        restartSnapshotWrites != 1 || restartSnapshotClears != 0 ||
+        lastRestartSnapshotDesired.fanMode != FAN_MODE_FIXED ||
+        lastRestartSnapshotDesired.fanPercent != FAN_RUNTIME_EMERGENCY_PERCENT)
         return 12860;
+    // Emergency handback when hadIntent == false initializes canonical defaults,
+    // records the owner GPU from g_app.selectedGpu, and persists the snapshot.
+    reset(true);
+    g_app.fanCurveRuntimeActive = true;
+    autoRefused = true;
+    escalate_fan_runtime_failure("Fan runtime initial start failed", "nvml error");
+    if (!g_serviceHasActiveDesired || !g_serviceActiveDesired.hasFan ||
+        g_serviceActiveDesired.lockCi != -1 ||
+        g_serviceActiveDesired.powerLimitPct != POWER_LIMIT_DEFAULT_PCT ||
+        !g_serviceActiveDesiredGpu.valid ||
+        g_serviceActiveDesiredGpu.deviceId != g_app.selectedGpu.deviceId ||
+        g_serviceActiveProfileSource != SERVICE_PROFILE_SOURCE_AD_HOC ||
+        g_serviceActiveProfileSlot != 0 || restartSnapshotWrites != 1)
+        return 12869;
     // Neither write confirmed: reported as such, still aiming at 100%.
     reset(true);
     own_running_curve(false);

@@ -556,6 +556,14 @@ def check_fan_fault_reporting(ctx, require_text, forbid_text, require_order):
                  "the service stops claiming a fan the driver took back")
     require_text(fault_cpp, "g_serviceActiveDesired.fanPercent = FAN_RUNTIME_EMERGENCY_PERCENT;",
                  "a refused handback owns the emergency duty, never the failed curve")
+    require_text(fault_cpp, "service_clear_restart_reapply_snapshot();",
+                 "releasing the last domain on handback clears the restart reapply snapshot")
+    require_text(fault_cpp, "service_write_restart_reapply_snapshot();",
+                 "handback with remaining owned domains refreshes the restart reapply snapshot")
+    require_text(fault_cpp, "g_serviceActiveProfileSource = SERVICE_PROFILE_SOURCE_AD_HOC;",
+                 "handback drops stale saved-slot attribution when owned domains remain")
+    require_text(fault_cpp, "memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));",
+                 "handback clears the owner GPU when no owned domains remain")
     require_text(_p(ctx, "main_shell.cpp"), '#include "main_service_fan_fault.cpp"',
                  "the fan fault shard is compiled")
     require_text(_p(ctx, "main_state_sync.cpp"),
