@@ -2,7 +2,8 @@
 
 ## Profile tools: capture, import and export end in ordinary slots (2026-11-19)
 
-Source anchors: `source/profile_slot_runtime.h`, `source/config_profile_document_load.h`,
+Source anchors: `source/profile_slot_runtime.h`, `source/profile_legacy_flat_tail_offset_policy.h`,
+`source/config_profile_document_load.h`, `source/config_profile_repair.cpp`,
 `source/linux_profile_document_load.h`, `source/profile_capture_save.h`,
 `source/profile_summary.h`, `source/profile_editor_transfer.h` (probe and explicit
 selection), `source/profile_transfer_slot_policy.h`, `source/gui_profile_tools.cpp`,
@@ -10,7 +11,7 @@ selection), `source/profile_transfer_slot_policy.h`, `source/gui_profile_tools.c
 `source/gui_profile_dialog_kit.h`, `source/gui_profile_transfer_work.h`,
 `source/profile_ini_slot.h`, `source/linux_tui_capture_draft.h`,
 `source/linux_tui_transfer.h`, `source/linux_tui_layout_transfer.h`,
-`tests/profile_slot_runtime_tests.cpp` (9950-9969, 12500-12504),
+`tests/profile_slot_runtime_tests.cpp` (9950-9969, 12500-12504, 12600-12622),
 `tests/profile_tools_tests.cpp` (9970-9996), `tests/tui_profile_tools_tests.cpp`
 (9770-9793), `tests/profile_ini_slot_tests.cpp` (9930-9948).
 
@@ -41,6 +42,26 @@ Current behavior:
   fixed point). Windows uses `g_app.curve`; the TUI Load uses the shown snapshot;
   the Linux file-level loader (daemon startup) has no live curve, so a
   voltage-bound slot refuses there until loaded once in the TUI and saved.
+- **Legacy flat-tail offset-artifact repair (2026-11-20).** Profiles saved
+  before live VF offset detection excluded unowned external programmed flat
+  tails (`vf_live_offset_policy.h`) could record a large negative graphics
+  offset below `-1000 MHz` (e.g. `-1927 MHz` with `exclude_low_count >= lock_ci`)
+  alongside an explicit `FLATTEN` lock, an absolute flat tail matching
+  `lock_mhz`, and zero projected points. `source/profile_legacy_flat_tail_offset_policy.h`
+  recognizes this exact dead artifact (`< -1000 MHz`, `FLATTEN` lock with
+  absolute tail points above `lockCi`, zero projected/captured points, and
+  either `excludeLowCount >= lockCi` corroborated by any recorded tail observed
+  offsets or `excludeLowCount == 0` with zero pre-tail points, at least four
+  matching observed tail offsets within `30 MHz`, and an observed anchor offset
+  not matching the tail delta) and neutralizes it to stock `0 MHz` (`exclude=0`,
+  `lockTracksAnchor=0`) identically across `profile_desired_from_indexed_document()`,
+  Windows ordinary INI load (`config_profile_repair.cpp` before IPC clamping),
+  Linux ordinary INI load (`linux_profile_document_load.h` /
+  `linux_port_profiles.cpp`), and `profile_document_summary()`, with one-line
+  repair diagnostics. All genuinely out-of-range offsets (no flatten lock,
+  `excludeLowCount < lockCi`, projected points, hard lock, positive values, or
+  contradictory/missing uniform proof) continue to be refused with exact MHz
+  and bounds.
 - **The legacy adapter is exact now.** Precise graphics/point/lock Hz export as
   such, and projected points keep their saved MHz as a labeled observation, so an
   export/import round trip reproduces the slot.

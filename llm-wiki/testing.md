@@ -1,5 +1,31 @@
 # Testing
 
+## Legacy flat-tail graphics offset artifact repair (2026-11-20)
+
+- `tests/profile_slot_runtime_tests.cpp` (`12600-12622`) executes
+  `source/profile_legacy_flat_tail_offset_policy.h`, `source/profile_slot_runtime.h`,
+  and `source/profile_summary.h`:
+  - `12600-12606`: exact pre-fix selective flat-tail artifact (`-1927 MHz`,
+    `exclude_low_count=76`, `FLATTEN` lock `ci=76 @ 2962 MHz`, `track_anchor=1`,
+    absolute tail `76..126`, anchor observed offset `+480 MHz`, tail observed
+    offsets `-1927 MHz`) loads cleanly as `DESIRED_SCOPE_LEGACY` with
+    `gpuOffsetMHz=0`, `gpuOffsetExcludeLowCount=0`, `lockTracksAnchor=0`,
+    survives portable bank encode/decode, summarizes as `core 0 MHz`, and also
+    repairs `excludeLowCount=lockCi+1`, selective without observed offsets, and
+    uniform `exclude=0` with observed tail-only proof.
+  - `12607-12616`: strict negative cases that must stay refused (`excludeLowCount
+    < lockCi`, projected point present, `LOCK_MODE_HARD`, anchor-only curve with
+    no tail points, contradictory tail observed offsets, positive `+1927 MHz`,
+    uniform without observed offsets, uniform with pre-tail point, uniform where
+    anchor also carries `-1927 MHz`, and overflow-safe `LLONG_MIN`/`LLONG_MAX`).
+  - `12617-12622`: `DesiredSettings` ordinary-INI helper positive/negative cases
+    and `profile_desired_repair_legacy_flat_tail_offset()`.
+- `tools/ui_gates.py` (`check_import_transfer_slots_and_runtime_check()`) pins
+  wiring across `profile_slot_runtime.h`, `profile_summary.h`,
+  `config_profiles.cpp`, `config_profile_repair.cpp`,
+  `config_profile_document_load.h`, `linux_port_profiles.cpp`,
+  `linux_profile_document_load.h`, and `linux_tui_actions.cpp`.
+
 ## Zero-MHz projected INI round-trip and projected-vs-absent ownership matching (2026-11-20)
 
 - `tests/regression_main.cpp` (`12560-12575`) executes

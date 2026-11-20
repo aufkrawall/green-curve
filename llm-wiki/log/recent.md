@@ -5,6 +5,47 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-20: Loading an older saved flatten profile failed with "graphics offset (-1927 MHz) is out of range"
+
+- Reported: clicking Load on Profile 1 raised
+  `Profile 1: graphics offset (-1927 MHz) is out of range (-1000..1000 MHz)`.
+- Root cause (confirmed from stored profile structure and code):
+  1. Profile 1 had originally been saved by a pre-`5d80beb` Green Curve build
+     while an external tool's flatten at `ci=76` (`2962 MHz`) was active; the
+     old selective VF offset detector misread the flattened tail (`ci=77..126`
+     at `-1927 MHz`, anchor `ci=76` at `+480 MHz`, `0..75` at `0 MHz`) as
+     `gpu_offset_mhz=-1927` with `gpu_offset_exclude_low_count=76` alongside
+     `lock_mode=flatten`, `lock_ci=76`, `lock_mhz=2962`, `lock_tracks_anchor=1`,
+     absolute tail points `76..126` (`2962 MHz`), and zero projected points.
+  2. In ordinary INI form, `validate_desired_settings_for_ipc()` silently
+     clamped `-1927` to `-1000` while leaving `exclude_low_count=76` (and with
+     `lock_tracks_anchor=1` could corrupt the lock target). Once exported and
+     re-imported as a portable indexed document, `profile_desired_from_indexed_document()`
+     rejected `-1927 MHz` outright against `-1000..1000 MHz`, making the slot
+     impossible to load even in the editor.
+- Fix:
+  1. Added pure `source/profile_legacy_flat_tail_offset_policy.h` recognizing
+     only that provably dead pre-fix flat-tail artifact (`< -1000 MHz`,
+     `LOCK_MODE_FLATTEN` with absolute tail points above `lockCi` matching
+     `lockMHz`, zero projected/captured points, and either
+     `excludeLowCount >= lockCi` corroborated by any recorded tail observed
+     offsets or `excludeLowCount == 0` with zero pre-tail points, at least four
+     matching observed tail offsets within `30 MHz`, and an observed anchor
+     offset differing from the tail delta).
+  2. Neutralized the artifact to stock `0 MHz` (`gpuOffsetMHz=0`,
+     `gpuOffsetExcludeLowCount=0`, `lockTracksAnchor=0`) identically across
+     `profile_desired_from_indexed_document()`, Windows ordinary INI load
+     (`config_profile_repair.cpp` / `config_profiles.cpp` before IPC clamping),
+     Linux ordinary INI load (`linux_profile_document_load.h` /
+     `linux_port_profiles.cpp`), and `profile_document_summary()`, with
+     one-line repair logs across all Windows/Linux document and INI loaders.
+     All genuinely out-of-range offsets continue to be refused with exact MHz
+     and bounds.
+- Verified: regression cases `12600-12622` (`tests/profile_slot_runtime_tests.cpp`),
+  `tools/ui_gates.py`, `--test`, `--check --target all`, `--tidy`, and full
+  deliverable `python build.py`. Live GUI reload of Profile 1 pending user
+  install of the freshly built setup.
+
 ## 2026-11-20: Upgrade restore of an imported profile lost its tray checkmark (zero-MHz projected points dropped on INI export)
 
 - Reported: installing a new Green Curve version on top restored the running

@@ -79,6 +79,7 @@ Curve checks, profile transfer and capture improve.
 - **Multi-GPU Windows systems:** Apply, Reset and logon profiles no longer leave a GPU's settings and fan untracked by moving to another GPU; reset that GPU first.
 - **GPU selector on Windows:** choosing another GPU now switches the live view instead of snapping back, and profiles act only on the GPU shown.
 - **Curve preview and loaded profiles:** previewing an offset profile over a flattened curve no longer spikes points pulled up by driver cross-talk or clamped tails, and loading imported offset profiles keeps valid draft values for Apply and Save.
+- **Older flattened profiles:** profiles saved or imported with a large negative graphics offset left over from an external flattened tail now load cleanly with a 0 MHz core offset instead of failing with an out-of-range error.
 
 ### Compatibility notes
 
