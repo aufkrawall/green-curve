@@ -681,7 +681,7 @@ bool linux_daemon_set_startup_policy(unsigned int mode, int profileSlot,
 }
 
 bool linux_daemon_refresh_startup_profile(int profileSlot,
-                                          const DesiredSettings* desired,
+                                          const DesiredSettings* desired, const ServiceResponse* reviewed,
                                           char* result, size_t resultSize) {
     ServiceRequest req = {};
     ServiceResponse resp = {};
@@ -690,9 +690,14 @@ bool linux_daemon_refresh_startup_profile(int profileSlot,
     req.command = SERVICE_CMD_REFRESH_STARTUP_PROFILE;
     req.callerPid = (gc_u32)getpid();
     req.profileSlot = (gc_u32)profileSlot;
-    // No targetGpu and no startupMode by contract: the binding and the mode are
-    // the daemon's, and the validator on both ends rejects a refresh that tries
-    // to carry either.
+    if (reviewed) {
+        if (!reviewed->startupTopologyBound || reviewed->snapshot.selectedAdapterIndex >= reviewed->snapshot.adapterCount ||
+            reviewed->snapshot.selectedAdapterIndex >= MAX_GPU_ADAPTERS) return false;
+        req.targetGpu = reviewed->snapshot.adapters[reviewed->snapshot.selectedAdapterIndex];
+        req.expectedServiceInstanceId = reviewed->state.serviceInstanceId;
+        req.expectedGpuGeneration = reviewed->state.gpuGeneration;
+        req.expectedTopologySignature = reviewed->state.topologySignature;
+    }
     if (desired) req.desired = *desired;
     char err[256] = {};
     bool ok = linux_daemon_send(&req, &resp, err, sizeof(err));

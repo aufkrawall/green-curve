@@ -4796,7 +4796,7 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 37) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 38) return 81;
         // These are release gates, not incidental layout observations. A field
         // addition that changes a fixed-size IPC structure must bump the wire
         // version; otherwise mixed old/new peers pass the header handshake and
@@ -14517,9 +14517,8 @@ static int run_all_tests_final() {
         validate_desired_settings_for_ipc(&roundTripped);
         if (!desired_settings_equal(&roundTripped, &edited)) return 1997;
 
-        // Wire contract for the refresh command: it names a slot and carries
-        // neither a GPU nor a startup mode, because the binding and the mode
-        // belong to the stored record.
+        // Offline refresh names only the slot. A refresh mapped against a GPU
+        // also carries its complete topology precondition. Both retain the binding.
         ServiceRequest refresh = {};
         refresh.magic = SERVICE_PROTOCOL_MAGIC;
         refresh.version = SERVICE_PROTOCOL_VERSION;
@@ -14537,6 +14536,13 @@ static int run_all_tests_final() {
         ServiceRequest refreshWithGpu = refresh;
         refreshWithGpu.targetGpu = boundGpu;
         if (validate_service_request_for_ipc(&refreshWithGpu)) return 2001;
+        ServiceRequest attached = refreshWithGpu;
+        attached.expectedServiceInstanceId = 5;
+        attached.expectedGpuGeneration = 6;
+        attached.expectedTopologySignature = 7;
+        if (!validate_service_request_for_ipc(&attached)) return 12712;
+        attached.expectedTopologySignature = 0;
+        if (validate_service_request_for_ipc(&attached)) return 12712;
         ServiceRequest refreshWithMode = refresh;
         refreshWithMode.startupMode = SERVICE_STARTUP_POLICY_PROFILE;
         if (validate_service_request_for_ipc(&refreshWithMode)) return 2002;
@@ -14610,6 +14616,11 @@ static int run_all_tests_final() {
         ServiceResponse nonBoolean = policy;
         nonBoolean.startupProfileValid = 2;
         if (validate_service_response_for_ipc(&nonBoolean)) return 2033;
+        ServiceResponse boundTopology = policy;
+        boundTopology.startupTopologyBound = 1;
+        if (!validate_service_response_for_ipc(&boundTopology)) return 12713;
+        boundTopology.state.topologySignature = 0;
+        if (service_response_startup_profile_is_coherent(&boundTopology)) return 12713;
         ServiceResponse strayReserved = policy;
         strayReserved.startupProfileReserved[3] = 1;
         if (validate_service_response_for_ipc(&strayReserved)) return 2034;

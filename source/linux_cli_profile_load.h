@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Live-daemon fallback for resolving voltage-bound portable profile slots on
-// Linux CLI and startup-policy paths. Position-based slots and ordinary INI
+// Linux CLI and initial startup-policy binding. Position-based slots and ordinary INI
 // slots load offline without contacting the daemon; voltage-bound slots fetch
 // the live VF topology from the daemon once and map by exact voltage.
 #ifndef GREEN_CURVE_LINUX_CLI_PROFILE_LOAD_H

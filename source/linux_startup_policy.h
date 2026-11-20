@@ -138,6 +138,18 @@ static void daemon_handle_refresh_startup_profile(const ServiceRequest* req,
              service_startup_policy_mode_name(g_startupPolicy.mode),
              (unsigned int)g_startupPolicy.profileSlot);
     } else {
+        if (req->expectedTopologySignature) {
+            ServiceSnapshot current{};
+            populate_snapshot(&current, nullptr);
+            if (!daemon_selected_startup_topology() || !linux_mutation_authority_matches(req,
+                    daemon_service_instance_id(), g_daemonGpuGeneration, service_snapshot_topology_signature(&current),
+                    &g_gpu.selectedGpu, SERVICE_MUTATION_DOMAIN_VF_CURVE)) {
+                resp->status = SERVICE_STATUS_STALE_STATE;
+                gc_strlcpy(resp->message, sizeof(resp->message), "startup GPU topology changed during refresh");
+                dlog("startup sync: refusing stale topology attachment\n");
+                return;
+            }
+        }
         DesiredSettings requested = req->desired;
         validate_desired_settings_for_ipc(&requested);
         LinuxDaemonStartupRecord record = {};

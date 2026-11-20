@@ -20,6 +20,15 @@ static gc_u64 daemon_service_instance_id() {
     return g_daemonServiceInstanceId;
 }
 
+static bool daemon_selected_startup_topology() {
+    if (!g_gpuReady || !g_gpu.writeIdentityResolved || !g_gpu.vfSnapshotFresh || !g_gpu.numPopulated ||
+        g_startupPolicy.mode != SERVICE_STARTUP_POLICY_PROFILE) return false;
+    const auto selection = linux_gpu_restore_selection(&g_startupPolicy.targetGpu,
+        (GpuLocationRole)g_startupPolicy.targetLocationRole, g_gpu.adapters, g_gpu.adapterCount,
+        &g_startupPolicy.targetUuid, g_gpu.adapterUuids, nullptr);
+    return selection.writeResolved && selection.index == (int)g_gpu.selectedAdapterIndex;
+}
+
 static void daemon_stamp_state_envelope(ServiceResponse* response, bool passive = false) {
     // Rebuild snapshot and controls together under g_lock.  This keeps the
     // envelope atomic: identity, topology, live controls and active intent all
@@ -64,6 +73,9 @@ static void daemon_stamp_state_envelope(ServiceResponse* response, bool passive 
         response->state.topologySignature =
             service_snapshot_topology_signature(&response->snapshot);
     }
+    if (response->startupProfileValid && (response->state.validSections & SERVICE_STATE_SECTION_ADAPTER_IDENTITY) &&
+        (response->state.validSections & SERVICE_STATE_SECTION_CURVE_TOPOLOGY))
+        response->startupTopologyBound = gc_bool8_from_bool(daemon_selected_startup_topology());
     if (response->controlState.valid)
         response->state.validSections |= SERVICE_STATE_SECTION_APPLIED_CONTROLS;
     if (response->snapshot.gpuTemperatureValid ||

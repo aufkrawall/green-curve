@@ -58,7 +58,7 @@ Curve editing, profile transfer and capture improve.
 - **Profile transfer:** retain scope, graphics controls and repeated-voltage point bindings.
 - **Windows advanced edits:** preserve omitted external settings.
 - **Windows power reset:** restore defaults even when displaying 100%.
-- **Linux startup:** accept all slots.
+- **Linux startup:** check all slots against their assigned GPU.
 - **TUI numeric edits:** replace precise values.
 - **Unicode banks:** preserve text and encoding.
 - **Unsaved drafts:** confirm replacement, including invalid input.

@@ -192,13 +192,12 @@ static inline const char* service_request_reject_reason(
         }
     } else if (r->command == SERVICE_CMD_REFRESH_STARTUP_PROFILE) {
         // Content-only update of an already-bound policy. It must name the slot
-        // it claims to refresh and must carry NO GPU and NO startup mode: the
-        // binding and the mode belong to the stored record, and accepting them
-        // here would turn a refresh into a re-bind.
+        // it claims to refresh. Live-mapped content carries the entire reviewed
+        // topology attachment. Its target is a precondition only.
         if (r->operationId || r->flags || r->resetOcBeforeApply ||
             r->applyOrigin || r->profileSource || r->startupMode ||
-            r->targetGpu.valid || anyPrecondition)
-            return "startup profile refresh would re-bind the policy";
+            (r->targetGpu.valid != (anyPrecondition && r->expectedTopologySignature != 0)))
+            return "startup profile refresh requires a complete topology attachment";
         if (!r->profileSlot || r->profileSlot > (gc_u32)CONFIG_NUM_SLOTS)
             return "startup profile refresh without a real slot";
     } else if (r->command == SERVICE_CMD_RESUME_RESTORE) {
@@ -703,7 +702,7 @@ static inline bool service_response_payload_is_absent(
         service_desired_settings_is_zero(r->desired) &&
         service_control_state_is_zero(r->controlState) &&
         service_desired_settings_is_zero(r->startupProfile) &&
-        r->startupProfileValid == 0 &&
+        r->startupProfileValid == 0 && r->startupTopologyBound == 0 &&
         service_scalar_array_is_zero(r->startupProfileReserved) &&
         hardware_capture_bytes_zero(&r->capture, sizeof(r->capture));
 }
@@ -743,7 +742,10 @@ static inline bool validate_service_update_state_for_ipc(ServiceUpdateState* upd
 static inline bool service_response_startup_profile_is_coherent(
     const ServiceResponse* r) {
     if (!r) return false;
-    if (r->startupProfileValid > 1) return false;
+    if (r->startupProfileValid > 1 || r->startupTopologyBound > 1) return false;
+    if (r->startupTopologyBound && (!r->startupProfileValid || !r->snapshot.loaded ||
+        !r->state.topologySignature || !(r->state.validSections & SERVICE_STATE_SECTION_ADAPTER_IDENTITY) ||
+        !(r->state.validSections & SERVICE_STATE_SECTION_CURVE_TOPOLOGY))) return false;
     for (unsigned int i = 0; i < sizeof(r->startupProfileReserved); ++i)
         if (r->startupProfileReserved[i] != 0) return false;
     if (!r->startupProfileValid)

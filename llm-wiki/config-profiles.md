@@ -50,9 +50,13 @@ Current behavior:
   the whole record with a plain reason otherwise (needs the GPU / different GPU /
   fixed point). Windows uses `g_app.curve`; the TUI Load and startup-policy bind
   use the shown daemon snapshot; Linux CLI (`--dump`, `--json`, `--apply-config`,
-  `--startup-profile`) and startup sync (`linux_startup_sync.cpp`) load
+  `--startup-profile`) load
   position-based slots offline and fall back to fetching the live daemon VF
   topology once (`linux_cli_profile_load.h`) when a slot reports `needsLive`.
+  Startup status uses the voltage table in the same policy response only when
+  the boot resolver identifies the selected GPU. Otherwise the comparison is
+  unknown. A voltage-mapped refresh checks the same GPU, generation, service
+  instance and topology again when the daemon accepts the new settings.
   `linux_main.cpp` also defers slot materialization for verbs that do not need a
   configured profile (`--tui`, `--probe`, `--reset --apply-config`), reading
   only `selected_slot` via `load_selected_profile_slot()` so a voltage-bound
@@ -96,7 +100,8 @@ Current behavior:
   the snapshot (TUI).
 - **Export** ticks saved slots (summaries via `profile_document_summary()`), then a
   native Save As (Windows) or a typed path with overwrite confirmation (TUI); the
-  job prepares and commits in one worker run.
+  job prepares and commits in one worker run. The TUI uses an atomic no-replace
+  rename for its first attempt. Empty and oversized destinations also prompt.
 - **Ordinary INI slots decode as their runtime record** (`profile_ini_slot.h`, used
   by export, the slot summaries and INI import). Base keys go through the historical
   decoder; the keys newer slots add (`application_scope`, precise Hz, captured
@@ -112,7 +117,7 @@ Current behavior:
   A file being imported still asks. The `gpu_offset_exclude_low_count` copy that
   Windows writes into the curve section is accepted and must equal the control
   section's value (the loaders read only that one).
-- **Import** reads the file first (`profile_editor_transfer_probe()`): portable banks
+- **Import** keeps the reviewed source bytes through commit. It reads the file first (`profile_editor_transfer_probe()`): portable banks
   list records in file order; anything else is tried as an old INI (Windows
   interpretation by default, switchable), slot by slot, and a missing memory unit or
   curve meaning becomes a question instead of a failure. Default destination slots
@@ -2154,5 +2159,3 @@ Source anchors: `source/gui_observed_lock_policy.h`, `source/main_observed_lock.
 - **Diagnostics:** `lock observe: action=...` (`debug_log_on_change`), plus
   `lock observe: showing...` / `withdrawn` and `profile-save: ... observedLock=...
   unsavedBelowLock=... firstBelow=ci...`.
-
-The Windows dialog and Linux TUI keep the bounded bytes used to display import records through commit. The TUI first publishes exports with a no-replace rename. Only an existing destination triggers overwrite confirmation, including empty and oversized files. Other filesystem failures remain errors.

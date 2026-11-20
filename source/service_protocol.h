@@ -87,7 +87,8 @@ enum {
     // v30 preserves independent signed-Hz captured VF offsets, including zero.
     // v31 defines explicit update/replacement/release and VF point-set semantics.
     // v37 binds passive review to both named clock APIs and outgoing ownership.
-    SERVICE_PROTOCOL_VERSION = 37,
+    // v38 identifies the selected topology of a bound startup profile.
+    SERVICE_PROTOCOL_VERSION = 38,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply; on a state read it
@@ -767,15 +768,13 @@ struct ServiceResponse {
     // silently overwritten on the way out.
     DesiredSettings desired;
     ControlState controlState;
-    // The Linux daemon's boot-apply snapshot -- what it would write to the GPU
-    // at the next start, which is NOT the same thing as what is applied now.
-    // Populated only by the startup-policy commands; startupProfileValid says
-    // whether this response carries it, and it may only be set while the
-    // published policy mode is PROFILE. Always zero on Windows, which has its
-    // own logon coordinator.
+    // Linux boot settings, published by startup-policy commands in PROFILE mode.
+    // startupTopologyBound ties these settings to the selected GPU's curve in
+    // this same response. Both flags are always zero on Windows.
     DesiredSettings startupProfile;
     gc_bool8 startupProfileValid;
-    gc_bool8 startupProfileReserved[7];
+    gc_bool8 startupTopologyBound; // The selected GPU supplies the boot profile topology.
+    gc_bool8 startupProfileReserved[6];
     // Stamped onto EVERY response by the one place that stamps
     // outcomeSeverity, so a new command branch cannot leave it behind.
     ServiceUpdateState update;

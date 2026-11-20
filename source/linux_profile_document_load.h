@@ -33,8 +33,7 @@ static bool load_document_section(const char* path, const char* section, const c
         return false;
     }
     const bool needsDestination = profile_document_requires_destination(*document);
-    if (needsLiveDestinationOut && needsDestination && !destination)
-        *needsLiveDestinationOut = true;
+    if (needsLiveDestinationOut) *needsLiveDestinationOut = needsDestination;
     const bool repairedFlatTailOffset =
         !needsDestination &&
         profile_indexed_document_has_legacy_flat_tail_offset_artifact(*document);

@@ -113,7 +113,7 @@ bool linux_daemon_set_startup_policy(unsigned int mode, int profileSlot,
 // rewritten on disk.  Keeps the stored GPU binding, mode, slot and name, so it
 // is not a re-bind; fails when the daemon holds no such policy.
 bool linux_daemon_refresh_startup_profile(int profileSlot,
-                                          const DesiredSettings* desired,
+                                          const DesiredSettings* desired, const ServiceResponse* reviewed,
                                           char* result, size_t resultSize);
 
 // Install / remove the systemd unit (greencurve.service running `--daemon`) and

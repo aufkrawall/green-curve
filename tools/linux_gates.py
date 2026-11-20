@@ -548,7 +548,7 @@ def check_startup_policy(ctx, require_text, forbid_text):
     daemon_cpp = _p(ctx, "linux_daemon.cpp")
     policy_h = _p(ctx, "linux_startup_policy.h")
     cli_cpp = _p(ctx, "linux_cli_options.cpp")
-    require_text(protocol_h, "SERVICE_PROTOCOL_VERSION = 37",
+    require_text(protocol_h, "SERVICE_PROTOCOL_VERSION = 38",
                  "the startup-policy, readback-validity, outcome-severity and "
                  "update-state/XBAR fields each moved the protocol version with "
                  "them")
@@ -607,7 +607,7 @@ def check_startup_policy(ctx, require_text, forbid_text):
                  "a refresh reuses the stored GPU binding instead of trusting the caller")
     require_text(sync_cpp, "linux_daemon_refresh_startup_profile(",
                  "the shared client path pushes the reloaded profile to the daemon")
-    require_text(sync_cpp, "linux_load_profile_with_daemon_fallback(configPath, slot",
+    require_text(sync_cpp, "load_startup_slot(configPath, slot",
                  "the pushed snapshot is reloaded from disk, not taken from memory")
     require_text(tui_actions, "sync_startup_snapshot_after_profile_write(state,",
                  "the TUI pushes the new content after writing a bound profile slot")

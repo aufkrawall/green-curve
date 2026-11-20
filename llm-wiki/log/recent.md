@@ -5,6 +5,14 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-20: Curve correction, profile I/O and GPU binding
+
+- Linux VF correction requires a fresh snapshot, a retry-eligible write policy and convergence of projected offsets. Windows retargeting disambiguates identical boards, and Reset preserves fractional memory readback.
+- Both editors import the reviewed source. Linux exports require consent before replacement. Complete voltage bindings survive transfer and domain-only releases use the destination's writable points.
+- Startup comparison uses topology from the bound GPU. A mapped refresh carries the service instance, GPU generation and topology signature used to resolve the slot.
+
+- Verification: the Windows regression suite and source gates passed. The Linux regression harness and filesystem fixture ran under WSL. Build 405 produced twelve packages whose binary payloads and SHA-256 sidecars matched. GPU failures were exercised with fixtures.
+
 ## 2026-11-20: Release-range review fixes verified and packaged
 
 - Completed the seven review corrections: planner-fixture request lifetime;

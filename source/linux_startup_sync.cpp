@@ -11,6 +11,19 @@
 #include <stdio.h>
 #include <string.h>
 
+// Settings and topology must come from the same boot-policy response.
+static bool load_startup_slot(const char* configPath, int slot, const ServiceResponse& policy,
+    DesiredSettings* desired, bool& needsTopology, bool& unavailable, char* err, size_t errSize) {
+    ProfileDestinationTopology topology{};
+    const bool bound = policy.startupTopologyBound && policy.state.startupPolicySlot == (unsigned int)slot &&
+        linux_profile_destination_from_snapshot(&policy.snapshot, &topology);
+    const bool loaded = load_profile_from_config_path_for_destination(configPath, slot, bound ? &topology : nullptr,
+        desired, err, errSize, &needsTopology);
+    unavailable = needsTopology && !bound;
+    if (unavailable) gc_strlcpy(err, errSize, "the startup GPU topology is unavailable");
+    return loaded;
+}
+
 LinuxStartupSyncResult linux_startup_sync_after_profile_write(
     const char* configPath, int slot, bool slotStillHasContent,
     bool daemonReachable, unsigned int policyMode, unsigned int policySlot) {
@@ -53,8 +66,11 @@ LinuxStartupSyncResult linux_startup_sync_after_profile_write(
     // normalized on the way out.
     DesiredSettings saved = {};
     char loadErr[256] = {};
-    if (!linux_load_profile_with_daemon_fallback(configPath, slot, nullptr,
-                                                 &saved, loadErr, sizeof(loadErr))) {
+    ServiceResponse policy{};
+    char policyError[256]{};
+    if (!linux_daemon_get_startup_policy(&policy, policyError, sizeof(policyError))) policy.startupTopologyBound = false;
+    bool needsTopology = false, unavailable = false;
+    if (!load_startup_slot(configPath, slot, policy, &saved, needsTopology, unavailable, loadErr, sizeof(loadErr))) {
         result.ok = false;
         snprintf(result.message, sizeof(result.message),
                  "boot-apply snapshot NOT refreshed: %s",
@@ -64,7 +80,7 @@ LinuxStartupSyncResult linux_startup_sync_after_profile_write(
         return result;
     }
     normalize_desired_settings_for_ui(&saved);
-    result.ok = linux_daemon_refresh_startup_profile(slot, &saved, daemonResult,
+    result.ok = linux_daemon_refresh_startup_profile(slot, &saved, needsTopology ? &policy : nullptr, daemonResult,
                                                      sizeof(daemonResult));
     snprintf(result.message, sizeof(result.message), result.ok
         ? "boot-apply snapshot for slot %d refreshed"
@@ -110,7 +126,7 @@ void print_startup_snapshot_report(FILE* out,
                     report->detail[0] ? report->detail : "slot unavailable");
             break;
         case STARTUP_SNAPSHOT_STATE_UNKNOWN:
-            fprintf(out, "Startup snapshot could not be read back (%s)\n",
+            fprintf(out, "Startup snapshot comparison unavailable (%s)\n",
                     report->detail[0] ? report->detail : "daemon request failed");
             break;
         case STARTUP_SNAPSHOT_STATE_NOT_APPLICABLE:
@@ -123,15 +139,15 @@ LinuxStartupSnapshotReport linux_startup_snapshot_report(
     unsigned int policySlot) {
     LinuxStartupSnapshotReport report = {};
     report.slot = policySlot;
+    ServiceResponse policy{};
     if (daemonReachable && policyMode == SERVICE_STARTUP_POLICY_PROFILE) {
-        ServiceResponse policy = {};
         char err[256] = {};
         if (linux_daemon_get_startup_policy(&policy, err, sizeof(err))) {
             // startupProfile, not desired: the latter is the ACTIVE intent that
             // the daemon stamps onto every response, so reading it here compared
             // whatever is applied right now against the profile and called the
             // difference a stale boot snapshot.
-            if (policy.startupProfileValid) {
+            if (policy.startupProfileValid && policy.state.startupPolicySlot == policySlot) {
                 report.snapshot = policy.startupProfile;
                 report.snapshotKnown = true;
             } else {
@@ -143,6 +159,7 @@ LinuxStartupSnapshotReport linux_startup_snapshot_report(
                                  policy.state.startupPolicySlot);
             }
         } else {
+            policy.startupTopologyBound = false;
             gc_strlcpy(report.detail, sizeof(report.detail),
                        err[0] ? err : "daemon request failed");
             linux_debug_logf("startup sync: cannot read the boot-apply "
@@ -150,16 +167,15 @@ LinuxStartupSnapshotReport linux_startup_snapshot_report(
         }
     }
     char loadErr[256] = {};
+    bool needsTopology = false, unavailable = false;
     report.profileLoaded = startup_snapshot_slot_is_valid(policySlot) &&
-        (daemonReachable
-            ? linux_load_profile_with_daemon_fallback(configPath, (int)policySlot, nullptr,
-                                                      &report.profile, loadErr, sizeof(loadErr))
-            : load_profile_from_config_path(configPath, (int)policySlot,
-                                            &report.profile, loadErr, sizeof(loadErr)));
+        load_startup_slot(configPath, (int)policySlot, policy, &report.profile, needsTopology, unavailable,
+            loadErr, sizeof(loadErr));
     if (report.profileLoaded) normalize_desired_settings_for_ui(&report.profile);
     else if (loadErr[0] && !report.detail[0])
         gc_strlcpy(report.detail, sizeof(report.detail), loadErr);
-    report.state = startup_snapshot_state_for(policyMode, policySlot,
+    report.state = unavailable && policyMode == SERVICE_STARTUP_POLICY_PROFILE ? STARTUP_SNAPSHOT_STATE_UNKNOWN :
+        startup_snapshot_state_for(policyMode, policySlot,
         report.snapshotKnown, &report.snapshot, report.profileLoaded,
         &report.profile);
     // Logged on every evaluation: a boot-apply that disagrees with config.ini

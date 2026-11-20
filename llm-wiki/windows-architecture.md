@@ -147,7 +147,9 @@ comparison.
 ### Protocol constants
 
 - Magic: `0x47535643u` (`"GSVC"`)
-- Version: `28` (v20 added Blackwell XBAR clock/MSVDD, v21 SYS clock,
+- Protocol version `38` uses a reserved response byte for the startup GPU topology binding.
+  The request is 5096 bytes and the response is 19568 bytes. Both peers must use the same version.
+- Earlier changes (v20 added Blackwell XBAR clock/MSVDD, v21 SYS clock,
   v22 VIDEO clock, v23 native zero-RPM curve intent, v24 assigned a reserved
   fan-curve byte to its independent fan-off gap, and v25 carries real active
   measured XBAR voltage `xbarMeasuredVoltageUv` in `ServiceSnapshot`. Wire
@@ -160,7 +162,7 @@ comparison.
   `ServiceStateEnvelope`, nonzero service instance/revision/GPU-generation
   identity, phase/topology/active-intent validity, mutation preconditions,
   operation deduplication/result query, and fixed-width `gc_bool8` validation
-  all remain. Current exact sizes (protocol 29) are `ServiceRequest=1552`,
+  all remain. At protocol 29 the sizes were `ServiceRequest=1552`,
   `ControlState=188`, `DesiredSettings=964`, `ServiceSnapshot=4440`, and
   `ServiceResponse=7560`; v29 appended the 192-byte `ServiceAutoApplyFailure`
   record to the snapshot (see auto-restore-policy.md); v26/v27 added `DesiredSettings.curvePointFromGpuOffset`,
@@ -267,6 +269,8 @@ path report "operation … pending or unknown" for what was a definitive refusal
 service log names the rule that was broken and cannot drift from the decision.
 
 ### Readback validity producer (v14)
+
+Windows Reset keeps a fresh memory getter within one MHz of the running-clock estimate. This preserves half-MHz offsets on the path that decides whether to reset memory. The service logs physical kHz and its write decision.
 
 `populate_control_state_locked()` in `main_state_sync.cpp` publishes the bits;
 the derivation is the pure `source/control_readback_policy.h` so it is
@@ -477,7 +481,7 @@ compatible with v4 records.
 - **DLL-search hardening (F-SEC-2):** `initialize_process_mitigations()` (`process_hardening.cpp`) calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS)` + `SetDllDirectoryW(L"")` before any runtime `LoadLibrary`, blocking DLL planting of non-KnownDLLs (e.g. `dbghelp.dll`, `version.dll`).
 - **IPC trust boundary (F-SEC-4):** `validate_desired_settings_for_ipc()` clamps every numeric field reachable from an Authenticated-User request — including `lockCi`, `gpuOffsetExcludeLowCount`, `fanMode`, and the embedded fan curve — before the service applies it. Wire booleans are fixed-width `gc_bool8`; request/response validators canonicalize them to `0/1` before privileged logic or GUI adoption.
 - **GPU target/recovery identity:** APPLY/RESET requests validate the requested GPU index and PCI identity against the live adapter list before mutating service-global selection. Controlled-recovery snapshots persist both desired settings and target `GpuAdapterInfo`; old snapshots without identity are cleared, and a validated controlled restore skips rather than targeting a different adapter. Ordinary startup never consumes the snapshot.
-- **Single-owner GPU retarget guard (2026-11-19):** the service holds one active intent bound to `g_serviceActiveDesiredGpu` and one runtime target (`g_app.selectedGpu`, its NVML device, the fan runtime). Before `service_prepare_requested_gpu()` (Apply, Reset, reviewed Apply, shared-binding Apply) or `service_lifecycle_select_context_gpu()` (logon) moves that runtime, `service_intent_owner_permits_target()` (`main_service_intent_owner.cpp`) applies `gpu_intent_owner_policy.h`: while an intent is held, a retarget may go only to its owner. A Reset may release an owner that provably left the adapter list; an Apply may not, because the non-replacing merge would inherit the owner's fields. Requests that keep the current target are never refused; one whose current target is not the owner logs `service gpu owner: ... keeps current target ... which is not the intent owner` once per picture. A refused logon finishes as `SERVICE_LIFECYCLE_RESULT_FAILED` without a write, and the worker does not retry it. Before the fix, a retarget left the owner's clocks and manual fan duty untracked. Its remaining fields were merged into the new GPU's intent, and the fan curve followed the new NVML device. Diagnostics: `service gpu owner: <origin> refused verdict=...`, `... releases the intent of absent owner ...`, `lifecycle logon: configured GPU refused without hardware mutation ...`. Linux's equivalent is `linux_gpu_switch_preserves_active_intent()`.
+- **Single-owner GPU retarget guard (2026-11-19):** the service holds one active intent bound to `g_serviceActiveDesiredGpu` and one runtime target (`g_app.selectedGpu`, its NVML device, the fan runtime). Before `service_prepare_requested_gpu()` (Apply, Reset, reviewed Apply, shared-binding Apply) or `service_lifecycle_select_context_gpu()` (logon) moves that runtime, `service_intent_owner_permits_target()` (`main_service_intent_owner.cpp`) applies `gpu_intent_owner_policy.h`: while an intent is held, a retarget may go only to its owner. If either PCI location is missing on a multi-GPU system, the base identity must be unique in a fully identified live inventory. A Reset may release an owner that provably left the adapter list; an Apply may not, because the non-replacing merge would inherit the owner's fields. Requests that keep the current target are never refused; one whose current target is not the owner logs `service gpu owner: ... keeps current target ... which is not the intent owner` once per picture. A refused logon finishes as `SERVICE_LIFECYCLE_RESULT_FAILED` without a write, and the worker does not retry it. Before the fix, a retarget left the owner's clocks and manual fan duty untracked. Its remaining fields were merged into the new GPU's intent, and the fan curve followed the new NVML device. Diagnostics: `service gpu owner: <origin> refused verdict=...`, `... releases the intent of absent owner ...`, `lifecycle logon: configured GPU refused without hardware mutation ...`. Linux's equivalent is `linux_gpu_switch_preserves_active_intent()`.
 - **Client/service GPU selection agreement (2026-11-19, `gpu_selection_sync_policy.h`):** a GUI full state read carries `targetGpu` (`g_guiFullSyncTarget` in `gui_mutation_worker.cpp`, owned by `gui_gpu_selection_sync.cpp`). The CLI sends one synchronous targeted snapshot (`validate_configured_gpu_selection_for_cli()`).
   - `service_snapshot_select_requested_gpu()` switches under the runtime lock through `service_prepare_requested_gpu(request, false, ...)`, so the retarget guard applies. A request for the shown GPU is a no-op.
   - The switch is refused for a non-admin caller under the shared-only policy (or while that policy is unreadable), and during an update install, NVML crash recovery or controlled restart. A refusal keeps the current GPU, and the snapshot message carries the reason.
@@ -959,5 +963,3 @@ cannot be driven from a test and is verified by hand.
 - 2026-06-14: Documented machine-wide default logon profile, machine-wide profile bank, and user-profile install warning (Build 284). Verified `python build.py --test`/`--asan`/`--target linux --check`.
 - 2026-06-07: Added GUI repaint-robustness section (message-pumping service/helper waits via `wait_object_pumping_ui`/`UiInputGuard`, redraw-suppressed `rebuild_edit_controls`). Verified against source and `python build.py --test`/`--asan`/`--target linux --check` (Build 271).
 - 2026-05-20: Cross-checked pipe ACL fail-closed behavior, pipe-thread startup failure handling, response protocol validation, message-mode checks, and connect-retry summary logging against source and `python build.py --check`.
-
-A retarget to an owner missing its PCI location requires one matching board in a fully identified live inventory. Reset reconciles a fresh memory getter with whole-MHz running clocks using the same resolution as passive capture. Owner refusals and Reset decisions include identity evidence and physical kHz in the existing service diagnostics.

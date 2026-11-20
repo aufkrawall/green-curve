@@ -12,6 +12,8 @@ flatten within that write set. A correction before a hard pin leaves the
 pin's existing tail offsets intact. `tests/linux_vf_write_tests.cpp` covers
 the partial reset mask and a pre-tail correction on a simulated hard lock.
 
+Linux correction requires a coherent post-write VF snapshot and a policy that permits another batch. Both correction paths require the offset writer to converge. Legacy projected offsets must also survive the full snapshot, subject to the existing idle-placeholder rule. The runtime fixture in `tests/linux_curve_correction_runtime_tests.cpp` covers these boundaries.
+
 ## Modeled lockless transition protection (2026-11-15)
 
 Source anchors: `source/modeled_curve_transition.h`,
@@ -1191,5 +1193,3 @@ Last verified: 2026-10-17, hardware-free regression harness; no Linux GPU run.
 - Opaque driver atomicity, voltage/frequency behavior, other clock-writing tools,
   device loss and inherently unstable OC remain limits. Software checks cannot
   guarantee every transient or make arbitrary user clocks stable.
-
-Linux correction requires a coherent post-write VF snapshot and a policy that permits another batch. Both correction paths require the offset writer to converge. Legacy projected offsets must also survive the full snapshot, subject to the existing idle-placeholder rule. The runtime fixture in `tests/linux_curve_correction_runtime_tests.cpp` covers these boundaries.

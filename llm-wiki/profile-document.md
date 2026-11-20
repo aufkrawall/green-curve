@@ -12,6 +12,8 @@ route when mapping the document to a GPU. The backend verifies the named
 control during Apply. `tests/profile_slot_runtime_tests.cpp` exercises the
 portable codec and both unbound and voltage-bound record loading.
 
+Runtime export preserves every saved voltage in a bound topology, including unowned points. A complete matching table can distinguish duplicate voltages by index without extending write authority. Domain-only curve and lock releases use the live resolver, which restricts a whole-curve release to writable graphics points. See `tests/profile_slot_runtime_tests.cpp`.
+
 Source anchors: `source/profile_document.h`, `source/profile_point_intent.h`,
 `source/tuning_units.h`, `source/profile_document_validation.h`,
 `source/profile_text_validation.h`, `tests/profile_document_tests.cpp` (7960-8000),
@@ -1083,5 +1085,3 @@ Source anchors: `source/profile_pin_observation.h`,
   in CLI (`--observe-pin` / `--confirm-pin-mhz`), Windows `ProfileSourceWindow`,
   or Linux TUI capture dialogs. Open gaps: `nvml_pin_observation_sample_burst()`
   execution against a physical GPU remains unverified in software-only runs.
-
-Runtime export preserves every saved voltage in a bound topology, including unowned points. A complete matching table can distinguish duplicate voltages by index without extending write authority. Domain-only curve and lock releases use the live resolver, which restricts a whole-curve release to writable graphics points. See `tests/profile_slot_runtime_tests.cpp`.

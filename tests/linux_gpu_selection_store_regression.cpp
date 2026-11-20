@@ -42,6 +42,7 @@ static int g_targetedReads;
 static GpuAdapterInfo g_liveGpu;
 static struct {
     int writes;
+    bool topologyBound;
     unsigned int mode;
     int slot;
     GpuAdapterInfo target;
@@ -57,6 +58,23 @@ bool linux_daemon_set_startup_policy(unsigned int mode, int slot, const char*,
     g_startupPolicy.slot = slot;
     g_startupPolicy.target = target ? *target : GpuAdapterInfo{};
     g_startupPolicy.desired = desired ? *desired : DesiredSettings{};
+    return true;
+}
+bool linux_daemon_get_startup_policy(ServiceResponse* response, char*, size_t) {
+    *response = {};
+    response->state.startupPolicyMode = g_startupPolicy.mode;
+    response->state.startupPolicySlot = (unsigned int)g_startupPolicy.slot;
+    response->startupProfileValid = g_startupPolicy.mode == SERVICE_STARTUP_POLICY_PROFILE;
+    response->startupProfile = g_startupPolicy.desired;
+    response->startupTopologyBound = g_startupPolicy.topologyBound;
+    response->snapshot = g_scriptedSnapshot;
+    return true;
+}
+bool linux_daemon_refresh_startup_profile(int, const DesiredSettings* desired, const ServiceResponse* reviewed,
+                                          char*, size_t) {
+    if (!reviewed || !reviewed->startupTopologyBound) return false;
+    ++g_startupPolicy.writes;
+    g_startupPolicy.desired = *desired;
     return true;
 }
 bool tui_configured_gpu_allows_write(TuiState*, const char*) { return true; }
@@ -510,6 +528,20 @@ void test_voltage_bound_profile_load_and_output() {
            "flatten lock resolves by voltage to destination index 61 @ 2962 MHz");
 
     test_startup_picker_binding(path);
+    g_startupPolicy.mode = SERVICE_STARTUP_POLICY_PROFILE;
+    g_startupPolicy.slot = 5;
+    g_startupPolicy.desired = desired;
+    const auto report = [&]() { return linux_startup_snapshot_report(path.c_str(), true, g_startupPolicy.mode, 5); };
+    const auto refresh = [&]() {
+        return linux_startup_sync_after_profile_write(path.c_str(), 5, true, true, g_startupPolicy.mode, 5);
+    };
+    const int before = g_startupPolicy.writes;
+    g_startupPolicy.topologyBound = false;
+    expect(report().state == STARTUP_SNAPSHOT_STATE_UNKNOWN && !refresh().ok && g_startupPolicy.writes == before,
+           "another selected GPU cannot supply the startup comparison or refresh");
+    g_startupPolicy.topologyBound = true;
+    expect(report().state == STARTUP_SNAPSHOT_STATE_IN_SYNC && refresh().ok && g_startupPolicy.writes == before + 1,
+           "the bound GPU supplies the voltage mapping for status and refresh");
 
     int selectedSlot = 0;
     DesiredSettings selectedDesired{};
