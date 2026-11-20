@@ -8706,6 +8706,36 @@ static int run_all_tests(int argc, char** argv) {
                 pt75.targetMHz != 2931)
                 return 12543;
         }
+        // 12650-12651: Linux TUI preview for captured VF points (e.g. Profile 5
+        // zero-offset captured points over a boosted live curve) and nonzero
+        // projected points must resolve from the stock base rather than stale
+        // live/projected MHz.
+        {
+            auto capService = tuiService;
+            capService.snapshot.curve[70].freq_kHz = 2850000u;
+            capService.snapshot.freqOffsets[70] = 475000;
+            DesiredSettings capDesired{};
+            capDesired.curvePointCaptured[70] = 1;
+            capDesired.curvePointCapturedOffsetHz[70] = 0;
+            TuiViewModel capVm = vm;
+            capVm.service = &capService;
+            capVm.desired = &capDesired;
+            TuiPointValues pt70 = tui_point_values(capVm, 70);
+            if (pt70.rule != TUI_POINT_ABSOLUTE || pt70.targetMHz != pt70.baseMHz)
+                return 12650;
+
+            DesiredSettings projDesired{};
+            projDesired.hasGpuOffset = 1;
+            projDesired.gpuOffsetMHz = 475;
+            projDesired.gpuOffsetExcludeLowCount = 70;
+            projDesired.hasCurvePoint[70] = 1;
+            projDesired.curvePointFromGpuOffset[70] = 1;
+            projDesired.curvePointMHz[70] = 2700; // stale stored MHz
+            capVm.desired = &projDesired;
+            TuiPointValues proj70 = tui_point_values(capVm, 70);
+            if (proj70.rule != TUI_POINT_GPU_OFFSET || proj70.targetMHz != proj70.baseMHz + 475)
+                return 12651;
+        }
 
         TuiLayout graphLayout;
         build_tui_layout(vm, 160, 48, &graphLayout);

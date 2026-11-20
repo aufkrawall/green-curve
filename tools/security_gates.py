@@ -144,6 +144,7 @@ LINUX_FIXTURE_EXTRA_SOURCES = {
     # text/fan-curve helpers gpu_core.h's IPC validators reach.
     "linux_gpu_selection_store_regression": (
         "linux_gpu_target_config.cpp", "linux_port.cpp",
+        "linux_port_profiles.cpp", "linux_profile_output.cpp",
         "config_text_utils.cpp", "fan_curve.cpp"),
 }
 

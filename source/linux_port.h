@@ -120,6 +120,14 @@ bool merge_linux_cli_desired_settings(DesiredSettings* base,
                                       char* err, size_t errSize);
 bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts);
 void print_linux_help();
+struct ProfileDestinationTopology;
+int load_selected_profile_slot(const char* path);
+bool load_profile_from_config_path_for_destination(const char* path, int slot,
+    const ProfileDestinationTopology* destination, DesiredSettings* desired,
+    char* err, size_t errSize, bool* needsLiveOut = nullptr);
+bool load_default_or_selected_profile_for_destination(const char* path, int* slot,
+    const ProfileDestinationTopology* destination, DesiredSettings* desired,
+    char* err, size_t errSize, bool* needsLiveOut = nullptr);
 bool load_profile_from_config_path(const char* path, int slot, DesiredSettings* desired, char* err, size_t errSize);
 bool load_default_or_selected_profile(const char* path, int* slot, DesiredSettings* desired, char* err, size_t errSize);
 bool save_profile_to_config_path(const char* path, int slot, const DesiredSettings* desired, char* err, size_t errSize);

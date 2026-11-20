@@ -182,9 +182,15 @@ void apply_startup_policy_cycle(TuiState* state) {
         }
         DesiredSettings saved = {};
         char error[256] = {};
-        if (!load_profile_from_config_path(state->configPath,
-                                           state->currentSlot, &saved,
-                                           error, sizeof(error))) {
+        auto liveTopo = std::make_unique<ProfileDestinationTopology>();
+        const VfFloorTopology floor = vf_floor_topology_compute(
+            state->service.snapshot.curve, state->service.snapshot.freqOffsets, VF_NUM_POINTS);
+        const bool haveLive = profile_destination_from_vf_curve(
+            state->service.snapshot.curve, floor, *liveTopo);
+        if (!load_profile_from_config_path_for_destination(state->configPath,
+                                           state->currentSlot,
+                                           haveLive ? liveTopo.get() : nullptr,
+                                           &saved, error, sizeof(error))) {
             set_daemon_failure(state, "Startup profile load failed", error);
             return;
         }

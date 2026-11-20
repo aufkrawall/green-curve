@@ -15,6 +15,8 @@
 
 #include "linux_port.h"
 #include "linux_port_internal.h"
+#include "linux_cli_profile_load.h"
+#include "profile_slot_codec.h"
 #include "posix_test_environment.h"
 #include "linux_output_directory.h"
 #include "linux_config_lock.h"
@@ -31,12 +33,14 @@
 // linux_gpu_target_config.cpp's other half talks to this scripted daemon.
 static bool g_daemonReachable;
 static bool g_backendStartsOnTargetedRead;
+static bool g_serveScriptedSnapshot;
+static ServiceSnapshot g_scriptedSnapshot;
 static int g_targetedReads;
 static GpuAdapterInfo g_liveGpu;
 void linux_debug_logf(const char*, ...) {}
 bool linux_daemon_snapshot(ServiceSnapshot* snapshot, char* err, size_t errSize) {
     if (g_daemonReachable) {
-        if (snapshot) *snapshot = ServiceSnapshot{};
+        if (snapshot) *snapshot = g_serveScriptedSnapshot ? g_scriptedSnapshot : ServiceSnapshot{};
         return true;
     }
     if (err && errSize) snprintf(err, errSize, "%s", "no daemon in this fixture");
@@ -44,6 +48,13 @@ bool linux_daemon_snapshot(ServiceSnapshot* snapshot, char* err, size_t errSize)
 }
 bool linux_daemon_get_state(const GpuAdapterInfo* target, ServiceResponse* response,
                             char* err, size_t errSize) {
+    if (g_serveScriptedSnapshot) {
+        if (response) {
+            *response = ServiceResponse{};
+            response->snapshot = g_scriptedSnapshot;
+        }
+        return true;
+    }
     if (target && target->valid) {
         ++g_targetedReads;
         if (g_backendStartsOnTargetedRead) {
@@ -338,9 +349,134 @@ void test_config_storage_lock() {
     unlink(lockPath.c_str());
 }
 
+void test_voltage_bound_profile_load_and_output() {
+    const std::string path = path_in_root("voltage-bound.ini");
+    ProfileDocument doc = profile_document_make_empty();
+    doc.documentId = 5;
+    snprintf(doc.displayName, sizeof(doc.displayName), "%s", "Voltage-bound");
+    doc.domains = PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK |
+                  PROFILE_DOMAIN_MEMORY | PROFILE_DOMAIN_POWER;
+    doc.applicationScope = PROFILE_SCOPE_UPDATE_INCLUDED;
+    doc.pointSetPolicy = PROFILE_POINTS_REPLACE;
+    doc.legacyIndicesUnresolved = false;
+    doc.sourceTopologyComplete = false;
+    doc.topologyCount = 2;
+    doc.topology[0].topologyId = 1;
+    doc.topology[0].sourceIndex = 75;
+    doc.topology[0].voltageUv = 895000;
+    doc.topology[1].topologyId = 2;
+    doc.topology[1].sourceIndex = 76;
+    doc.topology[1].voltageUv = 900000;
+    doc.points[0].kind = PROFILE_POINT_CAPTURED_OFFSET;
+    doc.points[0].capturedOffsetHz = 0;
+    doc.lock.present = true;
+    doc.lock.anchorTopologyId = 2;
+    doc.lock.mode = LOCK_MODE_FLATTEN;
+    doc.lock.targetFrequencyHz = 2962000000LL;
+    doc.hasMemoryOffset = true;
+    doc.memoryOffsetHz = 3000000000LL;
+    doc.memorySurface = 1u;
+    doc.power.present = true;
+    doc.power.ratio = tuning_power_ratio_reduce(17, 20);
+
+    std::string slotSection;
+    expect(profile_slot_encode(doc, 5, slotSection, nullptr),
+           "voltage-bound profile document encodes into INI section");
+
+    std::string iniText = "[profiles]\nselected_slot=5\n\n" + slotSection;
+    FILE* wf = fopen(path.c_str(), "wb");
+    expect(wf != nullptr, "voltage-bound config.ini opened for write");
+    if (wf) {
+        fwrite(iniText.data(), 1, iniText.size(), wf);
+        fclose(wf);
+    }
+
+    char err[256] = {};
+    expect(load_selected_profile_slot(path.c_str()) == 5,
+           "load_selected_profile_slot reads selected_slot without materializing slot");
+
+    DesiredSettings desired{};
+    bool needsLive = false;
+    expect(!load_profile_from_config_path_for_destination(
+               path.c_str(), 5, nullptr, &desired, err, sizeof(err), &needsLive) &&
+               needsLive,
+           "offline load of voltage-bound slot reports needsLive=true");
+
+    g_serveScriptedSnapshot = true;
+    g_scriptedSnapshot = ServiceSnapshot{};
+    for (int i = 0; i < VF_NUM_POINTS; ++i) {
+        // Strictly monotonic voltages where 895000 uV lands at index 60 and
+        // 900000 uV lands at index 61 (shifted from sourceIndex 75 and 76) to
+        // prove voltage-based resolution rather than raw sourceIndex fallback.
+        g_scriptedSnapshot.curve[i].volt_uV = 595000u + (unsigned int)i * 5000u;
+        g_scriptedSnapshot.curve[i].freq_kHz = 1200000u + (unsigned int)i * 20000u;
+        g_scriptedSnapshot.freqOffsets[i] = 0;
+    }
+
+    desired = DesiredSettings{};
+    expect(linux_load_profile_with_daemon_fallback(
+               path.c_str(), 5, nullptr, &desired, err, sizeof(err)),
+           "daemon-fallback load resolves voltage-bound slot 5");
+    expect(desired.curvePointCaptured[60] == 1 && desired.curvePointCapturedOffsetHz[60] == 0 &&
+               desired.curvePointCaptured[75] == 0,
+           "captured point resolves by voltage to destination index 60");
+    expect(desired.hasLock && desired.lockCi == 61 &&
+               desired.lockMode == LOCK_MODE_FLATTEN && desired.lockMHz == 2962,
+           "flatten lock resolves by voltage to destination index 61 @ 2962 MHz");
+
+    int selectedSlot = 0;
+    DesiredSettings selectedDesired{};
+    expect(linux_load_default_or_selected_profile_with_daemon_fallback(
+               path.c_str(), &selectedSlot, nullptr, &selectedDesired, err, sizeof(err)) &&
+               selectedSlot == 5 && selectedDesired.lockCi == 61,
+           "default/selected loader also resolves voltage-bound selected slot via daemon");
+
+    const std::string textPath = path_in_root("dump.txt");
+    FILE* tf = fopen(textPath.c_str(), "wb");
+    expect(tf != nullptr, "text dump temp file opened");
+    if (tf) {
+        print_desired_settings_text(tf, 5, &desired);
+        fclose(tf);
+    }
+    std::string textOut;
+    if (FILE* rf = fopen(textPath.c_str(), "rb")) {
+        char buf[4096];
+        size_t n = fread(buf, 1, sizeof(buf) - 1, rf);
+        buf[n] = '\0';
+        textOut.assign(buf, n);
+        fclose(rf);
+    }
+    expect(textOut.find("Lock: point 61 @ 2962 MHz (flatten)") != std::string::npos &&
+               textOut.find("point60=captured(+0 Hz)") != std::string::npos,
+           "text dump prints lock mode and captured point offsets");
+
+    const std::string jsonPath = path_in_root("dump.json");
+    FILE* jf = fopen(jsonPath.c_str(), "wb");
+    expect(jf != nullptr, "json dump temp file opened");
+    if (jf) {
+        print_desired_settings_json(jf, 5, &desired);
+        fclose(jf);
+    }
+    std::string jsonOut;
+    if (FILE* rf = fopen(jsonPath.c_str(), "rb")) {
+        char buf[4096];
+        size_t n = fread(buf, 1, sizeof(buf) - 1, rf);
+        buf[n] = '\0';
+        jsonOut.assign(buf, n);
+        fclose(rf);
+    }
+    expect(jsonOut.find("{\"index\": 60, \"captured_offset_hz\": 0}") != std::string::npos,
+           "json dump emits captured_offset_hz for captured zero-offset points");
+
+    g_serveScriptedSnapshot = false;
+    g_scriptedSnapshot = ServiceSnapshot{};
+    unlink(textPath.c_str());
+    unlink(jsonPath.c_str());
+}
+
 void remove_root() {
     const char* names[] = {"missing.ini", "profiles.ini", "oversized.ini",
-                           "locked.ini", "bring-up.ini"};
+                           "locked.ini", "bring-up.ini", "voltage-bound.ini"};
     for (const char* name : names) {
         unlink(path_in_root(name).c_str());
         unlink((path_in_root(name) + ".lock").c_str());
@@ -362,6 +498,7 @@ int main() {
     test_backend_bring_up_on_read();
     test_output_directory_walk();
     test_config_storage_lock();
+    test_voltage_bound_profile_load_and_output();
     remove_root();
     if (g_failures != 0) {
         fprintf(stderr, "Linux GPU selection store regression FAILED (%d)\n",

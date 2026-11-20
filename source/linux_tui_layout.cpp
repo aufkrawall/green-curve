@@ -343,7 +343,13 @@ TuiPointValues tui_point_values(const TuiViewModel& vm, int pointIndex) {
             out.rule = TUI_POINT_FLATTEN_KNEE;
         else
             out.rule = TUI_POINT_FLATTEN_TAIL;
+    } else if (desired.curvePointCaptured[pointIndex]) {
+        const long long offHz = desired.curvePointCapturedOffsetHz[pointIndex];
+        const int offMHz = (int)((offHz >= 0 ? offHz + 500000LL : offHz - 500000LL) / 1000000LL);
+        out.targetMHz = out.baseMHz + offMHz;
+        out.rule = TUI_POINT_ABSOLUTE;
     } else if (desired.hasCurvePoint[pointIndex] &&
+               !desired.curvePointFromGpuOffset[pointIndex] &&
                desired.curvePointMHz[pointIndex] > 0) {
         out.targetMHz = (int)desired.curvePointMHz[pointIndex];
         out.rule = TUI_POINT_ABSOLUTE;

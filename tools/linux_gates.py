@@ -607,7 +607,7 @@ def check_startup_policy(ctx, require_text, forbid_text):
                  "a refresh reuses the stored GPU binding instead of trusting the caller")
     require_text(sync_cpp, "linux_daemon_refresh_startup_profile(",
                  "the shared client path pushes the reloaded profile to the daemon")
-    require_text(sync_cpp, "load_profile_from_config_path(configPath, slot",
+    require_text(sync_cpp, "linux_load_profile_with_daemon_fallback(configPath, slot",
                  "the pushed snapshot is reloaded from disk, not taken from memory")
     require_text(tui_actions, "sync_startup_snapshot_after_profile_write(state,",
                  "the TUI pushes the new content after writing a bound profile slot")
@@ -1116,8 +1116,8 @@ def check_mem_offset_migration(ctx, require_text, forbid_text, require_order):
     # sees post-conversion values (+5000 effective -> +2500 display survives).
     require_order(profiles_cpp,
                   "migrate_profile_bank_mem_units(path, &doc, \"load\");",
-                  "load_profile_sections_any(path, &doc, controlsSection, "
-                  "curveSection, fanCurveSection, desired, context, err, errSize)",
+                  "load_sections_normalized(path, &doc, controlsSection, "
+                  "curveSection, fanCurveSection, destination, desired, context, err, errSize, needsLiveOut)",
                   "the stored-unit conversion happens before any parse/clamp")
     # The unit conversion now rides inside the schema widening (size selects the
     # layout, version selects the semantics -- see tools/persistence_gates.py),
@@ -1300,6 +1300,30 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
                  "booted on it")
 
 
+def check_profile_interchange_and_curve_correction(ctx, require_text):
+    """Cross-platform profile interchangeability and Linux curve convergence."""
+    mutation_cpp = _p(ctx, "linux_backend_mutation.cpp")
+    main_cpp = _p(ctx, "linux_main.cpp")
+    tui_mut_cpp = _p(ctx, "linux_tui_mutation_actions.cpp")
+    cli_load_h = _p(ctx, "linux_cli_profile_load.h")
+    require_text(mutation_cpp, "linux_apply_correct_curve_write(",
+                 "Linux curve apply runs bounded post-write correction on verification miss")
+    require_text(mutation_cpp, "linux_apply_needs_vf_baseline_reset(",
+                 "Linux scoped VF replacement over a shaped curve resets the VF baseline first")
+    require_text(mutation_cpp, "if (vfBaselineReset) g_linuxScopedCurveCeilingTransition = true;",
+                 "Linux VF baseline reset arms the transition clock ceiling before zeroing VF")
+    require_text(main_cpp, "desired_prepare_replacement_request(&desired);",
+                 "Linux CLI --apply-config prepares profile replacement like Windows")
+    require_text(tui_mut_cpp, "linux_tui_prepare_apply_request(",
+                 "Linux TUI Apply prepares loaded-profile and curve-edit replacements")
+    require_text(main_cpp, "linux_load_default_or_selected_profile_with_daemon_fallback(",
+                 "Linux CLI resolves voltage-bound profile slots against the live daemon GPU")
+    require_text(cli_load_h, "load_profile_from_config_path_for_destination(",
+                 "Linux daemon-fallback loader maps voltage-bound slots via live topology")
+    require_text(tui_mut_cpp, "load_profile_from_config_path_for_destination(",
+                 "Linux TUI startup policy bind resolves voltage-bound slots via live snapshot")
+
+
 def check_all(ctx, require_text, forbid_text, require_order):
     check_tui_layout(ctx, require_text, forbid_text, require_order)
     check_tui_graph_axes(ctx, require_text, forbid_text)
@@ -1317,3 +1341,4 @@ def check_all(ctx, require_text, forbid_text, require_order):
     check_auto_restore(ctx, require_text, forbid_text, require_order)
     check_release_packaging(ctx, require_text, forbid_text)
     check_gpu_location(ctx, require_text, forbid_text, require_order)
+    check_profile_interchange_and_curve_correction(ctx, require_text)

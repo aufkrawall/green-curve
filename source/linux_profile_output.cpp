@@ -30,7 +30,9 @@ void print_desired_settings_text(FILE* out, int slot, const DesiredSettings* des
     fprintf(out, "Profile slot: %d\n", slot);
     fprintf(out, "GPU offset: %d MHz\n", desired->gpuOffsetMHz);
     fprintf(out, "GPU offset exclude first N: %d\n", desired->gpuOffsetExcludeLowCount);
-    if (desired->hasLock) fprintf(out, "Lock: point %d @ %u MHz\n", desired->lockCi, desired->lockMHz);
+    if (desired->hasLock)
+        fprintf(out, "Lock: point %d @ %u MHz (%s)\n", desired->lockCi, desired->lockMHz,
+                desired->lockMode == LOCK_MODE_HARD ? "hard" : "flatten");
     fprintf(out, "Memory offset: %d MHz\n", desired->memOffsetMHz);
     fprintf(out, "Power limit: %d%%\n", desired->powerLimitPct);
     if (desired->hasXbarOffsetKhz)
@@ -52,6 +54,11 @@ void print_desired_settings_text(FILE* out, int slot, const DesiredSettings* des
     }
     fprintf(out, "\nVF points\n");
     for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (desired->curvePointCaptured[i]) {
+            fprintf(out, "  point%d=captured(%+lld Hz)\n", i,
+                    (long long)desired->curvePointCapturedOffsetHz[i]);
+            continue;
+        }
         if (!desired->hasCurvePoint[i]) continue;
         fprintf(out, "  point%d=%u\n", i, desired->curvePointMHz[i]);
     }
@@ -97,6 +104,12 @@ void print_desired_settings_json(FILE* out, int slot, const DesiredSettings* des
     fprintf(out, "    ]\n  },\n  \"vf_curve\": [\n");
     bool first = true;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (desired->curvePointCaptured[i]) {
+            fprintf(out, "%s    {\"index\": %d, \"captured_offset_hz\": %lld}",
+                    first ? "" : ",\n", i, (long long)desired->curvePointCapturedOffsetHz[i]);
+            first = false;
+            continue;
+        }
         if (!desired->hasCurvePoint[i]) continue;
         fprintf(out, "%s    {\"index\": %d, \"mhz\": %u}", first ? "" : ",\n", i, desired->curvePointMHz[i]);
         first = false;

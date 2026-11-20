@@ -314,6 +314,7 @@ static bool linux_power_request_is_inert(const DesiredSettings* d,
 #include "linux_backend_curve_build.h"
 
 #include "linux_backend_apply_context.h"
+#include "linux_backend_curve_correction_runtime.h"
 #include "linux_apply_baseline.h"
 #include "linux_apply_graphics_submission.h"
 // Read-only feasibility of the built targets, before the first setter.
@@ -371,10 +372,9 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             const auto policy = authoringReplay && !g_linuxCeilingArmed
                 ? VF_WRITE_SINGLE_BATCH : VF_WRITE_EXISTING_STRATEGY;
             const unsigned long long curveStartMs = pl_monotonic_ms();
-            const bool batchOk = apply_curve_offsets_verified(g, context->curveTargets,
+            bool curveOk = apply_curve_offsets_verified(g, context->curveTargets,
                 context->curveMask, 25, targetsHz, exactMask, policy);
-            bool curveOk = batchOk && linux_apply_verify_curve_write(context);
-            if (batchOk && !curveOk) {
+            if (curveOk && !linux_apply_verify_curve_write(context)) {
                 curveOk = linux_apply_correct_curve_write(context, policy, curveStartMs);
             }
             // The curve is now at its new (raised) shape and LINUX_MUTATION_LOCK

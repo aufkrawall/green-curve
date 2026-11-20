@@ -11,6 +11,7 @@
 #include "linux_gpu_selection.h"
 #include "linux_terminal_launch.h"
 #include "linux_startup_sync.h"
+#include "linux_cli_profile_load.h"
 #include "linux_asset_escaping_policy.h"  // F-03-003
 #include "profile_commands_linux.h"
 
@@ -589,22 +590,23 @@ static int linux_main_impl(int argc, char** argv) {
         }
     }
 
-    int slot = opts.hasProfileSlot ? opts.profileSlot : CONFIG_DEFAULT_SLOT;
+    int slot = opts.hasProfileSlot ? opts.profileSlot : load_selected_profile_slot(configPath);
     DesiredSettings desired = {};
     char err[256] = {};
-    if (!load_default_or_selected_profile(configPath, &slot, &desired, err, sizeof(err))) {
-        fprintf(stderr, "%s\n", err[0] ? err : "Failed to load config");
-        return 1;
-    }
-
-    if (opts.reset) {
+    const bool needsLoadedProfile = opts.dump || opts.json || opts.saveConfig || (opts.applyConfig && !opts.reset);
+    if (needsLoadedProfile) {
+        if (!linux_load_default_or_selected_profile_with_daemon_fallback(configPath, &slot,
+                linux_gpu_target_for_read(configPath, &gpuSelection), &desired, err, sizeof(err))) {
+            fprintf(stderr, "%s\n", err[0] ? err : "Failed to load config");
+            return 1;
+        }
+    } else {
         initialize_desired_settings_defaults(&desired);
     }
+    if (opts.reset) initialize_desired_settings_defaults(&desired);
     char fanError[192] = {};
-    if (!merge_linux_cli_desired_settings(&desired, &opts, fanError,
-                                          sizeof(fanError))) {
-        fprintf(stderr, "Invalid fan curve overrides: %s\n",
-                fanError[0] ? fanError : "invalid fan settings");
+    if (!merge_linux_cli_desired_settings(&desired, &opts, fanError, sizeof(fanError))) {
+        fprintf(stderr, "Invalid fan curve overrides: %s\n", fanError[0] ? fanError : "invalid fan settings");
         return 1;
     }
     normalize_desired_settings_for_ui(&desired);
@@ -702,12 +704,10 @@ static int linux_main_impl(int argc, char** argv) {
             // one exact GPU identity.
             DesiredSettings startupDesired = {};
             char loadErr[256] = {};
-            if (!load_profile_from_config_path(configPath, opts.startupPolicySlot,
-                                               &startupDesired, loadErr,
-                                               sizeof(loadErr))) {
+            if (!linux_load_profile_with_daemon_fallback(configPath, opts.startupPolicySlot,
+                    linux_gpu_target_for_read(configPath, &gpuSelection), &startupDesired, loadErr, sizeof(loadErr))) {
                 fprintf(stderr, "Cannot load profile %d for the startup policy: %s\n",
-                        opts.startupPolicySlot,
-                        loadErr[0] ? loadErr : "profile unavailable");
+                        opts.startupPolicySlot, loadErr[0] ? loadErr : "profile unavailable");
                 return 1;
             }
             normalize_desired_settings_for_ui(&startupDesired);

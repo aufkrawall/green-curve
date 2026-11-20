@@ -15,10 +15,12 @@ static bool section_holds_profile_document(const IniDocument* doc, const char* s
 
 // Imported profiles stay portable documents in the bank. Convert them into the
 // record every apply path uses: position-based records need no GPU; a
-// voltage-bound record needs the live curve, which this file-level loader does
-// not have, so it refuses with a reason the user can act on.
+// voltage-bound record maps onto `destination` when provided (TUI snapshot or
+// live daemon state), and otherwise refuses with a reason the user can act on.
 static bool load_document_section(const char* path, const char* section, const char* context,
-    DesiredSettings* desired, char* err, size_t errSize) {
+    const ProfileDestinationTopology* destination, DesiredSettings* desired, char* err, size_t errSize,
+    bool* needsLiveDestinationOut = nullptr) {
+    if (needsLiveDestinationOut) *needsLiveDestinationOut = false;
     ProfileCodecError error{};
     std::string bytes, text, body;
     bool present = false, found = false;
@@ -30,14 +32,19 @@ static bool load_document_section(const char* path, const char* section, const c
         set_message(err, errSize, "%s could not be read: %s", context, error.message[0] ? error.message : "no profile data");
         return false;
     }
+    const bool needsDestination = profile_document_requires_destination(*document);
+    if (needsLiveDestinationOut && needsDestination && !destination)
+        *needsLiveDestinationOut = true;
     const bool repairedFlatTailOffset =
-        !profile_document_requires_destination(*document) &&
+        !needsDestination &&
         profile_indexed_document_has_legacy_flat_tail_offset_artifact(*document);
     char why[192] = {};
     auto converted = std::make_unique<DesiredSettings>();
-    if (!profile_slot_document_runtime(*document, nullptr, *converted, why, sizeof(why))) {
+    if (!profile_slot_document_runtime(*document, destination, *converted, why, sizeof(why))) {
         set_message(err, errSize, "%s: %s", context, why);
-        linux_debug_logf("profile load: %s document refused points=%d reason=%s\n", context, document->topologyCount, why);
+        linux_debug_logf("profile load: %s document refused kind=%s live=%d points=%d reason=%s\n",
+            context, needsDestination ? "voltage" : "indexed",
+            destination ? destination->count : 0, document->topologyCount, why);
         return false;
     }
     if (repairedFlatTailOffset) {
@@ -49,8 +56,10 @@ static bool load_document_section(const char* path, const char* section, const c
             converted->lockCi, converted->lockMHz);
     }
     *desired = *converted;
-    linux_debug_logf("profile load: %s converted portable record scope=0x%X points=%d\n", context,
-        (unsigned)desired->applicationScope, document->topologyCount);
+    linux_debug_logf("profile load: %s converted portable record kind=%s scope=0x%X points=%d live=%d\n",
+        context, needsDestination ? "voltage" : "indexed",
+        (unsigned)desired->applicationScope, document->topologyCount,
+        destination ? destination->count : 0);
     return true;
 }
 
@@ -60,8 +69,12 @@ static bool load_desired_settings_from_sections(const IniDocument* doc, const ch
 
 // Ordinary record or imported document, whichever the slot section holds.
 static bool load_profile_sections_any(const char* path, const IniDocument* doc, const char* controls,
-    const char* curve, const char* fan, DesiredSettings* desired, const char* context, char* err, size_t errSize) {
-    if (section_holds_profile_document(doc, controls)) return load_document_section(path, controls, context, desired, err, errSize);
+    const char* curve, const char* fan, const ProfileDestinationTopology* destination,
+    DesiredSettings* desired, const char* context, char* err, size_t errSize,
+    bool* needsLiveDestinationOut = nullptr) {
+    if (needsLiveDestinationOut) *needsLiveDestinationOut = false;
+    if (section_holds_profile_document(doc, controls))
+        return load_document_section(path, controls, context, destination, desired, err, errSize, needsLiveDestinationOut);
     return load_desired_settings_from_sections(doc, controls, curve, fan, desired, context, err, errSize);
 }
 

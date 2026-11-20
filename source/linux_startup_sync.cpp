@@ -6,6 +6,7 @@
 #include "linux_daemon.h"
 #include "linux_debug_log.h"
 #include "linux_port.h"
+#include "linux_cli_profile_load.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -52,8 +53,8 @@ LinuxStartupSyncResult linux_startup_sync_after_profile_write(
     // normalized on the way out.
     DesiredSettings saved = {};
     char loadErr[256] = {};
-    if (!load_profile_from_config_path(configPath, slot, &saved, loadErr,
-                                       sizeof(loadErr))) {
+    if (!linux_load_profile_with_daemon_fallback(configPath, slot, nullptr,
+                                                 &saved, loadErr, sizeof(loadErr))) {
         result.ok = false;
         snprintf(result.message, sizeof(result.message),
                  "boot-apply snapshot NOT refreshed: %s",
@@ -150,9 +151,11 @@ LinuxStartupSnapshotReport linux_startup_snapshot_report(
     }
     char loadErr[256] = {};
     report.profileLoaded = startup_snapshot_slot_is_valid(policySlot) &&
-        load_profile_from_config_path(configPath, (int)policySlot,
-                                      &report.profile, loadErr,
-                                      sizeof(loadErr));
+        (daemonReachable
+            ? linux_load_profile_with_daemon_fallback(configPath, (int)policySlot, nullptr,
+                                                      &report.profile, loadErr, sizeof(loadErr))
+            : load_profile_from_config_path(configPath, (int)policySlot,
+                                            &report.profile, loadErr, sizeof(loadErr)));
     if (report.profileLoaded) normalize_desired_settings_for_ui(&report.profile);
     else if (loadErr[0] && !report.detail[0])
         gc_strlcpy(report.detail, sizeof(report.detail), loadErr);
