@@ -61,7 +61,7 @@ Three cross-platform profile parity gaps on Linux were root-caused and fixed:
    `DELTA` instead of `targetMHz - clampedBaseMHz`, reports live driver offsets
    on untouched rows and the selected-point header, and keeps excluded low
    points at `0 MHz`.
-4. **Linux -> Windows export, legacy INI auto-detection, and capture parity.**
+4. **Linux -> Windows export, legacy INI auto-detection, and capture memory-clock invariant.**
    Unlocked INI savers (`linux_port_profiles.cpp`, `config_profiles.cpp`,
    `main_runtime_capture.cpp`) now write `lock_tracks_anchor=0` when no lock is
    present, and `profile_legacy_ini.h` accepts an explicit no-lock triple
@@ -69,10 +69,14 @@ Three cross-platform profile parity gaps on Linux were root-caused and fixed:
    `lock_tracks_anchor=1` from earlier files so unlocked profiles export cleanly
    on both platforms. `profile_editor_transfer.h` auto-detects legacy Linux
    `config.ini` files (via `[meta] linux_mem_migrated` or bare `pointN=` keys)
-   so Windows imports them without manual format switching. `linux_backend.cpp`
-   resolves `nvmlDeviceGetMaxClockInfo` and `linux_backend_capture.h` wires
-   `hardware_capture_memory_clock` + changed-only logging to match Windows
-   running-clock memory capture evidence.
+   so Windows imports them without manual format switching.
+   **Linux capture invariant (hardware-verified 2026-11-20):**
+   `linux_backend_capture.h` must keep `memoryClockReader == nullptr` (gated in
+   `tools/linux_gates.py`). Unlike Windows, the Linux NVIDIA driver's
+   `nvmlDeviceGetMaxClockInfo(NVML_CLOCK_MEM)` includes the active NVML memory
+   offset (`17001 MHz == Pstates20 17001 MHz` under `+3000 MHz` OC), so
+   `pstates20 - maxClock` falsely computes `0 Hz` and would clobber the truthful
+   NVML offset getter.
 
 Verified live on Linux x86_64 with an RTX 5070 (Blackwell, NVIDIA driver
 620.73.04): five Windows-exported profiles (legacy flatten, selective offset +

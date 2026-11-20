@@ -22,10 +22,14 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
        selection:** `profile_editor_transfer_probe()` defaulted every legacy INI
        to `PROFILE_LEGACY_WINDOWS_INI` even when `[meta] linux_mem_migrated=1`
        or bare `pointN=` keys identified Linux.
-     - **Linux passive capture omitted running-clock memory evidence:**
-       `linux_backend.cpp` did not resolve `nvmlDeviceGetMaxClockInfo` and
-       `linux_backend_capture.h` left `memoryClockReader` null.
-- Fixes (`2a154e6`, `bc5dfe6`):
+     - **Rejected approach (verified live on RTX 5070 Linux driver 620.73.04):**
+       wiring `hardware_capture_memory_clock` into `linux_backend_capture.h`
+       caused Linux capture to report `memory=0Hz(running-clock)` under a
+       `+3000 MHz` OC because on Linux `nvmlDeviceGetMaxClockInfo(NVML_CLOCK_MEM)`
+       returns the OC-adjusted max (`17001 MHz == Pstates20 17001 MHz`), unlike
+       Windows (`14001 MHz` board stock). Reverted and locked behind a
+       `forbid_text` gate in `tools/linux_gates.py`.
+- Fixes (`2a154e6`, `bc5dfe6`, follow-up revert of Linux `memoryClockReader`):
   1. `linux_tui_layout.{h,cpp}` / `linux_tui_layout_vf.cpp`: compute
      `TUI_POINT_FLATTEN_TAIL` `deltaMHz` from `vf_offset_range_flatten_floor_khz`
      (typically `-1000 MHz`), report live offsets on `TUI_POINT_LIVE` and the
@@ -37,9 +41,8 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   3. Add `profile_editor_detect_legacy_ini_format()` in
      `profile_editor_transfer.h` so legacy Linux `config.ini` files auto-detect
      as `PROFILE_LEGACY_LINUX_INI`.
-  4. Resolve `nvmlDeviceGetMaxClockInfo` in `linux_backend.cpp` and wire
-     `hardware_capture_memory_clock` + changed-only logging in
-     `linux_backend_capture.h`.
+  4. Keep `linux_backend_capture.h` on the truthful NVML memory offset getter
+     with a `forbid_text` gate against wiring `hardware_capture_memory_clock`.
 - Verified: regression cases `12652-12656` (`tests/regression_main.cpp`),
   `12660-12663` (`tests/profile_legacy_ini_tests.cpp`), `12664-12667`
   (`tests/profile_tools_tests.cpp`), unlocked save/export in
