@@ -20,6 +20,7 @@ static const unsigned int LB_CONTROL_BUF_SIZE = 0x4000;
 #include "linux_backend_vf_read.h"
 #include "vf_offset_range_policy.h"
 #include "linux_backend_vf_write.h"
+#include "linux_backend_curve_correction.h"
 #include "vf_exact_control_write.h"
 static bool nvml_set_clock_offset(LinuxGpuState*, unsigned int, int, gc_u32);
 #include "linux_memory_curve_preservation.h"
@@ -444,6 +445,198 @@ int run_linux_vf_write_tests() {
         !apply_curve_offsets_verified(&g, targets, mask, 2, r.pointCapturedOffsetHz, r.pointCapturedIntent) ||
         d.raw[1] || d.raw[3] || d.raw[7] || d.raw[0] != 7777 || d.raw[2] != 8889 ||
         !d.bufferValid) return 8146;
+
+    // Linux post-write curve correction (12630-12637): budget, Blackwell-style
+    // flatten anchor quantization convergence, captured/cleanup preservation,
+    // fixed-point stop, monotonicity refusal, and authoring shape/monotonicity.
+    if (!linux_curve_correction_pass_may_start(0, 999999ULL, 999999ULL) ||
+        !linux_curve_correction_pass_may_start(1, 1000ULL, 500ULL) ||
+        linux_curve_correction_pass_may_start(1, linux_curve_correction_budget_ms(), 1ULL))
+        return 12630;
+    {
+        // Simulate Profile 2/3 on Blackwell: ci=2..4 are offset-intent (+475 MHz),
+        // ci=5 is flatten anchor (stock 2482 MHz, target 2957 MHz), ci=6..7 are
+        // tail (-1000 MHz). On initial write, driver shifts ci=5 base by -10 MHz
+        // when tail is flattened, landing at 2947 MHz (delta 10 > 8 MHz tol).
+        VFCurvePoint simCurve[VF_NUM_POINTS] = {};
+        int simOffsets[VF_NUM_POINTS] = {};
+        gc_i64 simOffsetsHz[VF_NUM_POINTS] = {};
+        const unsigned int stockKHz[8] = {
+            1800000u, 2200000u, 2380000u, 2410000u, 2452000u, 2482000u, 2505000u, 2527000u
+        };
+        for (int i = 0; i < 8; ++i) {
+            simCurve[i] = {stockKHz[i], 860000u + (unsigned int)i * 10000u};
+        }
+        DesiredSettings prof{};
+        prof.hasGpuOffset = 1;
+        prof.gpuOffsetMHz = 475;
+        prof.gpuOffsetExcludeLowCount = 2;
+        prof.hasLock = 1;
+        prof.lockMode = LOCK_MODE_FLATTEN;
+        prof.lockCi = 5;
+        prof.lockMHz = 2957;
+        for (int i = 2; i < 8; ++i) {
+            prof.hasCurvePoint[i] = 1;
+            prof.curvePointFromGpuOffset[i] = 1;
+            prof.curvePointMHz[i] = 0;
+        }
+        int initTargets[VF_NUM_POINTS] = {};
+        bool initMask[VF_NUM_POINTS] = {};
+        LinuxCurveTargetBuildResult initBuild = linux_build_curve_targets(
+            simCurve, simOffsets, &prof, -1000000, initTargets, initMask);
+        // Add a captured cleanup point at ci=1 (0 Hz) to prove exact preservation.
+        initBuild.pointMask[1] = initMask[1] = true;
+        initBuild.pointCapturedIntent[1] = true;
+        initBuild.pointCapturedOffsetHz[1] = 0;
+        initTargets[1] = 0;
+        auto applySimDriver = [&](const int* offs, const bool* msk,
+                                  const gc_i64* exactHz, const bool* exactMsk) {
+            for (int i = 0; i < 8; ++i) {
+                if (!msk[i]) continue;
+                simOffsets[i] = offs[i];
+                simOffsetsHz[i] = (exactMsk && exactMsk[i]) ? exactHz[i] : (gc_i64)offs[i] * 1000LL;
+            }
+            for (int i = 0; i < 8; ++i) {
+                long long base = (long long)stockKHz[i];
+                // Driver cross-talk / quantization when tail is flattened:
+                // anchor base drops by 10 MHz (2482 -> 2472 MHz).
+                if (i == 5 && simOffsets[6] <= -900000) base -= 10000;
+                long long freq = base + simOffsets[i];
+                if (i > 5 && freq < (long long)simCurve[5].freq_kHz) freq = (long long)simCurve[5].freq_kHz;
+                simCurve[i].freq_kHz = freq > 0 ? (unsigned int)freq : 0u;
+            }
+            // Monotonic clamp tail to anchor.
+            for (int i = 6; i < 8; ++i) {
+                if (simCurve[i].freq_kHz < simCurve[5].freq_kHz)
+                    simCurve[i].freq_kHz = simCurve[5].freq_kHz;
+            }
+        };
+        applySimDriver(initTargets, initMask, initBuild.pointCapturedOffsetHz, initBuild.pointCapturedIntent);
+        // Initial write lands at 2947 MHz -> must fail verification (10 > 8).
+        if (linux_verify_curve_absolute_targets(simCurve, initBuild, detail, sizeof(detail)))
+            return 12631;
+        VfOffsetRange simRange = {-1000000, 1000000, true};
+        unsigned long long fakeClock = 100;
+        int writeCalls = 0;
+        ApplyCorrectionLoopOutcome out = linux_run_legacy_curve_correction(
+            &prof, initBuild, initTargets, simRange, 0,
+            [&](const int* offs, const bool* msk, const gc_i64* eHz, const bool* eMsk) {
+                ++writeCalls;
+                fakeClock += 25;
+                applySimDriver(offs, msk, eHz, eMsk);
+                return true;
+            },
+            [&](int ci) -> unsigned int { return simCurve[ci].freq_kHz; },
+            [&](int ci) -> int { return simOffsets[ci]; },
+            [&](char* det, size_t detSz) -> bool {
+                return linux_verify_curve_absolute_targets(simCurve, initBuild, det, detSz) &&
+                       linux_verify_curve_captured_targets(simOffsetsHz, initBuild, det, detSz, true);
+            },
+            [&]() -> unsigned long long { return fakeClock; },
+            [](const char*) {});
+        if (!out.verified || writeCalls != 1 || simOffsets[5] != 485000 ||
+            simOffsets[4] != 475000 || simOffsets[6] != -1000000 ||
+            simOffsets[1] != 0 || simOffsetsHz[1] != 0 ||
+            curve_display_mhz_from_khz(simCurve[5].freq_kHz) != 2957)
+            return 12632;
+
+        // Fixed-point stop when driver ignores anchor offset changes and stays at 2947 MHz.
+        applySimDriver(initTargets, initMask, initBuild.pointCapturedOffsetHz, initBuild.pointCapturedIntent);
+        int stuckWrites = 0;
+        ApplyCorrectionLoopOutcome stuck = linux_run_legacy_curve_correction(
+            &prof, initBuild, initTargets, simRange, 0,
+            [&](const int*, const bool*, const gc_i64*, const bool*) {
+                ++stuckWrites;
+                fakeClock += 25;
+                return true;
+            },
+            [&](int ci) -> unsigned int { return simCurve[ci].freq_kHz; },
+            [&](int ci) -> int { return simOffsets[ci]; },
+            [&](char* det, size_t detSz) -> bool {
+                return linux_verify_curve_absolute_targets(simCurve, initBuild, det, detSz);
+            },
+            [&]() -> unsigned long long { return fakeClock; },
+            [](const char*) {});
+        if (stuck.verified || !stuck.fixedPoint || stuckWrites > 3)
+            return 12633;
+
+        // Strict flatten monotonicity check fails closed when predecessor exceeds plateau.
+        VFCurvePoint monoCurve[VF_NUM_POINTS] = {};
+        int monoOffsets[VF_NUM_POINTS] = {};
+        for (int i = 0; i < 8; ++i) monoCurve[i] = simCurve[i];
+        monoCurve[4].freq_kHz = 2990000u; // ci=4 live 2990 MHz > lock 2957 MHz
+        monoOffsets[4] = 475000;
+        monoCurve[5].freq_kHz = 2957000u;
+        monoOffsets[5] = 485000;
+        monoCurve[6].freq_kHz = 2957000u;
+        monoOffsets[6] = -1000000;
+        monoCurve[7].freq_kHz = 2957000u;
+        monoOffsets[7] = -1000000;
+        bool monoViolated = false;
+        int monoCi = -1;
+        ApplyCorrectionLoopOutcome monoOut = linux_run_legacy_curve_correction(
+            &prof, initBuild, initTargets, simRange, 0,
+            [&](const int*, const bool*, const gc_i64*, const bool*) { return true; },
+            [&](int ci) -> unsigned int { return monoCurve[ci].freq_kHz; },
+            [&](int ci) -> int { return monoOffsets[ci]; },
+            [&](char* det, size_t detSz) -> bool {
+                return linux_verify_curve_absolute_targets(monoCurve, initBuild, det, detSz);
+            },
+            [&]() -> unsigned long long { return 50; },
+            [](const char*) {},
+            &monoViolated, &monoCi, nullptr);
+        if (monoOut.verified || !monoViolated || monoCi != 5)
+            return 12634;
+    }
+    {
+        // Authoring correction shape validation and flatten monotonicity.
+        LinuxCurveTargetBuildResult orig{};
+        orig.pointCount = 3;
+        orig.composedGpuOffset = true;
+        orig.lockTail = true;
+        for (int i = 4; i <= 6; ++i) {
+            orig.pointMask[i] = true;
+            orig.pointVoltageUv[i] = 900000u + (unsigned int)i * 5000u;
+            orig.pointExactOffset[i] = true;
+        }
+        orig.pointExactOffsetHz[4] = 475000000;
+        orig.pointBaselineDependent[4] = false;
+        orig.pointAbsoluteIntent[5] = true;
+        orig.pointFrequencyPrecise[5] = true;
+        orig.pointTargetHz[5] = 2957000000LL;
+        orig.pointExactOffsetHz[5] = 475000000;
+        orig.pointBaselineDependent[5] = true;
+        orig.pointAbsoluteIntent[6] = true;
+        orig.pointFrequencyPrecise[6] = true;
+        orig.pointTargetHz[6] = 2957000000LL;
+        orig.pointExactOffsetHz[6] = -1000000000;
+        orig.pointBaselineDependent[6] = false;
+
+        LinuxCurveTargetBuildResult updated = orig;
+        updated.pointExactOffsetHz[5] = 485000000; // baseline-dependent anchor may move
+        if (!linux_authoring_correction_shape_matches(orig, updated)) return 12635;
+        updated.pointExactOffsetHz[4] = 480000000; // offset-intent point may NOT drift
+        if (linux_authoring_correction_shape_matches(orig, updated)) return 12636;
+
+        VFCurvePoint authCurve[VF_NUM_POINTS] = {};
+        gc_i64 authFreqHz[VF_NUM_POINTS] = {};
+        gc_i64 authOffHz[VF_NUM_POINTS] = {};
+        authCurve[4] = {2927000u, 920000u}; authFreqHz[4] = 2927000000LL; authOffHz[4] = 475000000LL;
+        authCurve[5] = {2957000u, 925000u}; authFreqHz[5] = 2957000000LL; authOffHz[5] = 485000000LL;
+        authCurve[6] = {2957000u, 935000u}; authFreqHz[6] = 2957000000LL; authOffHz[6] = -1000000000LL;
+        if (!linux_verify_authoring_flatten_monotonicity(
+                authCurve, authFreqHz, authOffHz, true, true, orig, LOCK_MODE_FLATTEN, 5, detail, sizeof(detail)))
+            return 12637;
+        authCurve[4].freq_kHz = 3000000u; authFreqHz[4] = 3000000000LL;
+        if (linux_verify_authoring_flatten_monotonicity(
+                authCurve, authFreqHz, authOffHz, true, true, orig, LOCK_MODE_FLATTEN, 5, detail, sizeof(detail)))
+            return 12638;
+        // Exact-frequency verify mismatch diagnostic includes actual Hz.
+        authCurve[5].freq_kHz = 2947000u; authFreqHz[5] = 2947000000LL;
+        if (linux_verify_curve_absolute_targets(authCurve, orig, detail, sizeof(detail), authFreqHz, true) ||
+            strstr(detail, "2947000000") == nullptr || strstr(detail, "2957000000") == nullptr)
+            return 12639;
+    }
     return run_linux_memory_curve_tests();
 }
 

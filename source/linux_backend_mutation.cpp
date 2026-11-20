@@ -365,9 +365,13 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             }
             const auto policy = authoringReplay && !g_linuxCeilingArmed
                 ? VF_WRITE_SINGLE_BATCH : VF_WRITE_EXISTING_STRATEGY;
-            bool curveOk = apply_curve_offsets_verified(g, context->curveTargets,
-                context->curveMask, 25, targetsHz, exactMask, policy) &&
-                linux_apply_verify_curve_write(context);
+            const unsigned long long curveStartMs = pl_monotonic_ms();
+            const bool batchOk = apply_curve_offsets_verified(g, context->curveTargets,
+                context->curveMask, 25, targetsHz, exactMask, policy);
+            bool curveOk = batchOk && linux_apply_verify_curve_write(context);
+            if (batchOk && !curveOk) {
+                curveOk = linux_apply_correct_curve_write(context, policy, curveStartMs);
+            }
             // The curve is now at its new (raised) shape and LINUX_MUTATION_LOCK
             // has not run: this is the instant that was uncapped before
             // F-APPLY-CEILING.

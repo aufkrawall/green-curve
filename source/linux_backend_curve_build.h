@@ -11,14 +11,18 @@ static CurvePlanInput linux_backend_curve_plan_input(LinuxGpuState*, const Desir
 // kHz builder. Both use the established uniform-floor flatten strategy.
 static LinuxCurveTargetBuildResult build_curve_targets(LinuxGpuState* g,
     const DesiredSettings* d, int* targetOffsets, bool* pointMask, int graphicsRouteOverride = 0,
-    bool rebuilding = false, CurveAuthoringTargets* preciseOut = nullptr) {
+    bool rebuilding = false, CurveAuthoringTargets* preciseOut = nullptr,
+    bool useTransactionBaseline = false) {
     if (curve_authoring_needs_exact_targets(d)) {
         int componentKHz[VF_NUM_POINTS]{};
         gc_i64 componentHz[VF_NUM_POINTS]{};
         bool stockMask[VF_NUM_POINTS]{};
         CurvePlanInput in = linux_backend_curve_plan_input(g, d, nullptr, nullptr, nullptr,
             componentKHz, componentHz, stockMask);
-        if (rebuilding && d->resetOcBeforeApply) in.evidence = CURVE_PLAN_EVIDENCE_TRANSACTION_BASELINE;
+        if (rebuilding)
+            in.evidence = useTransactionBaseline
+                ? CURVE_PLAN_EVIDENCE_TRANSACTION_BASELINE
+                : CURVE_PLAN_EVIDENCE_LIVE_SHAPED_ESTIMATE;
         const bool composed = d->authoring.graphicsPrecise
             ? d->authoring.graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT
             : graphicsRouteOverride == 2 || (graphicsRouteOverride == 0 && desired_gpu_offset_uses_curve(d));
@@ -39,7 +43,8 @@ static LinuxCurveTargetBuildResult build_curve_targets(LinuxGpuState* g,
 static LinuxCurveTargetBuildResult build_curve_transition_targets(
     LinuxGpuState* g, const DesiredSettings* previousIntent,
     const DesiredSettings* committedIntent, int* targetOffsets,
-    bool* pointMask, int* cleanupPointCountOut, bool rebuilding = false) {
+    bool* pointMask, int* cleanupPointCountOut, bool rebuilding = false,
+    bool useTransactionBaseline = false) {
     if (curve_authoring_needs_exact_targets(previousIntent) || curve_authoring_needs_exact_targets(committedIntent)) {
         if (cleanupPointCountOut) *cleanupPointCountOut = 0;
         LinuxCurveTargetBuildResult failed{}; failed.failed = true;
@@ -51,7 +56,7 @@ static LinuxCurveTargetBuildResult build_curve_transition_targets(
             (previousIntent && !desired_rebind_topology(*previousIntent, g->curve, g->vfFloor.floor, &outgoing, why, sizeof(why)))) {
             lb_log("curve-authoring: transition binding refused (%s)\n", why); return failed;
         }
-        auto result = build_curve_targets(g, &incoming, targetOffsets, pointMask, 0, rebuilding);
+        auto result = build_curve_targets(g, &incoming, targetOffsets, pointMask, 0, rebuilding, nullptr, useTransactionBaseline);
         if (result.failed) return result;
         const bool oldInVf = service_scoped_graphics_offset_in_vf(outgoing, false, true);
         int ordinal = 0;

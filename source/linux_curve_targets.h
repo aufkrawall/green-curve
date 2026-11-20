@@ -37,6 +37,7 @@ struct LinuxCurveTargetBuildResult {
     gc_i64 pointExactOffsetHz[VF_NUM_POINTS];
     bool pointFrequencyPrecise[VF_NUM_POINTS];
     gc_i64 pointTargetHz[VF_NUM_POINTS];
+    bool pointBaselineDependent[VF_NUM_POINTS];
 };
 
 // Compose the complete Linux VF target in one pass.  Absolute explicit points
@@ -171,7 +172,8 @@ static inline bool linux_verify_curve_absolute_targets(
                 !curve_point_absolute_target_verified_hz_over(freqAt,
                     [&](int i) { return frequencyHz[i]; }, ci, VF_NUM_POINTS, build.pointTargetHz[ci])) {
                 if (detail) gc_snprintf(detail, detailSize,
-                    "VF point %d exact frequency did not verify against %lld Hz", ci, build.pointTargetHz[ci]);
+                    "VF point %d exact frequency %lld Hz did not verify against %lld Hz",
+                    ci, frequencyHz ? frequencyHz[ci] : 0LL, build.pointTargetHz[ci]);
                 return false;
             }
         } else if (!curve_point_absolute_target_verified_over(freqAt, ci, VF_NUM_POINTS,

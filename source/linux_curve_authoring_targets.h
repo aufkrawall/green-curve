@@ -29,6 +29,7 @@ static inline LinuxCurveTargetBuildResult linux_build_authoring_curve_targets(co
         result.pointCapturedOffsetHz[i] = precise.offsetHz[i];
         result.pointExactOffset[i] = precise.mask[i]; result.pointExactOffsetHz[i] = precise.offsetHz[i];
         result.pointFrequencyPrecise[i] = precise.absoluteMask[i]; result.pointTargetHz[i] = precise.absoluteHz[i];
+        result.pointBaselineDependent[i] = precise.baselineDependentMask[i];
     }
     return result;
 }

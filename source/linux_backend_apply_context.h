@@ -9,6 +9,7 @@
 #include "curve_feasibility_message.h"
 #include "scalar_curve_submission_policy.h"
 #include "authoring_modeled_transition_review.h"
+#include "linux_backend_curve_correction.h"
 
 struct LinuxApplyTransactionContext {
     LinuxGpuState* gpu;
@@ -41,14 +42,16 @@ struct LinuxApplyTransactionContext {
 // The curve targets for this transaction: the replacement-aware build when
 // the request owns the VF domain and a committed intent exists, else plain.
 static LinuxCurveTargetBuildResult linux_apply_build_curve(
-    LinuxApplyTransactionContext* context, int* cleanupPointCountOut, bool rebuilding = false) {
+    LinuxApplyTransactionContext* context, int* cleanupPointCountOut,
+    bool rebuilding = false, bool useTransactionBaseline = false) {
     if (cleanupPointCountOut) *cleanupPointCountOut = 0;
     if (context->transitionBuild)
         return build_curve_transition_targets(context->gpu, context->previousIntent,
             context->committedIntent, context->curveTargets, context->curveMask,
-            cleanupPointCountOut, rebuilding);
+            cleanupPointCountOut, rebuilding, useTransactionBaseline);
     return build_curve_targets(context->gpu, context->desired,
-        context->curveTargets, context->curveMask, context->graphicsRouteOverride, rebuilding);
+        context->curveTargets, context->curveMask, context->graphicsRouteOverride,
+        rebuilding, nullptr, useTransactionBaseline);
 }
 
 // Curve targets are built before any phase runs.  When an earlier phase
@@ -64,7 +67,7 @@ static bool linux_apply_rebuild_curve_targets(LinuxApplyTransactionContext* cont
     }
     int cleanup = 0;
     LinuxCurveTargetBuildResult rebuilt =
-        linux_apply_build_curve(context, &cleanup, true);
+        linux_apply_build_curve(context, &cleanup, true, context->desired->resetOcBeforeApply != 0);
     if (rebuilt.failed || rebuilt.deferred) {
         lb_log("curve-authoring: fresh target compilation remains unresolved; refusing VF write\n");
         return false;
@@ -147,20 +150,151 @@ static bool linux_apply_reset_baseline_vf_curve(LinuxGpuState* g) {
 // absolute-intent point's resulting frequency, matching Windows
 // gpu_backend_apply_verify.h. LINUX_MUTATION_LOCK, which releases the
 // F-APPLY-CEILING transition ceiling, only runs if this returns true.
-static bool linux_apply_verify_curve_write(LinuxApplyTransactionContext* context) {
+static bool linux_apply_verify_curve_write(LinuxApplyTransactionContext* context,
+    bool logFailure = true) {
     LinuxGpuState* g = context->gpu;
     char why[160] = {};
     if (!nvapi_read_vf_snapshot(g, why, sizeof(why))) {
-        lb_log("curve verify: post-write curve re-read failed (%s)\n", why);
+        if (logFailure) lb_log("curve verify: post-write curve re-read failed (%s)\n", why);
         return false;
     }
+    const DesiredSettings* intended = context->transitionBuild ? context->committedIntent : context->desired;
     char detail[160] = {};
     bool ok = linux_verify_curve_absolute_targets(g->curve, context->plannedBuild,
         detail, sizeof(detail), g->curveFrequencyHz, g->vfFrequenciesHzValid) &&
         linux_verify_curve_captured_targets(g->freqOffsetsHz,
             context->plannedBuild, detail, sizeof(detail), g->vfOffsetsHzValid);
-    if (!ok) lb_log("curve verify: %s\n", detail);
+    if (ok && intended && curve_authoring_needs_exact_targets(intended)) {
+        ok = linux_verify_authoring_flatten_monotonicity(
+            g->curve, g->curveFrequencyHz, g->freqOffsetsHz,
+            g->vfFrequenciesHzValid, g->vfOffsetsHzValid,
+            context->plannedBuild, intended->hasLock ? intended->lockMode : LOCK_MODE_NONE,
+            intended->hasLock ? intended->lockCi : -1, detail, sizeof(detail));
+    }
+    if (!ok && logFailure) lb_log("curve verify: %s\n", detail);
     return ok;
+}
+
+static bool linux_apply_correct_authoring_curve(LinuxApplyTransactionContext* context,
+    const DesiredSettings* intended, VfControlWritePolicy policy,
+    unsigned long long curveStartMs) {
+    if (policy == VF_WRITE_SINGLE_BATCH) {
+        lb_log("curve-authoring: correction suppressed by single-batch policy\n");
+        return false;
+    }
+    LinuxGpuState* g = context->gpu;
+    const LinuxCurveTargetBuildResult original = context->plannedBuild;
+    unsigned long long passStartMs = 0;
+    unsigned long long previousPassMs = 0;
+    bool compileFailed = false;
+    bool unchanged = false;
+    const int batchPasses = intended && intended->hasLock ? 3 : 2;
+    const auto loop = apply_run_correction_loop(
+        APPLY_CORRECTION_MAX_PASSES,
+        [&](int pass) {
+            passStartMs = pl_monotonic_ms();
+            const unsigned long long elapsed = passStartMs >= curveStartMs ? (passStartMs - curveStartMs) : 0ULL;
+            if (linux_curve_correction_pass_may_start(pass, elapsed, previousPassMs))
+                return true;
+            lb_log("curve-authoring correction: stopping before pass %d (elapsed=%llums prev=%llums budget=%lums)\n",
+                pass + 1, elapsed, previousPassMs, linux_curve_correction_budget_ms());
+            return false;
+        },
+        [&](int pass) {
+            if (!g->vfFrequenciesHzValid || !g->vfOffsetsHzValid) {
+                lb_log("curve-authoring correction: exact readback unavailable before pass %d\n", pass + 1);
+                compileFailed = true;
+                return false;
+            }
+            int nextOffsets[VF_NUM_POINTS] = {};
+            bool nextMask[VF_NUM_POINTS] = {};
+            int cleanup = 0;
+            LinuxApplyTransactionContext probe = *context;
+            LinuxCurveTargetBuildResult next = linux_apply_build_curve(&probe, &cleanup, true, false);
+            for (int i = 0; i < VF_NUM_POINTS; ++i) {
+                nextOffsets[i] = probe.curveTargets[i];
+                nextMask[i] = probe.curveMask[i];
+            }
+            if (!linux_authoring_correction_shape_matches(original, next)) {
+                lb_log("curve-authoring correction: pass %d shape changed or compile failed; refusing write\n", pass + 1);
+                compileFailed = true;
+                return false;
+            }
+            unchanged = true;
+            for (int i = 0; i < VF_NUM_POINTS; ++i) {
+                if (next.pointMask[i] && next.pointExactOffsetHz[i] != context->plannedBuild.pointExactOffsetHz[i]) {
+                    unchanged = false;
+                    break;
+                }
+            }
+            if (unchanged) return false;
+            gc_i64 targetsHz[VF_NUM_POINTS] = {};
+            bool exactMask[VF_NUM_POINTS] = {};
+            for (int i = 0; i < VF_NUM_POINTS; ++i) {
+                exactMask[i] = next.pointExactOffset[i] || next.pointCapturedIntent[i];
+                targetsHz[i] = next.pointExactOffset[i] ? next.pointExactOffsetHz[i] : next.pointCapturedOffsetHz[i];
+            }
+            const bool written = apply_curve_offsets_verified(
+                g, nextOffsets, nextMask, batchPasses, targetsHz, exactMask, policy);
+            memcpy(context->curveTargets, nextOffsets, sizeof(context->curveTargets));
+            memcpy(context->curveMask, nextMask, sizeof(context->curveMask));
+            context->plannedBuild = next;
+            const unsigned long long now = pl_monotonic_ms();
+            previousPassMs = now >= passStartMs ? (now - passStartMs) : 0ULL;
+            lb_log("curve-authoring correction pass %d: points=%d rawVerified=%d elapsedMs=%llu\n",
+                pass + 1, next.pointCount, written ? 1 : 0, previousPassMs);
+            return true;
+        },
+        [](int) { return false; },
+        [&](int pass) {
+            if (!linux_apply_verify_curve_write(context, false)) return false;
+            lb_log("curve-authoring correction pass %d: verified live VF targets\n", pass + 1);
+            return true;
+        });
+    lb_log("curve-authoring correction: passes=%d verified=%d budgetExhausted=%d unchanged=%d compileFailed=%d\n",
+        loop.passesRun, loop.verified ? 1 : 0, loop.budgetExhausted ? 1 : 0,
+        unchanged ? 1 : 0, compileFailed ? 1 : 0);
+    if (!compileFailed && loop.verified) return true;
+    return !compileFailed && linux_apply_verify_curve_write(context, true);
+}
+
+static bool linux_apply_correct_curve_write(LinuxApplyTransactionContext* context,
+    VfControlWritePolicy policy, unsigned long long curveStartMs) {
+    LinuxGpuState* g = context->gpu;
+    const DesiredSettings* intended = context->transitionBuild ? context->committedIntent : context->desired;
+    if (intended && curve_authoring_needs_exact_targets(intended))
+        return linux_apply_correct_authoring_curve(context, intended, policy, curveStartMs);
+    int rangeMinKHz = 0, rangeMaxKHz = 0;
+    curve_offset_range_khz(g, &rangeMinKHz, &rangeMaxKHz);
+    VfOffsetRange range = {};
+    range.minKHz = rangeMinKHz;
+    range.maxKHz = rangeMaxKHz;
+    range.known = g->curveOffsetRangeKnown ||
+        (g->gpuOffsetMinMHz <= g->gpuOffsetMaxMHz && (g->gpuOffsetMinMHz || g->gpuOffsetMaxMHz));
+    const int batchPasses = intended && intended->hasLock ? 3 : 2;
+    const ApplyCorrectionLoopOutcome outcome = linux_run_legacy_curve_correction(
+        intended, context->plannedBuild, context->curveTargets, range, curveStartMs,
+        [&](const int* offsets, const bool* mask, const gc_i64* exactHz, const bool* exactMask) {
+            (void)apply_curve_offsets_verified(g, offsets, mask, batchPasses, exactHz, exactMask, policy);
+            char why[160] = {};
+            if (!nvapi_read_vf_snapshot(g, why, sizeof(why))) {
+                lb_log("curve correction: curve re-read failed (%s)\n", why);
+                return false;
+            }
+            return true;
+        },
+        [&](int ci) -> unsigned int { return g->curve[ci].freq_kHz; },
+        [&](int ci) -> int { return g->freqOffsets[ci]; },
+        [&](char* detail, size_t detailSize) -> bool {
+            return linux_verify_curve_absolute_targets(g->curve, context->plannedBuild,
+                detail, detailSize, g->curveFrequencyHz, g->vfFrequenciesHzValid) &&
+                linux_verify_curve_captured_targets(g->freqOffsetsHz, context->plannedBuild,
+                    detail, detailSize, g->vfOffsetsHzValid);
+        },
+        []() -> unsigned long long { return pl_monotonic_ms(); },
+        [](const char* line) { lb_log("%s", line ? line : ""); });
+    if (!outcome.verified) (void)linux_apply_verify_curve_write(context, true);
+    return outcome.verified;
 }
 
 static bool linux_apply_resolve_scope(LinuxGpuState* g, const DesiredSettings* d,
