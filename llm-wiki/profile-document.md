@@ -1,5 +1,17 @@
 # Profile document (authoring model)
 
+## Portable ordinary-slot authority (2026-11-20)
+
+`profile_legacy_document.h` and `profile_slot_runtime.h` round-trip whole
+values from an explicit replacement using the optional
+`explicit_replacement_scope` field. Older files without the field retain the
+existing inference used for indexed legacy slots. The optional graphics
+`control_surface` field stores the authored P0, global, or VF route separately
+from observation metadata. `profile_runtime_resolution.h` preserves that
+route when mapping the document to a GPU. The backend verifies the named
+control during Apply. `tests/profile_slot_runtime_tests.cpp` exercises the
+portable codec and both unbound and voltage-bound record loading.
+
 Source anchors: `source/profile_document.h`, `source/profile_point_intent.h`,
 `source/tuning_units.h`, `source/profile_document_validation.h`,
 `source/profile_text_validation.h`, `tests/profile_document_tests.cpp` (7960-8000),
@@ -139,14 +151,13 @@ builders and both merges retain captured zero. Hardware-independent point
 equality compares authority, including ignoring projected preview drift for
 applied-profile matching; structural runtime equality stays separate.
 
-Schema migration can preserve this intent, but IPC captured replay remains
-explicitly disabled until document/editor persistence is connected. Explicit
-runtime scopes now use the transition compiler below. The Windows write interface requires exact physical kHz; the Linux
+Document/local-slot adapters and the editor preserve captured replay and
+precise graphics/absolute-frequency intent in explicit runtime scopes, which
+use the transition compiler below. The Windows write interface requires exact physical kHz; the Linux
 raw control surface now supports its exact integer-Hz grid as described below.
 Runtime schema 4 now carries exact memory Hz/surface and rational power intent,
 with scoped merges, cleanup, restart migration and backend consumers. See
-[persistence-schema.md](persistence-schema.md). Document/local-slot producers
-and precise graphics/absolute-frequency evolution remain pending.
+[persistence-schema.md](persistence-schema.md).
 
 Fixtures 8040-8060 and the production Windows target/verify fixture cover zero,
 negative offsets, preview/global-offset independence, strict readback, merge,

@@ -156,7 +156,8 @@ static inline bool profile_check_commands_run(const std::vector<std::string>& ar
         if (doc.graphicsOffset.present) {
             bool projection = false;
             for (int i = 0; i < doc.topologyCount; ++i) projection |= doc.points[i].kind == PROFILE_POINT_PROJECTION;
-            if (graphicsChoice) routes.graphics = graphicsChoice;
+            if (doc.graphicsOffset.controlSurface) routes.graphics = doc.graphicsOffset.controlSurface;
+            else if (graphicsChoice) routes.graphics = graphicsChoice;
             else if (projection || doc.graphicsOffset.exclusionPolicy != PROFILE_EXCLUDE_NONE)
                 routes.graphics = DESIRED_GRAPHICS_VF_COMPONENT;
             else if (capture->composition == CAPTURE_COMPOSITION_INDEPENDENT && capture->graphics.valid)

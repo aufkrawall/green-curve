@@ -56,7 +56,8 @@ static bool load_profile_document_slot(const std::string& body, int slot, Desire
         if (dropped) debug_log("profile load: editor projection dropped %u hidden VF points\n", dropped);
     }
     validate_desired_settings_for_ipc(desired);
-    debug_log("profile load: slot %d converted portable record kind=%s scope=0x%X points=%d mode=%d\n", slot,
-        needsGpu ? "voltage" : "indexed", (unsigned)desired->applicationScope, document->topologyCount, (int)mode);
+    debug_log("profile load: slot %d converted portable record kind=%s scope=0x%X graphicsRoute=%u points=%d mode=%d\n", slot,
+        needsGpu ? "voltage" : "indexed", (unsigned)desired->applicationScope,
+        (unsigned)desired->authoring.graphicsSurface, document->topologyCount, (int)mode);
     return true;
 }

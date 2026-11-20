@@ -97,6 +97,7 @@ static inline bool hardware_capture_to_document(const HardwareCaptureObservation
     }
     if ((o.capturedDomains & PROFILE_DOMAIN_GRAPHICS_OFFSET) && o.composition == CAPTURE_COMPOSITION_INDEPENDENT) {
         d.domains |= PROFILE_DOMAIN_GRAPHICS_OFFSET; d.graphicsOffset.present = true; d.graphicsOffset.offsetHz = o.graphics.value;
+        d.graphicsOffset.controlSurface = o.graphics.surface;
     }
     if (o.capturedDomains & PROFILE_DOMAIN_MEMORY) {
         d.domains |= PROFILE_DOMAIN_MEMORY; d.hasMemoryOffset = true; d.memoryOffsetHz = o.memory.value; d.memorySurface = o.memory.surface;

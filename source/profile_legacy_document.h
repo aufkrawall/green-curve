@@ -18,11 +18,15 @@ static inline bool profile_document_from_legacy_desired(const DesiredSettings& i
     const gc_u32 scope = desired_application_scope_kind(in.applicationScope);
     d.applicationScope = scope == DESIRED_SCOPE_UPDATE_INCLUDED ? PROFILE_SCOPE_UPDATE_INCLUDED :
         scope == DESIRED_SCOPE_EXPLICIT_RELEASE ? PROFILE_SCOPE_EXPLICIT_RELEASE : PROFILE_SCOPE_REPLACE_PROFILE;
+    d.explicitReplacementScope = scope == DESIRED_SCOPE_REPLACE_PROFILE;
     d.pointSetPolicy = in.applicationScope & DESIRED_SCOPE_REPLACE_VF_POINTS ? PROFILE_POINTS_REPLACE : PROFILE_POINTS_MERGE;
+    if (scope == DESIRED_SCOPE_UPDATE_INCLUDED && d.pointSetPolicy == PROFILE_POINTS_REPLACE)
+        d.domains |= PROFILE_DOMAIN_VF_CURVE;
     if (in.hasGpuOffset) {
         d.domains |= PROFILE_DOMAIN_GRAPHICS_OFFSET; d.graphicsOffset.present = true;
         d.graphicsOffset.offsetHz = in.authoring.graphicsPrecise ? in.authoring.graphicsOffsetHz :
             (long long)in.gpuOffsetMHz * 1000000;
+        d.graphicsOffset.controlSurface = in.authoring.graphicsSurface;
         if (in.gpuOffsetExcludeLowCount) {
             d.graphicsOffset.exclusionPolicy = PROFILE_EXCLUDE_LEGACY_COUNT;
             d.graphicsOffset.excludeLowCount = in.gpuOffsetExcludeLowCount;

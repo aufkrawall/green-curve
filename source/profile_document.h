@@ -95,6 +95,7 @@ struct ProfileLockIntent {
 struct ProfileGraphicsOffset {
     bool present;
     long long offsetHz;
+    gc_u32 controlSurface; // DesiredGraphicsSurface, AUTO defers selection
     int excludeLowCount;
     ProfileExclusionPolicy exclusionPolicy;
     int excludedCount;
@@ -158,6 +159,8 @@ struct ProfileDocument {
     ProfilePointSetPolicy pointSetPolicy;
     bool sourceTopologyComplete;
     bool legacyIndicesUnresolved;
+    // Older indexed exports used replace_profile for legacy slots too.
+    bool explicitReplacementScope;
 
     ProfileSourceMetadata source;
 
@@ -251,6 +254,7 @@ static inline bool profile_fan_intent_semantically_equal(const ProfileFanIntent&
 static inline bool profile_document_semantically_equal(const ProfileDocument& a,
     const ProfileDocument& b) {
     if (a.domains != b.domains || a.applicationScope != b.applicationScope ||
+        a.explicitReplacementScope != b.explicitReplacementScope ||
         ((a.domains & PROFILE_DOMAIN_VF_CURVE) && a.pointSetPolicy != b.pointSetPolicy) ||
         a.sourceTopologyComplete != b.sourceTopologyComplete ||
         a.legacyIndicesUnresolved != b.legacyIndicesUnresolved)
@@ -264,6 +268,7 @@ static inline bool profile_document_semantically_equal(const ProfileDocument& a,
     if (a.graphicsOffset.present != b.graphicsOffset.present) return false;
     if (a.graphicsOffset.present &&
         (a.graphicsOffset.offsetHz != b.graphicsOffset.offsetHz ||
+         a.graphicsOffset.controlSurface != b.graphicsOffset.controlSurface ||
          a.graphicsOffset.excludeLowCount != b.graphicsOffset.excludeLowCount ||
          a.graphicsOffset.exclusionPolicy != b.graphicsOffset.exclusionPolicy ||
          a.graphicsOffset.excludedCount != b.graphicsOffset.excludedCount))

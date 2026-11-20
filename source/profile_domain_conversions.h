@@ -299,8 +299,9 @@ static inline SurfaceQuery query_graphics(const ProfileDocument& source,
     SurfaceQuery q;
     if (!source.graphicsOffset.present) return q;
     const gc_i64 v = source.graphicsOffset.offsetHz;
-    const gc_u32 route = routes.graphics ? routes.graphics
-        : (capture.composition == CAPTURE_COMPOSITION_INDEPENDENT && capture.graphics.valid ? capture.graphics.surface : 0u);
+    const gc_u32 route = source.graphicsOffset.controlSurface ? source.graphicsOffset.controlSurface :
+        routes.graphics ? routes.graphics :
+        (capture.composition == CAPTURE_COMPOSITION_INDEPENDENT && capture.graphics.valid ? capture.graphics.surface : 0u);
     if (route == DESIRED_GRAPHICS_VF_COMPONENT) {
         const bool known = capture.vfLimits.valid && capture.vfLimits.gridValid && capture.vfLimits.gridHz > 0;
         if (!known) {

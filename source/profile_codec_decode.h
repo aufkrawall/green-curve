@@ -41,7 +41,9 @@ inline bool finish_document(DecodeState& state, int n, ProfileCodecError* error)
         const auto policy = d.graphicsOffset.exclusionPolicy;
         const unsigned long long mask = policy == PROFILE_EXCLUDE_IDENTITIES ? 7 :
             policy == PROFILE_EXCLUDE_LEGACY_COUNT ? 11 : 3;
-        if (r.sections[GRAPHICS].keys != mask) return reject("missing or inapplicable graphics fields");
+        constexpr unsigned long long controlSurfaceKey = 1ull << 4;
+        if ((r.sections[GRAPHICS].keys & ~controlSurfaceKey) != mask)
+            return reject("missing or inapplicable graphics fields");
     }
     const int excluded = d.graphicsOffset.present && d.graphicsOffset.exclusionPolicy == PROFILE_EXCLUDE_IDENTITIES ?
         d.graphicsOffset.excludedCount : 0;

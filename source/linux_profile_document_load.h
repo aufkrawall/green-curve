@@ -56,9 +56,9 @@ static bool load_document_section(const char* path, const char* section, const c
             converted->lockCi, converted->lockMHz);
     }
     *desired = *converted;
-    linux_debug_logf("profile load: %s converted portable record kind=%s scope=0x%X points=%d live=%d\n",
+    linux_debug_logf("profile load: %s converted portable record kind=%s scope=0x%X graphicsRoute=%u points=%d live=%d\n",
         context, needsDestination ? "voltage" : "indexed",
-        (unsigned)desired->applicationScope, document->topologyCount,
+        (unsigned)desired->applicationScope, (unsigned)desired->authoring.graphicsSurface, document->topologyCount,
         destination ? destination->count : 0);
     return true;
 }

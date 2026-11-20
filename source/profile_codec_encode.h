@@ -65,6 +65,7 @@ inline void write_document(Writer& w, const ProfileDocument& d, int ordinal) {
     w.integer("topology_count", d.topologyCount);
     w.integer("point_count", pointCount);
     w.text("display_name", d.displayName);
+    if (d.explicitReplacementScope) w.boolean("explicit_replacement_scope", true);
     w.section(root + ".source");
     const View operatingSystems[] = {"unknown", "windows", "linux"};
     const View pinKnowledge[] = {"unknown", "absent", "present"};
@@ -104,6 +105,8 @@ inline void write_document(Writer& w, const ProfileDocument& d, int ordinal) {
         const auto& g = d.graphicsOffset;
         w.section(root + ".graphics");
         w.integer("offset_hz", g.offsetHz);
+        const View surfaces[] = {"destination", "p0", "global", "vf_component"};
+        if (g.controlSurface) w.value("control_surface", surfaces[g.controlSurface]);
         const View policies[] = {"none", "identities", "legacy_count_unresolved"};
         w.value("exclusion_policy", policies[g.exclusionPolicy]);
         if (g.exclusionPolicy == PROFILE_EXCLUDE_LEGACY_COUNT) w.integer("exclude_low_count", g.excludeLowCount);

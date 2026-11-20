@@ -23,6 +23,7 @@ static inline bool profile_document_structurally_valid(const ProfileDocument& d,
     if (d.documentVersion != 1 || !d.documentId) return fail("unsupported document version or missing identity");
     if (d.domains < 0 || (d.domains & ~allDomains) ||
         d.applicationScope < PROFILE_SCOPE_UPDATE_INCLUDED || d.applicationScope > PROFILE_SCOPE_EXPLICIT_RELEASE ||
+        (d.explicitReplacementScope && d.applicationScope != PROFILE_SCOPE_REPLACE_PROFILE) ||
         d.pointSetPolicy < PROFILE_POINTS_MERGE || d.pointSetPolicy > PROFILE_POINTS_REPLACE)
         return fail("invalid domains, application scope or point-set policy");
     if (!profile_bounded_text_valid(d.displayName, sizeof(d.displayName), PROFILE_DOCUMENT_MAX_DISPLAY_NAME) ||
@@ -74,8 +75,14 @@ static inline bool profile_document_structurally_valid(const ProfileDocument& d,
         (d.graphicsOffset.observedSurface > CLOCK_OFFSET_SURFACE_GLOBAL ||
          d.graphicsOffset.observedComposition < 0 || d.graphicsOffset.observedComposition > 2))
         return fail("unknown graphics observation surface or composition");
+    if (d.graphicsOffset.controlSurface > DESIRED_GRAPHICS_VF_COMPONENT ||
+        (d.graphicsOffset.controlSurface && !d.graphicsOffset.present))
+        return fail("unknown or missing graphics control surface");
     if (d.graphicsOffset.present) {
         const ProfileGraphicsOffset& g = d.graphicsOffset;
+        if ((g.controlSurface == DESIRED_GRAPHICS_P0 || g.controlSurface == DESIRED_GRAPHICS_GLOBAL) &&
+            g.exclusionPolicy != PROFILE_EXCLUDE_NONE)
+            return fail("graphics point exclusions require a VF component");
         if (g.exclusionPolicy < PROFILE_EXCLUDE_NONE || g.exclusionPolicy > PROFILE_EXCLUDE_LEGACY_COUNT ||
             g.excludedCount < 0 || g.excludedCount > VF_NUM_POINTS || g.excludeLowCount < 0 ||
             g.excludeLowCount > VF_NUM_POINTS ||

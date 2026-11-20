@@ -48,6 +48,7 @@ inline bool field(DecodeState& state, const Location& at, View key, View v) {
             GC_PROFILE_FIELD("topology_count", GC_PROFILE_INT(d.topologyCount, 0, VF_NUM_POINTS));
             GC_PROFILE_FIELD("point_count", GC_PROFILE_INT(r.pointCount, 0, VF_NUM_POINTS));
             GC_PROFILE_FIELD("display_name", text(v, d.displayName, sizeof(d.displayName)));
+            GC_PROFILE_FIELD("explicit_replacement_scope", boolean(v, d.explicitReplacementScope));
             break;
         case SOURCE:
             GC_PROFILE_FIELD("os", choice(v, d.source.osFamily, {"unknown", "windows", "linux"}));
@@ -84,6 +85,7 @@ inline bool field(DecodeState& state, const Location& at, View key, View v) {
             GC_PROFILE_FIELD("exclusion_policy", choice(v, d.graphicsOffset.exclusionPolicy, {"none", "identities", "legacy_count_unresolved"}));
             GC_PROFILE_FIELD("excluded_count", GC_PROFILE_INT(d.graphicsOffset.excludedCount, 0, VF_NUM_POINTS));
             GC_PROFILE_FIELD("exclude_low_count", GC_PROFILE_INT(d.graphicsOffset.excludeLowCount, 0, VF_NUM_POINTS));
+            GC_PROFILE_FIELD("control_surface", choice(v, d.graphicsOffset.controlSurface, {"destination", "p0", "global", "vf_component"}));
             break;
         case EXCLUSION:
             GC_PROFILE_FIELD("topology_id", GC_PROFILE_INT(d.graphicsOffset.excludedTopologyIds[at.index], 0, INT_MAX));

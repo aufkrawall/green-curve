@@ -45,7 +45,8 @@ static inline bool profile_document_requires_destination(const ProfileDocument& 
     if (d.lock.present) return true;
     for (int i = 0; i < d.topologyCount && i < VF_NUM_POINTS; ++i)
         if (d.points[i].kind != PROFILE_POINT_ABSENT) return true;
-    return d.graphicsOffset.present && d.graphicsOffset.exclusionPolicy == PROFILE_EXCLUDE_IDENTITIES;
+    return d.graphicsOffset.present && (d.graphicsOffset.exclusionPolicy == PROFILE_EXCLUDE_IDENTITIES ||
+        d.graphicsOffset.controlSurface == DESIRED_GRAPHICS_VF_COMPONENT);
 }
 
 static inline bool profile_slot_runtime_fail(char* why, size_t whySize, const char* text) {
@@ -87,7 +88,7 @@ static inline bool profile_indexed_document_needs_explicit_scope(const ProfileDo
         if (p.kind == PROFILE_POINT_CAPTURED_OFFSET) return true;
         if (p.kind == PROFILE_POINT_ABSOLUTE_FREQUENCY && p.absoluteFrequencyHz % 1000000) return true;
     }
-    if (d.graphicsOffset.present && d.graphicsOffset.offsetHz % 1000000 &&
+    if (d.graphicsOffset.present && (d.graphicsOffset.controlSurface || d.graphicsOffset.offsetHz % 1000000) &&
         !profile_indexed_document_has_legacy_flat_tail_offset_artifact(d)) return true;
     if (d.lock.present && d.lock.targetFrequencyHz % 1000000) return true;
     if (d.hasMemoryOffset && (d.memorySurface || d.memoryOffsetHz % 1000000)) return true;
@@ -121,7 +122,8 @@ static inline bool profile_desired_from_indexed_document(const ProfileDocument& 
     } else if (s.applicationScope == PROFILE_SCOPE_EXPLICIT_RELEASE) {
         next.applicationScope = DESIRED_SCOPE_EXPLICIT_RELEASE;
     } else {
-        next.applicationScope = explicitScope ? DESIRED_SCOPE_REPLACE_PROFILE : DESIRED_SCOPE_LEGACY;
+        next.applicationScope = s.explicitReplacementScope || explicitScope
+            ? DESIRED_SCOPE_REPLACE_PROFILE : DESIRED_SCOPE_LEGACY;
     }
     const bool legacyScope = next.applicationScope == DESIRED_SCOPE_LEGACY;
     const bool legacyFlatTailOffsetArtifact =
@@ -142,7 +144,11 @@ static inline bool profile_desired_from_indexed_document(const ProfileDocument& 
             if (g.exclusionPolicy == PROFILE_EXCLUDE_IDENTITIES) return fail("this profile needs the GPU it will run on");
             next.hasGpuOffset = 1; next.gpuOffsetMHz = (int)(g.offsetHz / 1000000);
             if (g.exclusionPolicy == PROFILE_EXCLUDE_LEGACY_COUNT) next.gpuOffsetExcludeLowCount = g.excludeLowCount;
-            if (g.offsetHz % 1000000) { next.authoring.graphicsPrecise = 1; next.authoring.graphicsOffsetHz = g.offsetHz; }
+            if (g.controlSurface || g.offsetHz % 1000000) {
+                next.authoring.graphicsPrecise = 1;
+                next.authoring.graphicsOffsetHz = g.offsetHz;
+                next.authoring.graphicsSurface = g.controlSurface;
+            }
         }
     }
     bool used[VF_NUM_POINTS]{};

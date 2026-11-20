@@ -76,6 +76,19 @@ int run_profile_slot_runtime_tests() {
         !same_points(*back, *again) || again->lockMHz != 1905 || again->memOffsetMHz != 1000)
         return 9955;
 
+    DesiredSettings powerOnly{};
+    initialize_desired_settings_defaults(&powerOnly);
+    powerOnly.applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+    if (!desired_power_set_ratio(&powerOnly, {9, 10}) ||
+        !profile_document_from_legacy_desired(powerOnly, bank->documents[0], why, sizeof(why)) ||
+        !profile_bank_encode(*bank, bytes) || !profile_bank_decode(bytes, *decoded) ||
+        !profile_slot_document_runtime(decoded->documents[0], nullptr, *back, why, sizeof(why)))
+        return 12685;
+    desired_prepare_replacement_request(back.get());
+    if (back->applicationScope != DESIRED_SCOPE_REPLACE_PROFILE || back->resetOcBeforeApply ||
+        !back->powerLimitRatio || back->powerRatioNumerator != 9 || back->powerRatioDenominator != 10)
+        return 12686;
+
     // 9956: precise and captured intent keep an explicit scope and exact values.
     DesiredSettings precise;
     initialize_desired_settings_defaults(&precise);
@@ -116,6 +129,30 @@ int run_profile_slot_runtime_tests() {
     live_curve(curve.get());
     const VfFloorTopology floor = vf_floor_topology_compute(curve.get(), nullptr, VF_NUM_POINTS);
     auto live = std::make_unique<ProfileDestinationTopology>();
+    if (!profile_destination_from_vf_curve(curve.get(), floor, *live)) return 12687;
+    DesiredSettings namedGraphics{};
+    initialize_desired_settings_defaults(&namedGraphics);
+    namedGraphics.applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+    namedGraphics.hasGpuOffset = 1;
+    namedGraphics.gpuOffsetMHz = 100;
+    namedGraphics.authoring.graphicsPrecise = 1;
+    namedGraphics.authoring.graphicsOffsetHz = 100000000;
+    for (gc_u32 route : {DESIRED_GRAPHICS_P0, DESIRED_GRAPHICS_GLOBAL}) {
+        namedGraphics.authoring.graphicsSurface = route;
+        for (bool bound : {false, true}) {
+            namedGraphics.authoring.topologyBound = gc_bool8_from_bool(bound);
+            namedGraphics.authoring.topologyCount = bound ? 1 : 0;
+            namedGraphics.authoring.voltageUv[10] = bound ? curve[10].volt_uV : 0;
+            namedGraphics.hasCurvePoint[10] = gc_bool8_from_bool(bound);
+            namedGraphics.curvePointMHz[10] = bound ? 1050 : 0;
+            if (!profile_document_from_legacy_desired(namedGraphics, bank->documents[0], why, sizeof(why)) ||
+                !profile_bank_encode(*bank, bytes) || !profile_bank_decode(bytes, *decoded) ||
+                !profile_slot_document_runtime(decoded->documents[0], bound ? live.get() : nullptr,
+                    *back, why, sizeof(why)) || !back->authoring.graphicsPrecise ||
+                back->authoring.graphicsSurface != route || back->authoring.graphicsOffsetHz != 100000000)
+                return 12688;
+        }
+    }
     if (!profile_destination_from_vf_curve(curve.get(), floor, *live) || live->count != 100 || !live->complete)
         return 9960;
     auto capture = std::make_unique<ProfileDocument>(profile_document_make_empty());

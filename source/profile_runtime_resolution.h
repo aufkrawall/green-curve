@@ -46,7 +46,9 @@ static inline bool profile_resolve_runtime(const ProfileDocument& source,
     if (!report.ready()) return fail("destination mapping requires review");
     if (!sourceRevision || !destination.gpuGeneration || !destination.revision)
         return fail("destination review binding is missing");
-    if (routes.graphics > DESIRED_GRAPHICS_VF_COMPONENT || routes.memory > CLOCK_OFFSET_SURFACE_GLOBAL)
+    const gc_u32 graphicsSurface = source.graphicsOffset.controlSurface
+        ? source.graphicsOffset.controlSurface : routes.graphics;
+    if (graphicsSurface > DESIRED_GRAPHICS_VF_COMPONENT || routes.memory > CLOCK_OFFSET_SURFACE_GLOBAL)
         return fail("invalid destination control route");
     auto nextPtr = std::make_unique<DesiredSettings>(); DesiredSettings& next = *nextPtr; next.lockCi = -1;
     next.applicationScope = source.applicationScope == PROFILE_SCOPE_REPLACE_PROFILE ? DESIRED_SCOPE_REPLACE_PROFILE :
@@ -56,7 +58,7 @@ static inline bool profile_resolve_runtime(const ProfileDocument& source,
         next.applicationScope |= DESIRED_SCOPE_REPLACE_VF_POINTS;
     const bool bound = source.lock.present || (source.domains & PROFILE_DOMAIN_VF_CURVE) ||
         (source.graphicsOffset.present && (source.graphicsOffset.exclusionPolicy == PROFILE_EXCLUDE_IDENTITIES ||
-            routes.graphics == DESIRED_GRAPHICS_VF_COMPONENT));
+             graphicsSurface == DESIRED_GRAPHICS_VF_COMPONENT));
     if (bound) {
         if (!destination.complete) return fail("complete destination graphics topology is required");
         next.authoring.topologyBound = 1;
@@ -71,11 +73,11 @@ static inline bool profile_resolve_runtime(const ProfileDocument& source,
         if (g.offsetHz < -1000000000LL || g.offsetHz > 1000000000LL)
             return fail("graphics intent exceeds application bounds; edit the draft explicitly");
         if (g.exclusionPolicy == PROFILE_EXCLUDE_LEGACY_COUNT) return fail("legacy exclusions require identity conversion");
-        if (g.exclusionPolicy == PROFILE_EXCLUDE_IDENTITIES && routes.graphics != DESIRED_GRAPHICS_VF_COMPONENT)
+        if (g.exclusionPolicy == PROFILE_EXCLUDE_IDENTITIES && graphicsSurface != DESIRED_GRAPHICS_VF_COMPONENT)
             return fail("identity exclusions require a destination VF component");
         next.hasGpuOffset = 1; next.gpuOffsetMHz = (int)(g.offsetHz / 1000000);
         next.authoring.graphicsPrecise = 1; next.authoring.graphicsOffsetHz = g.offsetHz;
-        next.authoring.graphicsSurface = routes.graphics;
+        next.authoring.graphicsSurface = graphicsSurface;
         if (g.exclusionPolicy == PROFILE_EXCLUDE_IDENTITIES) {
             next.authoring.identityExclusions = 1;
             for (int i = 0; i < g.excludedCount; ++i) {

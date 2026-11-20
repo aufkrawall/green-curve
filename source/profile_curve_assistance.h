@@ -256,7 +256,8 @@ static inline void profile_curve_assistance_prepare(
         capture.vfLimits.gridHz <= 0 || !capture.vfLimits.backendWritable) {
         ASSIST_FAIL(PROFILE_ASSIST_UNAVAILABLE, "destination VF topology, limits or grid are unavailable");
     }
-    if (source.graphicsOffset.present && routes.graphics == DESIRED_GRAPHICS_AUTO)
+    if (source.graphicsOffset.present && !source.graphicsOffset.controlSurface &&
+        routes.graphics == DESIRED_GRAPHICS_AUTO)
         ASSIST_FAIL(PROFILE_ASSIST_BASELINE_REQUIRED, "resolve destination graphics control composition before preparing curve");
 
     auto curveDoc = std::make_unique<ProfileDocument>();
