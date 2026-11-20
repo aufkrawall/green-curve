@@ -77,13 +77,41 @@ static bool load_profile_sections_any(const char* path, const IniDocument* doc, 
     return load_desired_settings_from_sections(doc, controls, curve, fan, desired, context, err, errSize);
 }
 
-static inline void linux_repair_legacy_flat_tail_offset_artifact(DesiredSettings* desired, const char* context) {
-    if (!profile_desired_has_legacy_flat_tail_offset_artifact(desired, nullptr, nullptr)) return;
+static inline void linux_repair_legacy_flat_tail_offset_artifact(
+    const IniDocument* doc, const char* curveSection,
+    ProfileCurveDecode curveDecode, DesiredSettings* desired, const char* context) {
+    if (!desired || desired->applicationScope != DESIRED_SCOPE_LEGACY) return;
+    if (!desired->hasGpuOffset ||
+        desired->gpuOffsetMHz >= PROFILE_LEGACY_FLAT_TAIL_OFFSET_LIMIT_MHZ)
+        return;
+    if (curveDecode == PROFILE_CURVE_DECODE_BASE_PLUS_GPU_OFFSET) return;
+    bool hasObserved[VF_NUM_POINTS] = {};
+    int observedKHz[VF_NUM_POINTS] = {};
+    int observedCount = 0;
+    if (doc && curveSection && curveSection[0]) {
+        for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+            if (!desired->hasCurvePoint[ci]) continue;
+            char key[48] = {};
+            snprintf(key, sizeof(key), "point%d_offset_khz", ci);
+            const std::string val = get_section_value(doc, curveSection, key);
+            if (val.empty()) continue;
+            int parsed = 0;
+            if (parse_int_strict(val.c_str(), &parsed)) {
+                hasObserved[ci] = true;
+                observedKHz[ci] = parsed;
+                ++observedCount;
+            }
+        }
+    }
+    if (!profile_desired_has_legacy_flat_tail_offset_artifact(
+            desired, observedCount > 0 ? hasObserved : nullptr,
+            observedCount > 0 ? observedKHz : nullptr))
+        return;
     const int rawGpuOffsetMHz = desired->gpuOffsetMHz;
     const int rawExclude = desired->gpuOffsetExcludeLowCount;
     profile_desired_repair_legacy_flat_tail_offset(desired);
     linux_debug_logf("profile: cleared legacy flat-tail graphics offset artifact in %s "
-                     "(rawGpuOffset=%d rawExclude=%d lockCi=%d lockMHz=%u -> 0 MHz)\n",
+                     "(rawGpuOffset=%d rawExclude=%d lockCi=%d lockMHz=%u observed=%d -> 0 MHz)\n",
                      context ? context : "config", rawGpuOffsetMHz, rawExclude,
-                     desired->lockCi, desired->lockMHz);
+                     desired->lockCi, desired->lockMHz, observedCount);
 }

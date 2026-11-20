@@ -645,6 +645,47 @@ void test_voltage_bound_profile_load_and_output() {
            "unlocked Linux config.ini decodes cleanly for export to Windows");
     unlink(unlockedPath.c_str());
     unlink((unlockedPath + ".lock").c_str());
+
+    // Linux INI flat-tail repair parity with Windows: read pointN_offset_khz
+    // for uniform-offset artifacts and skip base_plus_gpu_offset sections.
+    const std::string flatTailPath = path_in_root("flat-tail-repair.ini");
+    const std::string flatTailIni =
+        "[meta]\nlinux_mem_migrated=1\n"
+        "[profile1]\n"
+        "gpu_offset_mhz=-1927\n"
+        "gpu_offset_exclude_low_count=0\n"
+        "lock_ci=76\nlock_mhz=2962\nlock_mode=1\nlock_tracks_anchor=1\n"
+        "[profile1_curve]\n"
+        "curve_semantics=absolute_with_origin\n"
+        "point76=2962\npoint76_offset_khz=480000\n"
+        "point77=2962\npoint77_offset_khz=-1927000\n"
+        "point78=2962\npoint78_offset_khz=-1927000\n"
+        "point79=2962\npoint79_offset_khz=-1927000\n"
+        "point80=2962\npoint80_offset_khz=-1927000\n"
+        "[profile2]\n"
+        "gpu_offset_mhz=-1927\n"
+        "gpu_offset_exclude_low_count=76\n"
+        "lock_ci=76\nlock_mhz=2962\nlock_mode=1\nlock_tracks_anchor=1\n"
+        "[profile2_curve]\n"
+        "curve_semantics=base_plus_gpu_offset\n"
+        "point76=4889\npoint77=4889\n";
+    if (FILE* f = fopen(flatTailPath.c_str(), "wb")) {
+        fwrite(flatTailIni.data(), 1, flatTailIni.size(), f);
+        fclose(f);
+    }
+    DesiredSettings repairedUniform{};
+    expect(load_profile_from_config_path_for_destination(
+               flatTailPath.c_str(), 1, nullptr, &repairedUniform, err, sizeof(err), nullptr) &&
+               repairedUniform.hasGpuOffset && repairedUniform.gpuOffsetMHz == 0 &&
+               repairedUniform.lockTracksAnchor == 0,
+           "uniform flat-tail offset artifact with pointN_offset_khz evidence is repaired on Linux INI load");
+    DesiredSettings basePlusSection{};
+    expect(load_profile_from_config_path_for_destination(
+               flatTailPath.c_str(), 2, nullptr, &basePlusSection, err, sizeof(err), nullptr) &&
+               basePlusSection.hasGpuOffset && basePlusSection.gpuOffsetMHz == -1000,
+           "base_plus_gpu_offset section is skipped by Linux flat-tail offset repair");
+    unlink(flatTailPath.c_str());
+    unlink((flatTailPath + ".lock").c_str());
 }
 
 void remove_root() {

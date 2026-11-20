@@ -1929,6 +1929,12 @@ def check_import_transfer_slots_and_runtime_check(ctx, require_text, forbid_text
                  "profile_desired_has_legacy_flat_tail_offset_artifact(",
                  "Linux ordinary INI repair uses the shared flat-tail offset artifact policy")
     require_text(_p(ctx, "linux_profile_document_load.h"),
+                 "if (curveDecode == PROFILE_CURVE_DECODE_BASE_PLUS_GPU_OFFSET) return;",
+                 "Linux ordinary INI repair skips base_plus_gpu_offset sections like Windows")
+    require_text(_p(ctx, "linux_profile_document_load.h"),
+                 'snprintf(key, sizeof(key), "point%d_offset_khz", ci);',
+                 "Linux ordinary INI repair reads pointN_offset_khz evidence for uniform artifacts")
+    require_text(_p(ctx, "linux_profile_document_load.h"),
                  "profile_indexed_document_has_legacy_flat_tail_offset_artifact(",
                  "Linux document slot loader logs legacy flat-tail offset artifact repairs")
     require_text(_p(ctx, "linux_tui_actions.cpp"),
