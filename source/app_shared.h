@@ -66,6 +66,7 @@
 #include "desired_settings_ui_policy.h"
 #include "gpu_capability_policy.h"
 #include "fan_request_policy.h"
+#include "fan_intent_policy.h"
 #include "nvapi_module_policy.h"
 // The in-app updater's pure policy and its trust root.  gpu_core.h has already
 // pulled in service_protocol.h, which needs update_schedule_policy.h for the

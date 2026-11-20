@@ -9,6 +9,7 @@
 // Before any shard that acquires the runtime lock for a GPU write.
 #include "main_service_update_guard.cpp"
 #include "main_service_fan_worker.cpp"
+#include "main_service_fan_intent.cpp"
 #include "main_service_apply_runtime.cpp"
 
 enum ServiceLogonProfileResolveResult {

@@ -41,7 +41,20 @@ static bool live_fan_policy_readback_complete() {
 static void initialize_gui_fan_settings_from_live_state(bool syncGuiCurve) {
     ensure_valid_fan_curve_config(&g_app.guiFanCurve);
     ensure_valid_fan_curve_config(&g_app.activeFanCurve);
-    if (!g_app.serviceSnapshotAuthoritative) {
+    if (app_is_service_process()) {
+        // The service's activeFanMode mirrors its own runtime, which only the
+        // fan apply, runtime start/stop and failure escalation change.  It is
+        // never re-derived from the owned intent: a refresh in the middle of an
+        // Apply still sees the OUTGOING intent and would resurrect a mode the
+        // Apply just released (the F-RESET-INTENT class, fan_intent_policy.h).
+        const int driven = fan_runtime_driven_mode(g_app.fanCurveRuntimeActive,
+            g_app.fanFixedRuntimeActive);
+        if (g_app.activeFanMode != driven) {
+            debug_log("fan intent: service activeFanMode %s -> %s (follows the running fan runtime)\n",
+                fan_mode_label(g_app.activeFanMode), fan_mode_label(driven));
+        }
+        g_app.activeFanMode = driven;
+    } else if (!g_app.serviceSnapshotAuthoritative) {
         int liveMode = get_effective_live_fan_mode();
         int intentMode = current_green_curve_fan_intent_mode();
         if (intentMode == FAN_MODE_AUTO && liveMode != FAN_MODE_AUTO &&

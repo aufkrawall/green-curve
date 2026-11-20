@@ -35,6 +35,7 @@
 #include "platform.h"
 #include "fan_curve.h"
 #include "fan_runtime_policy.h"
+#include "fan_intent_policy.h"
 
 #include <errno.h>
 #include <fcntl.h>

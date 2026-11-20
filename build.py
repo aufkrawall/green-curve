@@ -2068,6 +2068,7 @@ def run_source_regression_checks():
     with open(_service_runtime_surface, "w", encoding="utf-8", errors="ignore") as _rf:
         for _cpp in (os.path.join(SOURCE_DIR, "main_service_driver_version.cpp"), main_service_runtime_identity_cpp,
                      main_service_fan_worker_cpp,
+                     os.path.join(SOURCE_DIR, "main_service_fan_intent.cpp"),
                      main_service_apply_runtime_cpp,
                      main_service_runtime_aggregate_cpp):
             with open(_cpp, "r", encoding="utf-8", errors="ignore") as _source:

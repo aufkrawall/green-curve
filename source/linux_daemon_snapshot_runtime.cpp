@@ -170,7 +170,10 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
         s->appliedGpuOffsetExcludeLowCount =
             g_activeDesired.gpuOffsetExcludeLowCount;
         s->lastApplyUsedGpuOffset = g_activeDesired.hasGpuOffset;
-        s->activeFanMode = g_activeDesired.fanMode;
+        // An unclaimed fan is the driver's, whatever stale mode the record
+        // carries (fan_intent_policy.h); the runtime flags below agree.
+        s->activeFanMode = fan_owned_intent_mode(g_activeDesired.hasFan != 0,
+            g_activeDesired.fanMode, g_activeDesired.fanAuto != 0);
         s->activeFanFixedPercent = g_activeDesired.fanPercent;
         s->activeFanCurve = g_activeDesired.fanCurve;
         s->fanCurveRuntimeActive = g_activeDesired.hasFan &&

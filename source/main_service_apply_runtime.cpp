@@ -248,6 +248,22 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         }
         InterlockedExchange(&g_serviceReapplyInProgress, 0);
         service_clear_restart_reapply_snapshot();
+        // The runtime must now drive exactly what the published intent owns
+        // (main_service_fan_intent.cpp); a divergence is repaired and reported.
+        char fanInvariantNote[384] = {};
+        const ServiceFanIntentEnforcement fanInvariant =
+            service_enforce_fan_runtime_matches_intent("apply", fanInvariantNote,
+                sizeof(fanInvariantNote));
+        if (fanInvariant != SERVICE_FAN_INTENT_HELD) {
+            const gc_u32 floorSeverity = fanInvariant == SERVICE_FAN_INTENT_REPAIRED
+                ? (gc_u32)SERVICE_OUTCOME_SEVERITY_WARNING : (gc_u32)SERVICE_OUTCOME_SEVERITY_ERROR;
+            if (outcomeSeverityOut && *outcomeSeverityOut < floorSeverity)
+                *outcomeSeverityOut = floorSeverity;
+            if (result && resultSize && fanInvariantNote[0]) {
+                if (result[0]) StringCchCatA(result, resultSize, " ");
+                StringCchCatA(result, resultSize, fanInvariantNote);
+            }
+        }
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
         mark_service_telemetry_cache_updated("service apply");

@@ -282,8 +282,14 @@ static bool control_state_has_any_meaningful_value(const ControlState* state) {
 }
 
 static int current_green_curve_fan_intent_mode() {
-    if (app_is_service_process() && g_serviceHasActiveDesired && g_serviceActiveDesired.hasFan) {
-        return g_serviceActiveDesired.fanMode;
+    if (app_is_service_process()) {
+        // fan_intent_policy.h: the owned intent, else the service's own
+        // runtime -- never the activeFanMode mirror, which a post-write refresh
+        // re-derives from the OUTGOING intent while an Apply is running.
+        const bool intentOwnsFan = g_serviceHasActiveDesired && g_serviceActiveDesired.hasFan;
+        return service_reported_fan_intent_mode(intentOwnsFan,
+            g_serviceActiveDesired.fanMode, g_serviceActiveDesired.fanAuto != 0,
+            g_app.fanCurveRuntimeActive, g_app.fanFixedRuntimeActive);
     }
     if (g_app.fanCurveRuntimeActive) return FAN_MODE_CURVE;
     if (g_app.fanFixedRuntimeActive) return FAN_MODE_FIXED;

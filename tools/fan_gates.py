@@ -490,9 +490,9 @@ def check_fan_intent_consistency(ctx, require_text, forbid_text, require_order):
     The GUI omitted an unchanged fan from its reset-before-apply request (legacy
     meaning: keep), the shared scope upgrade turned that request into a profile
     replacement (meaning: release), the service wrote driver Auto, stopped the
-    curve and still reported Curve, and the relaxed profile match kept the
-    profile ticked.  service_scoped_apply_policy.h, the GUI capture and
-    profile_ownership_policy.h are the ownership part of the fix;
+    curve and still reported Curve -- re-derived from the outgoing intent -- and
+    the relaxed profile match kept the profile ticked.  fan_intent_policy.h,
+    service_scoped_apply_policy.h and main_service_fan_intent.cpp are the fix;
     tests/fan_intent_tests.cpp executes them.
     """
     scoped_h = _p(ctx, "service_scoped_apply_policy.h")
@@ -505,8 +505,30 @@ def check_fan_intent_consistency(ctx, require_text, forbid_text, require_order):
                  "a full GUI Apply always carries an owned Fixed/Curve fan")
     forbid_text(capture_cpp, "    if (!fanChanged) {\n        resetFull.hasFan = false;",
                 "an unchanged owned fan must not be stripped from a replacement request")
+    gpu_state_cpp = _p(ctx, "main_gpu_state.cpp")
+    ctx.require_order_in_operation(
+        gpu_state_cpp, "static int current_green_curve_fan_intent_mode()",
+        "return service_reported_fan_intent_mode(", "if (g_app.activeFanMode == FAN_MODE_CURVE)",
+        "the service reports fan mode from intent and runtime before any GUI-side mirror fallback")
+    require_text(_p(ctx, "main_fan_runtime.cpp"),
+                 "const int driven = fan_runtime_driven_mode(g_app.fanCurveRuntimeActive,",
+                 "the service's activeFanMode follows its own runtime, never the outgoing intent")
+    apply_runtime_cpp = _p(ctx, "main_service_apply_runtime.cpp")
+    require_order(apply_runtime_cpp, "g_serviceActiveDesired = mergedActiveDesired;",
+                  'service_enforce_fan_runtime_matches_intent("apply"',
+                  "every successful Apply checks the fan runtime against the published intent")
+    require_order(apply_runtime_cpp, 'service_enforce_fan_runtime_matches_intent("apply"',
+                  "populate_control_state(&g_serviceControlState);\n"
+                  "        g_serviceControlStateValid = true;\n"
+                  "        mark_service_telemetry_cache_updated(\"service apply\");",
+                  "the control state is captured after the fan invariant is enforced")
+    require_text(_p(ctx, "main_service_runtime.cpp"), '#include "main_service_fan_intent.cpp"',
+                 "the fan invariant shard is compiled into the service")
     require_text(_p(ctx, "profile_ownership_policy.h"), "profileFanMode == FAN_MODE_AUTO;",
                  "only an Auto profile may match an unclaimed fan")
+    require_text(_p(ctx, "linux_daemon_snapshot_runtime.cpp"),
+                 "s->activeFanMode = fan_owned_intent_mode(",
+                 "the Linux snapshot never reports a stale fan mode for an unclaimed fan")
 
 
 def check_all(ctx, require_text, forbid_text, require_order, backend_surface):
