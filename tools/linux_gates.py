@@ -670,6 +670,19 @@ def check_release_packaging(ctx, require_text, forbid_text):
         install_cpp, "int linux_service_install(",
         "file->save_previous()", "file->publish()",
         "installation preserves every previous file before publishing replacements")
+    install_files_h = os.path.join(ctx.SOURCE_DIR, "linux_service_install_files.h")
+    require_text(install_files_h, "fchown(fd, owner_, group_)",
+                 "staged installer files get an explicit owner and group, never the caller's egid")
+    require_text(install_cpp, "service_install_verify_published(",
+                 "published daemon and unit files are re-verified as root-owned and not writable by others")
+    ctx.require_order_in_operation(
+        install_cpp, "int linux_service_install(",
+        "file->publish()", "service_install_verify_published(verifyError",
+        "installed files are verified on their live paths before any systemctl activation")
+    forbid_text(install_cpp, "context->wasEnabled",
+                "an already enabled unit is still re-enabled so an upgraded [Install] section is re-linked")
+    forbid_text(install_cpp, "context->resumeWasEnabled",
+                "an already enabled resume unit is still re-enabled so an upgraded [Install] section is re-linked")
     require_text(setup_script, "GREENCURVE_SETUP_OWNS_GROUP=1",
                  "the setup script claims that ownership when it resolved an account")
     require_text(setup_script, "logname",
@@ -1028,6 +1041,16 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
     # directories for ordinary users; the rules are pure and harness-tested.
     require_text(_p(ctx, "linux_port.cpp"), "linux_atomic_write_split(path, &dir, &name)",
                  "the atomic text writer uses the tested path split")
+    # A create-only export must not hard-fail on a mount that lacks
+    # renameat2(RENAME_NOREPLACE) (NFS, some FUSE, FAT-family); the fallback
+    # chain is pure and harness-tested (tests/review_followup_tests.cpp 6280-6289).
+    require_text(_p(ctx, "linux_port.cpp"), "linux_atomic_write_publish_new(",
+                 "create-only exports go through the tested no-replace fallback chain")
+    require_text(_p(ctx, "linux_atomic_write_policy.h"),
+                 "linux_atomic_write_noreplace_unsupported(error)",
+                 "only a missing capability, never EEXIST or an I/O error, selects the fallback")
+    require_text(_p(ctx, "linux_atomic_write_policy.h"), "LINUX_ATOMIC_PUBLISH_CHECKED_RENAME",
+                 "mounts with neither renameat2 flags nor hard links still export")
     require_text(_p(ctx, "linux_port.cpp"),
                  "linux_open_output_directory(dir.c_str(), geteuid() == 0)",
                  "privileged output walks every directory without following links")

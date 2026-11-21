@@ -5,6 +5,15 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-21: Review follow-ups for Linux exports and upgrades
+
+- Linux create-only exports degrade from `renameat2(RENAME_NOREPLACE)` to
+  `linkat` and then a checked rename, so mounts without the flag still export.
+- The upgrade rollback rewrite had dropped the explicit root owner and group on
+  staged files and the post-install ownership checks; both are back
+  (verification runs on the live paths before activation).
+- `systemctl enable` runs again for an already enabled unit.
+
 ## 2026-11-21: Cooling, Reset and Linux upgrade recovery
 
 - Use RPM for stall decisions and keep the live Windows cooling runtime when

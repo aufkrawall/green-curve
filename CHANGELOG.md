@@ -59,6 +59,7 @@ Curve editing, profile transfer and capture improve.
 - **Linux Reset recovery:** restore settings under the prior clock bound after a failure.
 - **Linux fanless GPUs:** Reset restores clocks without requiring fan control.
 - **Linux upgrades:** recover the prior daemon after a failed upgrade.
+- **Linux installs:** verify the installed files are root-owned and refresh service enablement on upgrade.
 - **Scoped Linux curves:** preserve unrelated offsets, hard-lock tails and read-only points across reset and rollback; check transitions before named offsets.
 - **Profile transfer:** retain scope, graphics controls and repeated-voltage point bindings.
 - **Windows advanced edits:** preserve omitted external settings.
@@ -88,6 +89,7 @@ Curve editing, profile transfer and capture improve.
 - **External flatten:** avoid false negative core offsets.
 - **Curve errors:** identify out-of-range targets.
 - **Profile files:** import the reviewed contents and confirm before replacing any Linux export destination.
+- **Linux exports:** new profile files save to network and FAT-formatted drives.
 - **Multi-GPU ownership:** prevent retargeting when identical cards cannot be distinguished.
 - **GPU selector:** switch views and writes together, stay usable when a card fails to initialize, and retry after temporary busy refusals.
 - **Curve previews:** avoid spikes; retain drafts.

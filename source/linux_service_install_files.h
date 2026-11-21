@@ -15,7 +15,10 @@
 // live replacement and restoration is one rename.
 class LinuxInstallFile {
 public:
-    explicit LinuxInstallFile(const char* path) : path_(path) {}
+    // Installed files belong to root:root. The owner is a parameter only so the
+    // unprivileged regression fixture can stage files it is allowed to chown.
+    explicit LinuxInstallFile(const char* path, uid_t owner = 0, gid_t group = 0)
+        : path_(path), owner_(owner), group_(group) {}
     LinuxInstallFile(const LinuxInstallFile&) = delete;
     LinuxInstallFile& operator=(const LinuxInstallFile&) = delete;
     ~LinuxInstallFile() {
@@ -29,7 +32,9 @@ public:
         int fd = mkostemp(name.data(), O_CLOEXEC);
         if (fd < 0) return -1;
         staged_ = name;
-        if (fchmod(fd, mode) == 0) return fd;
+        // The group is explicit as well: a staged file otherwise inherits the
+        // process's egid (sudo -g) or a setgid parent directory's group.
+        if (fchown(fd, owner_, group_) == 0 && fchmod(fd, mode) == 0) return fd;
         const int error = errno;
         close(fd);
         errno = error;
@@ -93,6 +98,8 @@ private:
     std::string path_;
     std::string staged_;
     std::string backup_;
+    uid_t owner_;
+    gid_t group_;
     bool installed_ = false;
 };
 

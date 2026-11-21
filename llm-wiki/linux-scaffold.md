@@ -16,7 +16,13 @@ installation lock serializes concurrent installers. Recovery failure is surfaced
 and an unrestored backup is retained. `source/linux_service_install.cpp` owns
 the activation sequence and `source/linux_service_install_files.h` owns the
 file transaction. The Linux state fixture exercises real files and an injected
-publish failure. Live systemd activation and abrupt host interruption remain
+publish failure. Staged files get an explicit root owner and group
+(`LinuxInstallFile` takes the owner so the unprivileged fixture can stage); after
+publishing, `service_install_verify_published()` re-checks every live file and
+the parent chains before any systemctl step, rolling the files back on failure.
+`systemctl enable` always runs, even for an already enabled unit, so an upgraded
+`[Install]` section is re-linked; rollback disables only what the install itself
+enabled. Live systemd activation and abrupt host interruption remain
 unverified.
 
 ## Cross-platform profile interchange, curve correction loop and shaped-baseline reset (2026-11-20)

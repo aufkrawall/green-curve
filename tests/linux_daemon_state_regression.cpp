@@ -8,6 +8,7 @@
 #include "posix_test_environment.h"
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static char fixtureRoot[4096];
 static int fixture_fstat(int fd, struct stat* status) {
@@ -80,8 +81,8 @@ static int run_install_files_fixture(const char* path) {
     if (!first.locked() || second.locked()) return 12;
     const std::string newPath = std::string(path) + ".resume";
     if (!write_fixture(path, 'o')) return 13;
-    LinuxInstallFile existing(path);
-    LinuxInstallFile fresh(newPath.c_str());
+    LinuxInstallFile existing(path, geteuid(), getegid());
+    LinuxInstallFile fresh(newPath.c_str(), geteuid(), getegid());
     if (!stage_installer_fixture(existing, 'u') || !stage_installer_fixture(fresh, 'n') ||
         !existing.save_previous() || !fresh.save_previous()) return 14;
     char observed = 0;
@@ -101,7 +102,7 @@ static int run_install_files_fixture(const char* path) {
         observed != 'o' || access(newPath.c_str(), F_OK) == 0 || access(oldBackup.c_str(), F_OK) == 0)
         return 17;
 
-    LinuxInstallFile committed(path);
+    LinuxInstallFile committed(path, geteuid(), getegid());
     if (!stage_installer_fixture(committed, 'c') || !committed.save_previous()) return 18;
     const std::string committedBackup = committed.backup();
     if (!committed.publish() || !committed.commit() ||
@@ -110,8 +111,8 @@ static int run_install_files_fixture(const char* path) {
 
     // A publish failure after another file was replaced can restore the
     // earlier file. A directory occupying the second fresh target refuses rename.
-    LinuxInstallFile firstFile(path);
-    LinuxInstallFile blocked(newPath.c_str());
+    LinuxInstallFile firstFile(path, geteuid(), getegid());
+    LinuxInstallFile blocked(newPath.c_str(), geteuid(), getegid());
     if (!stage_installer_fixture(firstFile, 'x') || !stage_installer_fixture(blocked, 'y') ||
         !firstFile.save_previous() || !blocked.save_previous() || mkdir(newPath.c_str(), 0700))
         return 20;
@@ -119,6 +120,37 @@ static int run_install_files_fixture(const char* path) {
     const bool restored = firstFile.restore();
     if (rmdir(newPath.c_str()) || !rejected || !restored ||
         !read_fixture(path, observed) || observed != 'c') return 21;
+    // Staged files carry the explicit owner, group and mode, never the process's
+    // umask or a setgid parent's group. Production passes root:root; the
+    // unprivileged fixture can only chown to a group it belongs to.
+    gid_t groups[64] = {};
+    const int groupCount = getgroups((int)(sizeof(groups) / sizeof(groups[0])), groups);
+    gid_t otherGroup = getegid();
+    for (int i = 0; i < groupCount; ++i)
+        if (groups[i] != getegid()) { otherGroup = groups[i]; break; }
+    LinuxInstallFile owned(path, geteuid(), otherGroup);
+    const int ownedFd = owned.stage(0640);
+    struct stat ownedStat = {};
+    const bool ownedOk = ownedFd >= 0 && fstat(ownedFd, &ownedStat) == 0 &&
+        ownedStat.st_uid == geteuid() && ownedStat.st_gid == otherGroup &&
+        (ownedStat.st_mode & 07777) == 0640;
+    if (ownedFd >= 0) close(ownedFd);
+    if (!ownedOk) return 22;
+    // Root-only ownership is the production default.
+    LinuxInstallFile rootDefault(path);
+    const int rootFd = rootDefault.stage(0644);
+    if (geteuid() == 0) {
+        struct stat rootStat = {};
+        const bool rootOk = rootFd >= 0 && fstat(rootFd, &rootStat) == 0 &&
+            rootStat.st_uid == 0 && rootStat.st_gid == 0;
+        if (rootFd >= 0) close(rootFd);
+        if (!rootOk) return 23;
+    } else if (rootFd >= 0) {
+        // An unprivileged process cannot hand a file to root, so staging must
+        // refuse instead of silently leaving it owned by the caller.
+        close(rootFd);
+        return 24;
+    }
     puts("Linux installer files: staging, lock, activation rollback, partial publish and commit passed");
     return 0;
 }

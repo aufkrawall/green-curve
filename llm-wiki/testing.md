@@ -7,6 +7,26 @@
 - **Windows GPU selection degraded recovery, transient deferral & single-sync switch (`tests/gpu_selection_sync_tests.cpp` `7100-7101`, `tools/gpu_support_gates.py`):** covers `gpu_selector_combo_enabled()` in `DEGRADED`/`DEVICE_MISSING`, `gpu_selection_refusal_is_transient()`, `service_prepare_requested_gpu()` rollback on init failure, and single full-sync advancement.
 - **Linux lazy CLI GPU target & INI flat-tail repair parity (`tests/linux_gpu_selection_store_regression.cpp`, `tools/linux_gates.py`, `tools/ui_gates.py`):** covers offline ordinary profile loading without GPU target resolution, malformed write-target refusal when `needsLive`, uniform `pointN_offset_khz` flat-tail repair, and `base_plus_gpu_offset` skip guard. Cross-linked for `x86_64-linux-gnu` on Windows (`python build.py --test`).
 
+## Linux create-only export fallback and installer ownership (2026-11-21)
+
+Source anchors: `source/linux_atomic_write_policy.h`, `source/linux_port.cpp`
+(`write_text_file_atomic`), `source/linux_service_install_files.h`,
+`source/linux_service_install.cpp`.
+
+- `tests/review_followup_tests.cpp` `6280-6289`, `6269`: injected-operation chain
+  for `linux_atomic_write_publish_new()` (one atomic step, EEXIST, a real I/O
+  error not mistaken for a missing capability, EINVAL/ENOSYS to `linkat`, a
+  conclusive `linkat` EEXIST, no hard links to checked rename, no rename over an
+  existing or unreadable destination).
+- `tests/linux_gpu_selection_store_regression.cpp`: real-filesystem create-only
+  export also asserts no hidden temporary survives any publish.
+- `tests/linux_daemon_state_regression.cpp`: staged installer files carry the
+  explicit owner, group and mode; an unprivileged stage to root is refused.
+- `tools/linux_gates.py` pins the fallback chain, the explicit `fchown`, the
+  post-publish verification order and the unconditional `enable`.
+- Not covered: a real NFS/FAT mount (the chain is exercised by injection) and a
+  live systemd activation.
+
 ## Curve planner fixture lifetime (2026-11-20)
 
 `tests/curve_plan_tests.cpp` keeps the hard-lock request alive until the

@@ -107,7 +107,11 @@ Current behavior:
 - **Export** ticks saved slots (summaries via `profile_document_summary()`), then a
   native Save As (Windows) or a typed path with overwrite confirmation (TUI); the
   job prepares and commits in one worker run. The TUI uses an atomic no-replace
-  rename for its first attempt. Empty and oversized destinations also prompt.
+  publish for its first attempt (`linux_atomic_write_publish_new()` in
+  `linux_atomic_write_policy.h`): `renameat2(RENAME_NOREPLACE)`, then `linkat`
+  when the mount answers EINVAL/ENOSYS/EOPNOTSUPP (NFS, FAT-family, some FUSE),
+  then an existence check plus rename on mounts with neither. Only EEXIST from an
+  atomic step is a conclusive "exists". Empty and oversized destinations also prompt.
 - **Ordinary INI slots decode as their runtime record** (`profile_ini_slot.h`, used
   by export, the slot summaries and INI import). Base keys go through the historical
   decoder; the keys newer slots add (`application_scope`, precise Hz, captured

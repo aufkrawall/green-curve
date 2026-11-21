@@ -156,8 +156,6 @@ static int run_systemctl(char* const argv[]) {
 
 struct LinuxServiceActivationContext {
     ServiceResponse verifiedResponse;
-    bool wasEnabled;
-    bool resumeWasEnabled;
 };
 
 static bool run_service_activation_step(
@@ -173,14 +171,15 @@ static bool run_service_activation_step(
             break;
         }
         case LINUX_SERVICE_STEP_ENABLE: {
-            if (context->wasEnabled) return true;
+            // Always run, even when the unit was already enabled: enable is
+            // idempotent and re-links an [Install] section an upgrade changed.
+            // Rollback only undoes it when the unit was not enabled before.
             char* args[] = {(char*)"systemctl", (char*)"enable",
                             (char*)"greencurve.service", nullptr};
             commandResult = run_systemctl(args);
             break;
         }
         case LINUX_SERVICE_STEP_ENABLE_RESUME: {
-            if (context->resumeWasEnabled) return true;
             char* args[] = {(char*)"systemctl", (char*)"enable",
                             (char*)GC_RESUME_UNIT_NAME, nullptr};
             commandResult = run_systemctl(args);
@@ -411,6 +410,25 @@ static bool stage_daemon_unit(LinuxInstallFile& file, char* err, size_t errSize)
     return unitOk;
 }
 
+static bool validate_unit_parent_chain(char* err, size_t errSize) {
+    return root_owned_nonwritable_path("/etc", true, err, errSize) &&
+           root_owned_nonwritable_path("/etc/systemd", true, err, errSize) &&
+           root_owned_nonwritable_path("/etc/systemd/system", true, err, errSize);
+}
+
+// What the renames made live must still be what installation promises: every
+// installed file a regular, root-owned file nobody else can write, under
+// directories that are still root-controlled. Checked on the live paths after
+// publishing, not on the staged siblings, because the live paths are what
+// systemd and the daemon trust.
+static bool service_install_verify_published(char* err, size_t errSize) {
+    return root_owned_nonwritable_path(GC_INSTALL_BIN, false, err, errSize) &&
+           root_owned_nonwritable_path(GC_UNIT_PATH, false, err, errSize) &&
+           root_owned_nonwritable_path(GC_RESUME_UNIT_PATH, false, err, errSize) &&
+           validate_install_parent_chain(err, errSize) &&
+           validate_unit_parent_chain(err, errSize);
+}
+
 static int service_install_unit_command(const char* command, const char* unit = nullptr) {
     char* args[] = {(char*)"systemctl", const_cast<char*>(command),
         const_cast<char*>(unit), nullptr};
@@ -451,9 +469,7 @@ int linux_service_install(char* err, size_t errSize,
     if (n <= 0) { gc_strlcpy(err, errSize, "cannot resolve /proc/self/exe"); return 1; }
     exe[n] = 0;
     if (!validate_install_parent_chain(err, errSize) ||
-        !root_owned_nonwritable_path("/etc", true, err, errSize) ||
-        !root_owned_nonwritable_path("/etc/systemd", true, err, errSize) ||
-        !root_owned_nonwritable_path("/etc/systemd/system", true, err, errSize)) return 1;
+        !validate_unit_parent_chain(err, errSize)) return 1;
     LinuxServiceInstallLock installLock(GC_INSTALL_DIR);
     if (!installLock.locked()) {
         gc_snprintf(err, errSize, "cannot lock daemon installation: %s", strerror(errno));
@@ -508,7 +524,18 @@ int linux_service_install(char* err, size_t errSize,
         return 1;
     }
 
-    LinuxServiceActivationContext activation = {{}, wasEnabled, resumeWasEnabled};
+    char verifyError[256] = {};
+    if (!service_install_verify_published(verifyError, sizeof(verifyError))) {
+        // Nothing is activated yet, so restoring the files is the whole rollback.
+        const bool restored = service_install_restore_files(files, sizeof(files) / sizeof(files[0]));
+        dlog("service-install: published files failed verification (%s); rollback=%d\n",
+             verifyError, restored ? 1 : 0);
+        gc_snprintf(err, errSize, "installed files failed verification: %s; file rollback %s",
+            verifyError, restored ? "completed" : "incomplete");
+        return 1;
+    }
+
+    LinuxServiceActivationContext activation = {};
     const LinuxServiceActivationResult activationResult =
         linux_service_run_activation(run_service_activation_step, &activation, err, errSize);
     if (!activationResult.success) {
