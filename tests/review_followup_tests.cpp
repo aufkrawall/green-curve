@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
-// Post-0.27.0 review follow-ups (codes 6250-6269): the freshness refusal
-// classification that tells "not renewed yet" from "wrong clock", and the
-// Linux atomic writer's path rules.  Both are pure, so they run on every host.
+// Post-0.27.0 review follow-ups (codes 6250-6289): the freshness refusal
+// classification that tells "not renewed yet" from "wrong clock", the Linux
+// atomic writer's path rules, and its create-only publish fallback chain
+// (6280-6289).  All are pure, so they run on every host.
 #include "update_freshness_policy.h"
 #include "linux_atomic_write_policy.h"
 #include "app_shared.h"
+#include <errno.h>
 #include <string.h>
 #include <string>
 
@@ -88,6 +90,70 @@ static int atomic_write_path_tests() {
     return 0;
 }
 
+// The create-only publish used by TUI exports must not turn "this mount lacks
+// renameat2(RENAME_NOREPLACE)" into a failed export.  The operations are
+// injected, so each rung of the fallback chain is exercised on every host.
+struct PublishProbe {
+    int renameNoReplace, link, exists, rename;
+    int calls[4];
+};
+
+static int publish_probe_run(PublishProbe& probe, LinuxAtomicPublishMethod* method) {
+    for (int& call : probe.calls) call = 0;
+    return linux_atomic_write_publish_new(
+        [&]() { ++probe.calls[0]; return probe.renameNoReplace; },
+        [&]() { ++probe.calls[1]; return probe.link; },
+        [&]() { ++probe.calls[2]; return probe.exists; },
+        [&]() { ++probe.calls[3]; return probe.rename; },
+        method);
+}
+
+static int atomic_write_publish_new_tests() {
+    LinuxAtomicPublishMethod method = LINUX_ATOMIC_PUBLISH_LINK;
+    // A mount that supports the flag publishes in one atomic step.
+    PublishProbe probe = {0, EPERM, EPERM, EPERM, {}};
+    if (publish_probe_run(probe, &method) != 0 ||
+        method != LINUX_ATOMIC_PUBLISH_RENAME_NOREPLACE ||
+        probe.calls[1] || probe.calls[2] || probe.calls[3]) return 6280;
+    // An existing destination is reported as such and never overwritten.
+    probe = {EEXIST, 0, 0, 0, {}};
+    if (publish_probe_run(probe, &method) != EEXIST || method != LINUX_ATOMIC_PUBLISH_NONE ||
+        probe.calls[1] || probe.calls[3]) return 6281;
+    // A real I/O error is not mistaken for a missing capability.
+    probe = {EIO, 0, 0, 0, {}};
+    if (publish_probe_run(probe, &method) != EIO || probe.calls[1] || probe.calls[3]) return 6282;
+    // The regression: EINVAL (NFS, FAT-family, some FUSE) falls back to link().
+    probe = {EINVAL, 0, EPERM, EPERM, {}};
+    if (publish_probe_run(probe, &method) != 0 || method != LINUX_ATOMIC_PUBLISH_LINK ||
+        probe.calls[2] || probe.calls[3]) return 6283;
+    probe = {ENOSYS, 0, EPERM, EPERM, {}};
+    if (publish_probe_run(probe, &method) != 0 || method != LINUX_ATOMIC_PUBLISH_LINK) return 6284;
+    // link() finding the destination is conclusive: no checked rename.
+    probe = {EINVAL, EEXIST, 0, 0, {}};
+    if (publish_probe_run(probe, &method) != EEXIST || probe.calls[2] || probe.calls[3]) return 6285;
+    // A mount without hard links (FAT-family answers EPERM) reaches the
+    // existence check, then the rename.
+    probe = {EINVAL, EPERM, 0, 0, {}};
+    if (publish_probe_run(probe, &method) != 0 ||
+        method != LINUX_ATOMIC_PUBLISH_CHECKED_RENAME ||
+        probe.calls[2] != 1 || probe.calls[3] != 1) return 6286;
+    // The checked rename never runs over an existing file or a failed check.
+    probe = {EINVAL, EPERM, EEXIST, 0, {}};
+    if (publish_probe_run(probe, &method) != EEXIST || probe.calls[3]) return 6287;
+    probe = {EINVAL, EPERM, EACCES, 0, {}};
+    if (publish_probe_run(probe, &method) != EACCES || probe.calls[3]) return 6288;
+    // The rename's own failure is the reported one.
+    probe = {EINVAL, EPERM, 0, EROFS, {}};
+    if (publish_probe_run(probe, &method) != EROFS || method != LINUX_ATOMIC_PUBLISH_NONE) return 6289;
+    // The capability classifier names exactly the "cannot do it" answers.
+    if (!linux_atomic_write_noreplace_unsupported(EINVAL) ||
+        !linux_atomic_write_noreplace_unsupported(ENOSYS) ||
+        linux_atomic_write_noreplace_unsupported(EEXIST) ||
+        linux_atomic_write_noreplace_unsupported(EIO) ||
+        linux_atomic_write_noreplace_unsupported(0)) return 6269;
+    return 0;
+}
+
 static int string_copy_shim_tests() {
     char buf[16] = {};
     HRESULT hr = StringCchCopyA(buf, sizeof(buf), "hello");
@@ -116,6 +182,7 @@ static int string_copy_shim_tests() {
 int run_review_followup_tests() {
     if (int failure = freshness_status_tests()) return failure;
     if (int failure = atomic_write_path_tests()) return failure;
+    if (int failure = atomic_write_publish_new_tests()) return failure;
     if (int failure = string_copy_shim_tests()) return failure;
     return 0;
 }

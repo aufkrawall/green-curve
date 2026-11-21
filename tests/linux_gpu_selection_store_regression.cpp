@@ -23,6 +23,7 @@
 #include "linux_output_directory.h"
 #include "linux_config_lock.h"
 
+#include <dirent.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -154,6 +155,18 @@ std::string read_file(const std::string& path) {
         text.append(buffer, count);
     fclose(file);
     return text;
+}
+
+// Hidden temporaries the atomic writer names ".<leaf>.tmp.<suffix>" must never
+// outlive a publish, whichever way it settled (rename, link or failure).
+int count_atomic_temporaries(const std::string& directory) {
+    int count = 0;
+    DIR* dir = opendir(directory.c_str());
+    if (!dir) return -1;
+    while (const struct dirent* entry = readdir(dir))
+        if (strstr(entry->d_name, ".tmp.") != nullptr) ++count;
+    closedir(dir);
+    return count;
 }
 
 GpuAdapterInfo selected_gpu() {
@@ -338,6 +351,8 @@ void test_output_directory_walk() {
            exists && read_file(exported).empty(), "first export attempt preserves even an empty file");
     expect(write_text_file_atomic(exported.c_str(), "replacement", outputError, sizeof(outputError)) &&
            read_file(exported) == "replacement", "confirmed export replaces the existing file");
+    expect(count_atomic_temporaries(real) == 0,
+           "create-only and replacing exports leave no temporary file behind");
     unlink(exported.c_str());
     const std::string regular = path_in_root("regular");
     expect(write_file(regular, "unchanged"), "creating the regular-file ancestor");

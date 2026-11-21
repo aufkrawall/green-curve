@@ -979,7 +979,7 @@ int run_debug_log_identity_tests();
 int run_service_client_identity_failure_child();
 int run_security_audit_tests();
 int run_installer_fuzz_harness_tests();
-// Post-0.27.0 review follow-ups (tests/review_followup_tests.cpp, 6250-6279).
+// Post-0.27.0 review follow-ups (tests/review_followup_tests.cpp, 6250-6289).
 int run_review_followup_tests();
 // 2026-09-24 audit follow-ups: lock/pre-tail refusal before reset, Linux fixed
 // fan maintenance (tests/apply_profile_followup_tests.cpp, 6430-6499).

@@ -5,6 +5,7 @@
 #include "linux_config_path_policy.h"
 #include "linux_atomic_write_policy.h"
 #include "linux_output_directory.h"
+#include "linux_debug_log.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -241,13 +242,43 @@ bool write_text_file_atomic(const char* path, const std::string& data, char* err
         if (ok) {
             step = "rename";
             if (existingDestination != nullptr) {
-                ok = syscall(SYS_renameat2, dirfd, temporary, dirfd, name.c_str(), RENAME_NOREPLACE) == 0;
+                // Create-only publish.  renameat2(RENAME_NOREPLACE) is not
+                // available on every mount (NFS, some FUSE and FAT-family
+                // filesystems answer EINVAL), so the helper degrades to
+                // link() and then to a checked rename instead of failing the
+                // export outright.
+                LinuxAtomicPublishMethod method = LINUX_ATOMIC_PUBLISH_NONE;
+                ioError = linux_atomic_write_publish_new(
+                    [&]() { return syscall(SYS_renameat2, dirfd, temporary, dirfd,
+                                           name.c_str(), RENAME_NOREPLACE) == 0 ? 0 : errno; },
+                    [&]() { return linkat(dirfd, temporary, dirfd, name.c_str(), 0) == 0
+                                       ? 0 : errno; },
+                    [&]() {
+                        struct stat present = {};
+                        if (fstatat(dirfd, name.c_str(), &present, AT_SYMLINK_NOFOLLOW) == 0)
+                            return (int)EEXIST;
+                        return errno == ENOENT ? 0 : errno;
+                    },
+                    [&]() { return renameat(dirfd, temporary, dirfd, name.c_str()) == 0
+                                       ? 0 : errno; },
+                    &method);
+                ok = ioError == 0;
+                *existingDestination = ioError == EEXIST;
+                if (method != LINUX_ATOMIC_PUBLISH_RENAME_NOREPLACE) {
+                    linux_debug_logf("write_text_file_atomic: create-only publish of %s used %s "
+                                     "(result=%d)\n", name.c_str(),
+                                     method == LINUX_ATOMIC_PUBLISH_LINK ? "link"
+                                     : method == LINUX_ATOMIC_PUBLISH_CHECKED_RENAME
+                                         ? "checked-rename" : "none",
+                                     ioError);
+                }
+                // link() leaves the temporary behind; it is a second name for
+                // the published file, so removing it is cleanup, not data loss.
+                if (ok && method == LINUX_ATOMIC_PUBLISH_LINK)
+                    (void)unlinkat(dirfd, temporary, 0);
             } else {
                 ok = renameat(dirfd, temporary, dirfd, name.c_str()) == 0;
-            }
-            if (!ok) {
-                ioError = errno;
-                if (existingDestination != nullptr) *existingDestination = ioError == EEXIST;
+                if (!ok) ioError = errno;
             }
         }
         if (ok) {
