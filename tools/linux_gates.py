@@ -683,6 +683,16 @@ def check_release_packaging(ctx, require_text, forbid_text):
                 "an already enabled unit is still re-enabled so an upgraded [Install] section is re-linked")
     forbid_text(install_cpp, "context->resumeWasEnabled",
                 "an already enabled resume unit is still re-enabled so an upgraded [Install] section is re-linked")
+    require_text(install_cpp, "linux_service_rollback_plan(",
+                 "failed upgrade rollback uses the tested pure rollback plan")
+    require_text(install_cpp, 'service_install_unit_command("reenable", "greencurve.service")',
+                 "failed upgrade rollback re-enables a previously enabled daemon unit after restore")
+    require_text(install_cpp, 'service_install_unit_command("reenable", GC_RESUME_UNIT_NAME)',
+                 "failed upgrade rollback re-enables a previously enabled resume unit after restore")
+    ctx.require_text_in_operation(
+        install_cpp, "static bool service_install_unit_state(",
+        '"--quiet"',
+        "systemctl pre-upgrade state probes run with --quiet")
     require_text(setup_script, "GREENCURVE_SETUP_OWNS_GROUP=1",
                  "the setup script claims that ownership when it resolved an account")
     require_text(setup_script, "logname",

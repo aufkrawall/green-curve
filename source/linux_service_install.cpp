@@ -437,10 +437,12 @@ static int service_install_unit_command(const char* command, const char* unit = 
 
 static bool service_install_unit_state(const char* query, const char* unit, bool* set,
                                        char* err, size_t errSize) {
-    const int result = service_install_unit_command(query, unit);
+    char* args[] = {(char*)"systemctl", const_cast<char*>(query),
+        (char*)"--quiet", const_cast<char*>(unit), nullptr};
+    const int result = run_systemctl(args);
     *set = result == 0;
     if (result == 0 || result == 1 || result == 3 || result == 4) return true;
-    gc_snprintf(err, errSize, "systemctl %s %s failed with exit code %d", query, unit, result);
+    gc_snprintf(err, errSize, "systemctl %s --quiet %s failed with exit code %d", query, unit, result);
     return false;
 }
 
@@ -543,20 +545,29 @@ int linux_service_install(char* err, size_t errSize,
         gc_strlcpy(activationError, sizeof(activationError), err && err[0]
             ? err : linux_service_activation_step_name(activationResult.failedStep));
         const auto step = activationResult.failedStep;
+        const LinuxServiceRollbackPlan rollback = linux_service_rollback_plan(
+            step, wasActive, wasEnabled, resumeWasEnabled);
         bool restored = true;
-        if (step >= LINUX_SERVICE_STEP_RESTART)
+        if (rollback.stopService)
             restored &= service_install_unit_command("stop", "greencurve.service") == 0;
-        if (step >= LINUX_SERVICE_STEP_ENABLE_RESUME && !resumeWasEnabled)
+        if (rollback.disableResume)
             restored &= service_install_unit_command("disable", GC_RESUME_UNIT_NAME) == 0;
-        if (step >= LINUX_SERVICE_STEP_ENABLE && !wasEnabled)
+        if (rollback.disableService)
             restored &= service_install_unit_command("disable", "greencurve.service") == 0;
         const bool filesRestored = service_install_restore_files(files, sizeof(files) / sizeof(files[0]));
         const bool reloaded = service_install_unit_command("daemon-reload") == 0;
         restored &= filesRestored && reloaded;
-        if (step >= LINUX_SERVICE_STEP_RESTART && wasActive && filesRestored && reloaded)
-            restored &= service_install_unit_command("start", "greencurve.service") == 0;
-        dlog("service-install: activation failed at %s; rollback=%d oldDaemonActive=%d\n",
-            linux_service_activation_step_name(step), restored ? 1 : 0, wasActive ? 1 : 0);
+        if (filesRestored && reloaded) {
+            if (rollback.reenableService)
+                restored &= service_install_unit_command("reenable", "greencurve.service") == 0;
+            if (rollback.reenableResume)
+                restored &= service_install_unit_command("reenable", GC_RESUME_UNIT_NAME) == 0;
+            if (rollback.startService)
+                restored &= service_install_unit_command("start", "greencurve.service") == 0;
+        }
+        dlog("service-install: activation failed at %s; rollback=%d oldDaemonActive=%d oldEnabled=%d oldResumeEnabled=%d\n",
+            linux_service_activation_step_name(step), restored ? 1 : 0, wasActive ? 1 : 0,
+            wasEnabled ? 1 : 0, resumeWasEnabled ? 1 : 0);
         gc_snprintf(err, errSize, "%s; installation rollback %s",
             activationError, restored ? "completed" : "incomplete");
         return 1;

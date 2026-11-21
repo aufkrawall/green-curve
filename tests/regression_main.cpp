@@ -5344,6 +5344,31 @@ static int run_all_tests(int argc, char** argv) {
                 failure.count != (unsigned int)fail + 1 || !error[0])
                 return 1222;
         }
+        // Upgrade rollback re-enables previously enabled units after restoring
+        // their prior unit files and reloading systemd, and disables only units
+        // that were newly enabled by the failed install.
+        {
+            LinuxServiceRollbackPlan upgrade = linux_service_rollback_plan(
+                LINUX_SERVICE_STEP_VERIFY_PROTOCOL, true, true, true);
+            if (!upgrade.stopService || upgrade.disableService || upgrade.disableResume ||
+                !upgrade.reenableService || !upgrade.reenableResume || !upgrade.startService)
+                return 1276;
+            LinuxServiceRollbackPlan fresh = linux_service_rollback_plan(
+                LINUX_SERVICE_STEP_VERIFY_PROTOCOL, false, false, false);
+            if (!fresh.stopService || !fresh.disableService || !fresh.disableResume ||
+                fresh.reenableService || fresh.reenableResume || fresh.startService)
+                return 1277;
+            LinuxServiceRollbackPlan early = linux_service_rollback_plan(
+                LINUX_SERVICE_STEP_DAEMON_RELOAD, true, true, true);
+            if (early.stopService || early.disableService || early.disableResume ||
+                early.reenableService || early.reenableResume || early.startService)
+                return 1278;
+            LinuxServiceRollbackPlan midEnable = linux_service_rollback_plan(
+                LINUX_SERVICE_STEP_ENABLE_RESUME, true, true, false);
+            if (midEnable.stopService || midEnable.disableService || !midEnable.disableResume ||
+                !midEnable.reenableService || midEnable.reenableResume || midEnable.startService)
+                return 1279;
+        }
     }
 
     // F-LNX-PCI: the NVML pciInfo ABI. `kDriverPciInfo` is a byte-exact

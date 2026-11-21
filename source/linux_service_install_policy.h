@@ -73,6 +73,32 @@ static inline LinuxServiceActivationResult linux_service_run_activation(
     return result;
 }
 
+// Pure rollback plan for a failed systemd activation during install/upgrade.
+// Previously enabled units are re-enabled after their prior unit files are
+// restored and daemon-reload completes so any [Install] changes from the
+// failed upgrade are undone; newly enabled units are disabled before restore.
+struct LinuxServiceRollbackPlan {
+    bool stopService;
+    bool disableResume;
+    bool disableService;
+    bool reenableService;
+    bool reenableResume;
+    bool startService;
+};
+
+static inline LinuxServiceRollbackPlan linux_service_rollback_plan(
+    LinuxServiceActivationStep failedStep,
+    bool wasActive, bool wasEnabled, bool resumeWasEnabled) {
+    LinuxServiceRollbackPlan plan = {};
+    plan.stopService = failedStep >= LINUX_SERVICE_STEP_RESTART;
+    plan.disableResume = failedStep >= LINUX_SERVICE_STEP_ENABLE_RESUME && !resumeWasEnabled;
+    plan.disableService = failedStep >= LINUX_SERVICE_STEP_ENABLE && !wasEnabled;
+    plan.reenableService = failedStep >= LINUX_SERVICE_STEP_ENABLE && wasEnabled;
+    plan.reenableResume = failedStep >= LINUX_SERVICE_STEP_ENABLE_RESUME && resumeWasEnabled;
+    plan.startService = failedStep >= LINUX_SERVICE_STEP_RESTART && wasActive;
+    return plan;
+}
+
 // ---------------------------------------------------------------------------
 // What to tell the user about greencurve group membership after a successful
 // install.
