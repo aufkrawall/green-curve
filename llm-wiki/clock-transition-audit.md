@@ -7,10 +7,19 @@
   The standard ownership planner computes omitted-control cleanup. A prior
   hard pin bounds a warm switch until the new curve verifies.
 - `source/apply_clock_ceiling_policy.h` requires maximum-only protection for
-  a memory write that could clear an outgoing flattened curve. Both backends
-  apply the guard before writes even for memory-only scopes. A missing guard
-  refuses that transition. Only an explicit HARD request can authorize the
-  fixed-clock fallback, and a retained VF flatten needs a maximum-only guard.
+  non-resetting memory writes (`!resetsToStock`) that could clear an outgoing
+  flattened curve (`APPLY_CEILING_REASON_MEMORY_DROPS_FLATTEN`). Both backends
+  (`source/gpu_backend_apply.cpp`, `source/linux_apply_ceiling.h`) apply the
+  guard before writes even for memory-only scopes, and Linux detects live
+  flattened/negative VF curves via `linux_outgoing_curve_has_negative_offsets()`
+  even when `committed == nullptr`. A missing guard refuses that transition.
+  Incoming lock and reset-to-stock reasons (`REQUESTED_LOCK`,
+  `REQUESTED_FLATTEN`, `RESET_DROPS_CAP`) take precedence over
+  `memoryMayDropFlatten` so Pascal FLATTEN/stock switches carrying memory
+  offsets keep their `APPLY_CEILING_ARM_UNSUPPORTED` exemption, and only an
+  explicit HARD request authorizes symmetric `(ceiling, ceiling)` fallback
+  (`incomingLock && lockMode == LOCK_MODE_HARD`), including on FLATTEN -> HARD
+  switches with memory writes.
 - `source/linux_backend_reset.h` resets verified stock clocks before raising
   power to the board default. It captures and restores independently readable
   P0 and global memory-offset controls. Both captures are verified after the

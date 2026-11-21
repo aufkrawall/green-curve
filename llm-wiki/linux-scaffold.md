@@ -21,9 +21,13 @@ publish failure. Staged files get an explicit root owner and group
 publishing, `service_install_verify_published()` re-checks every live file and
 the parent chains before any systemctl step, rolling the files back on failure.
 `systemctl enable` always runs, even for an already enabled unit, so an upgraded
-`[Install]` section is re-linked; rollback disables only what the install itself
-enabled. Live systemd activation and abrupt host interruption remain
-unverified.
+`[Install]` section is re-linked; rollback follows the pure
+`linux_service_rollback_plan()` (`source/linux_service_install_policy.h`),
+disabling units the failed install newly enabled and running `systemctl reenable`
+on previously enabled units after restoring their prior unit files and running
+`daemon-reload`. Pre-upgrade `systemctl is-active` and `is-enabled` probes pass
+`--quiet` (`service_install_unit_state()`) so installation stdout stays clean.
+Live systemd activation and abrupt host interruption remain unverified.
 
 ## Cross-platform profile interchange, curve correction loop and shaped-baseline reset (2026-11-20)
 

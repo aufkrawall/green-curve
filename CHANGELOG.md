@@ -55,10 +55,10 @@ Curve editing, profile transfer and capture improve.
 
 ### Fixed
 
-- **Windows cooling:** verify Auto on every fan, retain cooling if Reset fails, and hand fans back on service stop.
+- **Windows cooling:** verify Auto on every fan (including older drivers without policy readback), enforce Reset and shutdown handback for emergency cooling, skip fanless GPUs cleanly, and keep fan faults when post-Apply repair fails.
 - **Linux Reset:** restore stock clocks before stock power and clear both memory controls. Failures recover under the prior clock bound.
 - **Linux fanless GPUs:** Reset restores clocks without requiring fan control.
-- **Linux upgrades:** recover the prior daemon after a failed upgrade.
+- **Linux upgrades:** recover the prior daemon, re-enable restored service units, and keep pre-upgrade checks quiet after a failed upgrade.
 - **Linux installs:** verify the installed files are root-owned and refresh service enablement on upgrade.
 - **Scoped Linux curves:** preserve unrelated offsets, hard-lock tails and read-only points across reset and rollback; check transitions before named offsets.
 - **Profile transfer:** retain scope, graphics controls and repeated-voltage point bindings.
@@ -66,7 +66,7 @@ Curve editing, profile transfer and capture improve.
 - **Windows power reset:** restore defaults even when displaying 100%.
 - **Linux startup:** check each slot's GPU, honor recovery, preserve clock limits during switches, and prevent duplicate daemons.
 - **Linux startup cooling:** return fans to the driver when the daemon cannot start.
-- **Clock transitions:** protect flattened curves during VRAM edits without forcing a fixed clock.
+- **Clock transitions:** protect flattened curves during standalone VRAM edits without forcing a fixed clock, while preserving Pascal flatten switches and hard-pin fallbacks.
 - **TUI numeric edits:** replace precise values.
 - **Unicode banks:** preserve text and encoding.
 - **Unsaved drafts:** confirm replacement, including invalid input.

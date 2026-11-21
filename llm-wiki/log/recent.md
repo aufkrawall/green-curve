@@ -5,6 +5,14 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-21: Review follow-ups across Windows fan handback, clock ceiling, explicit-release profiles, and Linux upgrade rollback
+
+- **Windows fan Auto handback & Reset guard:** cleared `g_app.fanIsAuto` on failed reads and operational policy-read errors (`main_runtime_nvml_fans.cpp`), added per-fan `policyUnsupported` provenance (`control_readback_policy.h`) so older drivers/GPUs lacking `nvmlDeviceGetFanControlPolicy_v2` still confirm Auto from verified per-fan writes + consistent fan count, gated `service_reset_fan_to_driver()` on `app_fan_control_known_absent()`, complete positive policy readback, and `!service_owned_fan_is_non_auto()`, and extended `service_shutdown_owned_fan()` and Reset failure retention to cover emergency-owned manual fan intent (`tests/fan_handback_runtime_tests.cpp` `12903-12910`, `12920-12926`).
+- **Post-Apply fan fault retention:** added `fan_fault_should_clear_after_apply()` (`fan_intent_policy.h`) so `service_apply_desired_settings()` never clears an active fan fault when post-Apply fan-intent invariant repair fails (`tests/fan_intent_tests.cpp` `12737`).
+- **Clock ceiling `memoryMayDropFlatten` scoping:** scoped `memoryMayDropFlatten` to non-resetting memory writes (`!resetsToStock`) across `apply_clock_ceiling_policy.h`, `gpu_backend_apply.cpp`, and `linux_apply_ceiling.h`, restored `REQUESTED_LOCK`/`REQUESTED_FLATTEN`/`RESET_DROPS_CAP` precedence (preserving Pascal FLATTEN/stock switches and HARD-pin symmetric fallback), and added live negative-offset curve detection on Linux when `committed == nullptr` (`tests/clock_transition_tests.cpp`).
+- **Explicit-release legacy documents:** resolved `PROFILE_SCOPE_EXPLICIT_RELEASE` dead-end in `profile_slot_runtime.h` so empty-curve releases always require destination topology while indexed explicit curve/lock releases convert offline (`tests/profile_slot_runtime_tests.cpp` `12710-12712`).
+- **Linux upgrade rollback & probes:** added pure `linux_service_rollback_plan()` (`linux_service_install_policy.h`), `systemctl reenable` for previously enabled units after file restore + `daemon-reload`, and `--quiet` on pre-upgrade `is-active`/`is-enabled` probes (`tests/regression_main.cpp` `1276-1279`).
+
 ## 2026-11-21: Daemon startup and GPU transition review
 
 - Linux boot classifies incoming records before automatic writes and resolves

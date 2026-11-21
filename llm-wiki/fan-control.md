@@ -2,16 +2,38 @@
 
 ## Windows verified fan handback (2026-11-21)
 
+Source anchors: `source/control_readback_policy.h` (`FanReadbackValidity::policyUnsupported`),
+`source/main_runtime_nvml_fans.cpp`, `source/main_fan_zero_rpm.cpp`,
+`source/main_service_reset_fan.h`, `source/main_service_apply_runtime.cpp`,
+`source/fan_intent_policy.h` (`fan_fault_should_clear_after_apply()`),
+`source/main_service_host.cpp`, `tests/fan_handback_runtime_tests.cpp` (`12889`, `12900-12910`, `12920-12926`),
+`tests/fan_intent_tests.cpp` (`12737`), `tools/fan_gates.py`.
+
 `source/main_runtime_nvml_fans.cpp` reads a fresh controllable fan count before
-issuing Auto writes. Success requires positive Auto policy from each fan and
-the same count on verification. Telemetry estimates and cached zero counts
-cannot authorize retirement of a fan runtime. Reset retains it when Auto is
-unverified. During graceful service stop, `source/main_service_host.cpp` closes
-the request lane, serializes handback with the fan worker, and attempts
-emergency maximum if Auto fails. The independent handback runs before full
-GPU Reset, whose VF read may refuse before any write. A stop that cannot
-secure cooling reports a service error. The scripted driver in
-`tests/fan_handback_runtime_tests.cpp` covers count loss and unknown policy.
+issuing Auto writes and initializes `g_app.fanIsAuto = false` on read start so
+failed reads or operational policy-read errors never masquerade as Auto.
+Success requires positive Auto policy from each fan and the same count on
+verification, except on older drivers/GPUs where `nvmlDeviceGetFanControlPolicy_v2`
+is absent or returns `NVML_ERROR_NOT_SUPPORTED` for every fan
+(`live_fan_policy_readback_unsupported()`), in which case every per-fan Auto
+write returning `NVML_SUCCESS` plus a consistent fan-count readback confirms
+Auto. Partial readback failures or partial `NOT_SUPPORTED` responses still fail.
+`source/main_service_reset_fan.h` explicitly skips fanless GPUs via
+`app_fan_control_known_absent()`, short-circuits Reset handback only when no
+runtime is active, no non-Auto fan intent is owned (`service_owned_fan_is_non_auto()`),
+and `live_fan_policy_readback_complete() && g_app.fanIsAuto` holds, and retains
+either the running runtime (`service_reset_retain_running_fan()`) or unreturned
+emergency manual fan intent (`service_reset_retain_owned_fan()`) if Reset
+handback fails. During graceful service stop, `source/main_service_host.cpp`
+closes the request lane, serializes handback with the fan worker (covering both
+active runtimes and emergency-owned manual fan intent), and attempts emergency
+maximum if Auto fails before full GPU Reset runs. Post-Apply fan fault
+retirement (`source/main_service_apply_runtime.cpp`) goes through
+`fan_fault_should_clear_after_apply()`, preserving any active fan fault when
+post-Apply fan-intent invariant repair fails. The scripted driver in
+`tests/fan_handback_runtime_tests.cpp` covers count loss, unknown policy,
+unsupported policy readback, fanless Reset, post-emergency Reset/shutdown
+handback, and emergency ownership retention.
 
 ## Fan stall evidence and safe Reset handoff (2026-11-21)
 

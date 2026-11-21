@@ -45,6 +45,13 @@ Current behavior:
   `profile_document_from_legacy_desired()` without a GPU; a record with nothing
   only an explicit scope can carry stays legacy-scoped, otherwise it keeps an
   explicit scope (the service refuses precise/captured intent in legacy scope).
+  For `PROFILE_SCOPE_EXPLICIT_RELEASE` documents, releasing `VF_CURVE` without
+  explicit curve points always requires destination topology even when
+  `legacyIndicesUnresolved` is set (so the resolver enumerates writable
+  destination points), while indexed explicit-release documents with explicit
+  curve points or lock-only release resolve offline via
+  `profile_desired_from_indexed_document()` (`tests/profile_slot_runtime_tests.cpp`
+  `12710-12712`).
   Voltage-bound records map by exact voltage onto the live curve
   (`profile_destination_from_vf_curve()`, fixed floor points read-only) and refuse
   the whole record with a plain reason otherwise (needs the GPU / different GPU /
