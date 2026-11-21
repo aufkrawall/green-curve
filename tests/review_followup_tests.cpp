@@ -90,61 +90,31 @@ static int atomic_write_path_tests() {
     return 0;
 }
 
-// The create-only publish used by TUI exports must not turn "this mount lacks
-// renameat2(RENAME_NOREPLACE)" into a failed export.  The operations are
-// injected, so each rung of the fallback chain is exercised on every host.
-struct PublishProbe {
-    int renameNoReplace, link, exists, rename;
-    int calls[4];
-};
-
-static int publish_probe_run(PublishProbe& probe, LinuxAtomicPublishMethod* method) {
-    for (int& call : probe.calls) call = 0;
-    return linux_atomic_write_publish_new(
-        [&]() { ++probe.calls[0]; return probe.renameNoReplace; },
-        [&]() { ++probe.calls[1]; return probe.link; },
-        [&]() { ++probe.calls[2]; return probe.exists; },
-        [&]() { ++probe.calls[3]; return probe.rename; },
-        method);
-}
-
+// An unavailable no-replace rename can fall back only to a publish that
+// also refuses atomically when another writer creates the destination.
 static int atomic_write_publish_new_tests() {
     LinuxAtomicPublishMethod method = LINUX_ATOMIC_PUBLISH_LINK;
-    // A mount that supports the flag publishes in one atomic step.
-    PublishProbe probe = {0, EPERM, EPERM, EPERM, {}};
-    if (publish_probe_run(probe, &method) != 0 ||
-        method != LINUX_ATOMIC_PUBLISH_RENAME_NOREPLACE ||
-        probe.calls[1] || probe.calls[2] || probe.calls[3]) return 6280;
-    // An existing destination is reported as such and never overwritten.
-    probe = {EEXIST, 0, 0, 0, {}};
-    if (publish_probe_run(probe, &method) != EEXIST || method != LINUX_ATOMIC_PUBLISH_NONE ||
-        probe.calls[1] || probe.calls[3]) return 6281;
-    // A real I/O error is not mistaken for a missing capability.
-    probe = {EIO, 0, 0, 0, {}};
-    if (publish_probe_run(probe, &method) != EIO || probe.calls[1] || probe.calls[3]) return 6282;
-    // The regression: EINVAL (NFS, FAT-family, some FUSE) falls back to link().
-    probe = {EINVAL, 0, EPERM, EPERM, {}};
-    if (publish_probe_run(probe, &method) != 0 || method != LINUX_ATOMIC_PUBLISH_LINK ||
-        probe.calls[2] || probe.calls[3]) return 6283;
-    probe = {ENOSYS, 0, EPERM, EPERM, {}};
-    if (publish_probe_run(probe, &method) != 0 || method != LINUX_ATOMIC_PUBLISH_LINK) return 6284;
-    // link() finding the destination is conclusive: no checked rename.
-    probe = {EINVAL, EEXIST, 0, 0, {}};
-    if (publish_probe_run(probe, &method) != EEXIST || probe.calls[2] || probe.calls[3]) return 6285;
-    // A mount without hard links (FAT-family answers EPERM) reaches the
-    // existence check, then the rename.
-    probe = {EINVAL, EPERM, 0, 0, {}};
-    if (publish_probe_run(probe, &method) != 0 ||
-        method != LINUX_ATOMIC_PUBLISH_CHECKED_RENAME ||
-        probe.calls[2] != 1 || probe.calls[3] != 1) return 6286;
-    // The checked rename never runs over an existing file or a failed check.
-    probe = {EINVAL, EPERM, EEXIST, 0, {}};
-    if (publish_probe_run(probe, &method) != EEXIST || probe.calls[3]) return 6287;
-    probe = {EINVAL, EPERM, EACCES, 0, {}};
-    if (publish_probe_run(probe, &method) != EACCES || probe.calls[3]) return 6288;
-    // The rename's own failure is the reported one.
-    probe = {EINVAL, EPERM, 0, EROFS, {}};
-    if (publish_probe_run(probe, &method) != EROFS || method != LINUX_ATOMIC_PUBLISH_NONE) return 6289;
+    auto publish = [&](int renameError, int linkError, int expectedLinkCalls) {
+        int linkCalls = 0;
+        const int result = linux_atomic_write_publish_new(
+            [&]() { return renameError; },
+            [&]() { ++linkCalls; return linkError; }, &method);
+        return linkCalls == expectedLinkCalls ? result : -1;
+    };
+    if (publish(0, EPERM, 0) != 0 ||
+        method != LINUX_ATOMIC_PUBLISH_RENAME_NOREPLACE) return 6280;
+    if (publish(EEXIST, 0, 0) != EEXIST ||
+        method != LINUX_ATOMIC_PUBLISH_NONE) return 6281;
+    if (publish(EIO, 0, 0) != EIO ||
+        method != LINUX_ATOMIC_PUBLISH_NONE) return 6282;
+    if (publish(EINVAL, 0, 1) != 0 ||
+        method != LINUX_ATOMIC_PUBLISH_LINK) return 6283;
+    if (publish(ENOSYS, 0, 1) != 0 ||
+        method != LINUX_ATOMIC_PUBLISH_LINK) return 6284;
+    if (publish(EINVAL, EEXIST, 1) != EEXIST ||
+        method != LINUX_ATOMIC_PUBLISH_NONE) return 6285;
+    if (publish(EINVAL, EPERM, 1) != EPERM ||
+        method != LINUX_ATOMIC_PUBLISH_NONE) return 6286;
     // The capability classifier names exactly the "cannot do it" answers.
     if (!linux_atomic_write_noreplace_unsupported(EINVAL) ||
         !linux_atomic_write_noreplace_unsupported(ENOSYS) ||

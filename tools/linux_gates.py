@@ -1041,16 +1041,14 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
     # directories for ordinary users; the rules are pure and harness-tested.
     require_text(_p(ctx, "linux_port.cpp"), "linux_atomic_write_split(path, &dir, &name)",
                  "the atomic text writer uses the tested path split")
-    # A create-only export must not hard-fail on a mount that lacks
-    # renameat2(RENAME_NOREPLACE) (NFS, some FUSE, FAT-family); the fallback
-    # chain is pure and harness-tested (tests/review_followup_tests.cpp 6280-6289).
+    # The fallback must keep the same create-only guarantee as renameat2.
+    publish_h = _p(ctx, "linux_atomic_write_policy.h")
     require_text(_p(ctx, "linux_port.cpp"), "linux_atomic_write_publish_new(",
-                 "create-only exports go through the tested no-replace fallback chain")
-    require_text(_p(ctx, "linux_atomic_write_policy.h"),
-                 "linux_atomic_write_noreplace_unsupported(error)",
+                 "create-only exports go through the tested atomic publish chain")
+    require_text(publish_h, "linux_atomic_write_noreplace_unsupported(renameError)",
                  "only a missing capability, never EEXIST or an I/O error, selects the fallback")
-    require_text(_p(ctx, "linux_atomic_write_policy.h"), "LINUX_ATOMIC_PUBLISH_CHECKED_RENAME",
-                 "mounts with neither renameat2 flags nor hard links still export")
+    require_text(publish_h, "return linkError;",
+                 "failure of both atomic primitives is returned to the caller")
     require_text(_p(ctx, "linux_port.cpp"),
                  "linux_open_output_directory(dir.c_str(), geteuid() == 0)",
                  "privileged output walks every directory without following links")

@@ -63,7 +63,6 @@ enum LinuxAtomicPublishMethod {
     LINUX_ATOMIC_PUBLISH_NONE = 0,
     LINUX_ATOMIC_PUBLISH_RENAME_NOREPLACE,   // renameat2(RENAME_NOREPLACE)
     LINUX_ATOMIC_PUBLISH_LINK,               // linkat: the temporary still exists
-    LINUX_ATOMIC_PUBLISH_CHECKED_RENAME,     // existence check, then rename
 };
 
 // Whether a failed renameat2(RENAME_NOREPLACE) means "this filesystem or
@@ -81,37 +80,19 @@ static inline bool linux_atomic_write_noreplace_unsupported(int error) {
     return false;
 }
 
-// Publishes a fully written temporary under a name that must not exist yet.
-// Every operation returns 0 or an errno value; `existsCheck` returns EEXIST for
-// an existing destination, 0 for an absent one, any other value on failure.
-//
-// Order of strength: renameat2(RENAME_NOREPLACE) is atomic; link() is atomic
-// on filesystems with hard links (the caller then unlinks the temporary); the
-// last resort checks and then renames, which leaves a window another writer
-// could use but never silently refuses to export on a mount without either
-// primitive.  Only EEXIST from an atomic step is a conclusive "exists"; any
-// other link failure falls through to the checked rename, which reports its
-// own error.  The result is 0 on success, else the errno that stopped it.
-template <class RenameNoReplace, class LinkNoReplace, class ExistsCheck, class RenameReplace>
+// Publish a complete temporary without replacing any destination. If both
+// atomic primitives are unavailable, leave the destination alone.
+template <class RenameNoReplace, class LinkNoReplace>
 static inline int linux_atomic_write_publish_new(RenameNoReplace renameNoReplace,
-    LinkNoReplace linkNoReplace, ExistsCheck existsCheck, RenameReplace renameReplace,
-    LinuxAtomicPublishMethod* method) {
+    LinkNoReplace linkNoReplace, LinuxAtomicPublishMethod* method) {
     if (method) *method = LINUX_ATOMIC_PUBLISH_NONE;
-    int error = renameNoReplace();
-    if (error == 0) {
+    const int renameError = renameNoReplace();
+    if (renameError == 0) {
         if (method) *method = LINUX_ATOMIC_PUBLISH_RENAME_NOREPLACE;
         return 0;
     }
-    if (!linux_atomic_write_noreplace_unsupported(error)) return error;
-    error = linkNoReplace();
-    if (error == 0) {
-        if (method) *method = LINUX_ATOMIC_PUBLISH_LINK;
-        return 0;
-    }
-    if (error == EEXIST) return EEXIST;
-    error = existsCheck();
-    if (error != 0) return error;
-    error = renameReplace();
-    if (error == 0 && method) *method = LINUX_ATOMIC_PUBLISH_CHECKED_RENAME;
-    return error;
+    if (!linux_atomic_write_noreplace_unsupported(renameError)) return renameError;
+    const int linkError = linkNoReplace();
+    if (linkError == 0 && method) *method = LINUX_ATOMIC_PUBLISH_LINK;
+    return linkError;
 }

@@ -89,7 +89,7 @@ Curve editing, profile transfer and capture improve.
 - **External flatten:** avoid false negative core offsets.
 - **Curve errors:** identify out-of-range targets.
 - **Profile files:** import the reviewed contents and confirm before replacing any Linux export destination.
-- **Linux exports:** new profile files save to network and FAT-formatted drives.
+- **Linux exports:** create-only saves preserve concurrent files and report when the filesystem cannot guarantee that.
 - **Multi-GPU ownership:** reject ambiguous or mismatched GPU bindings before tuning.
 - **GPU selector:** switch views and writes together, stay usable when a card fails to initialize, and retry after temporary busy refusals.
 - **Curve previews:** avoid spikes; retain drafts.

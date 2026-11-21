@@ -13,11 +13,10 @@ Source anchors: `source/linux_atomic_write_policy.h`, `source/linux_port.cpp`
 (`write_text_file_atomic`), `source/linux_service_install_files.h`,
 `source/linux_service_install.cpp`.
 
-- `tests/review_followup_tests.cpp` `6280-6289`, `6269`: injected-operation chain
-  for `linux_atomic_write_publish_new()` (one atomic step, EEXIST, a real I/O
-  error not mistaken for a missing capability, EINVAL/ENOSYS to `linkat`, a
-  conclusive `linkat` EEXIST, no hard links to checked rename, no rename over an
-  existing or unreadable destination).
+- `tests/review_followup_tests.cpp` `6280-6286`, `6269`: injected-operation chain
+  for `linux_atomic_write_publish_new()`. It covers atomic publication,
+  EEXIST, real I/O errors, EINVAL/ENOSYS to `linkat`, and refusal when neither
+  atomic primitive is available.
 - `tests/linux_gpu_selection_store_regression.cpp`: real-filesystem create-only
   export also asserts no hidden temporary survives any publish.
 - `tests/linux_daemon_state_regression.cpp`: staged installer files carry the

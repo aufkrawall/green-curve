@@ -881,7 +881,7 @@ stays false). `tests/linux_transport_regression.cpp` 67-75 constructs both
 orders explicitly plus a peer that vanished without answering; executed under
 WSL Arch on 2026-10-01 in addition to the Windows cross-link.
 
-## CLI/TUI atomic text writer (verified 2026-10-27)
+## CLI/TUI atomic text writer (verified 2026-11-21)
 
 Source anchors: `source/linux_port.cpp`, `source/linux_output_directory.h`,
 `source/linux_atomic_write_policy.h`,
@@ -905,6 +905,10 @@ relative to the pinned directory. A leaf symlink is replaced without following
 its target. Temp names fit NAME_MAX; retries cover collisions only. Actual
 write, sync or rename errors stop and report their own errno. The final
 directory fsync remains best effort after replacement.
+
+Create-only exports publish through `renameat2(RENAME_NOREPLACE)` or a
+same-directory hard link. Filesystems lacking both primitives report a save
+failure. An explicit overwrite uses the ordinary atomic rename path.
 
 The native filesystem fixture covers directory links at final and ancestor
 positions, refusal before directory creation, ordinary-user redirects, nested

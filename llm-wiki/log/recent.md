@@ -7,8 +7,8 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
 ## 2026-11-21: Review follow-ups for Linux exports and upgrades
 
-- Linux create-only exports degrade from `renameat2(RENAME_NOREPLACE)` to
-  `linkat` and then a checked rename, so mounts without the flag still export.
+- Linux create-only exports use `linkat` when `renameat2(RENAME_NOREPLACE)`
+  is unavailable. The operation requires one of these atomic mechanisms.
 - The upgrade rollback rewrite had dropped the explicit root owner and group on
   staged files and the post-install ownership checks; both are back
   (verification runs on the live paths before activation).
