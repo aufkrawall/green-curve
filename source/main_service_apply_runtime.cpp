@@ -269,8 +269,15 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
             }
         }
         // A successful Apply that wrote the fan re-established it on purpose:
-        // a previous runtime handback is history (main_service_fan_fault.cpp).
-        if (desired && desired->hasFan) service_fan_fault_clear("an Apply that set the fan");
+        // a previous runtime handback is history unless post-Apply invariant
+        // repair failed (main_service_fan_fault.cpp).
+        if (fan_fault_should_clear_after_apply(desired && desired->hasFan,
+                fanInvariant == SERVICE_FAN_INTENT_REPAIR_FAILED)) {
+            service_fan_fault_clear("an Apply that set the fan");
+        } else if (desired && desired->hasFan) {
+            debug_log("fan fault: preserving active fan fault record because"
+                      " post-apply fan invariant repair failed\n");
+        }
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
         mark_service_telemetry_cache_updated("service apply");

@@ -91,4 +91,11 @@ static inline const char* fan_runtime_intent_verdict_name(FanRuntimeIntentVerdic
     return "unknown";
 }
 
+// An Apply that set the fan retires a prior runtime-handback fault record
+// only when the post-Apply fan/intent invariant holds or was repaired.
+static inline bool fan_fault_should_clear_after_apply(
+    bool applySetFan, bool fanInvariantRepairFailed) {
+    return applySetFan && !fanInvariantRepairFailed;
+}
+
 #endif  // GREEN_CURVE_FAN_INTENT_POLICY_H

@@ -582,8 +582,12 @@ def check_fan_fault_reporting(ctx, require_text, forbid_text, require_order):
                   "the fan fault notice has the last word on the status line")
     apply_runtime_cpp = _p(ctx, "main_service_apply_runtime.cpp")
     require_text(apply_runtime_cpp,
-                 'if (desired && desired->hasFan) service_fan_fault_clear("an Apply that set the fan");',
-                 "only an Apply that set the fan clears the record")
+                 "if (fan_fault_should_clear_after_apply(desired && desired->hasFan,\n"
+                 "                fanInvariant == SERVICE_FAN_INTENT_REPAIR_FAILED)) {",
+                 "only an Apply whose fan invariant held or repaired clears the fan fault record")
+    require_text(apply_runtime_cpp,
+                 'service_fan_fault_clear("an Apply that set the fan");',
+                 "a healthy fan Apply clears the fan fault record")
     require_text(apply_runtime_cpp, 'service_fan_fault_clear("a successful Reset");',
                  "a Reset clears the record")
     validation_h = _p(ctx, "service_protocol_validation.h")

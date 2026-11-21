@@ -99,6 +99,11 @@ static int policy_cases() {
     if (!profile_ownership_fan_mismatch_allowed(true, true, FAN_MODE_AUTO, false)) return 12735;
     if (profile_ownership_fan_mismatch_allowed(true, true, FAN_MODE_CURVE, false) ||
         profile_ownership_fan_mismatch_allowed(true, true, FAN_MODE_FIXED, false)) return 12736;
+    // Post-Apply fan fault retirement: never clear when invariant repair failed.
+    if (!fan_fault_should_clear_after_apply(true, false) ||
+        fan_fault_should_clear_after_apply(true, true) ||
+        fan_fault_should_clear_after_apply(false, false) ||
+        fan_fault_should_clear_after_apply(false, true)) return 12737;
     return 0;
 }
 
