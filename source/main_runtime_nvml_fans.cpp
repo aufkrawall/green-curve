@@ -6,7 +6,7 @@
 // validity, split out of main_runtime_nvml.cpp (size ratchet), which
 // includes it in place.
 
-static bool nvml_read_fans(char* detail, size_t detailSize) {
+static bool nvml_read_fans_for_count(char* detail, size_t detailSize, unsigned int expectedCount) {
     if (!nvml_ensure_ready()) {
         set_message(detail, detailSize, "NVML not ready");
         return false;
@@ -37,6 +37,10 @@ static bool nvml_read_fans(char* detail, size_t detailSize) {
         return false;
     }
 
+    if (expectedCount != 0 && count != expectedCount) {
+        set_message(detail, detailSize, "Fan count changed from %u to %u", expectedCount, count);
+        return false;
+    }
     g_app.fanSupported = true;
     g_app.fanCount = count > MAX_GPU_FANS ? MAX_GPU_FANS : count;
 
@@ -106,4 +110,64 @@ static bool nvml_read_fans(char* detail, size_t detailSize) {
     // A completed read: the stall check reuses it instead of reading again.
     g_app.fanReadSerial++;
     return true;
+}
+
+static bool nvml_read_fans(char* detail, size_t detailSize) {
+    return nvml_read_fans_for_count(detail, detailSize, 0);
+}
+
+static bool nvml_read_controllable_fan_count(unsigned int* count, char* detail, size_t detailSize) {
+    *count = 0;
+    const nvmlReturn_t result = g_nvml_api.getNumFans
+        ? g_nvml_api.getNumFans(g_app.nvmlDevice, count) : NVML_ERROR_NOT_SUPPORTED;
+    if (result != NVML_SUCCESS) {
+        set_message(detail, detailSize, "Fan count unavailable: %s", nvml_err_name(result));
+        return false;
+    }
+    if (*count == 0 || *count > MAX_GPU_FANS) {
+        set_message(detail, detailSize, "Unsupported fan count: %u", *count);
+        return false;
+    }
+    return true;
+}
+
+static bool live_fan_policy_readback_complete() {
+    return g_app.fanSupported && g_app.fanCount > 0 &&
+        all_fans_known(g_app.readback.fan.policy, g_app.fanCount);
+}
+
+static bool nvml_set_fan_auto(char* detail, size_t detailSize) {
+    if (!nvml_ensure_ready() || !g_app.fanSupported || (!g_nvml_api.setDefaultFanSpeed && !g_nvml_api.setFanControlPolicy)) {
+        set_message(detail, detailSize, "Fan auto unsupported");
+        return false;
+    }
+    unsigned int count = 0;
+    if (!nvml_read_controllable_fan_count(&count, detail, detailSize)) return false;
+    for (unsigned int fan = 0; fan < count; fan++) {
+        nvmlReturn_t defaultResult = NVML_ERROR_NOT_SUPPORTED;
+        nvmlReturn_t policyResult = NVML_ERROR_NOT_SUPPORTED;
+        char phase[128] = {};
+        if (g_nvml_api.setDefaultFanSpeed) {
+            StringCchPrintfA(phase, ARRAY_COUNT(phase), "Fan auto default write: fan=%u", fan);
+            set_last_apply_phase(phase);
+            defaultResult = g_nvml_api.setDefaultFanSpeed(g_app.nvmlDevice, fan);
+        }
+        if (g_nvml_api.setFanControlPolicy) {
+            StringCchPrintfA(phase, ARRAY_COUNT(phase), "Fan auto policy write: fan=%u", fan);
+            set_last_apply_phase(phase);
+            policyResult = g_nvml_api.setFanControlPolicy(g_app.nvmlDevice, fan,
+                NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW);
+        }
+        if (defaultResult != NVML_SUCCESS && policyResult != NVML_SUCCESS)
+            debug_log("nvml_set_fan_auto: fan=%u default=%d policy=%d\n", fan,
+                      (int)defaultResult, (int)policyResult);
+    }
+    for (int attempt = 0; attempt < 8; attempt++) {
+        if (attempt > 0) Sleep(10);
+        if (nvml_read_fans_for_count(detail, detailSize, count) &&
+            live_fan_policy_readback_complete() && g_app.fanIsAuto) return true;
+    }
+    set_message(detail, detailSize, "Fan readback did not confirm driver Auto on all %u fans", count);
+    debug_log("nvml_set_fan_auto: driver Auto unverified on %u fans\n", count);
+    return false;
 }

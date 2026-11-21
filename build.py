@@ -2664,7 +2664,7 @@ def run_source_regression_checks():
     require_text(gpu_backend_apply_cpp, "fan failure triggered rollback", "fan apply failure triggers rollback of earlier hardware writes")
 
     # F-01-003: Multi-GPU ordinal fallback blocked
-    require_text(runtime_nvml_cpp, "refusing ordinal fallback", "multi-GPU ordinal fallback is blocked when PCI identity is available")
+    require_text(os.path.join(SOURCE_DIR, "main_runtime_nvml_selection.h"), "if (haveSelectedIdentity && multiple) {", "multi-GPU ordinal fallback is blocked when PCI identity is available")
 
     # F-06-001: Lock capture always consumes the main-thread draft value, not a
     # stale lockedFreq fallback or HWND text from a different state generation.

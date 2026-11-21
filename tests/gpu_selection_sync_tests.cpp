@@ -8,6 +8,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
+#include "gpu_adapter_identity.h"
+#include "gpu_selection_policy.h"
 
 #include "app_shared.h"
 #include "gpu_selection_sync_policy.h"
@@ -135,9 +138,76 @@ int saved_matches_shown_tests() {
     return 0;
 }
 
+#if defined(_WIN32)
+AppData g_app{};
+NvmlApi g_nvml_api{};
+unsigned int nvmlAdapterCount;
+nvmlPciInfo_t pciInfo[2]{};
+
+void debug_log(const char*, ...) {}
+const char* nvml_err_name(nvmlReturn_t) { return "scripted response"; }
+void set_message(char* out, size_t size, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    vsnprintf(out, size, format, args);
+    va_end(args);
+}
+#include "main_runtime_nvml_selection.h"
+
+int nvml_binding_tests() {
+    constexpr unsigned int model = 0x2F0410DEu;
+    g_app = {};
+    g_app.adapterCount = 2;
+    g_app.selectedGpu = gpu(0, model, 0);
+    g_app.adapters[0] = g_app.selectedGpu;
+    g_app.adapters[1] = gpu(1, model, 2);
+    nvmlAdapterCount = 2;
+    pciInfo[0].pciDeviceId = pciInfo[1].pciDeviceId = model;
+    pciInfo[0].bus = 1;
+    pciInfo[1].bus = 2;
+    g_nvml_api.getCount = [](unsigned int* count) -> nvmlReturn_t {
+        *count = nvmlAdapterCount;
+        return NVML_SUCCESS;
+    };
+    g_nvml_api.getHandleByIndex = [](unsigned int index, nvmlDevice_t* device) -> nvmlReturn_t {
+        *device = reinterpret_cast<nvmlDevice_t>(&pciInfo[index]);
+        return NVML_SUCCESS;
+    };
+    g_nvml_api.getPciInfo = [](nvmlDevice_t device, nvmlPciInfo_t* pci) -> nvmlReturn_t {
+        *pci = *reinterpret_cast<const nvmlPciInfo_t*>(device);
+        return NVML_SUCCESS;
+    };
+    char detail[192]{};
+    if (nvml_select_device_for_selected_gpu(detail, sizeof(detail)) ||
+        g_app.nvmlDevice || g_app.selectedGpu.pciBus || g_app.adapters[0].pciBus) return 7102;
+    nvmlAdapterCount = 1;
+    if (nvml_select_device_for_selected_gpu(detail, sizeof(detail)) || g_app.nvmlDevice) return 7106;
+    pciInfo[0].pciDeviceId = 0x278210DEu;
+    if (nvml_select_device_for_selected_gpu(detail, sizeof(detail)) || g_app.nvmlDevice) return 7103;
+    // A valid location makes identical model IDs distinguishable.
+    nvmlAdapterCount = 2;
+    pciInfo[0].pciDeviceId = model;
+    g_app.selectedGpu = g_app.adapters[1];
+    g_app.selectedGpuIndex = 1;
+    if (!nvml_select_device_for_selected_gpu(detail, sizeof(detail)) ||
+        g_app.selectedNvmlIndex != 1 || g_app.selectedGpuOrdinalFallback) return 7104;
+    // Keep the compatibility path for a single device with no PCI query.
+    g_nvml_api.getPciInfo = nullptr;
+    g_app.adapterCount = nvmlAdapterCount = 1;
+    g_app.selectedGpu = g_app.adapters[0];
+    g_app.selectedGpuIndex = 0;
+    if (!nvml_select_device_for_selected_gpu(detail, sizeof(detail)) ||
+        g_app.selectedNvmlIndex != 0 || g_app.selectedGpuOrdinalFallback) return 7105;
+    return 0;
+}
+#endif
+
 }  // namespace
 
 int run_gpu_selection_sync_tests() {
+#if defined(_WIN32)
+    if (int r = nvml_binding_tests()) return r;
+#endif
     if (int r = accepted_tests()) return r;
     if (int r = selector_tests()) return r;
     if (int r = reconcile_tests()) return r;

@@ -334,12 +334,12 @@ def check_all(ctx, require_text, forbid_text):
     # NVML readback and writes reach the selected GPU only through this
     # match. Packed IDs share the NVIDIA vendor word, so it must compare device
     # IDs through the shared extractor, never the low words.
-    runtime_nvml_cpp = _p(ctx, "main_runtime_nvml.cpp")
+    nvml_selection_h = _p(ctx, "main_runtime_nvml_selection.h")
     ctx.require_text_in_operation(
-        runtime_nvml_cpp, "static bool nvml_pci_device_matches_nvapi(",
-        "return gpu_pci_nvidia_device_ids_match(nvapiDeviceId, nvmlDeviceId);",
+        nvml_selection_h, "static bool nvml_select_device_for_selected_gpu(",
+        "gpu_pci_nvidia_device_ids_match(selected.deviceId, pci.pciDeviceId)",
         "Windows NVML device matching compares device IDs, not vendor words")
-    forbid_text(runtime_nvml_cpp, "(nvmlDeviceId & 0xFFFFu) == (nvapiDeviceId & 0xFFFFu)",
+    forbid_text(nvml_selection_h, "(nvmlDeviceId & 0xFFFFu) == (nvapiDeviceId & 0xFFFFu)",
                 "Windows NVML device matching never accepts a shared vendor word")
     require_text(_p(ctx, "linux_gpu_selection.h"),
                  "return gpu_pci_extract_nvidia_device_id(encoded, deviceId);",

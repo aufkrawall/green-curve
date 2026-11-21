@@ -670,15 +670,14 @@ service_watchdog_loop:
     service_stop_selected_gpu_notification_best_effort(
         "graceful service shutdown");
     service_shutdown_logon_apply_coordinator();
-    lock_service_runtime();
-    bool hadOwnedIntentForShutdown = g_serviceHasActiveDesired;
-    unlock_service_runtime();
-    service_report_stop_progress("fan runtime shutdown");
-    lock_service_runtime();
-    stop_service_fan_runtime_thread();
-    unlock_service_runtime();
     service_report_stop_progress("pipe listener shutdown");
     service_pipe_listener_stop_and_join();
+    service_report_stop_progress("fan runtime shutdown");
+    lock_service_runtime();
+    const bool hadOwnedIntentForShutdown = g_serviceHasActiveDesired;
+    bool coolingSecured = lifecycleWorkerFailed || service_shutdown_owned_fan();
+    stop_service_fan_runtime_thread();
+    unlock_service_runtime();
     if (g_servicePipeReadyEvent) {
         CloseHandle(g_servicePipeReadyEvent);
         g_servicePipeReadyEvent = nullptr;
@@ -724,6 +723,9 @@ service_watchdog_loop:
         bool resetWriteAttempted = false;
         bool resetOk = service_reset_all(resetDetail, sizeof(resetDetail),
             &resetWriteAttempted);
+        coolingSecured = coolingSecured || resetOk;
+        debug_log("service_main: shutdown GPU reset ok=%d attempted=%d (%s)\n",
+            resetOk ? 1 : 0, resetWriteAttempted ? 1 : 0, resetDetail);
         if (!resetOk && resetWriteAttempted) {
             service_latch_auto_restore_lockout(
                 SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,
@@ -743,14 +745,12 @@ service_watchdog_loop:
     } else {
         debug_log("service_main: lifecycle worker failure may involve stale driver DLL state; process exit will reclaim modules without teardown calls\n");
     }
-    // External/graceful stops report success. An unexpected lifecycle-worker
-    // death reports a service error so the SCM availability net may restart the
-    // process, but the sticky lockout and lack of a nonce keep that restart
-    // entirely non-mutating.
-    g_serviceStatus.dwWin32ExitCode = lifecycleWorkerFailed
+    // Report a shutdown error if the last manual fan duty could not be
+    // secured, leaving the ownership marker for the next service start.
+    g_serviceStatus.dwWin32ExitCode = lifecycleWorkerFailed || !coolingSecured
         ? ERROR_SERVICE_SPECIFIC_ERROR : NO_ERROR;
     g_serviceStatus.dwServiceSpecificExitCode = lifecycleWorkerFailed
-        ? ERROR_PROCESS_ABORTED : 0;
+        ? ERROR_PROCESS_ABORTED : coolingSecured ? 0 : ERROR_WRITE_FAULT;
     g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
     // A terminal state carries no pending progress. Leaving the STOP_PENDING
     // checkpoint and hint behind would advertise a stopped service as still

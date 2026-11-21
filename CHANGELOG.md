@@ -55,7 +55,7 @@ Curve editing, profile transfer and capture improve.
 
 ### Fixed
 
-- **Windows Reset:** custom cooling continues if driver Auto fails.
+- **Windows cooling:** verify Auto on every fan, retain cooling if Reset fails, and hand fans back on service stop.
 - **Linux Reset recovery:** restore settings under the prior clock bound after a failure.
 - **Linux fanless GPUs:** Reset restores clocks without requiring fan control.
 - **Linux upgrades:** recover the prior daemon after a failed upgrade.
@@ -90,7 +90,7 @@ Curve editing, profile transfer and capture improve.
 - **Curve errors:** identify out-of-range targets.
 - **Profile files:** import the reviewed contents and confirm before replacing any Linux export destination.
 - **Linux exports:** new profile files save to network and FAT-formatted drives.
-- **Multi-GPU ownership:** prevent retargeting when identical cards cannot be distinguished.
+- **Multi-GPU ownership:** reject ambiguous or mismatched GPU bindings before tuning.
 - **GPU selector:** switch views and writes together, stay usable when a card fails to initialize, and retry after temporary busy refusals.
 - **Curve previews:** avoid spikes; retain drafts.
 - **Older flatten profiles:** load erroneous negative-offset records consistently across Windows and Linux.

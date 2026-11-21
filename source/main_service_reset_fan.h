@@ -20,6 +20,20 @@ static bool service_reset_fan_to_driver(char* detail, size_t detailSize) {
     return true;
 }
 
+// Called with the runtime lock after the pipe workers have drained. Cooling
+// handback is independent of the clock Reset and its VF preflight.
+static bool service_shutdown_owned_fan() {
+    if (!g_app.fanCurveRuntimeActive && !g_app.fanFixedRuntimeActive) return true;
+    char fanDetail[192] = {};
+    if (service_reset_fan_to_driver(fanDetail, sizeof(fanDetail))) return true;
+    char emergencyDetail[192] = {};
+    const bool emergencyOk = nvml_set_fan_manual(FAN_RUNTIME_EMERGENCY_PERCENT,
+        nullptr, emergencyDetail, sizeof(emergencyDetail));
+    debug_log("service_main: shutdown fan Auto failed (%s); emergency %d%% ok=%d (%s)\n",
+        fanDetail, FAN_RUNTIME_EMERGENCY_PERCENT, emergencyOk ? 1 : 0, emergencyDetail);
+    return emergencyOk;
+}
+
 static void service_reset_retain_running_fan() {
     initialize_desired_settings_defaults(&g_serviceActiveDesired);
     g_serviceActiveDesired.lockCi = -1;

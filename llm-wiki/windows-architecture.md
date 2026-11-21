@@ -1,5 +1,16 @@
 # Windows Architecture
 
+## NVML binding identity (2026-11-21)
+
+`source/main_runtime_nvml_selection.h` compares candidate PCI identity to an
+unchanged NvAPI selection. An exact PCI location identifies an adapter.
+Without location, a model match must be unique across both inventories before
+NVML can enrich the selection. A positive PCI mismatch also rules out ordinal
+fallback when NVML exposes just one adapter. Systems with one adapter and
+unavailable PCI evidence retain the compatibility fallback. The scripted
+driver in `tests/gpu_selection_sync_tests.cpp` exercises both refusal cases,
+location-based matching and the single-adapter fallback.
+
 ## Transport and shared-bank follow-up (verified 2026-10-01)
 
 Source anchors: `source/service_pipe_transport_lease.h`,

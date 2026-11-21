@@ -494,12 +494,66 @@ static int run() {
     return 0;
 }
 } // namespace fan_handback_fixture
+namespace nvml_fan_handback_fixture {
+static AppData g_app{};
+static NvmlApi g_nvml_api{};
+static unsigned int count, writes, knownFanCount;
+static bool countAvailable;
+static bool manual[MAX_GPU_FANS];
+
+static bool nvml_ensure_ready() { return true; }
+static void debug_log(const char*, ...) {}
+static const char* nvml_err_name(nvmlReturn_t) { return "scripted response"; }
+static void set_last_apply_phase(const char*) {}
+static void set_message(char* out, size_t size, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(out, size, format, args);
+    va_end(args);
+}
+#define Sleep(duration) ((void)(duration))
+#include "main_runtime_nvml_fans.cpp"
+#undef Sleep
+
+static int run() {
+    g_app.fanSupported = true;
+    g_app.fanFixedRuntimeActive = true;
+    g_app.fanCount = 2;
+    count = 2;
+    manual[0] = manual[1] = true;
+    g_nvml_api.getNumFans = [](nvmlDevice_t, unsigned int* out) -> nvmlReturn_t {
+        *out = count;
+        return countAvailable ? NVML_SUCCESS : NVML_ERROR_UNKNOWN;
+    };
+    g_nvml_api.setDefaultFanSpeed = [](nvmlDevice_t, unsigned int fan) -> nvmlReturn_t {
+        ++writes;
+        manual[fan] = false;
+        return NVML_SUCCESS;
+    };
+    g_nvml_api.getFanControlPolicy = [](nvmlDevice_t, unsigned int fan, unsigned int* policy) -> nvmlReturn_t {
+        if (fan >= knownFanCount) return NVML_ERROR_UNKNOWN;
+        *policy = manual[fan] ? NVML_FAN_POLICY_MANUAL : NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW;
+        return NVML_SUCCESS;
+    };
+    char detail[192]{};
+    if (nvml_read_fans(detail, sizeof(detail)) || g_app.fanCount ||
+        nvml_set_fan_auto(detail, sizeof(detail)) || writes) return 12920;
+    countAvailable = true;
+    knownFanCount = 1;
+    if (nvml_set_fan_auto(detail, sizeof(detail)) || writes != 2 ||
+        manual[0] || manual[1]) return 12921;
+    knownFanCount = 2;
+    if (!nvml_set_fan_auto(detail, sizeof(detail)) || writes != 4) return 12922;
+    return 0;
+}
+} // namespace nvml_fan_handback_fixture
 #endif
 
 int run_fan_handback_runtime_tests() {
     int result = 0;
 #if defined(_WIN32)
-    result = fan_handback_fixture::run();
+    result = nvml_fan_handback_fixture::run();
+    if (!result) result = fan_handback_fixture::run();
 #endif
     if (result) std::fprintf(stderr, "fan handback regression failed: %d\n", result);
     return result;

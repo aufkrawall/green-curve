@@ -31,13 +31,6 @@ static int get_effective_live_fan_mode() {
     if (g_app.fanCurveRuntimeActive) return FAN_MODE_CURVE;
     return g_app.fanIsAuto ? FAN_MODE_AUTO : FAN_MODE_FIXED;
 }
-// fanIsAuto starts false and says nothing until a policy readback has answered
-// for every fan, so a "manual" seen before that (at boot, before the first
-// telemetry pass) is not an observation of anyone's fan policy.
-static bool live_fan_policy_readback_complete() {
-    return g_app.fanSupported && g_app.fanCount > 0 &&
-        all_fans_known(g_app.readback.fan.policy, g_app.fanCount);
-}
 static void initialize_gui_fan_settings_from_live_state(bool syncGuiCurve) {
     ensure_valid_fan_curve_config(&g_app.guiFanCurve);
     ensure_valid_fan_curve_config(&g_app.activeFanCurve);

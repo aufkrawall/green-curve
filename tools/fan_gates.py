@@ -408,6 +408,12 @@ def check_service_fan_worker_serialization(ctx, require_text, forbid_text):
     require_text(fan_runtime_cpp, '#include "main_fan_runtime_failure.cpp"',
                  "the fan runtime uses the split failure reducer")
 
+    require_text(host_cpp, "service_shutdown_owned_fan();",
+                 "ordinary service stop hands back the fan independently of GPU Reset")
+    require_text(_p(ctx, "main_service_reset_fan.h"),
+                 "const bool emergencyOk = nvml_set_fan_manual(FAN_RUNTIME_EMERGENCY_PERCENT,",
+                 "ordinary service stop forces emergency cooling when Auto is unverified")
+
     # The service main thread owns the worker handle only under the runtime
     # lock, and never blocks its watchdog loop on it.
     require_text(host_cpp, "if (try_lock_service_runtime(0)) {",

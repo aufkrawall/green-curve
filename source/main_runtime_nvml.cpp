@@ -266,53 +266,6 @@ static bool nvml_reset_gpu_locked_clocks(char* detail, size_t detailSize) {
 // The per-fan read every fan path and the stall check rely on.
 #include "main_runtime_nvml_fans.cpp"
 
-static bool nvml_set_fan_auto(char* detail, size_t detailSize) {
-    if (!nvml_ensure_ready() || !g_app.fanSupported || (!g_nvml_api.setDefaultFanSpeed && !g_nvml_api.setFanControlPolicy)) {
-        set_message(detail, detailSize, "Fan auto unsupported");
-        return false;
-    }
-    for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
-        bool changed = false;
-        if (g_nvml_api.setDefaultFanSpeed) {
-            char phase[128] = {};
-            StringCchPrintfA(phase, ARRAY_COUNT(phase), "Fan auto default write: fan=%u", fan);
-            set_last_apply_phase(phase);
-            nvmlReturn_t r = g_nvml_api.setDefaultFanSpeed(g_app.nvmlDevice, fan);
-            if (r != NVML_SUCCESS) {
-                set_message(detail, detailSize, "fan %u: %s", fan, nvml_err_name(r));
-                return false;
-            }
-            changed = true;
-        }
-        if (g_nvml_api.setFanControlPolicy) {
-            char phase[128] = {};
-            StringCchPrintfA(phase, ARRAY_COUNT(phase), "Fan auto policy write: fan=%u", fan);
-            set_last_apply_phase(phase);
-            nvmlReturn_t r = g_nvml_api.setFanControlPolicy(g_app.nvmlDevice, fan, NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW);
-            if (r == NVML_SUCCESS) {
-                changed = true;
-            } else if (!g_nvml_api.setDefaultFanSpeed) {
-                set_message(detail, detailSize, "fan %u: %s", fan, nvml_err_name(r));
-                return false;
-            }
-        }
-        if (!changed) {
-            set_message(detail, detailSize, "Fan auto unsupported");
-            return false;
-        }
-    }
-    for (int attempt = 0; attempt < 8; attempt++) {
-        if (attempt > 0) Sleep(10);
-        if (nvml_read_fans(detail, detailSize) && g_app.fanIsAuto) return true;
-    }
-    if (!nvml_read_fans(detail, detailSize)) return false;
-    if (!g_app.fanIsAuto) {
-        set_message(detail, detailSize, "Fan readback did not confirm driver auto mode");
-        return false;
-    }
-    return true;
-}
-
 static bool desired_settings_have_explicit_state(const DesiredSettings* desired, bool requireCurve, char* err, size_t errSize) {
     if (!desired) {
         set_message(err, errSize, "No desired settings");
@@ -359,6 +312,12 @@ static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_
     if (!nvml_ensure_ready() || !g_app.fanSupported || !g_nvml_api.setFanSpeed) {
         set_message(detail, detailSize, "Fan manual unsupported");
         return false;
+    }
+
+    if (!runtimeTick || g_app.fanCount == 0) {
+        unsigned int count = 0;
+        if (!nvml_read_controllable_fan_count(&count, detail, detailSize)) return false;
+        g_app.fanCount = count;
     }
 
     // Snapshot pre-write fan state for rollback.
@@ -470,103 +429,7 @@ static bool nvml_manual_fan_matches_target(int pct, bool* matches, char* detail,
     return true;
 }
 
-// Compares device IDs only. The low word of a packed ID is the vendor, which
-// every NVIDIA GPU shares; matching on it accepted any NVIDIA device.
-static bool nvml_pci_device_matches_nvapi(unsigned int nvapiDeviceId, unsigned int nvmlDeviceId) {
-    return gpu_pci_nvidia_device_ids_match(nvapiDeviceId, nvmlDeviceId);
-}
-
-static bool nvml_pci_matches_selected_gpu(const nvmlPciInfo_t* pci) {
-    if (!pci || !g_app.selectedGpu.valid || !g_app.selectedGpu.pciInfoValid) return false;
-    if (!nvml_pci_device_matches_nvapi(g_app.selectedGpu.deviceId, pci->pciDeviceId)) return false;
-    if (g_app.selectedGpu.subSystemId && pci->pciSubSystemId &&
-        g_app.selectedGpu.subSystemId != pci->pciSubSystemId) return false;
-    if (gpu_adapter_has_valid_pci_location(&g_app.selectedGpu) &&
-        (g_app.selectedGpu.pciDomain != pci->domain ||
-         g_app.selectedGpu.pciBus != pci->bus ||
-         g_app.selectedGpu.pciDevice != pci->device)) return false;
-    return true;
-}
-
-static bool nvml_select_device_for_selected_gpu(char* detail, size_t detailSize) {
-    unsigned int count = 0;
-    bool haveCount = g_nvml_api.getCount && g_nvml_api.getCount(&count) == NVML_SUCCESS && count > 0;
-    if (!haveCount) count = g_app.adapterCount > 0 ? g_app.adapterCount : 1;
-    // Strong PCI identity remains mandatory whenever it is available. A stale
-    // process never executes this as a recovery re-init; only the freshly
-    // validated controlled-recovery service may probe and later write.
-    if (g_nvml_api.getPciInfo && g_app.selectedGpu.valid &&
-        g_app.selectedGpu.pciInfoValid) {
-        int matched = -1;
-        for (unsigned int i = 0; i < count && i < 64; i++) {
-            nvmlDevice_t candidate = nullptr;
-            if (g_nvml_api.getHandleByIndex(i, &candidate) != NVML_SUCCESS || !candidate) continue;
-            nvmlPciInfo_t pci = {};
-            if (g_nvml_api.getPciInfo(candidate, &pci) != NVML_SUCCESS) continue;
-            if (!nvml_pci_matches_selected_gpu(&pci)) {
-                debug_log("nvml_select_device: NVML index %u (device 0x%08X bus %s) is not"
-                          " the selected GPU (device 0x%08X)\n", i, pci.pciDeviceId,
-                          nvml_pci_bus_id_text(&pci), g_app.selectedGpu.deviceId);
-                continue;
-            }
-            if (matched >= 0) {
-                set_message(detail, detailSize, "Multiple NVML devices match selected GPU PCI identity");
-                return false;
-            }
-            matched = (int)i;
-            g_app.nvmlDevice = candidate;
-            g_app.selectedNvmlIndex = i;
-            g_app.selectedGpu.pciDomain = pci.domain;
-            g_app.selectedGpu.pciBus = pci.bus;
-            g_app.selectedGpu.pciDevice = pci.device;
-            unsigned int domain = 0, bus = 0, device = 0, function = 0;
-            if (parse_pci_bdf_string(nvml_pci_bus_id_text(&pci), &domain, &bus,
-                    &device, &function)) {
-                g_app.selectedGpu.pciFunction = function;
-            }
-            if (g_app.selectedGpuIndex < g_app.adapterCount) {
-                g_app.adapters[g_app.selectedGpuIndex].pciDomain =
-                    g_app.selectedGpu.pciDomain;
-                g_app.adapters[g_app.selectedGpuIndex].pciBus =
-                    g_app.selectedGpu.pciBus;
-                g_app.adapters[g_app.selectedGpuIndex].pciDevice =
-                    g_app.selectedGpu.pciDevice;
-                g_app.adapters[g_app.selectedGpuIndex].pciFunction =
-                    g_app.selectedGpu.pciFunction;
-            }
-        }
-        if (matched >= 0) {
-            g_app.selectedGpuOrdinalFallback = false;
-            debug_log("nvml_select_device: matched NVAPI index %u to NVML index %u by PCI identity\n", g_app.selectedGpuIndex, g_app.selectedNvmlIndex);
-            return true;
-        }
-        if (count > 1) {
-            set_message(detail, detailSize, "No NVML device matched selected GPU PCI identity");
-            return false;
-        }
-    }
-    unsigned int fallback = g_app.selectedGpuIndex;
-    if (fallback >= count) fallback = 0;
-    if (count > 1 && g_app.selectedGpu.valid && g_app.selectedGpu.pciInfoValid) {
-        // PCI identity was available but did not match any NVML device on a multi-GPU system.
-        // Fail closed to prevent applying settings to the wrong adapter.
-        set_message(detail, detailSize, "No NVML device matched selected GPU PCI identity on a multi-GPU system; refusing ordinal fallback");
-        debug_log("nvml_select_device: multi-GPU ordinal fallback blocked for selected GPU index %u (count=%u)\n",
-            g_app.selectedGpuIndex, count);
-        return false;
-    }
-    nvmlReturn_t r = g_nvml_api.getHandleByIndex(fallback, &g_app.nvmlDevice);
-    if (r != NVML_SUCCESS) {
-        set_message(detail, detailSize, "NVML device index %u failed: %s", fallback, nvml_err_name(r));
-        return false;
-    }
-    g_app.selectedNvmlIndex = fallback;
-    g_app.selectedGpuOrdinalFallback = count > 1;
-    if (g_app.selectedGpuOrdinalFallback) {
-        debug_log("nvml_select_device: WARNING using ordinal fallback index %u on %u-device system (no PCI identity)\n", fallback, count);
-    }
-    return true;
-}
+#include "main_runtime_nvml_selection.h"
 
 static bool nvml_ensure_ready() {
     // If device was removed, don't try to use NVML — the internal handles

@@ -1,5 +1,18 @@
 # Fan Control
 
+## Windows verified fan handback (2026-11-21)
+
+`source/main_runtime_nvml_fans.cpp` reads a fresh controllable fan count before
+issuing Auto writes. Success requires positive Auto policy from each fan and
+the same count on verification. Telemetry estimates and cached zero counts
+cannot authorize retirement of a fan runtime. Reset retains it when Auto is
+unverified. During graceful service stop, `source/main_service_host.cpp` closes
+the request lane, serializes handback with the fan worker, and attempts
+emergency maximum if Auto fails. The independent handback runs before full
+GPU Reset, whose VF read may refuse before any write. A stop that cannot
+secure cooling reports a service error. The scripted driver in
+`tests/fan_handback_runtime_tests.cpp` covers count loss and unknown policy.
+
 ## Fan stall evidence and safe Reset handoff (2026-11-21)
 
 Source anchors: `source/fan_stall_policy.h`, `source/main_fan_stall.cpp`,
