@@ -386,6 +386,8 @@ static int run(){
          hardPlan.symmetricFallbackAllowed);
    CHECK(linux_apply_arm_transition_ceiling(&g, &flattenToHard, &flattened));
    CHECK(g_linuxCeilingArmed && cap == hardPlan.ceilingMHz);
+   g.retainedTransitionCeilingMHz = 0;
+   cap = 0;
 
    // Even when a non-resetting HARD request also writes memory over an
    // outgoing flatten, the requested HARD lock keeps symmetric fallback.
@@ -415,6 +417,8 @@ static int run(){
    g.freqOffsets[0] = 0;
    linux_apply_ceiling_reset_state();
    CHECK(!linux_apply_clock_ceiling_plan(&g, &memory, nullptr).required);
+   g.retainedTransitionCeilingMHz = 0;
+   cap = 0;
    g.nvml.setGpuLockedClocks = setCap;
 
    // Windows guard: resetting FLATTEN->HARD with memory still permits
