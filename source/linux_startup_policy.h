@@ -219,7 +219,7 @@ static void daemon_handle_startup_policy_command(const ServiceRequest* req,
 // administrator-configured write, not drift correction: it happens exactly once
 // per daemon start, only for the exact GPU identity recorded with the policy,
 // and a failure locks the daemon out of retrying instead of looping.
-static void apply_startup_profile_policy() {
+static bool apply_startup_profile_policy(const LinuxDaemonStateRecord* previous) {
     const DesiredSettings& desired = g_startupPolicy.desired;
     // The snapshot's own values are logged before the write, not just
     // "applied": when a boot-applied profile disagrees with config.ini, this
@@ -239,14 +239,14 @@ static void apply_startup_profile_policy() {
     LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(
         LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE,
         &g_startupPolicy.targetGpu, &g_startupPolicy.desired,
-        (GpuLocationRole)g_startupPolicy.targetLocationRole, &g_startupPolicy.targetUuid);
+        (GpuLocationRole)g_startupPolicy.targetLocationRole, &g_startupPolicy.targetUuid, previous);
     if (!outcome.success) {
         // daemon_automatic_restore_write owns the uncertainty transition and
         // its fan handback on every path that reached a write.
         dlog("daemon: startup profile %u did not commit -> %s\n",
              (unsigned int)g_startupPolicy.profileSlot,
              outcome.message[0] ? outcome.message : "unknown reason");
-        return;
+        return false;
     }
     // The profile booted on its GPU after firmware renumbered the PCI buses
     // (linux_resolve_stored_gpu_target followed the model). Re-bind the record
@@ -257,7 +257,7 @@ static void apply_startup_profile_policy() {
          g_startupPolicy.targetLocationRole == (gc_u32)g_activeTargetRole &&
          memcmp(&g_startupPolicy.targetUuid, &g_activeTargetUuid, sizeof(g_activeTargetUuid)) == 0) ||
         !linux_gpu_model_matches(&g_startupPolicy.targetGpu, &g_activeTarget))
-        return;
+        return true;
     LinuxDaemonStartupRecord rebound = {};
     linux_daemon_startup_initialize(&rebound, g_startupPolicy.mode,
         g_startupPolicy.profileSlot, g_startupPolicy.profileName,
@@ -272,7 +272,7 @@ static void apply_startup_profile_policy() {
              g_activeTarget.pciDomain, g_activeTarget.pciBus,
              g_activeTarget.pciDevice, g_activeTarget.pciFunction,
              storeErr[0] ? storeErr : "record failed validation");
-        return;
+        return true;
     }
     dlog("daemon startup policy: profile %u re-bound from %04x:%02x:%02x.%u to "
          "%04x:%02x:%02x.%u (role=%s)\n",
@@ -283,6 +283,7 @@ static void apply_startup_profile_policy() {
          g_activeTarget.pciBus, g_activeTarget.pciDevice,
          g_activeTarget.pciFunction, configured_gpu_location_role_name(g_activeTargetRole));
     g_startupPolicy = rebound;
+    return true;
 }
 
 // Read the committed policy once at daemon start.  A present-but-unreadable

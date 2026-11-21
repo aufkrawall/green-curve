@@ -696,6 +696,9 @@ enum LinuxDaemonStateLoadResult {
     LINUX_DAEMON_STATE_IO_ERROR = 4,
 };
 
+// Hold the protected state directory lock until all daemon cleanup is done.
+int linux_daemon_lock_instance(const char* statePath, char* err, size_t errSize);
+
 LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
                                                    LinuxDaemonStateRecord* out,
                                                    char* err, size_t errSize,

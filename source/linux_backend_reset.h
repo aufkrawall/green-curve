@@ -13,6 +13,8 @@ static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
     LinuxGpuState* g = context->gpu;
     switch (phase) {
         case LINUX_MUTATION_LOCK: {
+            if (!linux_reset_memory_matches(g, {context->snapshot->resetMemory.validMask, 0, 0}))
+                return false;
             bool noControl = linux_clock_control_proven_absent(g);
             bool ok = linux_finalize_named_graphics_reset(g, [&] {
                 return noControl || (g->nvml.resetGpuLockedClocks &&
@@ -28,7 +30,7 @@ static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
             if (g->graphicsRecovery.covered) return linux_reset_named_graphics(g, false);
             return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0);
         case LINUX_MUTATION_MEM_OFFSET:
-            return nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0);
+            return linux_write_reset_memory(g, {context->snapshot->resetMemory.validMask, 0, 0});
         case LINUX_MUTATION_POWER: {
             unsigned int expectedDefaultmW = g->powerLimitDefaultmW > 0
                 ? (unsigned int)g->powerLimitDefaultmW : 0;
@@ -70,6 +72,16 @@ static bool linux_reset_transaction_rollback(void* opaque, unsigned int phases) 
                                           rollback, sizeof(rollback));
 }
 
+bool linux_backend_capture_reset_snapshot(LinuxGpuState* g, const DesiredSettings* previous,
+    LinuxHardwareSnapshot* snapshot, char* err, size_t errSize) {
+    if (!linux_backend_capture_snapshot(g, snapshot, err, errSize)) return false;
+    const gc_u32 ownedSurface = previous && previous->hasMemOffset && previous->memOffsetPrecise
+        ? previous->memOffsetSurface : 0u;
+    if (linux_capture_reset_memory(g, ownedSurface, &snapshot->resetMemory)) return true;
+    gc_strlcpy(err, errSize, "Reset cannot read and restore the available memory offset controls");
+    return false;
+}
+
 LinuxMutationResult linux_backend_reset(LinuxGpuState* g, const DesiredSettings* previous,
                                         char* result, size_t resultSize) {
     linux_apply_ceiling_reset_state();
@@ -81,7 +93,7 @@ LinuxMutationResult linux_backend_reset(LinuxGpuState* g, const DesiredSettings*
         if (result) gc_strlcpy(result, resultSize, "Reset requires durable preparation for every named graphics control");
         return mutation;
     }
-    if (!linux_backend_capture_snapshot(g, &snapshot, detail, sizeof(detail)) ||
+    if (!linux_backend_capture_reset_snapshot(g, previous, &snapshot, detail, sizeof(detail)) ||
         !g->writeIdentityResolved) {
         if (result) gc_strlcpy(result, resultSize, detail[0] ? detail : "Reset preflight failed");
         return mutation;
@@ -110,8 +122,10 @@ LinuxMutationResult linux_backend_reset(LinuxGpuState* g, const DesiredSettings*
     LinuxResetTransactionContext context = {g, &snapshot};
     unsigned int requested = linux_reset_phases_for_available_domains(
         snapshot.availableMutationDomains);
+    // Retain the outgoing power budget and pin until the stock VF curve
+    // and earlier clock reset phases have been verified.
     mutation = linux_execute_transaction(requested, linux_reset_transaction_step,
-                                         linux_reset_transaction_rollback, &context);
+                                         linux_reset_transaction_rollback, &context, true);
     if (result) gc_strlcpy(result, resultSize, mutation.success ? "Reset to defaults" :
         mutation.rollbackSucceeded ? "Reset failed and was rolled back" : "Reset failed; rollback uncertain");
     linux_backend_refresh(g);

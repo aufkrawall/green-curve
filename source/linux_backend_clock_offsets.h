@@ -101,15 +101,15 @@ static bool nvml_set_clock_offset_legacy(LinuxGpuState* g, unsigned int domain, 
     }
     if (domain == NVML_CLOCK_MEM && a->setMemClkVfOffset) {
         if (a->setMemClkVfOffset(g->nvmlDevice, offsetMHz) != NVML_SUCCESS) return false;
-        NvmlClockOffsetReadback verify = nvml_read_clock_offset(g, domain);
+        const auto verify = nvml_exact_clock_read(*a, g->nvmlDevice, domain, CLOCK_OFFSET_SURFACE_GLOBAL);
         lb_log("offset: write domain=%u pstate=global requested=%d display=%d "
                "readback=%s%d via=setMemClkVfOffset\n",
                domain, offsetMHz,
                nvml_mem_display_mhz_from_effective_mhz(offsetMHz),
-               verify.offsetValid ? "" : "unavailable:",
-               verify.offsetMHz);
-        return !verify.offsetValid ||
-               nvml_clock_offset_verified(domain, offsetMHz, verify.offsetMHz,
+               verify.valid ? "" : "unavailable:",
+               verify.value);
+        return !verify.valid ||
+               nvml_clock_offset_verified(domain, offsetMHz, verify.value,
                                           "setMemClkVfOffset");
     }
     return false;

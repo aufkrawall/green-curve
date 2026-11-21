@@ -678,6 +678,12 @@ once, stamped by `[meta] linux_mem_migrated`:
 
 ## Daemon lifecycle and serve loop
 
+- `linux_daemon_lock_instance()` locks the protected persistent state directory
+  before GPU initialization, replay or socket setup. The descriptor stays open
+  through fan and socket teardown, independently of systemd's runtime directory.
+- Worker, listener and readiness failures share the orderly fan handback before
+  the backend unloads. If Auto cannot be confirmed, teardown uses emergency
+  cooling and leaves the durable fan ownership record available for recovery.
 - `linux_daemon_lifecycle.h` installs `SIGTERM`/`SIGINT` handlers that set
   `g_running` and poke a self-pipe; `SIGHUP` is ignored. Before this the daemon
   had no handlers at all, so `systemctl stop` killed it at default disposition
@@ -1096,10 +1102,15 @@ every automatic Linux write laid a curve on top of whatever the driver was
 already holding. That is exactly the "apply on top of apply" case Windows
 resets the baseline to avoid (drifted boost behaviour, stacked offsets).
 
-The fix is to build the request through `service_build_full_restore_request()`
-— the same pure builder the Windows standby and driver-recovery paths use — so
-the rule lives in one place on both platforms. `linux_backend_apply()` is now
-forbidden by a source guard in `linux_startup_policy.h`.
+Restore-last and resume build through `service_build_full_restore_request()`,
+which Windows also uses. The boot profile path in `linux_daemon_boot.h` reads
+and classifies the incoming journal before scheduling any replay. A prepared,
+uncertain or unreadable journal requires explicit recovery. For a valid ACTIVE
+record, startup selection uses `service_build_profile_transition_request()`
+with the prior intent after proving both target bindings resolve to the same
+GPU. The previous profile informs clock protection and omitted-control cleanup.
+A successful apply commits and publishes its own ownership directly. The
+startup code does not reinterpret the new record as an incoming recovery record.
 
 **The shared builder was itself wrong about locks.** It derived "owns VF
 policy" from `hasGpuOffset || any hasCurvePoint`, while its sibling

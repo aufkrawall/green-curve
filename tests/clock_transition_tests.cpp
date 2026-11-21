@@ -105,6 +105,7 @@ struct LinuxHardwareSnapshot {
     bool memOffsetExact;
     unsigned int memOffsetSurface;
     int memOffsetEffectiveMHz;
+    struct { unsigned int validMask; } resetMemory;
     unsigned int powerLimitmW;
     int xbarOffsetKhz;
     int xbarMsvddOffsetUv;
@@ -156,6 +157,8 @@ static bool apply_curve_offsets_verified(LinuxGpuState*,const int*,const bool*,i
  if(curveRestoreClobbersGraphics)++lastGraphicsOffsetMHz;
  lastCurveOffsetHz=lastCurveExact?hz[0]:0;return true;
 }
+template<class T> static bool linux_write_reset_memory(LinuxGpuState*, T) { return false; }
+template<class T> static bool linux_reset_memory_matches(LinuxGpuState*, T) { return false; }
 #include "linux_backend_rollback.h"
 static bool linux_apply_reset_baseline_vf_curve(LinuxGpuState*) {++curveOffsetWrites;return true;}
 static bool linux_write_named_graphics(LinuxGpuState* g, gc_u32 surface, int value) {
@@ -301,6 +304,62 @@ static int run(){
    CHECK(cap==(to==LOCK_MODE_HARD?next.lockMHz:0));
  }
  old.lockMode=next.lockMode=LOCK_MODE_HARD;old.lockMHz=2500;next.lockMHz=3000;next.hasLock=true;
+ // A VRAM-only edit requires maximum-only protection while preserving a
+ // flattened curve. A driver that accepts fixed clocks only is insufficient.
+ {
+   DesiredSettings flattened = old, memory{};
+   flattened.lockMode = LOCK_MODE_FLATTEN;
+   memory.hasMemOffset = true;
+   linux_apply_ceiling_reset_state();
+   auto plan = linux_apply_clock_ceiling_plan(&g, &memory, &flattened);
+   CHECK(plan.required && plan.arm && !plan.symmetricFallbackAllowed &&
+         plan.reason == APPLY_CEILING_REASON_MEMORY_DROPS_FLATTEN);
+   auto fixedOnly = [](int, unsigned int low, unsigned int high) -> int {
+       ++armCalls;
+       if (low == 0 || low != high) return NVML_ERROR_NOT_SUPPORTED;
+       cap = high;
+       return NVML_SUCCESS;
+   };
+   g.nvml.setGpuLockedClocks = fixedOnly;
+   cap = 0;
+   const unsigned int calls = armCalls;
+   CHECK(!linux_apply_arm_transition_ceiling(&g, &memory, &flattened));
+   CHECK(cap == 0 && armCalls == calls + 1);
+   DesiredSettings cold = flattened;
+   cold.resetOcBeforeApply = true;
+   linux_apply_ceiling_reset_state();
+   CHECK(linux_apply_arm_transition_ceiling(&g, &cold, nullptr));
+   CHECK(!g_linuxCeilingArmed && !g_linuxCeilingPlan.symmetricFallbackAllowed &&
+         cap == 0 && armCalls == calls + 2);
+   g.nvml.setGpuLockedClocks = setCap;
+
+   g_app.curve[0].freq_kHz = 2500000;
+   g_nvml_api.setGpuLockedClocks = setCap;
+   g_nvml_api.resetGpuLockedClocks = resetCap;
+   ApplyClockCeilingGuard memoryGuard(&memory, false, false, nullptr, true);
+   CHECK(memoryGuard.plan.required && memoryGuard.plan.ceilingMHz == 2500 &&
+         !memoryGuard.plan.symmetricFallbackAllowed);
+   g_app = {};
+ }
+ // Reset power follows a verified stock curve. A failed curve leaves the
+ // outgoing power target untouched.
+ {
+   struct ResetOrder { unsigned int order[4]; unsigned int count; bool curveOk; };
+   const auto step = [](void* raw, unsigned int phase) -> bool {
+       auto& reset = *static_cast<ResetOrder*>(raw);
+       reset.order[reset.count++] = phase;
+       return phase != LINUX_MUTATION_CURVE || reset.curveOk;
+   };
+   const unsigned int phases = LINUX_MUTATION_MEM_OFFSET | LINUX_MUTATION_POWER |
+       LINUX_MUTATION_CURVE | LINUX_MUTATION_LOCK;
+   ResetOrder ordered{{}, 0, true};
+   CHECK(linux_execute_transaction(phases, step, nullptr, &ordered, true).success);
+   CHECK(ordered.order[1] == LINUX_MUTATION_CURVE &&
+         ordered.order[2] == LINUX_MUTATION_POWER && ordered.order[3] == LINUX_MUTATION_LOCK);
+   ResetOrder failedCurve{};
+   CHECK(!linux_execute_transaction(phases, step, nullptr, &failedCurve, true).success);
+   CHECK(failedCurve.count == 2 && failedCurve.order[1] == LINUX_MUTATION_CURVE);
+ }
  // Rejected arm through the real transaction and real rollback: no old-pin reset.
  cap=2500;resets=0;refuseArm=true;linux_apply_ceiling_reset_state();
  linux_apply_ceiling_note_outgoing(&old);g_linuxOutgoingCeilingMHz=2500;
@@ -962,10 +1021,10 @@ static int run(){
    const auto before=armCalls;
    {ApplyClockCeilingGuard guarded(&split,false,true);guarded.arm();
     CHECK(guarded.must_refuse_transition());CHECK(!guarded.armed);}
-   CHECK(armCalls==before+2&&cap==0);
+   CHECK(armCalls==before+1&&cap==0);
    linux_apply_ceiling_reset_state();
    CHECK(!linux_apply_arm_transition_ceiling(&g,&split,nullptr,true));
-   CHECK(!g_linuxCeilingArmed&&armCalls==before+4&&cap==0);
+   CHECK(!g_linuxCeilingArmed&&armCalls==before+2&&cap==0);
    {ApplyClockCeilingGuard historical(&split);historical.arm();CHECK(!historical.must_refuse_transition());}
    linux_apply_ceiling_reset_state();CHECK(linux_apply_arm_transition_ceiling(&g,&split,nullptr));
    refuseArm=false;

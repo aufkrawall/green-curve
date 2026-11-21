@@ -17,6 +17,26 @@ static inline bool linux_graphics_adopt_pending_record(LinuxGpuState* g,
     g->graphicsRecovery.uncertain |= record->graphicsControlSurfaces;
     return true;
 }
-static inline bool linux_daemon_record_requires_recovery(const LinuxDaemonStateRecord& record, bool restoreLast) {
-    return record.state != LINUX_DAEMON_RECORD_ACTIVE || (record.graphicsControlSurfaces && !restoreLast);
+static inline bool linux_daemon_record_requires_recovery(const LinuxDaemonStateRecord& record, bool canTransitionNamedControls) {
+    return record.state != LINUX_DAEMON_RECORD_ACTIVE || (record.graphicsControlSurfaces && !canTransitionNamedControls);
+}
+
+enum LinuxDaemonBootAction {
+    LINUX_DAEMON_BOOT_IDLE,
+    LINUX_DAEMON_BOOT_RECOVERY,
+    LINUX_DAEMON_BOOT_PROFILE,
+    LINUX_DAEMON_BOOT_RESTORE_LAST,
+};
+
+static inline LinuxDaemonBootAction linux_daemon_boot_action(
+    gc_u32 mode, LinuxDaemonStateLoadResult load, const LinuxDaemonStateRecord& saved) {
+    if (load != LINUX_DAEMON_STATE_LOADED && load != LINUX_DAEMON_STATE_MISSING)
+        return LINUX_DAEMON_BOOT_RECOVERY;
+    if (load == LINUX_DAEMON_STATE_LOADED &&
+        linux_daemon_record_requires_recovery(saved, mode != SERVICE_STARTUP_POLICY_NONE))
+        return LINUX_DAEMON_BOOT_RECOVERY;
+    if (mode == SERVICE_STARTUP_POLICY_PROFILE) return LINUX_DAEMON_BOOT_PROFILE;
+    if (mode == SERVICE_STARTUP_POLICY_RESTORE_LAST && load == LINUX_DAEMON_STATE_LOADED)
+        return LINUX_DAEMON_BOOT_RESTORE_LAST;
+    return LINUX_DAEMON_BOOT_IDLE;
 }

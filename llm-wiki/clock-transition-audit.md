@@ -1,5 +1,25 @@
 # Clock transition hardening
 
+## Startup, memory and Reset transition ordering (2026-11-21)
+
+- Linux startup profile selection passes the incoming journal's committed
+  intent as the outgoing profile after resolving it to the selected GPU.
+  The standard ownership planner computes omitted-control cleanup. A prior
+  hard pin bounds a warm switch until the new curve verifies.
+- `source/apply_clock_ceiling_policy.h` requires maximum-only protection for
+  a memory write that could clear an outgoing flattened curve. Both backends
+  apply the guard before writes even for memory-only scopes. A missing guard
+  refuses that transition. Only an explicit HARD request can authorize the
+  fixed-clock fallback, and a retained VF flatten needs a maximum-only guard.
+- `source/linux_backend_reset.h` resets verified stock clocks before raising
+  power to the board default. It captures and restores independently readable
+  P0 and global memory-offset controls. Both captures are verified after the
+  writes, including after VF rollback.
+- Scripted transition and NVML cases live in
+  `tests/clock_transition_tests.cpp` and `tests/linux_clock_offset_tests.cpp`.
+  Physical under-load transitions and driver-specific clock behavior remain
+  unverified for this change.
+
 ## Linux Reset rollback bound (2026-11-21)
 
 `source/linux_backend_reset.h` captures the outgoing bound before the first
@@ -854,23 +874,16 @@ The rule now separates "declined this time" from "absent on this GPU":
   would fail on the same call at its final lock step, so refusing first reports
   the real reason and writes nothing. The 2026-09-23 correction permits VF
   FLATTEN because that end state does not need an NVML pin.
-- What is left -- a lock-free or VF FLATTEN request, no usable clamp -- proceeds, and
-  `apply_clock_ceiling_proceeds_unprotected()` drives one explicit log line on
-  both platforms so it is never a silent absence.
+- A compatible lock-free or VF FLATTEN request may proceed without a clamp.
+  Required modeled, scalar and memory transitions still refuse. The shared
+  verdict drives a diagnostic on both platforms.
 
 **What UNSUPPORTED does and does not establish** (wording corrected
 2026-09-17, after the first pass overstated it). It means *no clamp form this
 request is permitted to use was accepted*, which is not the same claim as "this
-GPU has no locked-clock control". A lock-less request may only use the
-open-ended `(0, ceiling)` form -- the symmetric one would add a clock FLOOR
-nobody asked for -- so a driver that DOES have locked-clock control and rejects
-a 0 minimum with NOT_SUPPORTED lands here too. The decision is unaffected
-(nothing installable exists for this request either way), but a log line that
-diagnosed the GPU would send the next reader hunting a driver fault that is not
-there, so none of them do. `refusal_message()` is the one place the stronger
-claim is earned and made: UNSUPPORTED only refuses for a HARD pin, which is
-exactly when the symmetric form is permitted, so both forms
-were tried. A gate pins the qualifier in both unprotected log lines.
+GPU has no locked-clock control". A request without explicit HARD authority
+can use only the open-ended `(0, ceiling)` form. Refusal diagnostics report
+the required protection and the supported forms for that request.
 
 Sources: [apply_clock_ceiling_policy.h](../source/apply_clock_ceiling_policy.h),
 [gpu_backend_apply_ceiling.h](../source/gpu_backend_apply_ceiling.h),

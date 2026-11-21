@@ -23,6 +23,12 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
     const unsigned int clockPhases = LINUX_MUTATION_RESET_BASELINE |
         LINUX_MUTATION_GPU_OFFSET | LINUX_MUTATION_CURVE |
         LINUX_MUTATION_LOCK | LINUX_MUTATION_LOCK_CEILING;
+    // A first guard that was unavailable or unsupported did not install a
+    // restriction. There is no other phase to recover for this refusal.
+    if (phaseMask == LINUX_MUTATION_LOCK_CEILING && !g_linuxCeilingArmed &&
+        (g_linuxCeilingArmResult == APPLY_CEILING_ARM_UNSUPPORTED ||
+         g_linuxCeilingArmResult == APPLY_CEILING_ARM_UNAVAILABLE))
+        return true;
     const bool noClockControl = linux_clock_control_proven_absent(g);
     if (phaseMask & (LINUX_MUTATION_RESET_BASELINE | LINUX_MUTATION_GPU_OFFSET)) {
         g->graphicsRecovery.covered |= g->graphicsRecovery.attempted;
@@ -71,7 +77,9 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
         } else ok &= nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, snapshot->gpuOffsetMHz,
             snapshot->gpuOffsetExact ? snapshot->gpuOffsetSurface : 0);
     }
-    if ((phaseMask & LINUX_MUTATION_MEM_OFFSET) && snapshot->memOffsetValid) {
+    if ((phaseMask & LINUX_MUTATION_MEM_OFFSET) && snapshot->resetMemory.validMask) {
+        ok &= linux_write_reset_memory(g, snapshot->resetMemory);
+    } else if ((phaseMask & LINUX_MUTATION_MEM_OFFSET) && snapshot->memOffsetValid) {
         // Prefer the exact effective control over its legacy display projection.
         int restoreEffectiveMHz =
             snapshot->memOffsetExact ? snapshot->memOffsetEffectiveMHz :
@@ -171,6 +179,8 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
             ok &= fanOk;
         }
     }
+    if ((phaseMask & LINUX_MUTATION_MEM_OFFSET) && snapshot->resetMemory.validMask)
+        ok &= linux_reset_memory_matches(g, snapshot->resetMemory);
     if (phaseMask & (clockPhases | LINUX_MUTATION_MEM_OFFSET)) {
         const gc_u32 covered = g->graphicsRecovery.attempted | snapshot->graphicsPreimage.covered;
         ok &= graphics_scalar_verify_preimage(g->graphicsRecovery, snapshot->graphicsPreimage, covered,

@@ -280,6 +280,7 @@ bool linux_backend_capture_apply_snapshot(LinuxGpuState* g, const DesiredSetting
 
 // Rollback: putting the captured hardware snapshot back, and deciding whether
 // the clock restriction protecting it may be lifted.
+#include "linux_reset_memory.h"
 #include "linux_backend_rollback.h"
 
 // Whether an owned power request asks for nothing this board could do anyway.

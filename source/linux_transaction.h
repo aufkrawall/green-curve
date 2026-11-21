@@ -94,16 +94,17 @@ typedef bool (*LinuxTransactionRollbackFn)(void* context, unsigned int attempted
 // rollback receives every attempted phase, not only fully completed phases.
 static inline LinuxMutationResult linux_execute_transaction(
     unsigned int requestedPhases, LinuxTransactionStepFn step,
-    LinuxTransactionRollbackFn rollback, void* context) {
+    LinuxTransactionRollbackFn rollback, void* context, bool powerAfterCurve = false) {
     LinuxMutationResult result = {};
     const unsigned int order[] = {
         // F-APPLY-CEILING must be first: everything after it can raise a clock,
         // starting with the reset that removes whatever was capping it.
         LINUX_MUTATION_LOCK_CEILING,
         LINUX_MUTATION_RESET_BASELINE, LINUX_MUTATION_GPU_OFFSET,
-        LINUX_MUTATION_MEM_OFFSET, LINUX_MUTATION_POWER,
+        LINUX_MUTATION_MEM_OFFSET, powerAfterCurve ? 0u : LINUX_MUTATION_POWER,
         LINUX_MUTATION_XBAR, LINUX_MUTATION_SYS_CLK,
         LINUX_MUTATION_VIDEO_CLK, LINUX_MUTATION_CURVE,
+        powerAfterCurve ? LINUX_MUTATION_POWER : 0u,
         LINUX_MUTATION_LOCK, LINUX_MUTATION_FAN,
     };
     if (!step) return result;

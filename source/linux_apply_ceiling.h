@@ -75,14 +75,17 @@ static ApplyClockCeilingPlan linux_apply_clock_ceiling_plan(
     LinuxGpuState* g, const DesiredSettings* d,
     const DesiredSettings* committed = nullptr) {
     if (!g || !d) return ApplyClockCeilingPlan{};
+    const bool replacesClockDomain = service_request_replaces_lock_domain(d) ||
+        g_linuxScopedCurveCeilingTransition ||
+        (d->resetOcBeforeApply && linux_apply_ceiling_scope_is_replace_profile(d, 0));
+    const bool memoryMayDropFlatten = d->hasMemOffset && committed &&
+        committed->hasLock && committed->lockMode == LOCK_MODE_FLATTEN;
     return apply_clock_ceiling_plan(
-        service_request_replaces_lock_domain(d) || g_linuxScopedCurveCeilingTransition || ((d->resetOcBeforeApply != 0 || g_linuxScopedCurveCeilingTransition) && linux_apply_ceiling_scope_is_replace_profile(d, 0)), d->hasLock != 0,
-        (int)d->lockMode, d->lockMHz,
-        g->nvml.setGpuLockedClocks != nullptr &&
-            g->nvml.resetGpuLockedClocks != nullptr,
+        replacesClockDomain, d->hasLock != 0, (int)d->lockMode, d->lockMHz,
+        g->nvml.setGpuLockedClocks != nullptr && g->nvml.resetGpuLockedClocks != nullptr,
         d->resetOcBeforeApply != 0 || g_linuxScopedCurveCeilingTransition,
         linux_outgoing_state_holds_clocks_down(g, committed),
-        linux_outgoing_ceiling_mhz(g, committed));
+        linux_outgoing_ceiling_mhz(g, committed), memoryMayDropFlatten);
 }
 
 // What arming actually did, so the witness and the phase result can both stop

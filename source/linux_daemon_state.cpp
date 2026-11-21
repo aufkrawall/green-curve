@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/random.h>
 #include <unistd.h>
@@ -77,6 +78,22 @@ static int open_state_directory(const char* path, char* name, size_t nameSize,
         return -1;
     }
     return dirfd;
+}
+
+int linux_daemon_lock_instance(const char* statePath, char* err, size_t errSize) {
+    char name[256] = {};
+    const int dirfd = open_state_directory(statePath, name, sizeof(name), err, errSize);
+    if (dirfd < 0) return -1;
+    int locked;
+    do {
+        locked = flock(dirfd, LOCK_EX | LOCK_NB);
+    } while (locked != 0 && errno == EINTR);
+    if (locked == 0) return dirfd;
+    const int lockError = errno;
+    close(dirfd);
+    gc_snprintf(err, errSize, "cannot acquire daemon instance lock: %s",
+                strerror(lockError));
+    return -1;
 }
 
 // Shared by the operation and startup records: same-directory temp, file fsync,

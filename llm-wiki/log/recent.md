@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-21: Daemon startup and GPU transition review
+
+- Linux boot classifies incoming records before automatic writes and resolves
+  prior ownership before transferring control to a startup profile.
+- A lifetime instance lock protects startup and socket ownership. Every
+  post-replay exit attempts fan handback before unloading the backend.
+- Memory writes that can clear an outgoing flatten require maximum-only clock
+  protection. Flatten itself cannot install a fixed-clock fallback.
+- Linux Reset keeps the outgoing power limit through curve verification and
+  independently verifies both available memory controls.
+
 ## 2026-11-21: Review follow-ups for Linux exports and upgrades
 
 - Linux create-only exports use `linkat` when `renameat2(RENAME_NOREPLACE)`

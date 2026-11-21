@@ -31,7 +31,7 @@
 
 static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool interactive, char* result, size_t resultSize,
-    bool* hardwareWriteAttemptedOut, gc_u32* outcomeSeverityOut, bool releasesCurveCeiling) {
+    bool* hardwareWriteAttemptedOut, gc_u32* outcomeSeverityOut, bool releasesCurveCeiling, bool outgoingOwnedFlatten) {
     if (hardwareWriteAttemptedOut) *hardwareWriteAttemptedOut = false;
     // Any early return below is a refusal or a failure, so ERROR is the correct
     // starting value: a caller that forgets to look at the bool still cannot
@@ -138,7 +138,11 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         set_message(result, resultSize, "This driver's VF offset range cannot flatten the curve");
         return false;
     }
-    ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired, &scalarReview.modeledCeiling);
+    const bool memoryMayDropFlatten = desired->hasMemOffset &&
+        (outgoingOwnedFlatten || g_app.lockMode == LOCK_MODE_FLATTEN) &&
+        apply_plan_mem_offset_write(g_app, (int)(desired_memory_hz(*desired) / 1000));
+    ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling,
+        scalarReview.installedGuardRequired, &scalarReview.modeledCeiling, memoryMayDropFlatten);
     // Records the measured clock and the live load across the whole apply, and
     // ends with the one line the next under-load test needs: did the clamp hold.
     // Destroyed after the guard is declared, so the verdict is emitted before
@@ -1271,11 +1275,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         return apply_recover_clock_failure(clockCeiling, failureDetails, result, resultSize);
     if (!nvapi_verify_graphics_handoff(*desired, scalarReview))
         return apply_recover_clock_failure(clockCeiling, "Named graphics controls changed before clock handover", result, resultSize);
-    // Reset locked clocks only when this request intentionally owns/replaces
-    // the VF/lock domain. A sparse fan/memory/power request must preserve an
-    // external hard lock and an ad-hoc fan update must preserve Green Curve's
-    // existing lock intent. Named HARD->NONE/FLATTEN transitions carry
-    // resetOcBeforeApply, while direct curve/GPU/lock requests own the domain.
+    // Preserve unrelated pins. Release a temporary ceiling only after the
+    // curve has verified, including a VF curve preserved across a VRAM write.
     bool replacesLockDomain =
         service_request_replaces_lock_domain(desired);
     const bool releasesTransitionCeiling =

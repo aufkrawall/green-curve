@@ -118,7 +118,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # hardware write, and must be adopted by the final lock step in both modes.
     require_text(guard_h, "struct ApplyClockCeilingGuard",
                  "the Windows apply owns a scope-bound transition clamp")
-    require_text(apply_cpp, "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired, &scalarReview.modeledCeiling);",
+    require_text(apply_cpp, "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling,",
                  "the Windows apply declares the clamp before its first write")
     require_order_in_operation(
         apply_cpp,
@@ -180,7 +180,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         apply_cpp,
         "static bool apply_desired_settings_service(const DesiredSettings* desired",
         "if (!apply_curve_plan_anchor_is_writable(desired, result, resultSize)) return false;",
-        "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired, &scalarReview.modeledCeiling);",
+        "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling,",
         "the writable-anchor refusal precedes the transition clamp")
     # The Linux daemon refuses a proven curve-plan failure before its
     # transaction can run any phase.
@@ -994,7 +994,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         _p(ctx, "linux_auto_restore_runtime.h"), "static LinuxAutoRestoreOutcome daemon_automatic_restore_write(",
         "!store_daemon_record(LINUX_DAEMON_RECORD_PREPARED", "linux_backend_apply(&g_gpu, &request,",
         "automatic Linux replay prepares a durable recovery journal before hardware writes")
-    require_text(_p(ctx, "linux_daemon.cpp"),
+    require_text(_p(ctx, "linux_daemon_boot.h"),
                  'daemon_enter_uncertain_state("saved named graphics controls were not restored")',
                  "an aborted startup replay retains pending named-control recovery")
     require_order_in_operation(
@@ -1076,17 +1076,17 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         "no automatic write is layered over a crashed instance's owned state")
     linux_daemon_cpp = _p(ctx, "linux_daemon.cpp")
     require_order_in_operation(
-        linux_daemon_cpp, "int linux_daemon_run(const char* configPath)",
+        linux_daemon_cpp, "static int daemon_run_owned(const char* configPath)",
         "daemon_fan_ownership_handback_at_start();",
         "load_startup_policy_at_boot();",
         "the Linux fan handback runs before any startup write")
     require_order_in_operation(
-        linux_daemon_cpp, "int linux_daemon_run(const char* configPath)",
+        linux_daemon_cpp, "static int daemon_run_owned(const char* configPath)",
         "load_auto_restore_guard_at_boot();",
         "daemon_fan_ownership_handback_at_start();",
         "the guard is loaded before a handback give-up latches it")
     require_order_in_operation(
-        linux_daemon_cpp, "int linux_daemon_run(const char* configPath)",
+        linux_daemon_cpp, "static int daemon_run_owned(const char* configPath)",
         "daemon_fan_ownership_handback_at_start();",
         "pl_thread_start(&fanThread, fan_reassert_thread",
         "the Linux fan handback runs before the fan worker exists")
@@ -1132,7 +1132,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         apply_cpp,
         "static bool apply_desired_settings_service(const DesiredSettings* desired,",
         "if (!apply_curve_plan_precheck_before_writes(desired, result, resultSize)) {",
-        "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling, scalarReview.installedGuardRequired, &scalarReview.modeledCeiling);",
+        "ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling,",
         "the curve-plan refusal runs before the first clock write")
     require_order_in_operation(
         apply_cpp,

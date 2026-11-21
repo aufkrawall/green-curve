@@ -173,6 +173,12 @@ static inline bool linux_backend_recovery_binding_matches(const LinuxGpuState* b
 bool linux_backend_capture_current(const LinuxGpuState* gpu, gc_u64 generation, gc_u32 domains,
     const DesiredSettings* ownedFan, HardwareCaptureObservation* output, char* why, size_t size);
 
+struct LinuxResetMemoryPreimage {
+    unsigned int validMask;
+    int p0MHz;
+    int globalMHz;
+};
+
 struct LinuxHardwareSnapshot {
     GraphicsScalarPreimage graphicsPreimage;
     bool valid;
@@ -195,6 +201,7 @@ struct LinuxHardwareSnapshot {
     bool memOffsetExact;
     gc_u32 memOffsetSurface;
     int memOffsetEffectiveMHz;
+    LinuxResetMemoryPreimage resetMemory;
     unsigned int powerLimitmW;
     unsigned int powerDefaultmW;
     int xbarOffsetKhz;
@@ -240,6 +247,9 @@ struct LinuxBackendRefreshResult {
 bool linux_backend_capture_apply_snapshot(LinuxGpuState* g, const DesiredSettings* d,
     LinuxHardwareSnapshot* snapshot, char* err, size_t errSize,
     const DesiredSettings* previous = nullptr, const DesiredSettings* committed = nullptr);
+
+bool linux_backend_capture_reset_snapshot(LinuxGpuState* g, const DesiredSettings* previous,
+    LinuxHardwareSnapshot* snapshot, char* err, size_t errSize);
 
 // Load the driver libraries and initialise the selected GPU (ordinal `index`).
 // On success the curve, masks and ranges are read.  Returns false + message on

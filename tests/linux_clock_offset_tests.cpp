@@ -7,6 +7,7 @@
 
 static void lb_log(const char*, ...) {}
 #include "linux_backend_clock_offsets.h"
+#include "linux_reset_memory.h"
 #include "linux_graphics_offset_control.h"
 #include "linux_graphics_recovery_policy.h"
 
@@ -73,6 +74,49 @@ static void initialize(Driver* d, LinuxGpuState* g) {
     // These setter fixtures start after a successful synthetic journal store.
     // The recovery cases below explicitly exercise denied and fresh permits.
     g->graphicsRecovery.prepared = GRAPHICS_SCALAR_RECOVERY_ALL;
+}
+
+static int reset_memory_and_boot_cases() {
+    Driver driverState{}; LinuxGpuState gpu{};
+    initialize(&driverState, &gpu);
+    gpu.nvml.setClockOffsets = [](nvmlDevice_t, nvmlClockOffset_t*) -> nvmlReturn_t {
+        return NVML_ERROR_NOT_SUPPORTED;
+    };
+    // Apply reaches the global control even though P0 can be read.
+    if (!nvml_set_clock_offset(&gpu, NVML_CLOCK_MEM, 800) ||
+        driverState.globalValue != 800 || driverState.p0Value != 0) return 9200;
+    gpu.nvml.setClockOffsets = set_p0;
+    LinuxResetMemoryPreimage before{};
+    if (!linux_capture_reset_memory(&gpu, 0, &before) ||
+        before.globalMHz != 800 || before.p0MHz != 0) return 9201;
+    driverState.globalWriteClobbersP0 = true;
+    if (!linux_write_reset_memory(&gpu, {before.validMask, 0, 0}) ||
+        driverState.globalValue || driverState.p0Value) return 9202;
+    if (!linux_write_reset_memory(&gpu, before) ||
+        driverState.globalValue != 800 || driverState.p0Value) return 9203;
+    driverState.failGlobalRead = true;
+    if (linux_capture_reset_memory(&gpu, CLOCK_OFFSET_SURFACE_GLOBAL, &before)) return 9204;
+    if (!linux_capture_reset_memory(&gpu, 0, &before) ||
+        before.validMask != linux_reset_memory_bit(CLOCK_OFFSET_SURFACE_P0)) return 9205;
+
+    LinuxDaemonStateRecord saved{};
+    const gc_u32 unsettled[] = {LINUX_DAEMON_RECORD_PREPARED, LINUX_DAEMON_RECORD_UNCERTAIN};
+    for (gc_u32 state : unsettled) {
+        saved.state = state;
+        if (linux_daemon_boot_action(SERVICE_STARTUP_POLICY_PROFILE, LINUX_DAEMON_STATE_LOADED,
+                saved) != LINUX_DAEMON_BOOT_RECOVERY) return 9206;
+    }
+    saved.state = LINUX_DAEMON_RECORD_ACTIVE;
+    saved.graphicsControlSurfaces = GRAPHICS_SCALAR_RECOVERY_GLOBAL;
+    if (linux_daemon_boot_action(SERVICE_STARTUP_POLICY_PROFILE, LINUX_DAEMON_STATE_LOADED,
+            saved) != LINUX_DAEMON_BOOT_PROFILE ||
+        linux_daemon_boot_action(SERVICE_STARTUP_POLICY_NONE, LINUX_DAEMON_STATE_LOADED,
+            saved) != LINUX_DAEMON_BOOT_RECOVERY) return 9207;
+    if (linux_daemon_boot_action(SERVICE_STARTUP_POLICY_PROFILE, LINUX_DAEMON_STATE_IO_ERROR,
+            saved) != LINUX_DAEMON_BOOT_RECOVERY ||
+        linux_daemon_boot_action(SERVICE_STARTUP_POLICY_PROFILE, LINUX_DAEMON_STATE_MISSING,
+            saved) != LINUX_DAEMON_BOOT_PROFILE) return 9208;
+    return 0;
 }
 
 static int graphics_recovery_cases() {
@@ -289,6 +333,7 @@ static int graphics_control_cases() {
 }
 
 int run_linux_clock_offset_tests() {
+    if (int failure = reset_memory_and_boot_cases()) return failure;
     if (int failure = linux_graphics_handoff_cases()) return failure;
     if (int failure = graphics_recovery_cases()) return failure;
     {

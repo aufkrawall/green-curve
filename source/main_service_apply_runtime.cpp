@@ -155,8 +155,11 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
     set_last_apply_phase("service apply: apply desired settings");
     bool hardwareWriteAttempted = false;
     gc_u32 backendSeverity = (gc_u32)SERVICE_OUTCOME_SEVERITY_ERROR;
+    const bool outgoingOwnedFlatten = g_serviceHasActiveDesired &&
+        g_serviceActiveDesired.hasLock && g_serviceActiveDesired.lockMode == LOCK_MODE_FLATTEN;
     bool ok = apply_desired_settings_service(desired, interactive,
-        result, resultSize, &hardwareWriteAttempted, &backendSeverity, scopedPlan.releasesCurveCeiling);
+        result, resultSize, &hardwareWriteAttempted, &backendSeverity,
+        scopedPlan.releasesCurveCeiling, outgoingOwnedFlatten);
     if (writeAttemptedOut) *writeAttemptedOut = hardwareWriteAttempted;
     if (outcomeSeverityOut) *outcomeSeverityOut = backendSeverity;
     if (ok) {

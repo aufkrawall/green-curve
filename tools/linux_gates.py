@@ -578,7 +578,7 @@ def check_startup_policy(ctx, require_text, forbid_text):
                  "the startup policy uses the shared atomic root-owned store")
     require_text(policy_h, "g_startupPolicy.mode = SERVICE_STARTUP_POLICY_NONE;",
                  "an unreadable startup policy stops the boot write instead of guessing")
-    require_text(daemon_cpp, "g_startupPolicy.mode != SERVICE_STARTUP_POLICY_RESTORE_LAST",
+    require_text(_p(ctx, "linux_graphics_recovery_policy.h"), "mode == SERVICE_STARTUP_POLICY_RESTORE_LAST && load == LINUX_DAEMON_STATE_LOADED",
                  "a non-default policy suppresses the committed-intent replay")
     # The in-memory copy is assigned only on the success arm, after the store.
     ctx.require_order_in_operation(
@@ -868,16 +868,31 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
                  "bool nextOwnsVf = service_intent_owns_vf_cleanup(nextIntent);",
                  "a profile transition uses the same ownership predicate on both sides")
     require_text(runtime_h, "service_build_full_restore_request(&committed, &request)",
-                 "every unattended Linux write is built by the shared restore-request builder")
+                 "restore-last and resume use the shared replay-request builder")
+    require_text(runtime_h, "service_build_profile_transition_request(previous, &committed, &request)",
+                 "startup profile selection uses the shared ownership transition builder")
+    require_text(runtime_h, "previous, &committed, outcome.message, sizeof(outcome.message)",
+                 "the automatic hardware transaction receives its outgoing intent")
     # The three callers must not hand-roll a request around it again.
     forbid_text(startup_h, "linux_backend_apply(",
                 "the profile boot apply goes through the shared unattended-write path")
     require_text(startup_h, "LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE",
                  "the profile boot apply is a typed automatic-restore trigger")
-    require_text(daemon_cpp, "LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST",
+    require_text(_p(ctx, "linux_daemon_boot.h"), "LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST",
                  "the restore-last replay is a typed automatic-restore trigger")
     require_text(runtime_h, "LINUX_AUTO_RESTORE_TRIGGER_RESUME",
                  "the resume restore is a typed automatic-restore trigger")
+
+    boot_h = _p(ctx, "linux_daemon_boot.h")
+    ctx.require_order_in_operation(boot_h, "static void daemon_apply_boot_policy()",
+        "linux_daemon_state_load(", "linux_daemon_boot_action(",
+        "the daemon classifies its incoming journal before dispatching a startup write")
+    ctx.require_order_in_operation(daemon_cpp, "int linux_daemon_run(const char* configPath)",
+        "linux_daemon_lock_instance(", "daemon_run_owned(configPath)",
+        "the daemon acquires its lifetime lock before startup writes or socket replacement")
+    ctx.require_order_in_operation(daemon_cpp, "static int daemon_run_owned(const char* configPath)",
+        "daemon_release_fan_to_driver();", "linux_backend_shutdown(&g_gpu);",
+        "the common teardown hands fans back before unloading the backend")
 
     # --- the crash-loop guard ----------------------------------------------
     require_text(policy_h, "LINUX_AUTO_RESTORE_MAX_START_ATTEMPTS = 3",
@@ -1106,9 +1121,9 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
     # The poll loop must stay event-driven when no watchdog is configured.
     require_text(serve_h, "watchdogIntervalMs ? (int)watchdogIntervalMs : -1",
                  "without a watchdog the accept loop still waits forever")
-    require_text(daemon_cpp,
-                 "if (!pl_thread_start(&fanThread, fan_reassert_thread, nullptr)) {",
-                 "a daemon that cannot start its fan worker refuses to serve")
+    ctx.require_order_in_operation(daemon_cpp, "static int daemon_run_owned(const char* configPath)",
+        "if (workerStarted) {", "daemon_open_listener(&listener)",
+        "a daemon that cannot start its fan worker refuses to serve")
     require_text(daemon_cpp, "clear_auto_restore_attempts_on_clean_stop();",
                  "an orderly stop clears the per-boot attempt counter")
 
@@ -1221,7 +1236,7 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
                  "startup binding captures the requested adapter rather than the telemetry adapter")
     require_text(startup_h, "(GpuLocationRole)g_startupPolicy.targetLocationRole",
                  "startup restore and content refresh retain the stored role")
-    require_text(_p(ctx, "linux_daemon.cpp"), "(GpuLocationRole)saved.targetLocationRole",
+    require_text(_p(ctx, "linux_daemon_boot.h"), "(GpuLocationRole)saved.targetLocationRole",
                  "restore-last passes the committed location role")
     require_text(_p(ctx, "linux_daemon.cpp"),
                  "memset(&g_activeTarget, 0, sizeof(g_activeTarget));\n"

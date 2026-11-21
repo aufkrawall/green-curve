@@ -306,7 +306,8 @@ static bool auto_restore_prepare_backend(const GpuAdapterInfo* target,
 // becomes, and what the failure means.
 static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     LinuxAutoRestoreTrigger trigger, const GpuAdapterInfo* target,
-    const DesiredSettings* intent, GpuLocationRole role, const LinuxGpuUuid* uuid, gc_u32 graphicsCoverage = 0) {
+    const DesiredSettings* intent, GpuLocationRole role, const LinuxGpuUuid* uuid,
+    const LinuxDaemonStateRecord* previousRecord = nullptr) {
     LinuxAutoRestoreOutcome outcome = {};
     if (!target || !intent) {
         gc_strlcpy(outcome.message, sizeof(outcome.message),
@@ -355,9 +356,24 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     if (role != GPU_LOCATION_ROLE_REQUIRED)
         role = linux_gpu_location_role_for_selection(&g_gpu.selectedGpu,
             g_gpu.adapters, g_gpu.adapterCount);
+    const bool bootProfile = trigger == LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE;
+    if (bootProfile && previousRecord) {
+        const auto previousSelection = linux_gpu_restore_selection(&previousRecord->targetGpu,
+            (GpuLocationRole)previousRecord->targetLocationRole, g_gpu.adapters, g_gpu.adapterCount,
+            &previousRecord->targetUuid, g_gpu.adapterUuids, nullptr);
+        if (previousSelection.index < 0 ||
+            (unsigned int)previousSelection.index != g_gpu.selectedAdapterIndex) {
+            gc_strlcpy(outcome.message, sizeof(outcome.message),
+                "Reset the previous GPU before applying a startup profile to a different or unresolved GPU");
+            return outcome;
+        }
+    }
+    const DesiredSettings* previous = previousRecord ? &previousRecord->desired
+        : bootProfile ? nullptr : intent;
     GraphicsScalarOperation graphicsOperation(g_gpu.graphicsRecovery);
+    const gc_u32 graphicsCoverage = previousRecord ? previousRecord->graphicsControlSurfaces : 0;
     if (graphicsCoverage) {
-        const gc_u32 ownedSurface = desired_named_graphics_surface(*intent);
+        const gc_u32 ownedSurface = desired_named_graphics_surface(*previous);
         if (graphicsCoverage & ~graphics_scalar_recovery_bit(ownedSurface)) {
             daemon_enter_uncertain_state("automatic restore has unresolved named graphics controls");
             gc_strlcpy(outcome.message, sizeof(outcome.message), "Named graphics recovery requires explicit Reset");
@@ -413,19 +429,25 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     }
     validate_desired_settings_for_ipc(&committed);
 
-    // The request is the intent PLUS the reset-to-stock instruction, exactly as
-    // the Windows standby/driver-recovery restore builds it.  `committed` stays
-    // the ownership declaration; only the request carries the transaction flag.
+    // Profile selection transfers ownership from the previous committed intent.
+    // Restore-last and resume replay the existing ownership declaration.
     DesiredSettings request = {};
-    if (!service_build_full_restore_request(&committed, &request)) {
-        gc_strlcpy(outcome.message, sizeof(outcome.message),
-                   "could not build the restore request");
+    const bool requestBuilt = bootProfile
+        ? service_build_profile_transition_request(previous, &committed, &request)
+        : service_build_full_restore_request(&committed, &request);
+    if (!requestBuilt) {
+        gc_strlcpy(outcome.message, sizeof(outcome.message), "could not build the restore request");
+        return outcome;
+    }
+    if (request.applicationScope != DESIRED_SCOPE_LEGACY &&
+        !daemon_resolve_scoped_ownership(previous, &request, &committed, err, sizeof(err))) {
+        gc_strlcpy(outcome.message, sizeof(outcome.message), err);
         return outcome;
     }
     LinuxHardwareSnapshot before = {};
     char captureErr[256] = {};
     if (!linux_backend_capture_apply_snapshot(&g_gpu, &request, &before, captureErr,
-                                        sizeof(captureErr))) {
+                                        sizeof(captureErr), previous, &committed)) {
         gc_snprintf(outcome.message, sizeof(outcome.message),
                     "could not capture hardware state before automatic "
                     "restore: %s",
@@ -448,9 +470,9 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
              linux_auto_restore_trigger_name(trigger), outcome.message);
         return outcome;
     }
-    dlog("daemon auto-restore: %s writing intent [resetBaseline=%d curvePoints=%d "
+    dlog("daemon auto-restore: %s writing intent [previous=%d resetBaseline=%d curvePoints=%d "
          "gpuOffset=%d memOffset=%d powerPct=%d lock=%d lockMode=%d fanMode=%d fanPct=%d]\n",
-         linux_auto_restore_trigger_name(trigger),
+         linux_auto_restore_trigger_name(trigger), previous ? 1 : 0,
          request.resetOcBeforeApply ? 1 : 0,
          service_desired_curve_point_count(&request),
          request.hasGpuOffset ? request.gpuOffsetMHz : 0,
@@ -462,7 +484,7 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
 
     outcome.attempted = true;
     LinuxMutationResult mutation = linux_backend_apply(&g_gpu, &request,
-        &committed, &committed, outcome.message, sizeof(outcome.message));
+        previous, &committed, outcome.message, sizeof(outcome.message));
     if (!mutation.success) {
         outcome.success = false;
         char stateErr[256] = {};

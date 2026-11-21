@@ -77,6 +77,7 @@ enum ApplyClockCeilingReason {
     // final curve peak before all negative offsets land. This is strict even
     // on devices where ordinary single-batch VF writes need no clamp.
     APPLY_CEILING_REASON_MODELED_CURVE_TRANSITION,
+    APPLY_CEILING_REASON_MEMORY_DROPS_FLATTEN,
 };
 
 static inline const char* apply_clock_ceiling_reason_name(
@@ -88,6 +89,8 @@ static inline const char* apply_clock_ceiling_reason_name(
             return "reset-to-stock removes the outgoing cap";
         case APPLY_CEILING_REASON_MODELED_CURVE_TRANSITION:
             return "intermediate controls exceed the modeled final curve";
+        case APPLY_CEILING_REASON_MEMORY_DROPS_FLATTEN:
+            return "a memory write can clear the outgoing flattened curve";
         default: return "none";
     }
 }
@@ -120,10 +123,7 @@ struct ApplyClockCeilingPlan {
     // Whether the (ceiling, ceiling) fallback form may be used when the driver
     // refuses the open-ended one.  The symmetric form adds a FLOOR, so it is
     // only admissible at a value both the outgoing and the incoming state
-    // already permit -- true when the request names its own lock, false for a
-    // clamp derived purely from the outgoing state, where forcing an unpinned
-    // profile's idle clock up would be a new restriction the user never asked
-    // for.
+    // already permit. Only a HARD request authorizes a clock floor.
     bool symmetricFallbackAllowed;
     // The locked-clock ENTRY POINTS are missing, so this driver exposes no
     // locked-clock control at all and nothing was or could be written.  Narrow
@@ -136,8 +136,8 @@ struct ApplyClockCeilingPlan {
 
 // `requestOwnsClockDomain` is the caller's existing "this request replaces the
 // VF/lock domain" answer (Windows: service_request_replaces_lock_domain()).  A
-// sparse fan/memory/power request writes nothing that can raise a clock, so it
-// neither needs nor may install a clamp on a domain it does not own.
+// sparse fan or power request does not own the clock domain. A memory
+// write can also need protection if it can clear an outgoing VF flatten.
 //
 // The three trailing arguments describe the state the apply is leaving, and
 // default to "nothing known", which reproduces the original lock-only
@@ -161,18 +161,18 @@ static inline ApplyClockCeilingPlan apply_clock_ceiling_plan(
     bool requestOwnsClockDomain, bool requestHasLock, int lockMode,
     unsigned int lockMHz, bool nvmlLockedClocksAvailable,
     bool resetsToStock = false, bool outgoingStateHoldsClocksDown = false,
-    unsigned int outgoingCeilingMHz = 0) {
+    unsigned int outgoingCeilingMHz = 0, bool memoryMayDropFlatten = false) {
     ApplyClockCeilingPlan plan = {};
-    if (!requestOwnsClockDomain) return plan;
+    if (!requestOwnsClockDomain && !memoryMayDropFlatten) return plan;
 
     const bool incomingLock =
         requestHasLock && lockMode != LOCK_MODE_NONE && lockMHz > 0;
     const bool resetWillUncap = resetsToStock && outgoingStateHoldsClocksDown;
-    if (!incomingLock && !resetWillUncap) return plan;
+    if (!incomingLock && !resetWillUncap && !memoryMayDropFlatten) return plan;
 
     plan.required = true;
     plan.clampControlAbsent = !nvmlLockedClocksAvailable;
-    plan.reason = incomingLock
+    plan.reason = memoryMayDropFlatten ? APPLY_CEILING_REASON_MEMORY_DROPS_FLATTEN : incomingLock
         ? (lockMode == LOCK_MODE_HARD ? APPLY_CEILING_REASON_REQUESTED_LOCK
                                      : APPLY_CEILING_REASON_REQUESTED_FLATTEN)
         : APPLY_CEILING_REASON_RESET_DROPS_CAP;
@@ -189,7 +189,7 @@ static inline ApplyClockCeilingPlan apply_clock_ceiling_plan(
     plan.ceilingMHz = bound;
     plan.finalPinIsCeiling =
         incomingLock && lockMode == LOCK_MODE_HARD && bound == lockMHz;
-    plan.symmetricFallbackAllowed = incomingLock;
+    plan.symmetricFallbackAllowed = incomingLock && lockMode == LOCK_MODE_HARD && !memoryMayDropFlatten;
     plan.arm = nvmlLockedClocksAvailable;
     return plan;
 }
@@ -250,10 +250,7 @@ enum ApplyClockCeilingArmResult {
     // transient driver state).  A retry can change a REFUSED; nothing a retry
     // can do changes an UNSUPPORTED.
     //
-    // On the REFUSAL path the stronger claim does hold, and the user-facing
-    // message may make it: UNSUPPORTED only refuses when the request names its
-    // own lock, which is exactly when the symmetric form is permitted, so both
-    // forms were tried and both answered NOT_SUPPORTED.
+    // Diagnostics describe the forms this request was permitted to use.
     APPLY_CEILING_ARM_UNSUPPORTED,
 };
 

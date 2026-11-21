@@ -155,9 +155,24 @@ static int run_install_files_fixture(const char* path) {
     return 0;
 }
 
+static bool daemon_instance_lock_fixture(const char* statePath) {
+    char why[192]{};
+    const int first = linux_daemon_lock_instance(statePath, why, sizeof(why));
+    if (first < 0) return false;
+    const int duplicate = linux_daemon_lock_instance(statePath, why, sizeof(why));
+    const bool duplicateRefused = duplicate < 0 && strstr(why, "instance lock");
+    if (duplicate >= 0) close(duplicate);
+    close(first);
+    const int replacement = linux_daemon_lock_instance(statePath, why, sizeof(why));
+    if (replacement < 0) return false;
+    close(replacement);
+    return duplicateRefused;
+}
+
 int main() {
     Scratch scratch;
     if (!*scratch.path) return 1;
+    if (!daemon_instance_lock_fixture(scratch.path)) return 25;
     GpuAdapterInfo gpu{}; gpu.valid = gpu.pciInfoValid = 1;
     gpu.pciDomain = 2; gpu.pciBus = 3;
     DesiredSettings desired{}; desired.hasGpuOffset = 1; desired.gpuOffsetMHz = -17;
@@ -200,6 +215,6 @@ int main() {
     if (!write_fixture(scratch.path, old) || chmod(scratch.path, 0644)) return 10;
     if (linux_daemon_state_load(scratch.path, &loaded, why, sizeof(why), &migrated) != LINUX_DAEMON_STATE_INVALID_REMOVED ||
         access(scratch.path, F_OK) == 0) return 11;
-    puts("Linux daemon state files: frozen migration, durable coverage, invalid-store preservation and rejection passed");
+    puts("Linux daemon state files: instance lock, frozen migration, durable coverage and invalid-record rejection passed");
     return run_install_files_fixture(scratch.path);
 }

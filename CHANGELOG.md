@@ -56,7 +56,7 @@ Curve editing, profile transfer and capture improve.
 ### Fixed
 
 - **Windows cooling:** verify Auto on every fan, retain cooling if Reset fails, and hand fans back on service stop.
-- **Linux Reset recovery:** restore settings under the prior clock bound after a failure.
+- **Linux Reset:** restore stock clocks before stock power and clear both memory controls. Failures recover under the prior clock bound.
 - **Linux fanless GPUs:** Reset restores clocks without requiring fan control.
 - **Linux upgrades:** recover the prior daemon after a failed upgrade.
 - **Linux installs:** verify the installed files are root-owned and refresh service enablement on upgrade.
@@ -64,7 +64,9 @@ Curve editing, profile transfer and capture improve.
 - **Profile transfer:** retain scope, graphics controls and repeated-voltage point bindings.
 - **Windows advanced edits:** preserve omitted external settings.
 - **Windows power reset:** restore defaults even when displaying 100%.
-- **Linux startup:** check all slots against their assigned GPU.
+- **Linux startup:** check each slot's GPU, honor recovery, preserve clock limits during switches, and prevent duplicate daemons.
+- **Linux startup cooling:** return fans to the driver when the daemon cannot start.
+- **Clock transitions:** protect flattened curves during VRAM edits without forcing a fixed clock.
 - **TUI numeric edits:** replace precise values.
 - **Unicode banks:** preserve text and encoding.
 - **Unsaved drafts:** confirm replacement, including invalid input.
