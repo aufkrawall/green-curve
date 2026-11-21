@@ -3,6 +3,7 @@
 // Included by linux_daemon.cpp; do not compile separately.
 
 #include "linux_service_install_policy.h"
+#include "linux_service_install_files.h"
 #include "linux_service_sandbox.h"
 #include "linux_socket_path_permissions.h"
 
@@ -95,21 +96,16 @@ static bool write_all_file(int fd, const void* buf, size_t len) {
     return true;
 }
 
-static bool stage_service_binary(const char* sourceExe, char* err, size_t errSize) {
-    if (!validate_install_parent_chain(err, errSize)) return false;
-
-    char tempPath[4096] = {};
-    gc_snprintf(tempPath, sizeof(tempPath), "%s.tmp.%ld", GC_INSTALL_BIN, (long)getpid());
-    unlink(tempPath);
-
+static bool stage_service_binary(LinuxInstallFile& file, const char* sourceExe,
+                                 char* err, size_t errSize) {
     int in = open(sourceExe, O_RDONLY | O_CLOEXEC);
     if (in < 0) {
         gc_snprintf(err, errSize, "cannot open source executable %s: %s", sourceExe, strerror(errno));
         return false;
     }
-    int out = open(tempPath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0755);
+    int out = file.stage(0755);
     if (out < 0) {
-        gc_snprintf(err, errSize, "cannot create staged executable %s: %s", tempPath, strerror(errno));
+        gc_snprintf(err, errSize, "cannot create staged executable %s: %s", file.path(), strerror(errno));
         close(in);
         return false;
     }
@@ -128,27 +124,12 @@ static bool stage_service_binary(const char* sourceExe, char* err, size_t errSiz
         break;
     }
     if (fsync(out) != 0) ok = false;
-    if (fchown(out, 0, 0) != 0) ok = false;
-    if (fchmod(out, 0755) != 0) ok = false;
     if (close(out) != 0) ok = false;
     close(in);
     if (!ok) {
-        gc_snprintf(err, errSize, "failed staging executable %s: %s", tempPath, strerror(errno));
-        unlink(tempPath);
-        return false;
+        gc_snprintf(err, errSize, "failed staging executable %s", file.path());
     }
-    if (rename(tempPath, GC_INSTALL_BIN) != 0) {
-        gc_snprintf(err, errSize, "cannot install %s: %s", GC_INSTALL_BIN, strerror(errno));
-        unlink(tempPath);
-        return false;
-    }
-    if (!root_owned_nonwritable_path(GC_INSTALL_BIN, false, err, errSize)) return false;
-    int dirfd = open(GC_INSTALL_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (dirfd >= 0) {
-        fsync(dirfd);
-        close(dirfd);
-    }
-    return validate_install_parent_chain(err, errSize);
+    return ok;
 }
 
 static int run_root_command(const char* path, char* const argv[]) {
@@ -175,6 +156,8 @@ static int run_systemctl(char* const argv[]) {
 
 struct LinuxServiceActivationContext {
     ServiceResponse verifiedResponse;
+    bool wasEnabled;
+    bool resumeWasEnabled;
 };
 
 static bool run_service_activation_step(
@@ -190,12 +173,14 @@ static bool run_service_activation_step(
             break;
         }
         case LINUX_SERVICE_STEP_ENABLE: {
+            if (context->wasEnabled) return true;
             char* args[] = {(char*)"systemctl", (char*)"enable",
                             (char*)"greencurve.service", nullptr};
             commandResult = run_systemctl(args);
             break;
         }
         case LINUX_SERVICE_STEP_ENABLE_RESUME: {
+            if (context->resumeWasEnabled) return true;
             char* args[] = {(char*)"systemctl", (char*)"enable",
                             (char*)GC_RESUME_UNIT_NAME, nullptr};
             commandResult = run_systemctl(args);
@@ -320,16 +305,10 @@ static bool run_service_activation_step(
 // being ordered after it is a real signal and not a timing guess; the
 // ConditionPathExists on the socket means a machine whose daemon is not running
 // SKIPS this unit instead of failing it once per wake.
-static bool write_resume_unit(char* err, size_t errSize) {
-    int fd = open(GC_RESUME_UNIT_PATH,
-                  O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0644);
-    struct stat unitStat = {};
-    if (fd < 0 || fstat(fd, &unitStat) != 0 || !S_ISREG(unitStat.st_mode) ||
-        unitStat.st_nlink != 1 || fchown(fd, 0, 0) != 0 ||
-        fchmod(fd, 0644) != 0) {
-        gc_snprintf(err, errSize, "cannot safely write %s: %s",
-                    GC_RESUME_UNIT_PATH, strerror(errno));
-        if (fd >= 0) close(fd);
+static bool stage_resume_unit(LinuxInstallFile& file, char* err, size_t errSize) {
+    int fd = file.stage(0644);
+    if (fd < 0) {
+        gc_snprintf(err, errSize, "cannot stage %s: %s", file.path(), strerror(errno));
         return false;
     }
     FILE* stream = fdopen(fd, "w");
@@ -364,56 +343,23 @@ static bool write_resume_unit(char* err, size_t errSize) {
         gc_strlcpy(err, errSize, "failed to commit the resume systemd unit");
         return false;
     }
-    dlog("service-install: wrote %s (resume restore after suspend)\n",
+    dlog("service-install: staged %s (resume restore after suspend)\n",
          GC_RESUME_UNIT_PATH);
     return true;
 }
 
-int linux_service_install(char* err, size_t errSize,
-                          ServiceResponse* verifiedResponse) {
-    if (err && errSize) err[0] = 0;
-    if (geteuid() != 0) {
-        gc_strlcpy(err, errSize, "--service-install requires root (use sudo)");
-        return 1;
-    }
-    char exe[4096] = {};
-    // flawfinder: ignore -- kernel-owned /proc/self/exe, bounded and NUL-terminated below.
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n <= 0) { gc_strlcpy(err, errSize, "cannot resolve /proc/self/exe"); return 1; }
-    exe[n] = 0;
-    if (!stage_service_binary(exe, err, errSize)) return 1;
-
-    fprintf(stderr, "The greencurve group grants trusted GPU administration, including persistent boot settings. Removing membership does not clear saved boot settings; clear those separately.\n");
-    // Admin group creation and verification are part of the authorization
-    // boundary. Installation must not claim success without them.
-    char* groupArgs[] = {(char*)"groupadd", (char*)"-f", (char*)"greencurve", nullptr};
-    int groupResult = run_root_command("/usr/sbin/groupadd", groupArgs);
-    if (groupResult == 127)
-        groupResult = run_root_command("/sbin/groupadd", groupArgs);
-    if (groupResult != 0) {
-        gc_snprintf(err, errSize,
-            "groupadd -f greencurve failed with exit code %d", groupResult);
-        return 1;
-    }
-    struct group* serviceGroup = getgrnam("greencurve");
-    if (!serviceGroup || !serviceGroup->gr_name ||
-        strcmp(serviceGroup->gr_name, "greencurve") != 0) {
-        gc_strlcpy(err, errSize,
-            "greencurve group verification failed after groupadd");
-        return 1;
-    }
-
-    int unitFd = open(GC_UNIT_PATH, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0644);
-    struct stat unitStat = {};
-    if (unitFd < 0 || fstat(unitFd, &unitStat) != 0 ||
-        !S_ISREG(unitStat.st_mode) || unitStat.st_nlink != 1 ||
-        fchown(unitFd, 0, 0) != 0 || fchmod(unitFd, 0644) != 0) {
-        gc_snprintf(err, errSize, "cannot safely write %s: %s", GC_UNIT_PATH, strerror(errno));
-        if (unitFd >= 0) close(unitFd);
-        return 1;
+static bool stage_daemon_unit(LinuxInstallFile& file, char* err, size_t errSize) {
+    int unitFd = file.stage(0644);
+    if (unitFd < 0) {
+        gc_snprintf(err, errSize, "cannot stage %s: %s", file.path(), strerror(errno));
+        return false;
     }
     FILE* f = fdopen(unitFd, "w");
-    if (!f) { close(unitFd); gc_strlcpy(err, errSize, "cannot open systemd unit stream"); return 1; }
+    if (!f) {
+        close(unitFd);
+        gc_strlcpy(err, errSize, "cannot open systemd unit stream");
+        return false;
+    }
     int unitWritten = fprintf(f,
         "[Unit]\n"
         "Description=Green Curve NVIDIA GPU control daemon\n"
@@ -461,20 +407,136 @@ int linux_service_install(char* err, size_t errSize,
         GC_INSTALL_BIN);
     bool unitOk = unitWritten > 0 && fflush(f) == 0 && fsync(unitFd) == 0;
     if (fclose(f) != 0) unitOk = false;
-    if (!unitOk) { gc_strlcpy(err, errSize, "failed to commit systemd unit"); return 1; }
+    if (!unitOk) gc_strlcpy(err, errSize, "failed to stage systemd unit");
+    return unitOk;
+}
 
-    if (!write_resume_unit(err, errSize)) return 1;
+static int service_install_unit_command(const char* command, const char* unit = nullptr) {
+    char* args[] = {(char*)"systemctl", const_cast<char*>(command),
+        const_cast<char*>(unit), nullptr};
+    return run_systemctl(args);
+}
 
-    LinuxServiceActivationContext activation = {};
-    LinuxServiceActivationResult activationResult =
-        linux_service_run_activation(run_service_activation_step,
-                                     &activation, err, errSize);
-    if (!activationResult.success) {
-        if (err && errSize && !err[0]) {
-            gc_snprintf(err, errSize, "%s failed",
-                linux_service_activation_step_name(activationResult.failedStep));
-        }
+static bool service_install_unit_state(const char* query, const char* unit, bool* set,
+                                       char* err, size_t errSize) {
+    const int result = service_install_unit_command(query, unit);
+    *set = result == 0;
+    if (result == 0 || result == 1 || result == 3 || result == 4) return true;
+    gc_snprintf(err, errSize, "systemctl %s %s failed with exit code %d", query, unit, result);
+    return false;
+}
+
+static bool service_install_restore_files(LinuxInstallFile* const* files, size_t count) {
+    bool restored = true;
+    while (count > 0) {
+        LinuxInstallFile& file = *files[--count];
+        if (file.restore()) continue;
+        dlog("service-install: rollback of %s failed (%s), backup=%s\n",
+             file.path(), strerror(errno), file.backup());
+        restored = false;
+    }
+    return restored;
+}
+
+int linux_service_install(char* err, size_t errSize,
+                          ServiceResponse* verifiedResponse) {
+    if (err && errSize) err[0] = 0;
+    if (geteuid() != 0) {
+        gc_strlcpy(err, errSize, "--service-install requires root (use sudo)");
         return 1;
+    }
+    char exe[4096] = {};
+    // flawfinder: ignore -- kernel-owned /proc/self/exe, bounded and NUL-terminated below.
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0) { gc_strlcpy(err, errSize, "cannot resolve /proc/self/exe"); return 1; }
+    exe[n] = 0;
+    if (!validate_install_parent_chain(err, errSize) ||
+        !root_owned_nonwritable_path("/etc", true, err, errSize) ||
+        !root_owned_nonwritable_path("/etc/systemd", true, err, errSize) ||
+        !root_owned_nonwritable_path("/etc/systemd/system", true, err, errSize)) return 1;
+    LinuxServiceInstallLock installLock(GC_INSTALL_DIR);
+    if (!installLock.locked()) {
+        gc_snprintf(err, errSize, "cannot lock daemon installation: %s", strerror(errno));
+        return 1;
+    }
+
+    fprintf(stderr, "The greencurve group grants trusted GPU administration, including persistent boot settings. Removing membership does not clear saved boot settings; clear those separately.\n");
+    // Admin group creation and verification are part of the authorization
+    // boundary. Installation must not claim success without them.
+    char* groupArgs[] = {(char*)"groupadd", (char*)"-f", (char*)"greencurve", nullptr};
+    int groupResult = run_root_command("/usr/sbin/groupadd", groupArgs);
+    if (groupResult == 127)
+        groupResult = run_root_command("/sbin/groupadd", groupArgs);
+    if (groupResult != 0) {
+        gc_snprintf(err, errSize,
+            "groupadd -f greencurve failed with exit code %d", groupResult);
+        return 1;
+    }
+    struct group* serviceGroup = getgrnam("greencurve");
+    if (!serviceGroup || !serviceGroup->gr_name ||
+        strcmp(serviceGroup->gr_name, "greencurve") != 0) {
+        gc_strlcpy(err, errSize,
+            "greencurve group verification failed after groupadd");
+        return 1;
+    }
+
+    LinuxInstallFile binary(GC_INSTALL_BIN);
+    LinuxInstallFile unit(GC_UNIT_PATH);
+    LinuxInstallFile resume(GC_RESUME_UNIT_PATH);
+    LinuxInstallFile* const files[] = {&binary, &unit, &resume};
+    if (!stage_service_binary(binary, exe, err, errSize) ||
+        !stage_daemon_unit(unit, err, errSize) ||
+        !stage_resume_unit(resume, err, errSize)) return 1;
+
+    bool wasActive = false, wasEnabled = false, resumeWasEnabled = false;
+    if (!service_install_unit_state("is-active", "greencurve.service", &wasActive, err, errSize) ||
+        !service_install_unit_state("is-enabled", "greencurve.service", &wasEnabled, err, errSize) ||
+        !service_install_unit_state("is-enabled", GC_RESUME_UNIT_NAME, &resumeWasEnabled, err, errSize))
+        return 1;
+    for (auto* file : files) {
+        if (!file->save_previous()) {
+            gc_snprintf(err, errSize, "cannot preserve %s: %s", file->path(), strerror(errno));
+            return 1;
+        }
+    }
+    for (auto* file : files) {
+        if (file->publish()) continue;
+        const int error = errno;
+        const bool restored = service_install_restore_files(files, sizeof(files) / sizeof(files[0]));
+        gc_snprintf(err, errSize, "cannot publish %s: %s; file rollback %s",
+            file->path(), strerror(error), restored ? "completed" : "incomplete");
+        return 1;
+    }
+
+    LinuxServiceActivationContext activation = {{}, wasEnabled, resumeWasEnabled};
+    const LinuxServiceActivationResult activationResult =
+        linux_service_run_activation(run_service_activation_step, &activation, err, errSize);
+    if (!activationResult.success) {
+        char activationError[512] = {};
+        gc_strlcpy(activationError, sizeof(activationError), err && err[0]
+            ? err : linux_service_activation_step_name(activationResult.failedStep));
+        const auto step = activationResult.failedStep;
+        bool restored = true;
+        if (step >= LINUX_SERVICE_STEP_RESTART)
+            restored &= service_install_unit_command("stop", "greencurve.service") == 0;
+        if (step >= LINUX_SERVICE_STEP_ENABLE_RESUME && !resumeWasEnabled)
+            restored &= service_install_unit_command("disable", GC_RESUME_UNIT_NAME) == 0;
+        if (step >= LINUX_SERVICE_STEP_ENABLE && !wasEnabled)
+            restored &= service_install_unit_command("disable", "greencurve.service") == 0;
+        const bool filesRestored = service_install_restore_files(files, sizeof(files) / sizeof(files[0]));
+        const bool reloaded = service_install_unit_command("daemon-reload") == 0;
+        restored &= filesRestored && reloaded;
+        if (step >= LINUX_SERVICE_STEP_RESTART && wasActive && filesRestored && reloaded)
+            restored &= service_install_unit_command("start", "greencurve.service") == 0;
+        dlog("service-install: activation failed at %s; rollback=%d oldDaemonActive=%d\n",
+            linux_service_activation_step_name(step), restored ? 1 : 0, wasActive ? 1 : 0);
+        gc_snprintf(err, errSize, "%s; installation rollback %s",
+            activationError, restored ? "completed" : "incomplete");
+        return 1;
+    }
+    for (auto* file : files) {
+        if (!file->commit())
+            dlog("service-install: backup cleanup failed for %s: %s\n", file->path(), strerror(errno));
     }
     if (verifiedResponse) *verifiedResponse = activation.verifiedResponse;
 

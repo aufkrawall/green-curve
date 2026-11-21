@@ -125,10 +125,10 @@ cmd_install() {
     # message whenever we actually have an account to enroll.
     if [ -n "$user" ]; then
         GREENCURVE_SETUP_OWNS_GROUP=1 "$BINARY" --service-install ||
-            die "daemon installation failed; nothing else was changed."
+            die "daemon installation failed; see the rollback status above."
     else
         "$BINARY" --service-install ||
-            die "daemon installation failed; nothing else was changed."
+            die "daemon installation failed; see the rollback status above."
     fi
 
     if [ -z "$user" ]; then

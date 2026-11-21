@@ -5,12 +5,16 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
-## 2026-11-21: Cooling and Reset recovery
+## 2026-11-21: Cooling, Reset and Linux upgrade recovery
 
 - Use RPM for stall decisions and keep the live Windows cooling runtime when
   Reset cannot verify driver Auto.
 - Capture the Linux Reset rollback limit before changing clocks. Skip the
   fan phase only when the driver confirms there are no controllable fans.
+- Stage and back up Linux service files before publishing the upgrade.
+  Activation failure rolls back the files and service state.
+- Windows regression and source checks passed. The Linux file fixture ran
+  under WSL. The full build produced 12 packages with matching payloads and hashes.
 
 ## 2026-11-20: Review-range hardening across fan handback, Linux VF masks/modeled review, GPU selection, and Linux INI/CLI loading
 

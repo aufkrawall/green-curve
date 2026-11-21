@@ -1,12 +1,23 @@
 # Linux Backend
 
-## Fanless Reset (2026-11-21)
+## Fanless Reset and failed daemon upgrades (2026-11-21)
 
 Reset schedules no fan phase on a GPU whose driver answered with zero fans.
 The TUI requires the published absent capability and a zero count. An unknown
 fan count or a detected fan with failed readback still blocks Reset.
 See `source/linux_backend_reset.h`, `source/linux_transaction.h` and
 `source/linux_tui_mutation_actions.cpp`.
+
+The Linux installer stages the daemon and both unit files beside their targets
+and preserves existing files before replacing any target. Activation failure
+restores the previous files, reloads systemd and starts the old daemon if it was
+previously running and the attempted activation reached restart. The
+installation lock serializes concurrent installers. Recovery failure is surfaced
+and an unrestored backup is retained. `source/linux_service_install.cpp` owns
+the activation sequence and `source/linux_service_install_files.h` owns the
+file transaction. The Linux state fixture exercises real files and an injected
+publish failure. Live systemd activation and abrupt host interruption remain
+unverified.
 
 ## Cross-platform profile interchange, curve correction loop and shaped-baseline reset (2026-11-20)
 

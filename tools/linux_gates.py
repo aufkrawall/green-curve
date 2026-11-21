@@ -664,6 +664,12 @@ def check_release_packaging(ctx, require_text, forbid_text):
                 "install summary; the advice is decided per account")
     require_text(install_cpp, "GREENCURVE_SETUP_OWNS_GROUP",
                  "the wrapper can claim ownership of the group message it acts on")
+    forbid_text(install_cpp, "O_TRUNC",
+                "the installer never truncates a live daemon or unit")
+    ctx.require_order_in_operation(
+        install_cpp, "int linux_service_install(",
+        "file->save_previous()", "file->publish()",
+        "installation preserves every previous file before publishing replacements")
     require_text(setup_script, "GREENCURVE_SETUP_OWNS_GROUP=1",
                  "the setup script claims that ownership when it resolved an account")
     require_text(setup_script, "logname",

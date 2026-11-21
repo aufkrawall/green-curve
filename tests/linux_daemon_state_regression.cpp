@@ -4,6 +4,7 @@
 #include "linux_daemon_state.h"
 #include "desired_settings_ui_policy.h"
 #include "platform.h"
+#include "linux_service_install_files.h"
 #include "posix_test_environment.h"
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -66,6 +67,62 @@ template<class T> static bool read_fixture(const char* path, T& value) {
     const bool ok = count == (ssize_t)sizeof(value) && read(fd, &extra, 1) == 0;
     return close(fd) == 0 && ok;
 }
+static bool stage_installer_fixture(LinuxInstallFile& file, char contents) {
+    const int fd = file.stage(0600);
+    if (fd < 0) return false;
+    const bool wrote = write_all(fd, &contents, sizeof(contents)) && fsync(fd) == 0;
+    return close(fd) == 0 && wrote;
+}
+
+static int run_install_files_fixture(const char* path) {
+    LinuxServiceInstallLock first(fixtureRoot);
+    LinuxServiceInstallLock second(fixtureRoot);
+    if (!first.locked() || second.locked()) return 12;
+    const std::string newPath = std::string(path) + ".resume";
+    if (!write_fixture(path, 'o')) return 13;
+    LinuxInstallFile existing(path);
+    LinuxInstallFile fresh(newPath.c_str());
+    if (!stage_installer_fixture(existing, 'u') || !stage_installer_fixture(fresh, 'n') ||
+        !existing.save_previous() || !fresh.save_previous()) return 14;
+    char observed = 0;
+    if (!read_fixture(path, observed) || observed != 'o' || access(newPath.c_str(), F_OK) == 0)
+        return 15;
+    const std::string oldBackup = existing.backup();
+    if (!existing.publish() || !fresh.publish() ||
+        !read_fixture(path, observed) || observed != 'u' ||
+        !read_fixture(newPath.c_str(), observed) || observed != 'n') {
+        fresh.restore();
+        existing.restore();
+        return 16;
+    }
+    // Activation rejected the replacement: recover the installed file and
+    // remove the unit that only the failed upgrade introduced.
+    if (!fresh.restore() || !existing.restore() || !read_fixture(path, observed) ||
+        observed != 'o' || access(newPath.c_str(), F_OK) == 0 || access(oldBackup.c_str(), F_OK) == 0)
+        return 17;
+
+    LinuxInstallFile committed(path);
+    if (!stage_installer_fixture(committed, 'c') || !committed.save_previous()) return 18;
+    const std::string committedBackup = committed.backup();
+    if (!committed.publish() || !committed.commit() ||
+        !read_fixture(path, observed) || observed != 'c' || access(committedBackup.c_str(), F_OK) == 0)
+        return 19;
+
+    // A publish failure after another file was replaced can restore the
+    // earlier file. A directory occupying the second fresh target refuses rename.
+    LinuxInstallFile firstFile(path);
+    LinuxInstallFile blocked(newPath.c_str());
+    if (!stage_installer_fixture(firstFile, 'x') || !stage_installer_fixture(blocked, 'y') ||
+        !firstFile.save_previous() || !blocked.save_previous() || mkdir(newPath.c_str(), 0700))
+        return 20;
+    const bool rejected = firstFile.publish() && !blocked.publish();
+    const bool restored = firstFile.restore();
+    if (rmdir(newPath.c_str()) || !rejected || !restored ||
+        !read_fixture(path, observed) || observed != 'c') return 21;
+    puts("Linux installer files: staging, lock, activation rollback, partial publish and commit passed");
+    return 0;
+}
+
 int main() {
     Scratch scratch;
     if (!*scratch.path) return 1;
@@ -112,5 +169,5 @@ int main() {
     if (linux_daemon_state_load(scratch.path, &loaded, why, sizeof(why), &migrated) != LINUX_DAEMON_STATE_INVALID_REMOVED ||
         access(scratch.path, F_OK) == 0) return 11;
     puts("Linux daemon state files: frozen migration, durable coverage, invalid-store preservation and rejection passed");
-    return 0;
+    return run_install_files_fixture(scratch.path);
 }

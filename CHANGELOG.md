@@ -58,6 +58,7 @@ Curve editing, profile transfer and capture improve.
 - **Windows Reset:** custom cooling continues if driver Auto fails.
 - **Linux Reset recovery:** restore settings under the prior clock bound after a failure.
 - **Linux fanless GPUs:** Reset restores clocks without requiring fan control.
+- **Linux upgrades:** recover the prior daemon after a failed upgrade.
 - **Scoped Linux curves:** preserve unrelated offsets, hard-lock tails and read-only points across reset and rollback; check transitions before named offsets.
 - **Profile transfer:** retain scope, graphics controls and repeated-voltage point bindings.
 - **Windows advanced edits:** preserve omitted external settings.
