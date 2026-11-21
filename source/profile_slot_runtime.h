@@ -40,14 +40,22 @@ static inline bool profile_destination_from_vf_curve(const VFCurvePoint* curve, 
     return output.available && profile_destination_topology_valid(output);
 }
 
-static inline bool profile_document_requires_destination(const ProfileDocument& d) {
-    if (d.applicationScope == PROFILE_SCOPE_EXPLICIT_RELEASE &&
-        (d.domains & (PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK)) &&
-        (!d.legacyIndicesUnresolved || !d.topologyCount)) return true;
-    if (d.legacyIndicesUnresolved) return false;
-    if (d.lock.present) return true;
+static inline bool profile_document_has_curve_point_intent(const ProfileDocument& d) {
     for (int i = 0; i < d.topologyCount && i < VF_NUM_POINTS; ++i)
         if (d.points[i].kind != PROFILE_POINT_ABSENT) return true;
+    return false;
+}
+
+static inline bool profile_document_requires_destination(const ProfileDocument& d) {
+    if (d.applicationScope == PROFILE_SCOPE_EXPLICIT_RELEASE) {
+        if ((d.domains & PROFILE_DOMAIN_VF_CURVE) && !profile_document_has_curve_point_intent(d))
+            return true;
+        if ((d.domains & (PROFILE_DOMAIN_VF_CURVE | PROFILE_DOMAIN_LOCK)) &&
+            (!d.legacyIndicesUnresolved || !d.topologyCount)) return true;
+    }
+    if (d.legacyIndicesUnresolved) return false;
+    if (d.lock.present) return true;
+    if (profile_document_has_curve_point_intent(d)) return true;
     return d.graphicsOffset.present && (d.graphicsOffset.exclusionPolicy == PROFILE_EXCLUDE_IDENTITIES ||
         d.graphicsOffset.controlSurface == DESIRED_GRAPHICS_VF_COMPONENT);
 }
@@ -226,8 +234,14 @@ static inline bool profile_desired_from_indexed_document(const ProfileDocument& 
         next.hasXbarMsvddOffsetUv = 1; next.xbarMsvddOffsetUv = (int)s.xbarMsvddOffsetUv;
     }
     if (next.applicationScope == DESIRED_SCOPE_EXPLICIT_RELEASE) {
-        if ((s.domains & PROFILE_DOMAIN_VF_CURVE) || (s.domains & PROFILE_DOMAIN_LOCK))
+        bool anyCurve = false;
+        for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
+            anyCurve |= desired_curve_point_present(&next, ci);
+        if ((s.domains & PROFILE_DOMAIN_VF_CURVE) && !anyCurve)
             return fail("this profile needs the GPU it will run on");
+        if ((s.domains & PROFILE_DOMAIN_LOCK) && !next.hasLock) {
+            next.hasLock = 1; next.lockCi = -1; next.lockMode = LOCK_MODE_NONE;
+        }
         if ((s.domains & PROFILE_DOMAIN_GRAPHICS_OFFSET) && !next.hasGpuOffset) next.hasGpuOffset = 1;
         if ((s.domains & PROFILE_DOMAIN_MEMORY) && !next.hasMemOffset) next.hasMemOffset = 1;
         if ((s.domains & PROFILE_DOMAIN_POWER) && !next.hasPowerLimit) { next.hasPowerLimit = 1; next.powerLimitPct = POWER_LIMIT_DEFAULT_PCT; }

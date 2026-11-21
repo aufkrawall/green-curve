@@ -1910,6 +1910,12 @@ def check_import_transfer_slots_and_runtime_check(ctx, require_text, forbid_text
     require_text(_p(ctx, "profile_slot_runtime.h"),
                  "profile_indexed_document_has_legacy_flat_tail_offset_artifact(",
                  "indexed document slot loader repairs pre-fix flat-tail graphics offset artifacts")
+    require_text(_p(ctx, "profile_slot_runtime.h"),
+                 "if ((d.domains & PROFILE_DOMAIN_VF_CURVE) && !profile_document_has_curve_point_intent(d))",
+                 "whole-curve explicit release always requires destination topology, even with legacy indices")
+    require_text(_p(ctx, "profile_slot_runtime.h"),
+                 "if ((s.domains & PROFILE_DOMAIN_LOCK) && !next.hasLock) {",
+                 "indexed explicit-release documents resolve lock release without a dead-end")
     require_text(_p(ctx, "profile_summary.h"),
                  "profile_indexed_document_has_legacy_flat_tail_offset_artifact(",
                  "profile document summary reflects repaired legacy flat-tail graphics offset")

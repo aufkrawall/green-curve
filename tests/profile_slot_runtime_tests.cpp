@@ -196,6 +196,54 @@ int run_profile_slot_runtime_tests() {
         duplicate.points[1].index = 7;
         if (profile_slot_document_runtime(decoded->documents[0], &duplicate, *back, why, sizeof(why)))
             return 12709;
+
+        // 12710: Explicit release with VF_CURVE|LOCK, legacyIndicesUnresolved=true,
+        // topologyCount > 0, and absent points must require destination and resolve
+        // against a live GPU rather than dead-ending in the indexed path.
+        duplicate.points[1].index = 6;
+        auto legacyEmptyRelease = profile_document_make_empty();
+        legacyEmptyRelease.applicationScope = PROFILE_SCOPE_EXPLICIT_RELEASE;
+        legacyEmptyRelease.domains = PROFILE_DOMAIN_LOCK | PROFILE_DOMAIN_VF_CURVE;
+        legacyEmptyRelease.legacyIndicesUnresolved = true;
+        legacyEmptyRelease.topologyCount = 1;
+        legacyEmptyRelease.topology[0] = {5, 5, 0, 0};
+        legacyEmptyRelease.points[0].kind = PROFILE_POINT_ABSENT;
+        if (!profile_document_requires_destination(legacyEmptyRelease) ||
+            profile_slot_document_runtime(legacyEmptyRelease, nullptr, *back, why, sizeof(why)) ||
+            !profile_slot_document_runtime(legacyEmptyRelease, &duplicate, *back, why, sizeof(why)) ||
+            !back->hasLock || back->lockMode != LOCK_MODE_NONE || !back->curvePointCaptured[5] ||
+            back->curvePointCaptured[6] || back->curvePointCapturedOffsetHz[5])
+            return 12710;
+
+        // 12711: Unbound explicit release with indexed captured zero point and lock
+        // release round-trips through portable encoding and loads cleanly offline.
+        DesiredSettings indexedRelease{};
+        initialize_desired_settings_defaults(&indexedRelease);
+        indexedRelease.applicationScope = DESIRED_SCOPE_EXPLICIT_RELEASE;
+        indexedRelease.curvePointCaptured[5] = 1;
+        indexedRelease.curvePointCapturedOffsetHz[5] = 0;
+        indexedRelease.hasLock = 1;
+        indexedRelease.lockCi = -1;
+        indexedRelease.lockMode = LOCK_MODE_NONE;
+        if (!profile_document_from_legacy_desired(indexedRelease, bank->documents[0], why, sizeof(why)) ||
+            !bank->documents[0].legacyIndicesUnresolved || bank->documents[0].topologyCount != 1 ||
+            !profile_bank_encode(*bank, bytes) || !profile_bank_decode(bytes, *decoded) ||
+            profile_document_requires_destination(decoded->documents[0]) ||
+            !profile_slot_document_runtime(decoded->documents[0], nullptr, *back, why, sizeof(why)) ||
+            back->applicationScope != DESIRED_SCOPE_EXPLICIT_RELEASE ||
+            !back->hasLock || back->lockMode != LOCK_MODE_NONE || back->lockCi != -1 ||
+            !back->curvePointCaptured[5] || back->curvePointCapturedOffsetHz[5] != 0)
+            return 12711;
+
+        // 12712: Lock-only explicit release with legacyIndicesUnresolved=true and
+        // absent topology entry loads cleanly offline without dead-ending.
+        auto legacyLockRelease = legacyEmptyRelease;
+        legacyLockRelease.domains = PROFILE_DOMAIN_LOCK;
+        if (profile_document_requires_destination(legacyLockRelease) ||
+            !profile_slot_document_runtime(legacyLockRelease, nullptr, *back, why, sizeof(why)) ||
+            back->applicationScope != DESIRED_SCOPE_EXPLICIT_RELEASE ||
+            !back->hasLock || back->lockMode != LOCK_MODE_NONE || back->lockCi != -1)
+            return 12712;
     }
     // 9963: without a GPU it refuses with an actionable reason, never a guess.
     why[0] = 0;
