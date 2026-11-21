@@ -579,12 +579,19 @@ static bool service_reset_all(char* result, size_t resultSize,
         recovery.restrictionReleased = true;
     }
 
-    const bool fanHandoffNeeded = g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive ||
-        !g_app.fanIsAuto || g_app.activeFanMode != FAN_MODE_AUTO;
+    const bool hadOwnedNonAutoFan = service_owned_fan_is_non_auto();
+    const int priorOwnedFanMode = g_serviceActiveDesired.fanMode;
+    const int priorOwnedFanPercent = g_serviceActiveDesired.fanPercent;
+    const FanCurveConfig priorOwnedFanCurve = g_serviceActiveDesired.fanCurve;
+    const bool fanHandoffNeeded = !app_fan_control_known_absent() &&
+        (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive ||
+         hadOwnedNonAutoFan || !live_fan_policy_readback_complete() ||
+         !g_app.fanIsAuto || g_app.activeFanMode != FAN_MODE_AUTO);
     char fanHandoffDetail[128] = {};
     const bool fanHandedBack = service_reset_fan_to_driver(fanHandoffDetail, sizeof(fanHandoffDetail));
     const bool retainFan = !fanHandedBack &&
         (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive);
+    const bool retainOwnedManualFan = !fanHandedBack && !retainFan && hadOwnedNonAutoFan;
     if (fanHandedBack && fanHandoffNeeded) successCount++;
     if (!fanHandedBack) {
         failCount++;
@@ -594,13 +601,16 @@ static bool service_reset_all(char* result, size_t resultSize,
     }
 
     // Retire the old profile before refreshing live state. A failed handoff
-    // keeps only the cooling runtime that is still responsible for the fans.
+    // keeps only the cooling runtime or emergency manual fan intent still held.
     g_serviceHasActiveDesired = false;
     memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
     memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
     if (retainFan) service_reset_retain_running_fan();
+    else if (retainOwnedManualFan)
+        service_reset_retain_owned_fan(priorOwnedFanMode, priorOwnedFanPercent, &priorOwnedFanCurve);
     EnterCriticalSection(&g_appLock);
-    g_serviceActiveProfileSource = retainFan ? SERVICE_PROFILE_SOURCE_AD_HOC : SERVICE_PROFILE_SOURCE_NONE;
+    g_serviceActiveProfileSource = (retainFan || retainOwnedManualFan)
+        ? SERVICE_PROFILE_SOURCE_AD_HOC : SERVICE_PROFILE_SOURCE_NONE;
     g_serviceActiveProfileSlot = 0;
     // Dropping the intent above does not drop the lock markers: live detection
     // no longer touches markers it does not own, and the snapshot reports them
@@ -638,7 +648,7 @@ static bool service_reset_all(char* result, size_t resultSize,
         nvml_read_fans(fanDetail, sizeof(fanDetail));
     }
     initialize_gui_fan_settings_from_live_state(false);
-    if (!retainFan && g_app.fanIsAuto) {
+    if (!retainFan && !retainOwnedManualFan && (g_app.fanIsAuto || app_fan_control_known_absent())) {
         g_app.guiFanMode = FAN_MODE_AUTO;
         g_app.guiFanFixedPercent = 0;
         fan_curve_set_default(&g_app.guiFanCurve);

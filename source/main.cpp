@@ -541,6 +541,7 @@ static bool nvml_ensure_ready();
 static void launch_recovery_thread();
 static bool nvml_set_fan_auto(char* detail, size_t detailSize);
 static bool live_fan_policy_readback_complete();
+static bool live_fan_policy_readback_unsupported();
 static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_t detailSize, bool runtimeTick = false);
 static void initialize_gui_fan_settings_from_live_state(bool syncGuiCurve = true);
 static int get_effective_live_fan_mode();

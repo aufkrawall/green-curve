@@ -23,7 +23,7 @@ static bool nvml_read_fans_for_count(char* detail, size_t detailSize, unsigned i
     g_app.fanMinPct = 0;
     g_app.fanMaxPct = 100;
     g_app.fanRangeKnown = false;
-    g_app.fanIsAuto = true;
+    g_app.fanIsAuto = false;
 
     if (!g_nvml_api.getNumFans) {
         set_message(detail, detailSize, "nvmlDeviceGetNumFans missing");
@@ -33,6 +33,7 @@ static bool nvml_read_fans_for_count(char* detail, size_t detailSize, unsigned i
     unsigned int count = 0;
     nvmlReturn_t r = g_nvml_api.getNumFans(g_app.nvmlDevice, &count);
     if (r != NVML_SUCCESS || count == 0) {
+        if (!g_app.fanSupported && r == NVML_SUCCESS && count == 0) g_app.fanIsAuto = true;
         set_message(detail, detailSize, "%s", nvml_err_name(r));
         return false;
     }
@@ -58,11 +59,19 @@ static bool nvml_read_fans_for_count(char* detail, size_t detailSize, unsigned i
         bool policyKnown = false;
         if (g_nvml_api.getFanControlPolicy) {
             unsigned int pol = 0;
-            if (g_nvml_api.getFanControlPolicy(g_app.nvmlDevice, fan, &pol) == NVML_SUCCESS) {
+            const nvmlReturn_t pr = g_nvml_api.getFanControlPolicy(g_app.nvmlDevice, fan, &pol);
+            if (pr == NVML_SUCCESS) {
                 g_app.fanPolicy[fan] = pol;
                 g_app.readback.fan.policy[fan] = policyKnown = true;
                 if (pol != NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) allAuto = false;
+            } else if (pr == NVML_ERROR_NOT_SUPPORTED) {
+                g_app.readback.fan.policyUnsupported[fan] = true;
+            } else {
+                // Operational read failure: never assume driver Auto.
+                allAuto = false;
             }
+        } else {
+            g_app.readback.fan.policyUnsupported[fan] = true;
         }
         bool isAutoForFan = true;
         if (policyKnown) {
@@ -136,6 +145,11 @@ static bool live_fan_policy_readback_complete() {
         all_fans_known(g_app.readback.fan.policy, g_app.fanCount);
 }
 
+static bool live_fan_policy_readback_unsupported() {
+    return g_app.fanSupported && g_app.fanCount > 0 &&
+        all_fans_known(g_app.readback.fan.policyUnsupported, g_app.fanCount);
+}
+
 static bool nvml_set_fan_auto(char* detail, size_t detailSize) {
     if (!nvml_ensure_ready() || !g_app.fanSupported || (!g_nvml_api.setDefaultFanSpeed && !g_nvml_api.setFanControlPolicy)) {
         set_message(detail, detailSize, "Fan auto unsupported");
@@ -143,6 +157,7 @@ static bool nvml_set_fan_auto(char* detail, size_t detailSize) {
     }
     unsigned int count = 0;
     if (!nvml_read_controllable_fan_count(&count, detail, detailSize)) return false;
+    bool allWritesSucceeded = true;
     for (unsigned int fan = 0; fan < count; fan++) {
         nvmlReturn_t defaultResult = NVML_ERROR_NOT_SUPPORTED;
         nvmlReturn_t policyResult = NVML_ERROR_NOT_SUPPORTED;
@@ -158,16 +173,27 @@ static bool nvml_set_fan_auto(char* detail, size_t detailSize) {
             policyResult = g_nvml_api.setFanControlPolicy(g_app.nvmlDevice, fan,
                 NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW);
         }
-        if (defaultResult != NVML_SUCCESS && policyResult != NVML_SUCCESS)
+        if (defaultResult != NVML_SUCCESS && policyResult != NVML_SUCCESS) {
+            allWritesSucceeded = false;
             debug_log("nvml_set_fan_auto: fan=%u default=%d policy=%d\n", fan,
                       (int)defaultResult, (int)policyResult);
+        }
     }
     for (int attempt = 0; attempt < 8; attempt++) {
         if (attempt > 0) Sleep(10);
-        if (nvml_read_fans_for_count(detail, detailSize, count) &&
-            live_fan_policy_readback_complete() && g_app.fanIsAuto) return true;
+        if (!nvml_read_fans_for_count(detail, detailSize, count)) continue;
+        if (live_fan_policy_readback_complete() && g_app.fanIsAuto) return true;
+        if (allWritesSucceeded && live_fan_policy_readback_unsupported()) {
+            g_app.fanIsAuto = true;
+            debug_log("nvml_set_fan_auto: fan policy readback unsupported by driver/GPU;"
+                      " accepted Auto from verified writes across %u fans\n", count);
+            return true;
+        }
     }
     set_message(detail, detailSize, "Fan readback did not confirm driver Auto on all %u fans", count);
-    debug_log("nvml_set_fan_auto: driver Auto unverified on %u fans\n", count);
+    debug_log("nvml_set_fan_auto: driver Auto unverified on %u fans (allWritesSucceeded=%d"
+              " policyComplete=%d policyUnsupported=%d fanIsAuto=%d)\n",
+        count, allWritesSucceeded ? 1 : 0, live_fan_policy_readback_complete() ? 1 : 0,
+        live_fan_policy_readback_unsupported() ? 1 : 0, g_app.fanIsAuto ? 1 : 0);
     return false;
 }

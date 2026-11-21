@@ -141,7 +141,14 @@ static bool nvml_read_fans(char* detail, size_t size) {
 #undef GetTickCount64
 #include "main_service_fan_fault.cpp"
 static bool resetFanPolicyComplete;
+static bool resetFanPolicyUnsupported;
+static bool app_fan_control_known_absent() {
+    return fan_control_known_absent(g_app.fanSupported != 0,
+        gpu_capability_domain_is_missing(gpu_capability_get(
+            &g_app.gpuCapability, SERVICE_MUTATION_DOMAIN_FAN)));
+}
 static bool live_fan_policy_readback_complete() { return resetFanPolicyComplete; }
+static bool live_fan_policy_readback_unsupported() { return resetFanPolicyUnsupported; }
 #include "main_service_reset_fan.h"
 
 static void reset(bool service) {
@@ -171,6 +178,8 @@ static void reset(bool service) {
     g_serviceActiveProfileSource = SERVICE_PROFILE_SOURCE_NONE;
     g_serviceActiveProfileSlot = 0;
     g_serviceFanFault = {};
+    resetFanPolicyComplete = false;
+    resetFanPolicyUnsupported = false;
 }
 static void own_running_curve(bool alsoPower) {
     g_serviceHasActiveDesired = true;
@@ -354,6 +363,74 @@ static int run_reset_handoff_cases() {
     resetFanPolicyComplete = true;
     if (!service_reset_fan_to_driver(detail, sizeof(detail)) || g_app.fanFixedRuntimeActive ||
         runtimeStops != 1 || autoWrites != 3 || g_app.activeFanMode != FAN_MODE_AUTO) return 12902;
+
+    // Already Auto with complete policy readback and no owned manual intent:
+    // short-circuits without issuing a redundant driver write.
+    g_serviceHasActiveDesired = false;
+    g_serviceActiveDesired = {};
+    g_app.fanIsAuto = true;
+    g_app.activeFanMode = FAN_MODE_AUTO;
+    resetFanPolicyComplete = true;
+    if (!service_reset_fan_to_driver(detail, sizeof(detail)) || autoWrites != 3) return 12903;
+
+    // Incomplete policy readback (e.g. transient read error) must NOT skip
+    // driver Auto handback even when g_app.fanIsAuto is stale true.
+    resetFanPolicyComplete = false;
+    autoRefused = true;
+    detail[0] = 0;
+    if (service_reset_fan_to_driver(detail, sizeof(detail)) || autoWrites != 4 || !detail[0])
+        return 12904;
+
+    // Post-emergency handback: runtime stopped, activeFanMode == Auto,
+    // g_app.fanIsAuto stale true, owned intent holds Fixed 100% emergency duty.
+    // Neither Reset nor graceful shutdown may short-circuit past Auto handback.
+    reset(true);
+    g_app.fanIsAuto = true;
+    g_app.activeFanMode = FAN_MODE_AUTO;
+    resetFanPolicyComplete = true;
+    g_serviceHasActiveDesired = true;
+    g_serviceActiveDesired.lockCi = -1;
+    g_serviceActiveDesired.hasFan = 1;
+    g_serviceActiveDesired.fanAuto = 0;
+    g_serviceActiveDesired.fanMode = FAN_MODE_FIXED;
+    g_serviceActiveDesired.fanPercent = FAN_RUNTIME_EMERGENCY_PERCENT;
+    autoRefused = true;
+    detail[0] = 0;
+    if (service_reset_fan_to_driver(detail, sizeof(detail)) || autoWrites != 1 || !detail[0])
+        return 12905;
+    if (!service_shutdown_owned_fan() || autoWrites != 2 || manualWrites != 1 ||
+        lastManualPct != FAN_RUNTIME_EMERGENCY_PERCENT) return 12906;
+    autoRefused = false;
+    if (!service_reset_fan_to_driver(detail, sizeof(detail)) || autoWrites != 3) return 12907;
+
+    // Retaining emergency manual fan ownership after a failed Reset preserves
+    // the emergency Fixed 100% intent cleanly without requiring a live runtime.
+    g_serviceHasActiveDesired = false;
+    g_serviceActiveDesired = {};
+    service_reset_retain_owned_fan(FAN_MODE_FIXED, FAN_RUNTIME_EMERGENCY_PERCENT, nullptr);
+    if (!g_serviceHasActiveDesired || !g_serviceActiveDesired.hasFan ||
+        g_serviceActiveDesired.fanAuto || g_serviceActiveDesired.fanMode != FAN_MODE_FIXED ||
+        g_serviceActiveDesired.fanPercent != FAN_RUNTIME_EMERGENCY_PERCENT ||
+        !g_serviceActiveDesiredGpu.valid) return 12908;
+
+    // Fanless GPU (capability ABSENT, fanSupported == false): Reset succeeds
+    // without touching NVML fan writes even when fanIsAuto is false and policy
+    // readback is absent.
+    reset(true);
+    g_app.fanSupported = false;
+    g_app.fanCount = 0;
+    g_app.fanIsAuto = false;
+    gpu_capability_set(&g_app.gpuCapability, SERVICE_MUTATION_DOMAIN_FAN, GPU_DOMAIN_CAP_ABSENT);
+    if (!service_reset_fan_to_driver(detail, sizeof(detail)) || autoWrites != 0) return 12909;
+
+    // Older driver / GPU without getFanControlPolicy_v2 support:
+    // live_fan_policy_readback_unsupported() allows verified Auto handback.
+    start_fixed_runtime(true);
+    resetFanPolicyComplete = false;
+    resetFanPolicyUnsupported = true;
+    if (!service_reset_fan_to_driver(detail, sizeof(detail)) || g_app.fanFixedRuntimeActive ||
+        runtimeStops != 1 || autoWrites != 1 || g_app.activeFanMode != FAN_MODE_AUTO)
+        return 12910;
     return 0;
 }
 
@@ -498,7 +575,7 @@ namespace nvml_fan_handback_fixture {
 static AppData g_app{};
 static NvmlApi g_nvml_api{};
 static unsigned int count, writes, knownFanCount;
-static bool countAvailable;
+static bool countAvailable, failDefaultWrite, policyUnsupportedAll, policyUnsupportedPartial;
 static bool manual[MAX_GPU_FANS];
 
 static bool nvml_ensure_ready() { return true; }
@@ -516,10 +593,18 @@ static void set_message(char* out, size_t size, const char* format, ...) {
 #undef Sleep
 
 static int run() {
+    g_app = {};
+    g_nvml_api = {};
+    count = 2;
+    writes = 0;
+    knownFanCount = 0;
+    countAvailable = false;
+    failDefaultWrite = false;
+    policyUnsupportedAll = false;
+    policyUnsupportedPartial = false;
     g_app.fanSupported = true;
     g_app.fanFixedRuntimeActive = true;
     g_app.fanCount = 2;
-    count = 2;
     manual[0] = manual[1] = true;
     g_nvml_api.getNumFans = [](nvmlDevice_t, unsigned int* out) -> nvmlReturn_t {
         *out = count;
@@ -527,23 +612,60 @@ static int run() {
     };
     g_nvml_api.setDefaultFanSpeed = [](nvmlDevice_t, unsigned int fan) -> nvmlReturn_t {
         ++writes;
+        if (failDefaultWrite && fan == 1) return NVML_ERROR_UNKNOWN;
         manual[fan] = false;
         return NVML_SUCCESS;
     };
     g_nvml_api.getFanControlPolicy = [](nvmlDevice_t, unsigned int fan, unsigned int* policy) -> nvmlReturn_t {
+        if (policyUnsupportedAll) return NVML_ERROR_NOT_SUPPORTED;
+        if (policyUnsupportedPartial && fan >= knownFanCount) return NVML_ERROR_NOT_SUPPORTED;
         if (fan >= knownFanCount) return NVML_ERROR_UNKNOWN;
         *policy = manual[fan] ? NVML_FAN_POLICY_MANUAL : NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW;
         return NVML_SUCCESS;
     };
+    g_nvml_api.getTargetFanSpeed = [](nvmlDevice_t, unsigned int, unsigned int* target) -> nvmlReturn_t {
+        // Older drivers without policy getter may still echo a non-zero auto target.
+        *target = 30;
+        return NVML_SUCCESS;
+    };
     char detail[192]{};
-    if (nvml_read_fans(detail, sizeof(detail)) || g_app.fanCount ||
+    // Failed read on a fan-capable GPU must clear fanIsAuto (never leave true).
+    g_app.fanIsAuto = true;
+    if (nvml_read_fans(detail, sizeof(detail)) || g_app.fanCount || g_app.fanIsAuto ||
         nvml_set_fan_auto(detail, sizeof(detail)) || writes) return 12920;
+    // Partial operational policy readback failure must leave fanIsAuto == false
+    // and fail nvml_set_fan_auto().
     countAvailable = true;
     knownFanCount = 1;
     if (nvml_set_fan_auto(detail, sizeof(detail)) || writes != 2 ||
-        manual[0] || manual[1]) return 12921;
+        manual[0] || manual[1] || g_app.fanIsAuto) return 12921;
+    // Partial NOT_SUPPORTED (fan 0 answered, fan 1 NOT_SUPPORTED) still fails.
+    manual[0] = manual[1] = true;
+    policyUnsupportedPartial = true;
+    if (nvml_set_fan_auto(detail, sizeof(detail)) || writes != 4) return 12923;
+    policyUnsupportedPartial = false;
+    // Complete policy readback succeeds.
     knownFanCount = 2;
-    if (!nvml_set_fan_auto(detail, sizeof(detail)) || writes != 4) return 12922;
+    manual[0] = manual[1] = true;
+    if (!nvml_set_fan_auto(detail, sizeof(detail)) || writes != 6 ||
+        !live_fan_policy_readback_complete() || !g_app.fanIsAuto) return 12922;
+    // Unsupported policy readback across all fans (NVML_ERROR_NOT_SUPPORTED):
+    // fails if any Auto write failed, succeeds if all writes succeeded and
+    // fan count remained consistent (even when getTargetFanSpeed echoes 30%).
+    policyUnsupportedAll = true;
+    failDefaultWrite = true;
+    manual[0] = manual[1] = true;
+    if (nvml_set_fan_auto(detail, sizeof(detail)) || writes != 8) return 12924;
+    failDefaultWrite = false;
+    manual[0] = manual[1] = true;
+    if (!nvml_set_fan_auto(detail, sizeof(detail)) || writes != 10 ||
+        !live_fan_policy_readback_unsupported() || !g_app.fanIsAuto) return 12925;
+    // Missing getFanControlPolicy entry point (older NVML DLL) also succeeds
+    // when all per-fan Auto writes succeed and fan count is consistent.
+    g_nvml_api.getFanControlPolicy = nullptr;
+    manual[0] = manual[1] = true;
+    if (!nvml_set_fan_auto(detail, sizeof(detail)) || writes != 12 ||
+        !live_fan_policy_readback_unsupported() || !g_app.fanIsAuto) return 12926;
     return 0;
 }
 } // namespace nvml_fan_handback_fixture

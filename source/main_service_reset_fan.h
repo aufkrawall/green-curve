@@ -2,28 +2,46 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+static bool service_owned_fan_is_non_auto() {
+    return g_serviceHasActiveDesired && g_serviceActiveDesired.hasFan &&
+        fan_owned_intent_mode(true, g_serviceActiveDesired.fanMode,
+            g_serviceActiveDesired.fanAuto != 0) != FAN_MODE_AUTO;
+}
+
 // Reset holds the service runtime lock, so the worker cannot reassert its
 // duty during handoff. Keep it available if the handoff fails partway.
 static bool service_reset_fan_to_driver(char* detail, size_t detailSize) {
     const bool running = g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive;
-    if (!running && g_app.fanIsAuto && g_app.activeFanMode == FAN_MODE_AUTO)
+    const bool ownedNonAuto = service_owned_fan_is_non_auto();
+    if (!running && !ownedNonAuto && app_fan_control_known_absent()) {
+        debug_log("reset fan: GPU has no controllable fan; no driver handoff needed\n");
         return true;
-    if (!nvml_set_fan_auto(detail, detailSize) || !live_fan_policy_readback_complete()) {
+    }
+    if (!running && !ownedNonAuto && g_app.activeFanMode == FAN_MODE_AUTO &&
+        live_fan_policy_readback_complete() && g_app.fanIsAuto)
+        return true;
+    if (!nvml_set_fan_auto(detail, detailSize) ||
+        (!live_fan_policy_readback_complete() && !live_fan_policy_readback_unsupported())) {
         if (!detail[0]) set_message(detail, detailSize, "Driver Auto could not be verified");
-        debug_log("reset fan: driver handoff failed, runtime retained=%d (%s)\n", running, detail);
+        debug_log("reset fan: driver handoff failed, runtime retained=%d ownedNonAuto=%d (%s)\n",
+            running ? 1 : 0, ownedNonAuto ? 1 : 0, detail);
         return false;
     }
     stop_fan_curve_runtime();
     g_app.activeFanMode = FAN_MODE_AUTO;
     g_app.activeFanFixedPercent = 0;
-    debug_log("reset fan: driver handoff verified, previous runtime=%d\n", running);
+    debug_log("reset fan: driver handoff verified, previous runtime=%d ownedNonAuto=%d policyReadback=%s\n",
+        running ? 1 : 0, ownedNonAuto ? 1 : 0,
+        live_fan_policy_readback_complete() ? "verified" : "unsupported");
     return true;
 }
 
 // Called with the runtime lock after the pipe workers have drained. Cooling
 // handback is independent of the clock Reset and its VF preflight.
 static bool service_shutdown_owned_fan() {
-    if (!g_app.fanCurveRuntimeActive && !g_app.fanFixedRuntimeActive) return true;
+    if (!g_app.fanCurveRuntimeActive && !g_app.fanFixedRuntimeActive &&
+        !service_owned_fan_is_non_auto())
+        return true;
     char fanDetail[192] = {};
     if (service_reset_fan_to_driver(fanDetail, sizeof(fanDetail))) return true;
     char emergencyDetail[192] = {};
@@ -34,14 +52,21 @@ static bool service_shutdown_owned_fan() {
     return emergencyOk;
 }
 
-static void service_reset_retain_running_fan() {
+static void service_reset_retain_owned_fan(int fanMode, int fanPercent, const FanCurveConfig* fanCurve) {
     initialize_desired_settings_defaults(&g_serviceActiveDesired);
     g_serviceActiveDesired.lockCi = -1;
     g_serviceActiveDesired.hasFan = true;
     g_serviceActiveDesired.fanAuto = false;
-    g_serviceActiveDesired.fanMode = g_app.fanCurveRuntimeActive ? FAN_MODE_CURVE : FAN_MODE_FIXED;
-    g_serviceActiveDesired.fanPercent = g_app.activeFanFixedPercent;
-    g_serviceActiveDesired.fanCurve = g_app.activeFanCurve;
+    g_serviceActiveDesired.fanMode = fanMode == FAN_MODE_CURVE ? FAN_MODE_CURVE : FAN_MODE_FIXED;
+    g_serviceActiveDesired.fanPercent = fanPercent;
+    if (fanCurve) g_serviceActiveDesired.fanCurve = *fanCurve;
+    else g_serviceActiveDesired.fanCurve = g_app.activeFanCurve;
     g_serviceHasActiveDesired = true;
     g_serviceActiveDesiredGpu = g_app.selectedGpu;
+}
+
+static void service_reset_retain_running_fan() {
+    service_reset_retain_owned_fan(
+        g_app.fanCurveRuntimeActive ? FAN_MODE_CURVE : FAN_MODE_FIXED,
+        g_app.activeFanFixedPercent, &g_app.activeFanCurve);
 }

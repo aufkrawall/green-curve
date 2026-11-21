@@ -677,13 +677,27 @@ def check_all(ctx, require_text, forbid_text, require_order, backend_surface):
     check_fan_intent_consistency(ctx, require_text, forbid_text, require_order)
     check_fan_fault_reporting(ctx, require_text, forbid_text, require_order)
     check_fan_stall_detection(ctx, require_text, forbid_text, require_order)
-    require_order(_p(ctx, "main_service_reset_fan.h"),
+    reset_fan_h = _p(ctx, "main_service_reset_fan.h")
+    require_order(reset_fan_h,
                   "if (!nvml_set_fan_auto(detail, detailSize)",
                   "stop_fan_curve_runtime();",
                   "Reset verifies the driver handoff before stopping cooling")
+    require_text(reset_fan_h, "app_fan_control_known_absent()",
+                 "Reset explicitly skips fan handback on fanless GPUs")
+    require_text(reset_fan_h, "service_owned_fan_is_non_auto()",
+                 "Reset and shutdown never skip owned non-Auto (including emergency) fan intent")
+    require_text(reset_fan_h, "live_fan_policy_readback_complete() && g_app.fanIsAuto",
+                 "Reset only short-circuits Auto handback on complete positive policy readback")
+    require_text(reset_fan_h, "!live_fan_policy_readback_unsupported()",
+                 "Reset accepts Auto handback on older drivers without policy readback when all writes succeeded")
+    require_text(_p(ctx, "main_runtime_nvml_fans.cpp"), "live_fan_policy_readback_unsupported()",
+                 "nvml_set_fan_auto preserves Auto support on drivers without getFanControlPolicy_v2")
     require_text(_p(ctx, "main_service_apply_runtime.cpp"),
                  "if (retainFan) service_reset_retain_running_fan();",
                  "Reset keeps only live fan ownership when its handoff fails")
+    require_text(_p(ctx, "main_service_apply_runtime.cpp"),
+                 "service_reset_retain_owned_fan(",
+                 "Reset preserves unreturned emergency manual fan ownership when Auto fails")
     require_text(_p(ctx, "main_service_pipe_switch.cpp"),
                  '"explicit Reset hardware write did not complete",',
                  "Reset lockout keeps the independent live fan runtime")
