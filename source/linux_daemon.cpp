@@ -200,7 +200,6 @@ static bool restore_committed_record(bool wasUncertain, bool hadPrevious,
 }
 
 #include "linux_daemon_record_recovery.h"
-
 // The fan ownership marker and once-per-crash startup handback.  Before the
 // unattended-write path below, which records ownership through it.
 #include "linux_fan_ownership.h"
@@ -503,7 +502,9 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                             "Reset aborted before hardware write: %s", stateErr);
                 break;
             }
-            LinuxMutationResult mutation = linux_backend_reset(&g_gpu, resp->message, sizeof(resp->message));
+            const bool ownsSelected = hadPrevious && linux_gpu_identity_matches(&previousTarget, &g_gpu.selectedGpu);
+            LinuxMutationResult mutation = linux_backend_reset(&g_gpu, ownsSelected ? &previousDesired : nullptr,
+                resp->message, sizeof(resp->message));
             bool committed = mutation.success &&
                 linux_daemon_state_remove(GC_DAEMON_STATE_FILE, stateErr, sizeof(stateErr));
             if (mutation.success && !committed) {

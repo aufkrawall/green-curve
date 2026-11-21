@@ -861,7 +861,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "Linux baseline and final lock use the absent-control rule")
     require_text(linux_rollback_h, "const bool noClockControl = linux_clock_control_proven_absent(g);",
                  "Pascal rollback restores prior settings when no cap can exist")
-    require_text(linux_mutation_cpp, "bool noControl = linux_clock_control_proven_absent(g);",
+    require_text(_p(ctx, "linux_backend_reset.h"), "bool noControl = linux_clock_control_proven_absent(g);",
                  "explicit Linux Reset skips an absent locked-clock domain")
     require_text(ceiling_policy_h,
                  "static inline bool apply_clock_ceiling_proceeds_unprotected(",

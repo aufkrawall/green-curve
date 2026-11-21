@@ -41,7 +41,7 @@ Curve editing, profile transfer and capture improve.
 - **Capture:** import external curves, locks and memory.
 - **CLI checks:** preview profiles without writes.
 - **CMP cards:** experimental modified-driver startup guidance.
-- **Fan stall protection:** a fan that stops turning under custom control goes back to the driver, with a warning.
+- **Fan stall protection:** custom cooling warns and hands back control when a proven RPM reading drops to zero.
 
 ### Improved
 
@@ -55,6 +55,9 @@ Curve editing, profile transfer and capture improve.
 
 ### Fixed
 
+- **Windows Reset:** custom cooling continues if driver Auto fails.
+- **Linux Reset recovery:** restore settings under the prior clock bound after a failure.
+- **Linux fanless GPUs:** Reset restores clocks without requiring fan control.
 - **Scoped Linux curves:** preserve unrelated offsets, hard-lock tails and read-only points across reset and rollback; check transitions before named offsets.
 - **Profile transfer:** retain scope, graphics controls and repeated-voltage point bindings.
 - **Windows advanced edits:** preserve omitted external settings.

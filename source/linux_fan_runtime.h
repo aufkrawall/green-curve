@@ -172,9 +172,9 @@ static void daemon_fan_stall_check(FanStallTracker* tracker, FanStallLogLimiter*
         const unsigned int bit = 1u << fan;
         const FanStallFanSample* s = fan < fanCount ? &samples[fan] : nullptr;
         if ((r.proofGainedMask & bit) && s)
-            dlog("daemon fan stall: fan %u sensors proven (rpm=%u%s measured=%d%%%s); "
+            dlog("daemon fan stall: fan %u RPM channel proven (rpm=%u%s reportedDuty=%d%%%s); "
                  "stall detection armed\n", fan, s->rpm, s->rpmKnown ? "" : "?",
-                 s->measuredPercent, s->measuredKnown ? "" : "?");
+                 s->reportedDuty, s->dutyKnown ? "" : "?");
         if (r.verdict == FAN_STALL_VERDICT_CONFIRMED && r.fanIndex == fan) continue;
         if (!((r.windowStartedMask | r.windowRestartedMask | r.windowClearedMask) & bit))
             continue;
@@ -188,10 +188,10 @@ static void daemon_fan_stall_check(FanStallTracker* tracker, FanStallLogLimiter*
     if (r.verdict != FAN_STALL_VERDICT_CONFIRMED) return;
     const FanStallFanSample& s = samples[r.fanIndex];
     char rpmText[24] = "n/a", measuredText[24] = "n/a";
-    if (r.rpmEvidence) snprintf(rpmText, sizeof(rpmText), "%u RPM", s.rpm);
-    if (r.measuredEvidence) snprintf(measuredText, sizeof(measuredText), "%d%%", s.measuredPercent);
+    if (s.rpmKnown) snprintf(rpmText, sizeof(rpmText), "%u RPM", s.rpm);
+    if (s.dutyKnown) snprintf(measuredText, sizeof(measuredText), "%d%%", s.reportedDuty);
     char summary[SERVICE_FAN_FAULT_DETAIL_CHARS] = {};
-    snprintf(summary, sizeof(summary), "Fan %u did not turn at %d%% for %llu s (tach %s, measured %s)",
+    snprintf(summary, sizeof(summary), "Fan %u did not turn at %d%% for %llu s (RPM %s, reported duty %s)",
              r.fanIndex + 1, r.judgedPercent, (r.stalledForMs + 500ull) / 1000ull,
              rpmText, measuredText);
     dlog("daemon FAN STALL: %s over %u readings; handing the fan back to the driver\n",

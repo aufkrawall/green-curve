@@ -1318,9 +1318,15 @@ def check_profile_interchange_and_curve_correction(ctx, require_text, forbid_tex
     require_text(_p(ctx, "linux_backend_apply_context.h"),
                  "linux_vf_baseline_reset_mask(g->curve, writeMask, vfResetMask, g->vfMask)",
                  "Linux VF baseline reset intersects the editable vfMask")
-    require_text(mutation_cpp,
+    require_text(_p(ctx, "linux_backend_reset.h"),
                  "linux_vf_baseline_reset_mask(g->curve, nullptr, mask, g->vfMask)",
                  "Linux full Reset intersects the editable vfMask")
+    reset_h = _p(ctx, "linux_backend_reset.h")
+    ctx.require_order_in_operation(
+        reset_h, "LinuxMutationResult linux_backend_reset(",
+        "linux_reset_capture_rollback_ceiling(g, previous);",
+        "mutation = linux_execute_transaction(",
+        "Linux Reset captures its pre-write rollback ceiling")
     require_text(_p(ctx, "linux_backend_rollback.h"),
                  "linux_vf_rollback_masks(g->curve, g->vfMask,",
                  "Linux VF rollback intersects the editable vfMask and preserves placeholder tolerance")

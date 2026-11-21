@@ -9,6 +9,7 @@
 // scripted driver and clock.  No GPU, no sleeps.
 #include "app_shared.h"
 #include "fan_curve.h"
+#include "desired_settings_ui_policy.h"
 #include "fan_intent_policy.h"
 #include "fan_runtime_policy.h"
 #include "service_scoped_apply_policy.h"
@@ -139,6 +140,9 @@ static bool nvml_read_fans(char* detail, size_t size) {
 #include "main_fan_stall.cpp"
 #undef GetTickCount64
 #include "main_service_fan_fault.cpp"
+static bool resetFanPolicyComplete;
+static bool live_fan_policy_readback_complete() { return resetFanPolicyComplete; }
+#include "main_service_reset_fan.h"
 
 static void reset(bool service) {
     g_app = {};
@@ -228,6 +232,7 @@ static int run_stall_cases() {
     start_fixed_runtime(true);
     fan_stall_check_after_tick(g_app.fanReadSerial);
     script[1] = stopped_fan();
+    script[1].measured = 45;
     tick_until(121000, 1000);
     if (autoWrites || !g_app.fanFixedRuntimeActive) return 12870;
     tick_until(122000, 1000);
@@ -279,7 +284,7 @@ static int run_stall_cases() {
     script[0].manual = script[1].manual = false;
     tick_until(200000, 1000);
     if (autoWrites) return 12888;
-    // No tach or measured-duty getter: never judged.
+    // No RPM channel: never judged.
     start_fixed_runtime(true);
     script[0] = script[1] = stopped_fan();
     script[0].rpmKnown = script[1].rpmKnown = false;
@@ -328,7 +333,32 @@ static int run_stall_cases() {
     return 0;
 }
 
+static int run_reset_handoff_cases() {
+    char detail[128] = {};
+    start_fixed_runtime(true);
+    autoRefused = true;
+    if (service_reset_fan_to_driver(detail, sizeof(detail)) || !g_app.fanFixedRuntimeActive ||
+        runtimeStops || autoWrites != 1 || !detail[0]) return 12889;
+    autoRefused = false;
+    resetFanPolicyComplete = false;
+    detail[0] = 0;
+    if (service_reset_fan_to_driver(detail, sizeof(detail)) || !g_app.fanFixedRuntimeActive ||
+        runtimeStops || autoWrites != 2 || !detail[0]) return 12900;
+    g_serviceActiveDesired.hasGpuOffset = true;
+    g_app.selectedGpu.valid = true;
+    service_reset_retain_running_fan();
+    if (!g_serviceHasActiveDesired || !g_serviceActiveDesiredGpu.valid ||
+        g_serviceActiveDesired.hasGpuOffset || !g_serviceActiveDesired.hasFan ||
+        g_serviceActiveDesired.fanMode != FAN_MODE_FIXED ||
+        g_serviceActiveDesired.fanPercent != 40 || g_serviceActiveDesired.lockCi != -1) return 12901;
+    resetFanPolicyComplete = true;
+    if (!service_reset_fan_to_driver(detail, sizeof(detail)) || g_app.fanFixedRuntimeActive ||
+        runtimeStops != 1 || autoWrites != 3 || g_app.activeFanMode != FAN_MODE_AUTO) return 12902;
+    return 0;
+}
+
 static int run() {
+    if (int failure = run_reset_handoff_cases()) return failure;
     InitializeCriticalSection(&g_appLock);
     // Repeated failures in the service: the driver takes the fan back, the
     // owned intent stops claiming the curve, and the clients get a record.

@@ -1,6 +1,6 @@
 # Fan Control
 
-## A stalled fan goes back to the driver, and the user is told (2026-11-20)
+## Fan stall evidence and safe Reset handoff (2026-11-21)
 
 Source anchors: `source/fan_stall_policy.h`, `source/main_fan_stall.cpp`,
 `source/main_runtime_nvml_fans.cpp`, `source/main_fan_runtime_failure.cpp`
@@ -27,16 +27,27 @@ at most every 2 s:
   the duty (the driver's intent when it answers, else the command) is at least
   the advertised minimum and never below 30%. Each of these is its own gate;
   the fixtures break each one alone.
-- A tach (`nvmlDeviceGetFanSpeedRPM`) or measured duty (`nvmlDeviceGetFanSpeed_v2`)
-  counts only after it has read nonzero for that fan on this GPU in this
-  process, and only in a sample where its getter answered. Unsupported or
-  always-zero sensors never judge. Any proven sensor showing motion wins.
-- Stopped means every proven, answering sensor reads 0. A stall is confirmed
-  after 20 s and at least 3 consecutive stopped readings no more than 12 s
-  apart (spin-up takes a few seconds; 5 s is the slowest cadence). Motion, a
-  missing reading, a failed fan read, a new command (Windows runtime start,
-  Linux wake generation) or a gap closes the window; a GPU change also drops
-  the proof. Confirmation clears every window, so the handback runs once.
+- The per-fan RPM channel counts only after a nonzero reading for that fan on
+  this GPU in this process. The duty percentage is context in the diagnostic.
+  A nonzero duty from NVML can be intended speed even when the fan is stopped.
+  It cannot open, close or substitute for an RPM observation.
+- Zero RPM opens the window after proof. Confirmation needs 20 s and at least
+  3 consecutive stopped readings no more than 12 s apart. Motion, a missing
+  RPM reading, a failed read, a new command or a gap closes the window. A GPU
+  change also drops proof. Confirmation clears all windows.
+- The NVML RPM API may also report an intended speed on some driver and board
+  combinations. A device that lacks a usable RPM signal has no stall verdict
+  from this check. The ordinary fan failure ladder remains available.
+
+**Windows Reset handoff.** Reset holds the runtime lock across the handoff.
+It stops custom cooling after the driver accepts Auto and every fan's policy
+is verified. On failure it keeps the live fan runtime and only its fan intent,
+demotes profile attribution to ad hoc and clears restart replay. Explicit
+Reset lockout disables automatic profile restoration while preserving live
+cooling. See `source/main_service_reset_fan.h`,
+`source/main_service_apply_runtime.cpp` and `source/main_service_recovery.cpp`.
+The fixture checks both refusal and incomplete policy readback followed by
+successful handoff.
 
 **Reaction.** The existing handback, entered directly: driver automatic
 control, forced 100% if the driver refuses, runtime stopped. Driver auto, not
@@ -81,7 +92,7 @@ update-install handback precedes the service's replacement. Either divergence
 direction leaves the fan under active control (driver or runtime), so a
 periodic check would be diagnostics only and was left out.
 
-Diagnostics: `fan stall: fan N sensors proven`, `fan stall: fan N reads stopped
+Diagnostics: `fan stall: fan N RPM channel proven`, `fan stall: fan N reads stopped
 under a manual P% duty ...; confirming over 20 s`, `... stall window closed:
 <reason>` (per-fan, at most one per 30 s with a suppressed count), `FAN STALL:
 Fan N did not turn at P% for S s (tach ..., measured ...)`, `fan fault:

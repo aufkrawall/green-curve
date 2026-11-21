@@ -4472,23 +4472,16 @@ def run_source_regression_checks():
         "accepting as non-offsettable placeholder",
         "F-OFFSET-REFUSAL: refused placeholder points are accepted (not retried) to keep apply fast")
 
-    # F-RESET-INTENT: service_reset_all must drop the active-desired intent BEFORE the
-    # post-reset state refresh + control/snapshot population. Otherwise
-    # detect_locked_tail_from_curve() preserves the old lock and
-    # initialize_gui_fan_settings_from_live_state() re-reads the stale desired fan
-    # mode into g_app.activeFanMode, so the RESET reports the old Custom Curve fan
-    # mode / lock and the GUI re-adopts them (regression: reset shows Custom Curve).
-    require_text(main_service_runtime_cpp,
-        "F-RESET-INTENT",
-        "F-RESET-INTENT: reset drops active-desired intent before post-reset refresh")
-    require_order(main_service_runtime_cpp,
-        "F-RESET-INTENT",
-        "Clear persisted runtime state BEFORE refreshing",
-        "F-RESET-INTENT: active-desired is cleared before refresh_global_state in service_reset_all")
-    require_order(main_service_runtime_cpp,
-        "F-RESET-INTENT",
+    # Reset retires the old profile before deriving new live state. Only the
+    # active fan runtime may retain ownership after a failed handoff.
+    require_order_in_operation(main_service_runtime_cpp, "static bool service_reset_all(",
+        "memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));",
+        "if (!refresh_global_state(detail, sizeof(detail))) {",
+        "F-RESET-INTENT: Reset clears the old profile before the live refresh")
+    require_order_in_operation(main_service_runtime_cpp, "static bool service_reset_all(",
+        "if (retainFan) service_reset_retain_running_fan();",
         "initialize_gui_fan_settings_from_live_state(false)",
-        "F-RESET-INTENT: active-desired is cleared before post-reset fan derivation")
+        "F-RESET-INTENT: Reset restores retained fan intent before deriving the fan state")
 
     # FP-03-001: nvapi_qi() module-level cache invalidated by close_nvapi()
     require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"),

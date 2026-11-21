@@ -18,11 +18,11 @@
 //   * A native zero-RPM stop.  The curve hands the fan to driver automatic
 //     control below its start temperature; the fan stands still by design.
 //     Only a fan the driver reports under MANUAL policy is ever judged.
-//   * Spin-up.  Measured duty and tach read 0 for a few seconds after a duty is
+//   * Spin-up.  The RPM reading can remain 0 for a few seconds after a duty is
 //     first applied to a stopped fan.  A stall needs consecutive stopped
 //     readings spanning FAN_STALL_CONFIRM_MS.
-//   * A sensor that does not exist.  Many boards answer the tach or measured
-//     duty getter with 0 forever, or not at all.  A sensor only counts once it
+//   * A sensor that does not exist.  Some boards answer the RPM
+//     getter with 0 forever, or not at all.  RPM only counts once it
 //     has reported a nonzero value for that fan on this GPU in this process.
 //   * A duty too low to turn the motor.  Only duties at or above the driver's
 //     advertised minimum, and never below FAN_STALL_MIN_JUDGED_PERCENT, are
@@ -40,8 +40,7 @@
 #include <string.h>
 
 // 20 s of consecutive stopped readings.  A fan spinning up from a stop reports
-// tach within a few seconds (the measured-duty lag documented in
-// fan_runtime_policy.h); 20 s is several times that, and spans at least four
+// RPM within a few seconds. 20 s is several times that and spans at least four
 // samples on the slowest (5 s fixed-duty) cadence.  It is still short against
 // the minutes a GPU takes to heat-soak without airflow, and the GPU's own
 // thermal throttling protects it meanwhile.
@@ -71,8 +70,8 @@ struct FanStallFanSample {
     int intentPercent;
     bool rpmKnown;
     unsigned int rpm;
-    bool measuredKnown;
-    int measuredPercent;
+    bool dutyKnown;
+    int reportedDuty;
 };
 
 // What the runtime commands right now.  `manualCommanded` is false while a
@@ -86,7 +85,6 @@ struct FanStallCommand {
 
 struct FanStallFanTrack {
     bool rpmProven;
-    bool measuredProven;
     unsigned int stalledObservations;
     unsigned long long windowStartMs;
     unsigned long long lastObservationMs;
@@ -128,8 +126,6 @@ struct FanStallReport {
     int judgedPercent;
     unsigned long long stalledForMs;
     unsigned int observations;
-    bool rpmEvidence;
-    bool measuredEvidence;
     // Per-fan transitions for one-line diagnostics.
     unsigned int proofGainedMask;     // a sensor of this fan was proven now
     unsigned int windowStartedMask;   // first stopped reading of a window
@@ -179,8 +175,7 @@ static inline int fan_stall_judged_percent(const FanStallCommand* cmd,
 
 static inline FanStallFanState fan_stall_classify(const FanStallCommand* cmd,
                                                   const FanStallFanSample* s,
-                                                  bool rpmProven,
-                                                  bool measuredProven) {
+                                                  bool rpmProven) {
     if (!cmd || !s || !cmd->manualCommanded) return FAN_STALL_FAN_NOT_JUDGED;
     // The driver holds this fan (or will not say): not ours to judge.
     if (!s->policyKnown || !s->policyManual) return FAN_STALL_FAN_NOT_JUDGED;
@@ -188,13 +183,10 @@ static inline FanStallFanState fan_stall_classify(const FanStallCommand* cmd,
             fan_stall_judged_floor(cmd->rangeKnown, cmd->minPercent))
         return FAN_STALL_FAN_NOT_JUDGED;
     const bool rpmUsable = s->rpmKnown && rpmProven;
-    const bool measuredUsable = s->measuredKnown && measuredProven;
-    if (!rpmUsable && !measuredUsable) return FAN_STALL_FAN_NO_EVIDENCE;
-    // Any proven sensor that sees motion wins: stopping a working fan is the
-    // one mistake this policy must not make.
-    if ((rpmUsable && s->rpm > 0) || (measuredUsable && s->measuredPercent > 0))
-        return FAN_STALL_FAN_SPINNING;
-    return FAN_STALL_FAN_STOPPED;
+    if (!rpmUsable) return FAN_STALL_FAN_NO_EVIDENCE;
+    // The percentage getter can report intended speed even for a blocked
+    // fan. Keep it for diagnostics and judge only the per-fan RPM channel.
+    return s->rpm > 0 ? FAN_STALL_FAN_SPINNING : FAN_STALL_FAN_STOPPED;
 }
 
 // Feeds one sample.  `fanCount` is clamped to MAX_GPU_FANS; fans beyond it
@@ -242,12 +234,7 @@ static inline FanStallReport fan_stall_observe(FanStallTracker* t,
             f->rpmProven = true;
             report.proofGainedMask |= bit;
         }
-        if (s->measuredKnown && s->measuredPercent > 0 && !f->measuredProven) {
-            f->measuredProven = true;
-            report.proofGainedMask |= bit;
-        }
-        const FanStallFanState state = fan_stall_classify(cmd, s,
-            f->rpmProven, f->measuredProven);
+        const FanStallFanState state = fan_stall_classify(cmd, s, f->rpmProven);
         report.states[i] = state;
         if (state != FAN_STALL_FAN_STOPPED) {
             if (f->stalledObservations) report.windowClearedMask |= bit;
@@ -276,8 +263,6 @@ static inline FanStallReport fan_stall_observe(FanStallTracker* t,
             report.judgedPercent = fan_stall_judged_percent(cmd, s);
             report.stalledForMs = nowMs - f->windowStartMs;
             report.observations = f->stalledObservations;
-            report.rpmEvidence = s->rpmKnown && f->rpmProven;
-            report.measuredEvidence = s->measuredKnown && f->measuredProven;
         }
     }
     if (confirmed) fan_stall_tracker_clear_windows(t);
@@ -357,12 +342,12 @@ static inline bool fan_stall_format_window_event(const FanStallReport* r,
     out[0] = '\0';
     const unsigned int bit = 1u << fan;
     const unsigned int rpm = s && s->rpmKnown ? s->rpm : 0u;
-    const int measured = s && s->measuredKnown ? s->measuredPercent : -1;
+    const int duty = s && s->dutyKnown ? s->reportedDuty : -1;
     if (r->windowStartedMask & bit) {
         snprintf(out, outSize,
-                 "fan %u reads stopped under a manual %d%% duty (rpm=%u measured=%d%%); "
+                 "fan %u reads stopped under a manual %d%% duty (rpm=%u reportedDuty=%d%%); "
                  "confirming over %llu s (suppressed=%u)",
-                 fan, commandedPercent, rpm, measured,
+                 fan, commandedPercent, rpm, duty,
                  FAN_STALL_CONFIRM_MS / 1000ull, suppressed);
         return true;
     }

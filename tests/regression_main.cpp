@@ -10445,6 +10445,13 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
              LINUX_MUTATION_FAN))
             return 4556;
 
+        const unsigned int noFan = coreDomainsNoPower & ~SERVICE_MUTATION_DOMAIN_FAN;
+        if (linux_reset_preflight_domains_supported(noFan, 0) ||
+            !linux_reset_preflight_domains_supported(noFan, 0, true) ||
+            linux_reset_preflight_domains_supported(noFan & ~SERVICE_MUTATION_DOMAIN_VF_CURVE, 0, true) ||
+            linux_reset_phases_for_available_domains(noFan) != (phasesNoPower & ~LINUX_MUTATION_FAN))
+            return 12903;
+
         // When power is available, preflight requires a positive defaultmW.
         unsigned int coreWithPower = coreDomainsNoPower | SERVICE_MUTATION_DOMAIN_POWER;
         if (linux_reset_preflight_domains_supported(coreWithPower, 0))

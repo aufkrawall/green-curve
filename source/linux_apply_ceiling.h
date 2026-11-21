@@ -130,6 +130,14 @@ static void linux_apply_ceiling_note_outgoing(const DesiredSettings* committed) 
         committed->lockMode == LOCK_MODE_HARD && committed->lockMHz > 0;
 }
 
+// Capture Reset's rollback bound before any offset, VF or lock write. The
+// daemon may also need it if the successful hardware Reset cannot commit.
+static void linux_reset_capture_rollback_ceiling(const LinuxGpuState* g,
+                                                 const DesiredSettings* previous) {
+    linux_apply_ceiling_note_outgoing(previous);
+    g_linuxOutgoingCeilingMHz = linux_outgoing_ceiling_mhz(g, previous);
+}
+
 // Whether a curve this rollback is about to restore is one that needs a pin to
 // be safe.
 static bool linux_snapshot_curve_needs_a_pin(const LinuxHardwareSnapshot* s) {

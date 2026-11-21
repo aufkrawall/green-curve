@@ -301,7 +301,7 @@ def check_video_domain(ctx, require_text, forbid_text):
     linux_backend = _p(ctx, "linux_backend_xbar.cpp")
     linux_snapshot = _p(ctx, "linux_daemon_snapshot_runtime.cpp")
     linux_tui = _p(ctx, "linux_tui_layout_fan_profiles.cpp")
-    linux_mutation = _p(ctx, "linux_backend_mutation.cpp")
+    linux_reset = _p(ctx, "linux_backend_reset.h")
     desired_policy = _p(ctx, "service_desired_mutation_policy.h")
     require_text(linux_backend, "xbar_write_entry_freq(",
                  "F-XBAR-LINUX: Linux reuses the audited exact-readback transaction")
@@ -311,8 +311,8 @@ def check_video_domain(ctx, require_text, forbid_text):
                  "F-XBAR-LINUX: the Linux TUI exposes VIDEO editing")
     require_text(desired_policy, "merged.videoClkOffsetKhz = requested->videoClkOffsetKhz;",
                  "F-XBAR-LINUX: successful sparse applies retain VIDEO intent")
-    require_text(linux_mutation,
-                 "snapshot.availableMutationDomains);",
+    require_text(linux_reset,
+                 "linux_reset_phases_for_available_domains(\n        snapshot.availableMutationDomains);",
                  "F-XBAR-LINUX: Reset selects optional advanced phases from proven writable domains")
     require_text(linux_tui, '"unavailable for this GPU"',
                  "F-XBAR-LINUX: unsupported advanced rows never fabricate zero readback")

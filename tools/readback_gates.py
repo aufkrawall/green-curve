@@ -326,7 +326,7 @@ def check_all(ctx, require_text, forbid_text):
     require_text(linux_mutation_cpp,
                  "bool pairValid = linux_read_power_limit_pair(g, &currentmW, &defaultmW);",
                  "Linux forward power writes require complete post-write readback")
-    require_text(linux_mutation_cpp,
+    require_text(_p(ctx, "linux_backend_reset.h"),
                  "bool pairValid = ok &&\n                linux_read_power_limit_pair(g, &currentmW, &defaultmW);",
                  "Linux reset-to-default requires complete post-write readback")
 

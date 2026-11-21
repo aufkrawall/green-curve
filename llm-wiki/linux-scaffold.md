@@ -1,5 +1,13 @@
 # Linux Backend
 
+## Fanless Reset (2026-11-21)
+
+Reset schedules no fan phase on a GPU whose driver answered with zero fans.
+The TUI requires the published absent capability and a zero count. An unknown
+fan count or a detected fan with failed readback still blocks Reset.
+See `source/linux_backend_reset.h`, `source/linux_transaction.h` and
+`source/linux_tui_mutation_actions.cpp`.
+
 ## Cross-platform profile interchange, curve correction loop and shaped-baseline reset (2026-11-20)
 
 Source anchors: `source/linux_backend_curve_correction.h`,

@@ -60,8 +60,8 @@ static unsigned int fan_stall_collect_locked(FanStallFanSample* samples) {
         s.intentPercent = (int)g_app.fanTargetPercent[fan];
         s.rpmKnown = g_app.readback.fan.rpm[fan];
         s.rpm = g_app.fanRpm[fan];
-        s.measuredKnown = g_app.readback.fan.measured[fan];
-        s.measuredPercent = (int)g_app.fanPercent[fan];
+        s.dutyKnown = g_app.readback.fan.measured[fan];
+        s.reportedDuty = (int)g_app.fanPercent[fan];
     }
     return count;
 }
@@ -75,9 +75,9 @@ static void fan_stall_log_report(const FanStallReport& r, const FanStallFanSampl
         const unsigned int bit = 1u << fan;
         const FanStallFanSample* s = fan < fanCount ? &samples[fan] : nullptr;
         if ((r.proofGainedMask & bit) && s)
-            debug_log("fan stall: fan %u sensors proven (rpm=%u%s measured=%d%%%s); stall detection armed\n",
-                fan, s->rpm, s->rpmKnown ? "" : "?", s->measuredPercent,
-                s->measuredKnown ? "" : "?");
+            debug_log("fan stall: fan %u RPM channel proven (rpm=%u%s reportedDuty=%d%%%s); stall detection armed\n",
+                fan, s->rpm, s->rpmKnown ? "" : "?", s->reportedDuty,
+                s->dutyKnown ? "" : "?");
         if (r.verdict == FAN_STALL_VERDICT_CONFIRMED && r.fanIndex == fan) continue;
         if (!((r.windowStartedMask | r.windowRestartedMask | r.windowClearedMask) & bit)) continue;
         unsigned int suppressed = 0;
@@ -92,12 +92,12 @@ static void fan_stall_log_report(const FanStallReport& r, const FanStallFanSampl
 static void fan_stall_hand_back(const FanStallReport& r, const FanStallFanSample* samples) {
     const FanStallFanSample& s = samples[r.fanIndex];
     char rpmText[24] = "n/a", measuredText[24] = "n/a";
-    if (r.rpmEvidence) StringCchPrintfA(rpmText, ARRAY_COUNT(rpmText), "%u RPM", s.rpm);
-    if (r.measuredEvidence)
-        StringCchPrintfA(measuredText, ARRAY_COUNT(measuredText), "%d%%", s.measuredPercent);
+    if (s.rpmKnown) StringCchPrintfA(rpmText, ARRAY_COUNT(rpmText), "%u RPM", s.rpm);
+    if (s.dutyKnown)
+        StringCchPrintfA(measuredText, ARRAY_COUNT(measuredText), "%d%%", s.reportedDuty);
     char summary[SERVICE_FAN_FAULT_DETAIL_CHARS] = {};
     StringCchPrintfA(summary, ARRAY_COUNT(summary),
-        "Fan %u did not turn at %d%% for %llu s (tach %s, measured %s)",
+        "Fan %u did not turn at %d%% for %llu s (RPM %s, reported duty %s)",
         r.fanIndex + 1, r.judgedPercent, (r.stalledForMs + 500ull) / 1000ull,
         rpmText, measuredText);
     debug_log("FAN STALL: %s over %u readings; handing the fan back to the driver\n",

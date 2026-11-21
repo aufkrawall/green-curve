@@ -486,6 +486,22 @@ static int run(){
  linux_apply_ceiling_reset_state();
  CHECK(linux_outgoing_ceiling_mhz(&g,nullptr)==2500);
  CHECK(linux_outgoing_state_holds_clocks_down(&g,nullptr));
+ {
+   // Reset keeps its pre-write bound for a later phase failure and for
+   // daemon persistence recovery after the hardware restriction is released.
+   char detail[128]{};
+   linux_reset_capture_rollback_ceiling(&g, &old);
+   CHECK(g_linuxOutgoingCeilingMHz == 2500 && g_linuxOutgoingHadHardPin);
+   CHECK(linux_apply_write_final_lock(&g, &next));
+   const int beforeMemory = memoryOffsetWrites;
+   snapshot.memOffsetValid = true;
+   snapshot.memOffsetMHz = 30;
+   CHECK(!linux_backend_restore_snapshot(&g, &snapshot,
+       LINUX_MUTATION_GPU_OFFSET | LINUX_MUTATION_MEM_OFFSET | LINUX_MUTATION_LOCK,
+       detail, sizeof(detail)));
+   CHECK(cap == 2500 && memoryOffsetWrites == beforeMemory + 1 && lastMemoryOffsetMHz == 60);
+   snapshot.memOffsetValid = false;
+ }
  CHECK(linux_apply_write_final_lock(&g,&next));
  CHECK(g.retainedTransitionCeilingMHz==0);
  // Captured offsets (including zero) stay independent of sampled MHz,

@@ -116,13 +116,19 @@ void reset_gpu(TuiState* state) {
                  (unsigned int)state->service.state.gpuPhase);
         return;
     }
+    const ServiceSnapshot& snapshot = state->service.snapshot;
+    GpuCapabilityProbe capability = {};
+    gpu_capability_unpack_domains(&capability, snapshot.health.capabilityDomainsPacked,
+        snapshot.health.capabilityMemoryTopology);
+    const bool fanKnownAbsent = snapshot.fanCount == 0 &&
+        gpu_capability_get(&capability, SERVICE_MUTATION_DOMAIN_FAN) == GPU_DOMAIN_CAP_ABSENT;
     if (!linux_reset_preflight_domains_supported(
             state->service.snapshot.health.availableMutationDomains,
-            state->service.snapshot.powerLimitDefaultmW)) {
+            snapshot.powerLimitDefaultmW, fanKnownAbsent)) {
         snprintf(state->status, sizeof(state->status),
                  "Reset blocked: core mutation domains unavailable (available=0x%02x required=0x%02x)",
                  state->service.snapshot.health.availableMutationDomains,
-                 linux_reset_required_mutation_domains());
+                 linux_reset_required_mutation_domains(fanKnownAbsent));
         return;
     }
     snprintf(state->status, sizeof(state->status), "Resetting GPU controls...");

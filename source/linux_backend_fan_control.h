@@ -71,9 +71,9 @@ bool linux_backend_fan_stall_sample(LinuxGpuState* g, FanStallFanSample* samples
             g->nvml.getTargetFanSpeed(g->nvmlDevice, fan, &value) == NVML_SUCCESS;
         s.intentPercent = (int)value;
         value = 0;
-        s.measuredKnown = g->nvml.getFanSpeed &&
+        s.dutyKnown = g->nvml.getFanSpeed &&
             g->nvml.getFanSpeed(g->nvmlDevice, fan, &value) == NVML_SUCCESS;
-        s.measuredPercent = (int)value;
+        s.reportedDuty = (int)value;
         if (g->nvml.getFanSpeedRpm) {
             nvmlFanSpeedInfo_t info = {};
             info.version = nvmlFanSpeedInfo_v1;

@@ -511,7 +511,8 @@ switch (request->command) {
             LeaveCriticalSection(&g_appLock);
             service_disable_automatic_restore(
                 SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,
-                "explicit Reset hardware write did not complete");
+                "explicit Reset hardware write did not complete",
+                g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive);
         }
         response->status = ok ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
         StringCchCopyA(response->message, ARRAY_COUNT(response->message), result);

@@ -7,6 +7,7 @@
 #include "desired_advanced_domains_policy.h"
 #include "service_scoped_apply_policy.h"
 #include "reset_live_readback_policy.h"
+#include "main_service_reset_fan.h"
 
 // Ownership marker + once-per-crash handback, defined later in
 // main_service_ownership_handback.cpp (ownership_handback_policy.h).
@@ -332,12 +333,11 @@ static bool service_reset_all(char* result, size_t resultSize,
             "Could not record GPU ownership before the write; no reset write was attempted");
         return false;
     }
-    if (hardwareWriteAttemptedOut) *hardwareWriteAttemptedOut = true;
-
     if (!nvapi_read_curve()) {
         set_message(result, resultSize, "Cannot read the curve before Reset");
         return false;
     }
+    if (hardwareWriteAttemptedOut) *hardwareWriteAttemptedOut = true;
     int resetOffsets[VF_NUM_POINTS] = {};
     bool resetMask[VF_NUM_POINTS] = {};
     int successCount = 0;
@@ -502,13 +502,6 @@ static bool service_reset_all(char* result, size_t resultSize,
         }
     }
 
-    // Stop the service-owned fan maintenance first so it cannot immediately
-    // reassert a manual target after we restore driver auto.
-    stop_fan_curve_runtime();
-    if (app_is_service_process() && g_serviceFanThread) {
-        stop_service_fan_runtime_thread();
-    }
-
     // Reset NVML locked clocks (hard lock, or a retained transition clamp).
     //
     // CT-04.  Two things were wrong here.  The release ran regardless of
@@ -583,33 +576,28 @@ static bool service_reset_all(char* result, size_t resultSize,
         recovery.restrictionReleased = true;
     }
 
-    if (!g_app.fanIsAuto || g_app.activeFanMode != FAN_MODE_AUTO) {
-        char fanDetail[128] = {};
-        if (nvml_set_fan_auto(fanDetail, sizeof(fanDetail))) {
-            successCount++;
-            g_app.fanIsAuto = true;
-            g_app.activeFanMode = FAN_MODE_AUTO;
-            g_app.activeFanFixedPercent = 0;
-        } else {
-            failCount++;
-            append_failure("Fan control did not return to driver auto%s%s",
-                fanDetail[0] ? ": " : "",
-                fanDetail[0] ? fanDetail : "");
-        }
+    const bool fanHandoffNeeded = g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive ||
+        !g_app.fanIsAuto || g_app.activeFanMode != FAN_MODE_AUTO;
+    char fanHandoffDetail[128] = {};
+    const bool fanHandedBack = service_reset_fan_to_driver(fanHandoffDetail, sizeof(fanHandoffDetail));
+    const bool retainFan = !fanHandedBack &&
+        (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive);
+    if (fanHandedBack && fanHandoffNeeded) successCount++;
+    if (!fanHandedBack) {
+        failCount++;
+        append_failure("Fan control did not return to driver Auto%s%s%s",
+            fanHandoffDetail[0] ? ": " : "", fanHandoffDetail,
+            retainFan ? ". Custom cooling is still running" : "");
     }
 
-    // F-RESET-INTENT: drop the active-desired intent NOW, before the post-reset
-    // state refresh + control-state population below. A reset means "stop applying
-    // anything", so lock/fan intent derivation must see NO intent. Clearing it only
-    // afterwards (as this used to) left detect_locked_tail_from_curve() preserving
-    // the old lock and initialize_gui_fan_settings_from_live_state() re-reading the
-    // stale desired fan mode into g_app.activeFanMode — so the RESET snapshot
-    // reported the old Custom Curve fan mode + lock and the GUI re-adopted them.
+    // Retire the old profile before refreshing live state. A failed handoff
+    // keeps only the cooling runtime that is still responsible for the fans.
     g_serviceHasActiveDesired = false;
     memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
     memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
+    if (retainFan) service_reset_retain_running_fan();
     EnterCriticalSection(&g_appLock);
-    g_serviceActiveProfileSource = SERVICE_PROFILE_SOURCE_NONE;
+    g_serviceActiveProfileSource = retainFan ? SERVICE_PROFILE_SOURCE_AD_HOC : SERVICE_PROFILE_SOURCE_NONE;
     g_serviceActiveProfileSlot = 0;
     // Dropping the intent above does not drop the lock markers: live detection
     // no longer touches markers it does not own, and the snapshot reports them
@@ -647,7 +635,7 @@ static bool service_reset_all(char* result, size_t resultSize,
         nvml_read_fans(fanDetail, sizeof(fanDetail));
     }
     initialize_gui_fan_settings_from_live_state(false);
-    if (g_app.fanIsAuto) {
+    if (!retainFan && g_app.fanIsAuto) {
         g_app.guiFanMode = FAN_MODE_AUTO;
         g_app.guiFanFixedPercent = 0;
         fan_curve_set_default(&g_app.guiFanCurve);
@@ -680,12 +668,9 @@ static bool service_reset_all(char* result, size_t resultSize,
         set_message(result, resultSize, "Reset applied.");
         return true;
     }
-    // The in-memory intent was already cleared above, because a Reset means
-    // "stop applying anything" even when one of its steps failed.  Writing the
-    // snapshot from that cleared intent therefore DELETES the on-disk restart
-    // snapshot, so no later restart can replay the profile the user just asked
-    // to reset away.
-    service_write_restart_reapply_snapshot();
+    // A failed Reset must not replay the old profile on restart. The live
+    // runtime, if retained, is tracked by the crash ownership marker.
+    service_clear_restart_reapply_snapshot();
     populate_control_state(&g_serviceControlState);
     g_serviceControlStateValid = true;
     mark_service_telemetry_cache_updated("service reset");

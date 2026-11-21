@@ -23,8 +23,8 @@ static FanStallFanSample spinning(unsigned int rpm = 1200, int measured = 35) {
     s.intentPercent = 40;
     s.rpmKnown = true;
     s.rpm = rpm;
-    s.measuredKnown = true;
-    s.measuredPercent = measured;
+    s.dutyKnown = true;
+    s.reportedDuty = measured;
     return s;
 }
 
@@ -59,11 +59,11 @@ static unsigned long long feed(FanStallTracker* t, unsigned long long deviceKey,
 
 static int run() {
     const FanStallCommand cmd = manual();
-    // A board without a tach or measured-duty getter is never judged.
+    // A board without an RPM reading is never judged.
     {
         FanStallTracker t = {};
         FanStallFanSample s = stopped();
-        s.rpmKnown = s.measuredKnown = false;
+        s.rpmKnown = s.dutyKnown = false;
         FanStallReport r = {};
         if (feed(&t, 1, 1, cmd, s, 1000, 120000, 2000, &r) ||
             r.states[0] != FAN_STALL_FAN_NO_EVIDENCE) return 12800;
@@ -73,8 +73,7 @@ static int run() {
         FanStallTracker t = {};
         FanStallReport r = {};
         if (feed(&t, 1, 1, cmd, stopped(), 1000, 120000, 2000, &r) ||
-            r.states[0] != FAN_STALL_FAN_NO_EVIDENCE || t.fans[0].rpmProven ||
-            t.fans[0].measuredProven) return 12801;
+            r.states[0] != FAN_STALL_FAN_NO_EVIDENCE || t.fans[0].rpmProven) return 12801;
     }
     // Proven tach, then stopped: confirmed once 20 s of readings span the
     // window, not one sample earlier.
@@ -82,14 +81,13 @@ static int run() {
         FanStallTracker t = {};
         FanStallReport r = {};
         feed(&t, 1, 1, cmd, spinning(), 0, 4000, 2000, &r);
-        if (!t.fans[0].rpmProven || !t.fans[0].measuredProven ||
+        if (!t.fans[0].rpmProven ||
             r.states[0] != FAN_STALL_FAN_SPINNING) return 12802;
         // First stopped reading at 6000; 24000 is 18 s in, 26000 is 20 s in.
         if (feed(&t, 1, 1, cmd, stopped(), 6000, 24000, 2000)) return 12803;
         unsigned long long at = feed(&t, 1, 1, cmd, stopped(), 26000, 26000, 2000, &r);
         if (at != 26000 || r.fanIndex != 0 || r.judgedPercent != 40 ||
-            r.stalledForMs != 20000 || r.observations != 11 ||
-            !r.rpmEvidence || !r.measuredEvidence) return 12804;
+            r.stalledForMs != 20000 || r.observations != 11) return 12804;
         // Confirmation clears every window: no second request on the next sample.
         if (fan_stall_tracker_has_open_window(&t) ||
             feed(&t, 1, 1, cmd, stopped(), 28000, 28000, 2000)) return 12805;
@@ -203,24 +201,20 @@ static int run() {
         r = fan_stall_observe(&t, 1, 1, 44000, &cmd, oneStopped, 1);
         if (r.windowClearedMask != 2u || fan_stall_tracker_has_open_window(&t)) return 12823;
     }
-    // Measured duty alone can prove and judge; one proven sensor seeing motion
-    // outvotes another reading 0.
+    // Intended duty can stay positive after motion stops. It cannot prove
+    // motion, veto zero RPM, or stand in when the RPM channel is missing.
     {
         FanStallTracker t = {};
-        FanStallFanSample s = spinning();
-        s.rpmKnown = false;
-        feed(&t, 1, 1, cmd, s, 0, 0, 2000);
-        FanStallFanSample measuredStopped = stopped();
-        measuredStopped.rpmKnown = false;
+        FanStallFanSample sample = spinning();
+        sample.rpmKnown = false;
         FanStallReport r = {};
-        if (feed(&t, 1, 1, cmd, measuredStopped, 2000, 22000, 2000, &r) != 22000 ||
-            r.rpmEvidence || !r.measuredEvidence) return 12824;
+        if (feed(&t, 1, 1, cmd, sample, 0, 30000, 2000, &r) ||
+            r.states[0] != FAN_STALL_FAN_NO_EVIDENCE || r.proofGainedMask) return 12824;
         FanStallTracker both = {};
         feed(&both, 1, 1, cmd, spinning(), 0, 0, 2000);
-        FanStallFanSample tachZero = stopped();
-        tachZero.measuredPercent = 31;
-        if (feed(&both, 1, 1, cmd, tachZero, 2000, 120000, 2000, &r) ||
-            r.states[0] != FAN_STALL_FAN_SPINNING) return 12825;
+        const FanStallFanSample tachZero = spinning(0, 45);
+        if (feed(&both, 1, 1, cmd, tachZero, 2000, 22000, 2000, &r) != 22000 ||
+            r.verdict != FAN_STALL_VERDICT_CONFIRMED) return 12825;
     }
     // A proven sensor that stops answering mid-window ends the window.
     {
@@ -228,7 +222,7 @@ static int run() {
         feed(&t, 1, 1, cmd, spinning(), 0, 0, 2000);
         feed(&t, 1, 1, cmd, stopped(), 2000, 14000, 2000);
         FanStallFanSample silent = stopped();
-        silent.rpmKnown = silent.measuredKnown = false;
+        silent.rpmKnown = silent.dutyKnown = false;
         FanStallReport r = {};
         feed(&t, 1, 1, cmd, silent, 16000, 16000, 2000, &r);
         if (r.windowClearedMask != 1u || r.states[0] != FAN_STALL_FAN_NO_EVIDENCE ||

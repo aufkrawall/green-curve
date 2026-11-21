@@ -1,5 +1,17 @@
 # Clock transition hardening
 
+## Linux Reset rollback bound (2026-11-21)
+
+`source/linux_backend_reset.h` captures the outgoing bound before the first
+Reset write. `source/linux_apply_ceiling.h` prefers a retained protection
+ceiling, then the selected GPU's recorded hard pin, then the live VF peak.
+The serialized daemon retains the transaction facts through its state-file
+commit, so the same bound protects restoration if that commit fails. A
+restored curve whose original restriction cannot be proved still keeps
+protection and reports uncertainty. The fake driver exercises restoring
+offsets after the original ceiling is released. Physical failure injection is
+unverified.
+
 ## Scoped Linux VF preparation and correction (2026-11-20)
 
 `linux_backend_mutation.cpp` passes the compiled VF write set to the

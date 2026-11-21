@@ -671,6 +671,16 @@ def check_all(ctx, require_text, forbid_text, require_order, backend_surface):
     check_fan_intent_consistency(ctx, require_text, forbid_text, require_order)
     check_fan_fault_reporting(ctx, require_text, forbid_text, require_order)
     check_fan_stall_detection(ctx, require_text, forbid_text, require_order)
+    require_order(_p(ctx, "main_service_reset_fan.h"),
+                  "if (!nvml_set_fan_auto(detail, detailSize)",
+                  "stop_fan_curve_runtime();",
+                  "Reset verifies the driver handoff before stopping cooling")
+    require_text(_p(ctx, "main_service_apply_runtime.cpp"),
+                 "if (retainFan) service_reset_retain_running_fan();",
+                 "Reset keeps only live fan ownership when its handoff fails")
+    require_text(_p(ctx, "main_service_pipe_switch.cpp"),
+                 '"explicit Reset hardware write did not complete",',
+                 "Reset lockout keeps the independent live fan runtime")
     check_manual_write_verification(ctx, require_text, forbid_text, backend_surface)
     check_service_fan_worker_serialization(ctx, require_text, forbid_text)
     check_runtime_failsafe(ctx, require_text, forbid_text, require_order)

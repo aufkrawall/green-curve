@@ -15,12 +15,16 @@ static bool service_ownership_marker_committed();
 // Callers serialize this with a real hardware write by holding the runtime
 // lock; pre-write authorization failures may call it without that lock.
 static void service_disable_automatic_restore(DWORD lockoutReason,
-    const char* context) {
+    const char* context, bool keepRunningFan = false) {
     service_latch_auto_restore_lockout(lockoutReason, context);
     service_clear_restart_reapply_snapshot();
     service_clear_oc_apply_stamp();
     InterlockedExchange(&g_serviceReapplyInProgress, 0);
     g_app.pendingDeviceRecovery = false;
+    if (keepRunningFan) {
+        debug_log("automatic restore: disabled while keeping live fan maintenance (%s)\n", context);
+        return;
+    }
     g_serviceHasActiveDesired = false;
     memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
     memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));

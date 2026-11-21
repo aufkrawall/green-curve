@@ -292,7 +292,8 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
 
 // Reset OC/UV to driver defaults (curve offsets 0, clock offsets 0, power
 // default, locked clocks released, fan auto).
-LinuxMutationResult linux_backend_reset(LinuxGpuState* g, char* result, size_t resultSize);
+LinuxMutationResult linux_backend_reset(LinuxGpuState* g, const DesiredSettings* previous,
+                                        char* result, size_t resultSize);
 bool linux_backend_set_curve_fan_percent(LinuxGpuState* g, unsigned int percent);
 bool linux_backend_set_fan_auto(LinuxGpuState* g);
 bool linux_backend_fans_are_auto(LinuxGpuState* g);

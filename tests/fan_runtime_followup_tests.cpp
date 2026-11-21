@@ -132,9 +132,9 @@ static bool linux_backend_fan_stall_sample(LinuxGpuState*, FanStallFanSample* sa
         s.intentKnown = true;
         s.intentPercent = 40;
         const bool turning = fan == 0 || stallSamples == 1;
-        s.rpmKnown = s.measuredKnown = schedule != STALL_UNSUPPORTED;
+        s.rpmKnown = s.dutyKnown = schedule != STALL_UNSUPPORTED;
         s.rpm = s.rpmKnown && turning ? 1100u : 0u;
-        s.measuredPercent = s.measuredKnown && turning ? 41 : 0;
+        s.reportedDuty = s.dutyKnown ? 41 : 0;
         samples[fan] = s;
     }
     *fanCount = 2;
@@ -232,7 +232,7 @@ static int run_stall() {
         g_daemonFanFault.handback != SERVICE_FAN_HANDBACK_DRIVER_AUTO ||
         !std::strstr(g_daemonFanFault.detail, "Fan 2 did not turn at 40%") ||
         !service_fan_fault_wire_valid(&g_daemonFanFault) || !lockOrderValid) return 12893;
-    // No tach or measured duty: never judged, however long.
+    // No RPM channel: never judged, however long.
     initialize(STALL_UNSUPPORTED);
     commit_fixed(40);
     fan_reassert_thread(nullptr);
