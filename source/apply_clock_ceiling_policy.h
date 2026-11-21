@@ -163,19 +163,22 @@ static inline ApplyClockCeilingPlan apply_clock_ceiling_plan(
     bool resetsToStock = false, bool outgoingStateHoldsClocksDown = false,
     unsigned int outgoingCeilingMHz = 0, bool memoryMayDropFlatten = false) {
     ApplyClockCeilingPlan plan = {};
-    if (!requestOwnsClockDomain && !memoryMayDropFlatten) return plan;
+    const bool memoryProtection = memoryMayDropFlatten && !resetsToStock;
+    if (!requestOwnsClockDomain && !memoryProtection) return plan;
 
     const bool incomingLock =
         requestHasLock && lockMode != LOCK_MODE_NONE && lockMHz > 0;
     const bool resetWillUncap = resetsToStock && outgoingStateHoldsClocksDown;
-    if (!incomingLock && !resetWillUncap && !memoryMayDropFlatten) return plan;
+    if (!incomingLock && !resetWillUncap && !memoryProtection) return plan;
 
     plan.required = true;
     plan.clampControlAbsent = !nvmlLockedClocksAvailable;
-    plan.reason = memoryMayDropFlatten ? APPLY_CEILING_REASON_MEMORY_DROPS_FLATTEN : incomingLock
+    plan.reason = incomingLock
         ? (lockMode == LOCK_MODE_HARD ? APPLY_CEILING_REASON_REQUESTED_LOCK
                                      : APPLY_CEILING_REASON_REQUESTED_FLATTEN)
-        : APPLY_CEILING_REASON_RESET_DROPS_CAP;
+        : (resetWillUncap
+            ? APPLY_CEILING_REASON_RESET_DROPS_CAP
+            : APPLY_CEILING_REASON_MEMORY_DROPS_FLATTEN);
 
     unsigned int bound = incomingLock ? lockMHz : 0;
     if (outgoingCeilingMHz > 0 && (bound == 0 || outgoingCeilingMHz < bound))
@@ -189,7 +192,7 @@ static inline ApplyClockCeilingPlan apply_clock_ceiling_plan(
     plan.ceilingMHz = bound;
     plan.finalPinIsCeiling =
         incomingLock && lockMode == LOCK_MODE_HARD && bound == lockMHz;
-    plan.symmetricFallbackAllowed = incomingLock && lockMode == LOCK_MODE_HARD && !memoryMayDropFlatten;
+    plan.symmetricFallbackAllowed = incomingLock && lockMode == LOCK_MODE_HARD;
     plan.arm = nvmlLockedClocksAvailable;
     return plan;
 }

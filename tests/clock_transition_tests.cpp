@@ -338,7 +338,96 @@ static int run(){
    g_nvml_api.resetGpuLockedClocks = resetCap;
    ApplyClockCeilingGuard memoryGuard(&memory, false, false, nullptr, true);
    CHECK(memoryGuard.plan.required && memoryGuard.plan.ceilingMHz == 2500 &&
-         !memoryGuard.plan.symmetricFallbackAllowed);
+         !memoryGuard.plan.symmetricFallbackAllowed &&
+         memoryGuard.plan.reason == APPLY_CEILING_REASON_MEMORY_DROPS_FLATTEN);
+
+   // Full resetting profile switches away from FLATTEN with hasMemOffset=true:
+   // Pascal (NOT_SUPPORTED on every clamp form) keeps its exemption for
+   // FLATTEN->FLATTEN and FLATTEN->stock switches, and FLATTEN->HARD retains
+   // symmetric (ceiling, ceiling) fallback on fixed-clock-only drivers.
+   auto allUnsupported = [](int, unsigned int, unsigned int) -> int {
+       ++armCalls;
+       return NVML_ERROR_NOT_SUPPORTED;
+   };
+   g.nvml.setGpuLockedClocks = allUnsupported;
+   DesiredSettings flattenToFlatten = flattened;
+   flattenToFlatten.resetOcBeforeApply = true;
+   flattenToFlatten.hasMemOffset = true;
+   flattenToFlatten.lockMHz = 2800;
+   linux_apply_ceiling_reset_state();
+   auto flattenPlan = linux_apply_clock_ceiling_plan(&g, &flattenToFlatten, &flattened);
+   CHECK(flattenPlan.required &&
+         flattenPlan.reason == APPLY_CEILING_REASON_REQUESTED_FLATTEN &&
+         !flattenPlan.symmetricFallbackAllowed);
+   CHECK(linux_apply_arm_transition_ceiling(&g, &flattenToFlatten, &flattened));
+   CHECK(!g_linuxCeilingArmed);
+
+   DesiredSettings flattenToStock{};
+   flattenToStock.resetOcBeforeApply = true;
+   flattenToStock.hasMemOffset = true;
+   flattenToStock.hasGpuOffset = true;
+   linux_apply_ceiling_reset_state();
+   auto stockPlan = linux_apply_clock_ceiling_plan(&g, &flattenToStock, &flattened);
+   CHECK(stockPlan.required &&
+         stockPlan.reason == APPLY_CEILING_REASON_RESET_DROPS_CAP &&
+         !stockPlan.symmetricFallbackAllowed);
+   CHECK(linux_apply_arm_transition_ceiling(&g, &flattenToStock, &flattened));
+   CHECK(!g_linuxCeilingArmed);
+
+   g.nvml.setGpuLockedClocks = fixedOnly;
+   cap = 0;
+   DesiredSettings flattenToHard = next;
+   flattenToHard.resetOcBeforeApply = true;
+   flattenToHard.hasMemOffset = true;
+   linux_apply_ceiling_reset_state();
+   auto hardPlan = linux_apply_clock_ceiling_plan(&g, &flattenToHard, &flattened);
+   CHECK(hardPlan.required &&
+         hardPlan.reason == APPLY_CEILING_REASON_REQUESTED_LOCK &&
+         hardPlan.symmetricFallbackAllowed);
+   CHECK(linux_apply_arm_transition_ceiling(&g, &flattenToHard, &flattened));
+   CHECK(g_linuxCeilingArmed && cap == hardPlan.ceilingMHz);
+
+   // Even when a non-resetting HARD request also writes memory over an
+   // outgoing flatten, the requested HARD lock keeps symmetric fallback.
+   DesiredSettings nonResetHard = flattenToHard;
+   nonResetHard.resetOcBeforeApply = false;
+   linux_apply_ceiling_reset_state();
+   auto nonResetHardPlan = linux_apply_clock_ceiling_plan(&g, &nonResetHard, &flattened);
+   CHECK(nonResetHardPlan.required &&
+         nonResetHardPlan.reason == APPLY_CEILING_REASON_REQUESTED_LOCK &&
+         nonResetHardPlan.symmetricFallbackAllowed);
+
+   // Linux sparse memory-only Apply with committed == nullptr still detects a
+   // live flattened/negative VF curve and requires maximum-only protection.
+   g.freqOffsets[0] = -300000;
+   linux_apply_ceiling_reset_state();
+   auto liveFlattenMemPlan = linux_apply_clock_ceiling_plan(&g, &memory, nullptr);
+   CHECK(liveFlattenMemPlan.required && liveFlattenMemPlan.arm &&
+         !liveFlattenMemPlan.symmetricFallbackAllowed &&
+         liveFlattenMemPlan.reason == APPLY_CEILING_REASON_MEMORY_DROPS_FLATTEN);
+   cap = 0;
+   CHECK(!linux_apply_arm_transition_ceiling(&g, &memory, nullptr));
+   CHECK(cap == 0);
+   // Over an active HARD pin or a clean stock curve, sparse memory-only Apply
+   // needs no extra ceiling.
+   linux_apply_ceiling_reset_state();
+   CHECK(!linux_apply_clock_ceiling_plan(&g, &memory, &old).required);
+   g.freqOffsets[0] = 0;
+   linux_apply_ceiling_reset_state();
+   CHECK(!linux_apply_clock_ceiling_plan(&g, &memory, nullptr).required);
+   g.nvml.setGpuLockedClocks = setCap;
+
+   // Windows guard: resetting FLATTEN->HARD with memory still permits
+   // symmetric fallback even if caller passed memoryMayDropFlatten=true.
+   g_app.lockMode = LOCK_MODE_FLATTEN;
+   ApplyClockCeilingGuard hardGuard(&flattenToHard, false, false, nullptr, true);
+   CHECK(hardGuard.plan.required &&
+         hardGuard.plan.reason == APPLY_CEILING_REASON_REQUESTED_LOCK &&
+         hardGuard.plan.symmetricFallbackAllowed);
+   ApplyClockCeilingGuard flattenGuard(&flattenToFlatten, false, false, nullptr, true);
+   CHECK(flattenGuard.plan.required &&
+         flattenGuard.plan.reason == APPLY_CEILING_REASON_REQUESTED_FLATTEN &&
+         !flattenGuard.plan.symmetricFallbackAllowed);
    g_app = {};
  }
  // Reset power follows a verified stock curve. A failed curve leaves the

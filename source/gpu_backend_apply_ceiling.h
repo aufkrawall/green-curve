@@ -113,12 +113,13 @@ struct ApplyClockCeilingGuard {
         if (modeled) plan = apply_clock_ceiling_merge_modeled(plan, *modeled,
             g_nvml_api.setGpuLockedClocks && g_nvml_api.resetGpuLockedClocks);
         debug_log("apply ceiling: plan arm=%d required=%d reason=%s ceiling=%u MHz"
-                  " finalPin=%d symFallback=%d (hasLock=%d mode=%s lockMHz=%u"
+                  " finalPin=%d symFallback=%d memDropFlatten=%d (hasLock=%d mode=%s lockMHz=%u"
                   " resetToStock=%d outgoingHoldsDown=%d outgoingCeiling=%u"
                   " outgoingMode=%s nvmlSet=%d nvmlReset=%d)\n",
             plan.arm ? 1 : 0, plan.required ? 1 : 0,
             apply_clock_ceiling_reason_name(plan.reason), plan.ceilingMHz,
             plan.finalPinIsCeiling ? 1 : 0, plan.symmetricFallbackAllowed ? 1 : 0,
+            memoryMayDropFlatten ? 1 : 0,
             desired->hasLock ? 1 : 0, lock_mode_name(desired->lockMode),
             desired->lockMHz, resetsToStock ? 1 : 0, outgoingHoldsDown ? 1 : 0,
             outgoingCeiling, lock_mode_name(g_app.lockMode),

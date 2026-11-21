@@ -44,6 +44,15 @@ static unsigned int linux_outgoing_ceiling_mhz(const LinuxGpuState* g,
     return peakMHz;
 }
 
+static bool linux_outgoing_curve_has_negative_offsets(const LinuxGpuState* g) {
+    if (!g) return false;
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (g->curve[i].freq_kHz == 0) continue;
+        if (g->freqOffsets[i] < 0) return true;
+    }
+    return false;
+}
+
 // Whether a reset-to-stock would RAISE this GPU on its way through: the
 // outgoing state is being held down by something the reset removes.
 static bool linux_outgoing_state_holds_clocks_down(const LinuxGpuState* g,
@@ -54,11 +63,7 @@ static bool linux_outgoing_state_holds_clocks_down(const LinuxGpuState* g,
         return true;
     if (committed && committed->hasGpuOffset && committed->gpuOffsetMHz < 0)
         return true;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (g->curve[i].freq_kHz == 0) continue;
-        if (g->freqOffsets[i] < 0) return true;
-    }
-    return false;
+    return linux_outgoing_curve_has_negative_offsets(g);
 }
 
 static bool g_linuxScopedCurveCeilingTransition = false;
@@ -75,15 +80,20 @@ static ApplyClockCeilingPlan linux_apply_clock_ceiling_plan(
     LinuxGpuState* g, const DesiredSettings* d,
     const DesiredSettings* committed = nullptr) {
     if (!g || !d) return ApplyClockCeilingPlan{};
+    const bool resetsToStock = d->resetOcBeforeApply != 0 || g_linuxScopedCurveCeilingTransition;
     const bool replacesClockDomain = service_request_replaces_lock_domain(d) ||
         g_linuxScopedCurveCeilingTransition ||
         (d->resetOcBeforeApply && linux_apply_ceiling_scope_is_replace_profile(d, 0));
-    const bool memoryMayDropFlatten = d->hasMemOffset && committed &&
-        committed->hasLock && committed->lockMode == LOCK_MODE_FLATTEN;
+    const bool outgoingHardPin = committed && committed->hasLock &&
+        committed->lockMode == LOCK_MODE_HARD && committed->lockMHz > 0;
+    const bool outgoingFlatten = (committed && committed->hasLock &&
+        committed->lockMode == LOCK_MODE_FLATTEN) ||
+        (!outgoingHardPin && linux_outgoing_curve_has_negative_offsets(g));
+    const bool memoryMayDropFlatten = !resetsToStock && d->hasMemOffset && outgoingFlatten;
     return apply_clock_ceiling_plan(
         replacesClockDomain, d->hasLock != 0, (int)d->lockMode, d->lockMHz,
         g->nvml.setGpuLockedClocks != nullptr && g->nvml.resetGpuLockedClocks != nullptr,
-        d->resetOcBeforeApply != 0 || g_linuxScopedCurveCeilingTransition,
+        resetsToStock,
         linux_outgoing_state_holds_clocks_down(g, committed),
         linux_outgoing_ceiling_mhz(g, committed), memoryMayDropFlatten);
 }

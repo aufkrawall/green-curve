@@ -138,8 +138,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         set_message(result, resultSize, "This driver's VF offset range cannot flatten the curve");
         return false;
     }
-    const bool memoryMayDropFlatten = desired->hasMemOffset &&
-        (outgoingOwnedFlatten || g_app.lockMode == LOCK_MODE_FLATTEN) &&
+    const bool memoryMayDropFlatten = !desired->resetOcBeforeApply && !releasesCurveCeiling &&
+        desired->hasMemOffset && (outgoingOwnedFlatten || g_app.lockMode == LOCK_MODE_FLATTEN) &&
         apply_plan_mem_offset_write(g_app, (int)(desired_memory_hz(*desired) / 1000));
     ApplyClockCeilingGuard clockCeiling(desired, releasesCurveCeiling,
         scalarReview.installedGuardRequired, &scalarReview.modeledCeiling, memoryMayDropFlatten);

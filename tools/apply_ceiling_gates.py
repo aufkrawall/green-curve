@@ -111,6 +111,16 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # would be invisible until a platform-specific TDR report.
     require_text(policy_h, "static inline ApplyClockCeilingPlan apply_clock_ceiling_plan(",
                  "the transition-ceiling decision exists exactly once")
+    require_text(policy_h, "const bool memoryProtection = memoryMayDropFlatten && !resetsToStock;",
+                 "memory-drop-flatten protection never overrides resetting full profile switches")
+    require_text(policy_h, "plan.symmetricFallbackAllowed = incomingLock && lockMode == LOCK_MODE_HARD;",
+                 "HARD lock requests retain symmetric fallback even when memory is written")
+    require_text(apply_cpp, "const bool memoryMayDropFlatten = !desired->resetOcBeforeApply && !releasesCurveCeiling &&",
+                 "Windows only flags memoryMayDropFlatten on non-resetting memory writes")
+    require_text(linux_ceiling_h, "linux_outgoing_curve_has_negative_offsets(g)",
+                 "Linux detects live flattened/negative curves even without committed intent")
+    require_text(linux_ceiling_h, "const bool memoryMayDropFlatten = !resetsToStock && d->hasMemOffset && outgoingFlatten;",
+                 "Linux scopes memoryMayDropFlatten to non-resetting memory writes over flattened/negative curves")
     require_text(policy_h, "static inline bool apply_clock_ceiling_release_on_abandon(",
                  "the abandoned-clamp rule is named rather than open-coded")
 
