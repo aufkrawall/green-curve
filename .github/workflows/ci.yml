@@ -4,11 +4,10 @@ name: CI
 # requests; expensive stable-release publication remains a separate manual
 # workflow.
 #
-# Actions are pinned to commit SHAs rather than tags, and the compilers come
-# from this repository's own Compilers release with SHA-256 pins in
-# compilers/*/manifest.json.  Unlike the release workflow, CI does keep a
-# toolchain cache: it publishes nothing, and every restored tree is re-verified
-# against the manifest before it is used.
+# Actions are pinned to commit SHAs rather than tags. Release toolchains come
+# from this repository's Compilers release with SHA-256 pins in the manifests.
+# The Windows MSVC-ABI build uses a separately pinned upstream LLVM download.
+# CI caches these downloads and verifies them again before use.
 permissions:
   contents: read
 env:
@@ -42,7 +41,7 @@ jobs:
         run: python3 tools/secret_scan.py
 
   windows:
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -52,10 +51,9 @@ jobs:
         with:
           python-version: '3.12.10'
       # The toolchains are ~190 MB of llvm-mingw plus Zig, redownloaded on every
-      # job otherwise. build.py verifies them against digests pinned in the
-      # script and in compilers/*/manifest.json (not the adjacent .sha256
-      # markers), so a restored cache is still integrity-checked before use --
-      # every binary in bin/, not just the driver.
+      # job otherwise. build.py verifies every binary in the cached release
+      # toolchains against the pinned digests. The separate upstream LLVM
+      # archive is verified before extraction on every run.
       - name: Cache toolchains
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -63,8 +61,29 @@ jobs:
             llvm-mingw
             zig
             seven-zip
-          key: toolchain-windows-${{ hashFiles('build.py', 'compilers/*/manifest.json') }}
+            build-tmp/ci-msvc-llvm/LLVM-22.1.8-win64.exe
+          key: toolchain-windows-${{ hashFiles('build.py', 'compilers/*/manifest.json', '.github/workflows/ci.yml') }}
           restore-keys: toolchain-windows-
+      - name: Provision LLVM for the Visual Studio 2026 STL
+        shell: pwsh
+        run: |
+          $archive = 'build-tmp/ci-msvc-llvm/LLVM-22.1.8-win64.exe'
+          if (-not (Test-Path -LiteralPath $archive)) {
+            New-Item -ItemType Directory -Force -Path (Split-Path $archive) | Out-Null
+            curl.exe --fail --location --retry 3 --silent --show-error --output $archive `
+              'https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-win64.exe'
+            if ($LASTEXITCODE -ne 0) { throw 'LLVM download failed' }
+          }
+          $expected = '16e5709785fef73c854646241c4a92c5cd574318d1b33c63330dd7721903e55c'
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          if ($actual -ne $expected) { throw "LLVM archive SHA-256 mismatch: $actual" }
+
+          # Extract the upstream NSIS archive with full 7-Zip from the runner image.
+          $root = Join-Path $env:RUNNER_TEMP 'greencurve-msvc-llvm'
+          $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+          & $sevenZip x $archive "-o$root" -y 'bin\clang-cl.exe' 'bin\lld-link.exe' 'bin\llvm-pdbutil.exe' 'lib\clang' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'LLVM extraction failed' }
+          "GREENCURVE_MSVC_LLVM_BIN=$(Join-Path $root 'bin')" >> $env:GITHUB_ENV
       - name: Verify the pinned toolchain
         run: python build.py --verify-toolchain
       # Keep these as separate steps: PowerShell otherwise returns only the

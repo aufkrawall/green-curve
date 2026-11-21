@@ -30,6 +30,7 @@ variant; its direct auto mode still falls back loudly when the stack is absent.
 import os
 import subprocess
 import sys
+import tempfile
 
 # Search order for the LLVM tools.  The standalone LLVM install is preferred:
 # it ships lld-link and llvm-pdbutil alongside clang-cl, and its version tends
@@ -38,15 +39,15 @@ _LLVM_STANDALONE_DIRS = [
     r"C:\Program Files\LLVM\bin",
     r"C:\Program Files (x86)\LLVM\bin",
 ]
+_LLVM_BIN_ENV = "GREENCURVE_MSVC_LLVM_BIN"
 _VSWHERE = (r"C:\Program Files (x86)\Microsoft Visual Studio"
             r"\Installer\vswhere.exe")
 _PROBE_SOURCE = """\
 #include <windows.h>
-int main(void) {
-    // One indirect call so /guard:cf has something to guard even in a probe.
-    void (*local)(void) = (void (*)(void))main;
-    (void)local;
-    return 0;
+#include <memory>
+int main() {
+    auto process = std::make_unique<DWORD>(GetCurrentProcessId());
+    return *process == 0;
 }
 """
 
@@ -100,8 +101,16 @@ def _vs_install_roots():
     return roots
 
 
-def _candidate_installations():
+def _candidate_installations(override):
     """Yield candidate toolchain roots, best first."""
+    if override is not None:
+        if override:
+            directory = os.path.abspath(override)
+            yield (f"{_LLVM_BIN_ENV} ({directory})",
+                   {"clang_cl": os.path.join(directory, "clang-cl.exe"),
+                    "lld_link": os.path.join(directory, "lld-link.exe"),
+                    "pdbutil": os.path.join(directory, "llvm-pdbutil.exe")})
+        return
     # 1) Standalone LLVM installs.
     for directory in _LLVM_STANDALONE_DIRS:
         clang = os.path.join(directory, "clang-cl.exe")
@@ -152,29 +161,21 @@ def _probe_toolchain(tools, work_dir, arch="all"):
     """Fail-closed verification: compile AND link a probe with the real flag
     set for each requested architecture."""
     problems = []
-    os.makedirs(work_dir, exist_ok=True)
     source = os.path.join(work_dir, "msvc_probe.cpp")
     with open(source, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(_PROBE_SOURCE)
-    probes = {
-        "x64": ([], ["-cetcompat"]),
-        "arm64": (["--target=aarch64-pc-windows-msvc",
-                   "-mbranch-protection=standard"], []),
-    }
     arches = ("x64", "arm64") if arch == "all" else (arch,)
     for probe_arch in arches:
-        target_flags, extra_link = probes[probe_arch]
         obj = os.path.join(work_dir, f"msvc_probe_{probe_arch}.obj")
         exe = os.path.join(work_dir, f"msvc_probe_{probe_arch}.exe")
-        compiled = _capture([tools["clang_cl"], "-nologo", "-c", "-GS", "-guard:cf",
-                             "-sdl", "-W4", "-WX", "-EHs-c-", "-GR-", "-Zi",
-                             *target_flags, source, f"-Fo{obj}"])
+        compile_flags = windows_compile_flags(False, probe_arch, "0", 0, work_dir)
+        compiled = _capture([tools["clang_cl"], *compile_flags, source, f"-Fo{obj}"])
         if compiled.returncode != 0 or not os.path.isfile(obj):
             problems.append(f"{probe_arch} probe compile failed:\n{compiled.stdout}{compiled.stderr}")
             continue
-        linked = _capture([tools["lld_link"], "-nologo", "-guard:cf",
-                           "-opt:ref,icf", "-subsystem:console",
-                           *extra_link, f"-out:{exe}", obj])
+        link_flags = windows_link_flags("msvc_probe.pdb", probe_arch, debug=False)
+        linked = _capture([tools["lld_link"], *link_flags,
+                           "-entry:mainCRTStartup", f"-out:{exe}", obj, "kernel32.lib"])
         if linked.returncode != 0 or not os.path.isfile(exe):
             problems.append(f"{probe_arch} probe link failed:\n{linked.stdout}{linked.stderr}")
     return problems
@@ -233,18 +234,25 @@ def resolve_requested(mode, target, script_dir, arch="all"):
                   "from Linux)")
             sys.exit(1)
         return None
-    for label, tools in _candidate_installations():
-        if not (tools["clang_cl"] and tools["lld_link"]):
+    override = os.environ.get(_LLVM_BIN_ENV)
+    for label, tools in _candidate_installations(override):
+        if not all(tools[name] and os.path.isfile(tools[name]) for name in ("clang_cl", "lld_link")):
+            print(f"MSVC-ABI candidate is missing clang-cl.exe or lld-link.exe: {label}")
             continue
-        details = _discover_details({**tools, "label": label})
-        problems = _probe_toolchain(
-            tools, os.path.join(script_dir, "build-tmp", "msvc-probe"), arch)
+        scratch = os.path.join(script_dir, "build-tmp")
+        os.makedirs(scratch, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="msvc-probe-", dir=scratch) as work_dir:
+            problems = _probe_toolchain(tools, work_dir, arch)
         if problems:
             print(f"MSVC-ABI candidate failed verification: {label}")
             for problem in problems:
                 print(f"  {problem}")
             continue
-        return details
+        return _discover_details({**tools, "label": label})
+    if override is not None:
+        print(f"ERROR: {_LLVM_BIN_ENV} must name a directory containing a working "
+              "clang-cl.exe and lld-link.exe compatible with the installed Visual Studio STL.")
+        sys.exit(1)
     if mode == "clang-cl":
         print("ERROR: a verified clang-cl + lld-link installation is required "
               "for the native Windows MSVC variant. Install standalone "
@@ -361,6 +369,18 @@ def link_windows(lld_link, link_flags, objects, res_path, libs, output_path,
 # ---------------------------------------------------------------------------
 
 def run_self_tests():
+    from unittest.mock import patch
+
+    # An explicit directory must never pick up a linker or compiler from the host.
+    with tempfile.TemporaryDirectory() as bin_dir:
+        with patch.object(sys.modules[__name__], "_vs_install_roots",
+                          side_effect=AssertionError("explicit LLVM must skip discovery")):
+            (_, candidate), = _candidate_installations(bin_dir)
+        for key, name in (("clang_cl", "clang-cl.exe"), ("lld_link", "lld-link.exe"),
+                          ("pdbutil", "llvm-pdbutil.exe")):
+            if candidate[key] != os.path.join(bin_dir, name):
+                raise AssertionError(f"explicit LLVM must resolve {name} in the same directory")
+
     compile_flags = windows_compile_flags(
         service=True, arch="arm64", app_version="1.2", build_number=7,
         source_dir=r"C:\src\source")

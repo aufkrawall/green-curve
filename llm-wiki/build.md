@@ -90,7 +90,10 @@ depends on it),
 the hardened flag builders, and the object-first compile/link helpers. The
 native Windows default requires a verified MSVC installation because it must
 produce both variants; `--toolchain clang-cl` and `--toolchain llvm-mingw` select
-one explicitly. Linux hosts and Linux-only targets use the release path.
+one explicitly. `GREENCURVE_MSVC_LLVM_BIN` selects a single LLVM `bin` directory
+for `clang-cl` and `lld-link`. A missing or incompatible pair fails verification
+without searching other locations. Linux hosts and Linux-only targets use the
+release path.
 
 MSVC-ABI compile flags (cl-style; clang-cl rejects GNU-style flags under -WX,
 and `-Oz` is unavailable — `-O1` is the size floor):
@@ -870,10 +873,28 @@ the pinned llvm-mingw Linux archive targets an older glibc, so it still runs.
 `check_workflow_structure()` in `--test`/`--gates`) rejects any `ubuntu-*` label
 that is not `ubuntu-NN.NN[-arm]`; its self-test covers both the floating and the
 pinned form. Moving to a newer image is a deliberate edit: first confirm the
-pinned Python exists for it and that `clang-tidy-18` installs. The Windows job
-still uses `windows-latest` (it currently resolves to a Windows Server 2025
-image and passes); the gate does not cover it. Stale-risk: unverified whether a
-pinned Windows label would be preferable.
+pinned Python exists for it and that `clang-tidy-18` installs.
+
+**Windows CI pins native LLVM (2026-11-21).** The `windows-2025-vs2026` runner
+provided standalone LLVM 20.1.8 and MSVC 14.52 headers that require Clang 22.
+The old probe included only the Windows SDK and passed before the matrix
+failed with `STL1000`. The probe in `tools/msvc_toolchain.py` now includes
+`<memory>` and compiles and links x64 and ARM64 with the same production flag
+builders, including x64 ThinLTO. A rejected candidate reports the architecture
+and the compiler or linker diagnostics.
+
+Windows CI names the VS 2026 image explicitly and checks the SHA-256 of the
+official LLVM 22.1.8 archive on every run, including cache hits. It extracts the
+MSVC-ABI tools into runner scratch space and selects them through
+`GREENCURVE_MSVC_LLVM_BIN`. The pinned llvm-mingw and Zig release toolchains
+remain independent of this LLVM installation. Runner image servicing can
+raise the STL compiler minimum again; the verification step reports that
+mismatch before the full matrix.
+
+Local verification used the runner's MSVC 14.52 header version. The original
+probe accepted LLVM 20.1.8 and the updated probe rejected it on both targets
+with `STL1000`. The pinned LLVM 22.1.8 archive passed both probes and the
+full check-build matrix. A hosted run with the new configuration is pending.
 
 `python build.py --test` already enables UBSan, so CI runs it once. The former
 additional `--test --sanitizer` step was identical coverage, not a stronger

@@ -1,11 +1,13 @@
 # Compilers — Green Curve Build Toolchain
 
-This folder is the record of the exact toolchain `build.py` is allowed to
-build with: upstream sources, integrity checksums, access timestamps, licences,
-and the digest of every binary the build actually executes.
+This folder records the exact toolchains `build.py` uses for release artifacts:
+upstream sources, integrity checksums, access timestamps, licences, and the
+digest of every binary from these toolchains that the build executes.
 
-Nothing here is advisory. `build.py` refuses to run a compiler, linker or
-archiver whose SHA-256 does not match what these manifests record.
+`build.py` refuses to run a release compiler, linker or archiver whose SHA-256
+does not match these manifests. The additional native Windows MSVC-ABI variant
+uses Visual Studio and the Windows SDK with a separate LLVM installation.
+Windows CI pins that LLVM download in `.github/workflows/ci.yml`.
 
 ## Contents
 
