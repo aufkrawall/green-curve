@@ -134,8 +134,10 @@ re-verifies v2 bytes, signature, expiry and an unchanged v1. Covered by
 by `--gates`). Without the flag `release_post` is initial publication, which
 verifies provenance before signing, validates both local signatures even in
 dry-run, requires the latest release before signing/upload, and compares all
-four delivered assets with local bytes. No real
-release asset was signed or published by either change; renewal remains a maintainer action.
+four delivered assets with local bytes. The 2026-10-01 tooling change itself
+did not sign or publish a release asset. The first live renewal ran on
+2026-11-22 for 0.31.0 with the documented dry-run/live flow; renewal remains a
+maintainer action.
 The prompt for it is `.github/workflows/freshness.yml` (2026-10-22): a daily
 run of `tools/freshness_watch.py` that anonymously fetches the latest v2 pair,
 verifies it against `GC_UPDATE_PUBLIC_KEY_ACTIVE`, and fails from
@@ -1184,7 +1186,8 @@ Attestations remain forensic evidence rather than a replacement for the offline
 signing trust root. Full post-publication execution of the corrected command
 was performed live for the first time by the 0.28 release on 2026-10-05
 (dry run first, then download/provenance/sign/upload/anonymous delivery),
-see "Last verified"; `--renew-freshness` remains the one path with no live run.
+see "Last verified". The first live `--renew-freshness` run renewed 0.31.0 on
+2026-11-22.
 
 #### Key-file ACL gate
 
@@ -1702,6 +1705,28 @@ be started, the closed GUIs are not relaunched.
 
 ## Last verified
 
+- 2026-11-22 (**0.31.0 freshness renewed**): the documented dry run followed
+  by the live `tools/release_post.py --renew-freshness` run replaced only the
+  two version-independent v2 assets. The local and remote tags both resolved
+  to `34c57298b972de30c25857a6e61acd86e68dd834`, and `0.31.0` remained
+  `releases/latest`. The tool verified the published v1 signature, both
+  installers' release-workflow provenance, and that the renewed envelope wraps
+  the exact 475-byte published v1 manifest. The new envelope was issued
+  `2026-11-22T20:41:43Z` and expires `2026-12-22T20:41:43Z` (exactly 30 days).
+  New public hashes are v2 manifest
+  `764907e781be593d4599e8eda2348380e067fdc7319b9ca9d5d6516090231de8`
+  and signature
+  `8f473ae250e54f6789f432c47b39322cb4ba18f29348084eb2d05a9750f9a04d`.
+  The release inventory stayed at 21 assets and every non-v2 asset kept its
+  identity, size, digest, and release metadata. Anonymous delivery verified
+  the new signature and v2-to-v1 binding; the manually dispatched freshness
+  workflow `45067937146` passed and reported 30.0 days remaining. The prior
+  valid v2 pair was verified before replacement and retained as a temporary
+  rollback point, but no rollback was needed and the temporary copy was
+  removed. The renewal itself made no source, installer, tag, or release-body
+  change, and no live client update-status click-through was rerun for this
+  metadata-only operation.
+
 - 2026-10-22 (**0.30.0 released**): stable tag targets `bba83d97bb4e11da517855f1d9076088cd7a7a35`;
   CI `39830049166` and release workflow `39832643745` passed. All 21 assets are
   published. `tools/release_post.py` verified both GitHub-built installers'
@@ -1760,8 +1785,9 @@ be started, the closed GUIs are not relaunched.
   `f62275a7615bac3bd9717edb3ee70f268762d7dc47552f95d888878965e89390`.
   v2 envelope: issued `2026-10-05T18:53:55Z`, expires `2026-11-04T18:53:55Z`
   (30 days) -- **renew with `release_post.py --renew-freshness` before that
-  instant**; expiry is fail-closed for cached and staged metadata. Renewal
-  itself is still unexercised live.
+  instant**; expiry is fail-closed for cached and staged metadata. At that
+  time, renewal had not yet been exercised live; the first live run was
+  2026-11-22.
   Post-publication checks through the client's fixed `releases/latest/download`
   URLs: v1 and v2 signatures verified over the network bytes against
   `GC_UPDATE_PUBLIC_KEY_ACTIVE`, fetched bytes identical to the locally

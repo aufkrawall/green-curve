@@ -5,6 +5,27 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-22: Renew the 0.31.0 update-freshness envelope
+
+- Ran the documented dry run and then the first live
+  `release_post.py --renew-freshness`, after independently checking the latest
+  release, local/remote tag identity, signing-key/ACL preflight, GitHub clock
+  agreement, and a verified rollback copy.
+- The tool revalidated the published v1 signature and both installers'
+  release-workflow provenance, then replaced only
+  `greencurve-update-v2.txt` and `.sig`. The new envelope carries the exact
+  475-byte v1 manifest, was issued `2026-11-22T20:41:43Z`, and expires
+  `2026-12-22T20:41:43Z`.
+- Postflight proved all 21 release assets remained present and every non-v2
+  asset kept its identity, size, digest, and release metadata. Anonymous
+  delivery verified the new signature and v2-to-v1 binding; manual freshness
+  workflow [45067937146](https://github.com/aufkrawall/green-curve/actions/runs/45067937146)
+  passed with 30.0 days remaining.
+- The renewal itself required no source, installer, tag, release-body, or
+  changelog change. The temporary rollback copy was removed after success.
+  The remaining risks are the already documented non-atomic two-asset
+  replacement and concurrent remote publication.
+
 ## 2026-11-21: Review follow-ups across Windows fan handback, clock ceiling, explicit-release profiles, and Linux upgrade rollback
 
 - **Windows fan Auto handback & Reset guard:** cleared `g_app.fanIsAuto` on failed reads and operational policy-read errors (`main_runtime_nvml_fans.cpp`), added per-fan `policyUnsupported` provenance (`control_readback_policy.h`) so older drivers/GPUs lacking `nvmlDeviceGetFanControlPolicy_v2` still confirm Auto from verified per-fan writes + consistent fan count, gated `service_reset_fan_to_driver()` on `app_fan_control_known_absent()`, complete positive policy readback, and `!service_owned_fan_is_non_auto()`, and extended `service_shutdown_owned_fan()` and Reset failure retention to cover emergency-owned manual fan intent (`tests/fan_handback_runtime_tests.cpp` `12903-12910`, `12920-12926`).
