@@ -1,5 +1,37 @@
 # GPU Backend
 
+## Per-point VF negative offset floor decoupling (2026-11-23)
+
+Source anchors: `source/vf_offset_range_policy.h`, `source/vf_offset_range_runtime.h`,
+`source/hardware_capture_getters.h`, `source/hardware_capture_runtime.h`,
+`source/main_secure_write.cpp`, `source/gpu_backend_curve_write.h`,
+`source/linux_backend_nvml_write.cpp`, `source/linux_backend_vf_write.h`,
+`source/linux_graphics_offset_control.h`, `source/linux_memory_curve_policy.h`,
+`tests/gpu_generation_sim_tests.cpp`, `tests/gpu_generation_sim_edge_tests.cpp`.
+
+Neither NVML nor NvAPI Pstates20 exposes a dedicated per-point VF delta range:
+both report the scalar P0 graphics offset bounds, whose negative floor must keep
+the lowest idle point positive (for example `-200..+1200 MHz` on Pascal GP102
+where point 0 sits at `215 MHz`, or `-1000 MHz` on Blackwell). Live Windows
+Pascal GP102 dumps confirmed both accurate `2x` VF unit decoding on Windows and
+driver acceptance of `-1038 MHz` (`-2076000` raw) per-point VF deltas alongside
+a `-200..+1200 MHz` scalar range; Blackwell captures similarly observed
+`-2045 MHz` per-point deltas against a `-1000 MHz` scalar minimum.
+
+- **Invariant:** `vf_offset_range_for_vf_points()` (and its 64-bit Hz partner
+  `vf_offset_range_for_vf_points_hz()`) widens the per-point VF negative bound
+  to at least `-VF_OFFSET_RANGE_VF_NEG_FLOOR_KHZ` (`-2500 MHz`) whenever a
+  probed scalar range permits negative offsets (`minKHz < 0`). Positive-only
+  boards (`minKHz >= 0`) stay non-flattenable, wider driver minimums (such as
+  `-3000 MHz`) are preserved, the reported positive maximum is kept, and scalar
+  GPU offset limits remain strictly enforced at the NVML scalar bounds.
+- **Diagnostics:** Windows and Linux VF batch writers log
+  `offsetRange=%d..%dkHz` on every batch pass; range widening is logged once per
+  distinct range tuple, and `--dump` / capture summaries label widened bounds.
+- **Open question:** Physical Pascal GP102 hardware acceptance of uniform
+  `-2500 MHz` flatten tail floors (vs. graduated per-point `-1038 MHz` deltas)
+  remains pending live user confirmation.
+
 ## Exact Windows power reset (2026-11-20)
 
 `main_service_apply_runtime.cpp` compares the live current and default power

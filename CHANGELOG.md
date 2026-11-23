@@ -55,6 +55,9 @@ Curve editing, profile transfer and capture improve.
 
 ### Fixed
 
+- **Deep undervolting and Pascal curves:** allow per-point curve undervolting beyond narrow scalar GPU offset minimums (such as Pascal's -200 MHz global limit) while keeping global GPU offset limits unchanged.
+- **Windows probe command:** write default `--probe` reports into the user data directory and resolve relative output paths on the client so the background service accepts them.
+- **Captured curve display:** show preserved lower-voltage point offsets alongside flattened curves in Save Current summaries and Windows profile load previews.
 - **Windows cooling:** verify Auto on every fan (including older drivers without policy readback), enforce Reset and shutdown handback for emergency cooling, skip fanless GPUs cleanly, and keep fan faults when post-Apply repair fails.
 - **Linux Reset:** restore stock clocks before stock power and clear both memory controls. Failures recover under the prior clock bound.
 - **Linux fanless GPUs:** Reset restores clocks without requiring fan control.

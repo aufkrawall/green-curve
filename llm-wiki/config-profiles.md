@@ -343,9 +343,14 @@ Source anchors: `source/profile_capture_proposals.h` (`profile_capture_judge_cur
   `lockStatus/clockMax/clockMin/voltageUv`.
 - **Open questions.** The table is validated on one Blackwell board and driver
   (Windows); other generations, Linux NvAPI and memory locks (presumably entries
-  2/3) are unverified, and any unobserved entry makes the reading unknown. The
-  VF per-point offset range is still NVML's graphics range although the driver
-  accepted -2045 MHz per-point offsets; widening it is a separate decision.
+  2/3) are unverified, and any unobserved entry makes the reading unknown. As of
+  2026-11-23, `vf_offset_range_for_vf_points()` widens the per-point VF negative
+  bound to `-2500 MHz` whenever NVML permits negative offsets (allowing both
+  Pascal `-1038 MHz` and Blackwell `-2045 MHz` captures and deep flattens),
+  `profile_capture_summary()` appends preserved lower-voltage point offset
+  counts to recognized flatten summaries, and `gui_draft_desired_point_mhz()`
+  projects `curvePointCaptured[ci]` over `stockBaseKHz` on Windows Load preview
+  to match the Linux TUI.
 
 ## Capture lock proposals (2026-11-15)
 

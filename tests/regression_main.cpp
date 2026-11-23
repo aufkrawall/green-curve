@@ -1110,6 +1110,12 @@ int run_vf_live_offset_tests();
 // Stock-base VF curve estimation for GUI/TUI previews under driver cross-talk
 // and monotonically clamped flat tails (tests/vf_stock_base_tests.cpp, 12520-12542).
 int run_vf_stock_base_tests();
+// Multi-generation hardware-free GPU simulation suite: Pascal GP102, Ampere,
+// Blackwell, positive-only boards, VF negative floor, Windows --probe path
+// resolution, Save Current pre-tail summaries, and GUI captured-point preview
+// (tests/gpu_generation_sim_tests.cpp, 13000-13083).
+int run_gpu_generation_sim_tests();
+int run_gpu_generation_sim_edge_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
 int run_linux_curve_correction_runtime_tests();
@@ -2884,6 +2890,14 @@ static int run_all_tests(int argc, char** argv) {
     if (int vfStockBaseFailure = run_vf_stock_base_tests()) {
         fprintf(stderr, "VF stock-base preview regression failed: %d\n", vfStockBaseFailure);
         return vfStockBaseFailure;
+    }
+    if (int gpuGenSimFailure = run_gpu_generation_sim_tests()) {
+        fprintf(stderr, "Multi-generation GPU simulation regression failed: %d\n", gpuGenSimFailure);
+        return gpuGenSimFailure;
+    }
+    if (int gpuGenEdgeFailure = run_gpu_generation_sim_edge_tests()) {
+        fprintf(stderr, "Multi-generation GPU edge simulation regression failed: %d\n", gpuGenEdgeFailure);
+        return gpuGenEdgeFailure;
     }
     if (int captureFailure = run_hardware_capture_tests()) {
         fprintf(stderr, "hardware capture regression failed: %d\n", captureFailure);

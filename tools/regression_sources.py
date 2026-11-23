@@ -106,4 +106,6 @@ REGRESSION_SOURCES = (
     'profile_ini_slot_tests.cpp',
     'profile_tools_tests.cpp',
     'tui_profile_tools_tests.cpp',
+    'gpu_generation_sim_tests.cpp',
+    'gpu_generation_sim_edge_tests.cpp',
 )
