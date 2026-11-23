@@ -76,6 +76,23 @@ enum VfOffsetRangeSource {
 // breaking FLATTEN on unprobeable boards.
 enum { VF_OFFSET_RANGE_FALLBACK_LIMIT_KHZ = 1000000 };
 
+// Minimum negative per-point VF curve delta permitted when the driver allows
+// negative graphics offsets at all (scalarMinKHz < 0).
+//
+// Neither NVML nor NvAPI Pstates20 exposes a dedicated per-point VF delta
+// range: both report the SCALAR P0 graphics offset bounds, whose negative
+// floor must keep the lowest idle point positive (e.g. -200 MHz on Pascal
+// GP102 where point 0 sits at 215 MHz, or -1000 MHz on Blackwell). Live
+// captures prove per-point VF control accepts far deeper negative deltas
+// (e.g. -1038 MHz on Pascal GP102, -2045 MHz on Blackwell).
+//
+// Keeping the driver's reported positive upper bound (maxKHz) and preserving
+// positive-only boards (scalarMinKHz >= 0) while ensuring the per-point
+// negative bound reaches at least -VF_OFFSET_RANGE_VF_NEG_FLOOR_KHZ lets deep
+// undervolting/flatten and exact capture replay work across GPU generations
+// without relaxing scalar GPU offset limits.
+enum { VF_OFFSET_RANGE_VF_NEG_FLOOR_KHZ = 2500000 };
+
 static inline VfOffsetRange vf_offset_range_fallback() {
     VfOffsetRange r = {};
     r.minKHz = -VF_OFFSET_RANGE_FALLBACK_LIMIT_KHZ;
@@ -94,6 +111,42 @@ static inline VfOffsetRange vf_offset_range_from_probe(bool probed, int minKHz,
     r.maxKHz = maxKHz;
     r.known = true;
     return r;
+}
+
+// Derive the per-point VF offset range from a probed scalar graphics range.
+// Positive-only boards (minKHz >= 0) stay unchanged; boards that allow
+// negative graphics offsets widen the VF per-point negative bound to at least
+// -VF_OFFSET_RANGE_VF_NEG_FLOOR_KHZ while keeping wider driver minimums and
+// the driver's positive maximum intact.
+static inline VfOffsetRange vf_offset_range_for_vf_points(
+    const VfOffsetRange& scalarRange) {
+    VfOffsetRange r = scalarRange;
+    if (r.known && r.minKHz < 0 && r.minKHz > -VF_OFFSET_RANGE_VF_NEG_FLOOR_KHZ) {
+        r.minKHz = -VF_OFFSET_RANGE_VF_NEG_FLOOR_KHZ;
+    }
+    return r;
+}
+
+static inline bool vf_offset_range_was_neg_widened(
+    const VfOffsetRange& scalarRange, const VfOffsetRange& vfRange) {
+    return vfRange.minKHz < scalarRange.minKHz;
+}
+
+// 64-bit Hz counterpart for hardware capture so wide driver ranges are never
+// truncated through 32-bit kHz.
+static inline void vf_offset_range_for_vf_points_hz(
+    bool rangeReported, long long scalarMinHz, long long scalarMaxHz,
+    long long* vfMinHzOut, long long* vfMaxHzOut) {
+    long long mn = -(long long)VF_OFFSET_RANGE_FALLBACK_LIMIT_KHZ * 1000LL;
+    long long mx = (long long)VF_OFFSET_RANGE_FALLBACK_LIMIT_KHZ * 1000LL;
+    if (rangeReported && scalarMinHz <= scalarMaxHz) {
+        mn = scalarMinHz;
+        mx = scalarMaxHz;
+        const long long negFloorHz = -(long long)VF_OFFSET_RANGE_VF_NEG_FLOOR_KHZ * 1000LL;
+        if (mn < 0 && mn > negFloorHz) mn = negFloorHz;
+    }
+    if (vfMinHzOut) *vfMinHzOut = mn;
+    if (vfMaxHzOut) *vfMaxHzOut = mx;
 }
 
 // The magnitude beyond which a requested offset is refused before any write.

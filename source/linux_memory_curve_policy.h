@@ -17,8 +17,9 @@ static inline bool linux_memory_curve_precheck(const LinuxGpuState* g, const Des
             gc_snprintf(why, size, "read-only VF point %d cannot be preserved across the memory change", i); return false;
         }
     }
-    const VfOffsetRange range = vf_offset_range_from_probe(g->curveOffsetRangeKnown,
-        g->curveOffsetMinKHz, g->curveOffsetMaxKHz);
+    const VfOffsetRange range = vf_offset_range_for_vf_points(
+        vf_offset_range_from_probe(g->curveOffsetRangeKnown,
+            g->curveOffsetMinKHz, g->curveOffsetMaxKHz));
     int bad = -1;
     if (!curve_exact_targets_representable(g->backend, range, mask, snapshot->curveOffsetsHz, &bad)) {
         gc_snprintf(why, size, "existing VF point %d is not representable for memory preservation", bad); return false;

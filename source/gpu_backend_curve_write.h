@@ -121,6 +121,7 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
         unsigned char writeMask[32] = {};
         bool anyPendingWrite = false;
         int pointsInPass = 0;
+        int minPassOffsetKHz = 0, maxPassOffsetKHz = 0;
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (!pendingMask[i]) continue;
             int currentDelta = 0;
@@ -139,6 +140,12 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
             }
             memcpy(&buf[deltaOffset], &rawDelta, sizeof(rawDelta));
             writeMask[i / 8] |= (unsigned char)(1u << (i % 8));
+            if (pointsInPass == 0) {
+                minPassOffsetKHz = maxPassOffsetKHz = desiredOffsets[i];
+            } else {
+                if (desiredOffsets[i] < minPassOffsetKHz) minPassOffsetKHz = desiredOffsets[i];
+                if (desiredOffsets[i] > maxPassOffsetKHz) maxPassOffsetKHz = desiredOffsets[i];
+            }
             anyPendingWrite = true;
             pointsInPass++;
         }
@@ -149,12 +156,12 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
         char phase[128] = {};
         StringCchPrintfA(phase, ARRAY_COUNT(phase), "VF curve batch pass: pass=%d points=%d", pass + 1, pointsInPass);
         set_last_apply_phase(phase);
-        debug_log("curve batch pass %d begin: points=%d maskBytes=%02X%02X%02X%02X\n",
-            pass + 1, pointsInPass,
+        debug_log("curve batch pass %d begin: points=%d offsetRange=%d..%dkHz maskBytes=%02X%02X%02X%02X\n",
+            pass + 1, pointsInPass, minPassOffsetKHz, maxPassOffsetKHz,
             writeMask[0], writeMask[1], writeMask[2], writeMask[3]);
         int setRet = setFunc(g_app.gpuHandle, buf);
-        debug_log("curve batch pass %d: points=%d ret=%d maskBytes=%02X%02X%02X%02X\n",
-            pass + 1, pointsInPass, setRet,
+        debug_log("curve batch pass %d: points=%d offsetRange=%d..%dkHz ret=%d maskBytes=%02X%02X%02X%02X\n",
+            pass + 1, pointsInPass, minPassOffsetKHz, maxPassOffsetKHz, setRet,
             writeMask[0], writeMask[1], writeMask[2], writeMask[3]);
         if (setRet != 0) {
             batchFailed = true;

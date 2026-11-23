@@ -239,6 +239,7 @@ static void detect_clock_offsets(bool freshMemoryGetter = false);
 static int uniform_curve_offset_khz();
 static void set_curve_offset_range_khz(int minkHz, int maxkHz);
 static bool get_curve_offset_range_khz(int* minkHz, int* maxkHz);
+static const char* vf_offset_range_current_label();
 static int clamp_freq_delta_khz(int freqDelta_kHz);
 static bool nvapi_set_point(int pointIndex, int freqDelta_kHz);
 static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* pointMask, int maxBatchPasses,

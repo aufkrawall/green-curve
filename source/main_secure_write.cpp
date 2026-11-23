@@ -568,14 +568,9 @@ static bool write_log_snapshot(const char* path, char* err, size_t errSize) {
     appendf("GPU offset: %d MHz", g_app.gpuClockOffsetkHz / 1000);
     if (g_app.gpuOffsetRangeKnown) appendf(" (range %d..%d)", g_app.gpuClockOffsetMinMHz, g_app.gpuClockOffsetMaxMHz);
     appendf("\r\n");
-    int curveMinkHz = 0;
-    int curveMaxkHz = 0;
-    bool curveRangeKnown = get_curve_offset_range_khz(&curveMinkHz, &curveMaxkHz);
-    appendf("VF curve delta clamp: %d..%d kHz", curveMinkHz, curveMaxkHz);
-    appendf("%s\r\n",
-        g_app.curveOffsetRangeKnown ? " (driver curve range)" :
-        curveRangeKnown ? " (graphics offset fallback)" :
-        " (default fallback)");
+    int curveMinkHz = 0, curveMaxkHz = 0;
+    get_curve_offset_range_khz(&curveMinkHz, &curveMaxkHz);
+    appendf("VF curve delta clamp: %d..%d kHz%s\r\n", curveMinkHz, curveMaxkHz, vf_offset_range_current_label());
     appendf("Mem offset: %d MHz", mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
     if (g_app.memOffsetRangeKnown) appendf(" (range %d..%d)", g_app.memClockOffsetMinMHz, g_app.memClockOffsetMaxMHz);
     appendf("\r\n");
@@ -688,14 +683,9 @@ static bool write_error_report_log(const char* summary, const char* details, cha
     if (g_app.gpuOffsetRangeKnown) appendf(" (range %d..%d)", g_app.gpuClockOffsetMinMHz, g_app.gpuClockOffsetMaxMHz);
     appendf("\r\n");
     appendf("GPU offset state: %s\r\n", liveOffsetState);
-    int curveMinkHz = 0;
-    int curveMaxkHz = 0;
-    bool curveRangeKnown = get_curve_offset_range_khz(&curveMinkHz, &curveMaxkHz);
-    appendf("VF curve delta clamp: %d..%d kHz", curveMinkHz, curveMaxkHz);
-    appendf("%s\r\n",
-        g_app.curveOffsetRangeKnown ? " (driver curve range)" :
-        curveRangeKnown ? " (graphics offset fallback)" :
-        " (default fallback)");
+    int curveMinkHz = 0, curveMaxkHz = 0;
+    get_curve_offset_range_khz(&curveMinkHz, &curveMaxkHz);
+    appendf("VF curve delta clamp: %d..%d kHz%s\r\n", curveMinkHz, curveMaxkHz, vf_offset_range_current_label());
     appendf("Mem offset: %d MHz", mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
     if (g_app.memOffsetRangeKnown) appendf(" (range %d..%d)", g_app.memClockOffsetMinMHz, g_app.memClockOffsetMaxMHz);
     appendf("\r\n");

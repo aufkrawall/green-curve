@@ -1159,3 +1159,18 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                 "the post-reset curve readback result is not discarded")
     forbid_text(reset_cpp, "refresh_global_state(result, resultSize);",
                 "the post-reset refresh does not write into the caller's result")
+    # Per-point VF negative floor decoupling (Windows + Linux + capture):
+    # scalar P0 graphics offset bounds stay strict, while VF per-point bounds
+    # widen negative floors on boards that permit negative graphics offsets.
+    require_text(_p(ctx, "vf_offset_range_runtime.h"), "vf_offset_range_for_vf_points(",
+                 "Windows runtime derives VF per-point range from scalar graphics bounds")
+    require_text(_p(ctx, "hardware_capture_getters.h"), "vf_offset_range_for_vf_points_hz(",
+                 "passive capture derives VF per-point limits without truncating scalar bounds")
+    require_text(_p(ctx, "linux_backend_nvml_write.cpp"), "vf_offset_range_for_vf_points(",
+                 "Linux NVML range query derives VF per-point bounds from scalar graphics bounds")
+    require_text(_p(ctx, "linux_backend_vf_write.h"), "vf_offset_range_for_vf_points(",
+                 "Linux VF writer applies the shared VF per-point range rule")
+    require_text(_p(ctx, "linux_graphics_offset_control.h"), "vf_offset_range_for_vf_points(",
+                 "Linux modeled transition planner applies the shared VF per-point range rule")
+    require_text(_p(ctx, "linux_memory_curve_policy.h"), "vf_offset_range_for_vf_points(",
+                 "Linux memory-preserve precheck applies the shared VF per-point range rule")

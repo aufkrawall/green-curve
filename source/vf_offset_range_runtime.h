@@ -27,27 +27,60 @@
 // The GPU offset range (±1000 MHz) is the authoritative hardware capability
 // that the driver actually accepts for VF curve offsets, superseding the
 // narrower curve-specific range reported by NVML.
-static VfOffsetRange vf_offset_range_current_with_source(VfOffsetRangeSource* sourceOut) {
+static VfOffsetRange vf_offset_range_current_with_source(VfOffsetRangeSource* sourceOut,
+                                                         bool* widenedOut = nullptr) {
     if (sourceOut) *sourceOut = VF_OFFSET_RANGE_SOURCE_FALLBACK;
+    if (widenedOut) *widenedOut = false;
+    auto finalize = [&](const VfOffsetRange& scalar, VfOffsetRangeSource source) {
+        const VfOffsetRange widened = vf_offset_range_for_vf_points(scalar);
+        const bool isWidened = vf_offset_range_was_neg_widened(scalar, widened);
+        if (sourceOut) *sourceOut = source;
+        if (widenedOut) *widenedOut = isWidened;
+        if (isWidened) {
+            static int lastScalarMin = 0, lastScalarMax = 0, lastVfMin = 0, lastSource = -1;
+            if (lastScalarMin != scalar.minKHz || lastScalarMax != scalar.maxKHz ||
+                lastVfMin != widened.minKHz || lastSource != (int)source) {
+                lastScalarMin = scalar.minKHz;
+                lastScalarMax = scalar.maxKHz;
+                lastVfMin = widened.minKHz;
+                lastSource = (int)source;
+                debug_log("vf_offset_range: widened VF negative floor from scalar %d..%d kHz to %d..%d kHz (source=%d)\n",
+                    scalar.minKHz, scalar.maxKHz, widened.minKHz, widened.maxKHz, (int)source);
+            }
+        }
+        return widened;
+    };
     if (g_app.gpuOffsetRangeKnown &&
         g_app.gpuClockOffsetMinMHz <= g_app.gpuClockOffsetMaxMHz &&
         g_app.gpuClockOffsetMinMHz >= INT_MIN / 1000 &&
         g_app.gpuClockOffsetMaxMHz <= INT_MAX / 1000) {
-        if (sourceOut) *sourceOut = VF_OFFSET_RANGE_SOURCE_NVML_GRAPHICS;
-        return vf_offset_range_from_probe(true, g_app.gpuClockOffsetMinMHz * 1000,
-                                          g_app.gpuClockOffsetMaxMHz * 1000);
+        return finalize(
+            vf_offset_range_from_probe(true, g_app.gpuClockOffsetMinMHz * 1000,
+                                       g_app.gpuClockOffsetMaxMHz * 1000),
+            VF_OFFSET_RANGE_SOURCE_NVML_GRAPHICS);
     }
     if (g_app.curveOffsetRangeKnown &&
         g_app.curveOffsetMinkHz <= g_app.curveOffsetMaxkHz) {
-        if (sourceOut) *sourceOut = VF_OFFSET_RANGE_SOURCE_PSTATE;
-        return vf_offset_range_from_probe(true, g_app.curveOffsetMinkHz,
-                                          g_app.curveOffsetMaxkHz);
+        return finalize(
+            vf_offset_range_from_probe(true, g_app.curveOffsetMinkHz,
+                                       g_app.curveOffsetMaxkHz),
+            VF_OFFSET_RANGE_SOURCE_PSTATE);
     }
     return vf_offset_range_fallback();
 }
 
 static VfOffsetRange vf_offset_range_current() {
     return vf_offset_range_current_with_source(nullptr);
+}
+
+static const char* vf_offset_range_current_label() {
+    VfOffsetRangeSource source = VF_OFFSET_RANGE_SOURCE_FALLBACK;
+    bool widened = false;
+    VfOffsetRange r = vf_offset_range_current_with_source(&source, &widened);
+    if (widened) return " (VF negative floor; scalar driver range)";
+    if (g_app.curveOffsetRangeKnown) return " (driver curve range)";
+    if (r.known) return " (graphics offset fallback)";
+    return " (default fallback)";
 }
 
 static bool get_curve_offset_range_khz(int* minkHz, int* maxkHz) {

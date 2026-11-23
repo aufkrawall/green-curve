@@ -21,17 +21,16 @@ static bool nvapi_read_offsets(LinuxGpuState* g) {
 
 // ports get_curve_offset_range_khz() / clamp_freq_delta_khz()
 static void curve_offset_range_khz(LinuxGpuState* g, int* minKHz, int* maxKHz) {
-    const int FALLBACK = 1000000;  // 1000 MHz (matches Windows)
-    int mn = -FALLBACK, mx = FALLBACK;
+    VfOffsetRange r = vf_offset_range_fallback();
     if (g->curveOffsetRangeKnown && g->curveOffsetMinKHz <= g->curveOffsetMaxKHz) {
-        mn = g->curveOffsetMinKHz;
-        mx = g->curveOffsetMaxKHz;
+        r = vf_offset_range_for_vf_points(
+            vf_offset_range_from_probe(true, g->curveOffsetMinKHz, g->curveOffsetMaxKHz));
     } else if (g->gpuOffsetMinMHz <= g->gpuOffsetMaxMHz && (g->gpuOffsetMinMHz || g->gpuOffsetMaxMHz)) {
-        mn = g->gpuOffsetMinMHz * 1000;
-        mx = g->gpuOffsetMaxMHz * 1000;
+        r = vf_offset_range_for_vf_points(
+            vf_offset_range_from_probe(true, g->gpuOffsetMinMHz * 1000, g->gpuOffsetMaxMHz * 1000));
     }
-    if (minKHz) *minKHz = mn;
-    if (maxKHz) *maxKHz = mx;
+    if (minKHz) *minKHz = r.minKHz;
+    if (maxKHz) *maxKHz = r.maxKHz;
 }
 
 // ports apply_curve_offsets_verified(): batch per-point writes with readback
@@ -101,6 +100,7 @@ static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffs
             unsigned char writeMask[32] = {};
             bool anyPendingWrite = false;
             int pointsInPass = 0;
+            int minPassOffsetKHz = 0, maxPassOffsetKHz = 0;
             for (int i = 0; i < VF_NUM_POINTS; i++) {
                 if (!pendingMask[i]) continue;
                 int cur = 0;
@@ -122,13 +122,21 @@ static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffs
                 }
                 memcpy(batchBuf + off, &rawDelta, sizeof(rawDelta));
                 writeMask[i / 8] |= (unsigned char)(1u << (i % 8));
+                const int passOffKHz = precise ? (int)(desiredHz[i] / 1000) : desiredOffsets[i];
+                if (pointsInPass == 0) {
+                    minPassOffsetKHz = maxPassOffsetKHz = passOffKHz;
+                } else {
+                    if (passOffKHz < minPassOffsetKHz) minPassOffsetKHz = passOffKHz;
+                    if (passOffKHz > maxPassOffsetKHz) maxPassOffsetKHz = passOffKHz;
+                }
                 anyPendingWrite = true;
                 pointsInPass++;
             }
             if (!anyPendingWrite) { ok = true; break; }
             memcpy(batchBuf + b->controlMaskOffset, writeMask, sizeof(writeMask));
             int setRet = setFunc(g->gpuHandle, batchBuf);
-            lb_log("curve batch pass %d: points=%d ret=%d\n", pass + 1, pointsInPass, setRet);
+            lb_log("curve batch pass %d: points=%d offsetRange=%d..%dkHz ret=%d\n",
+                   pass + 1, pointsInPass, minPassOffsetKHz, maxPassOffsetKHz, setRet);
             if (setRet != 0) break;
 
             bool readOk = false;

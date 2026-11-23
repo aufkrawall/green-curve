@@ -154,10 +154,18 @@ static void nvml_query_ranges(LinuxGpuState* g) {
     if (gpu.rangeValid) {
         g->gpuOffsetMinMHz = gpu.minMHz;
         g->gpuOffsetMaxMHz = gpu.maxMHz;
-        if (!g->curveOffsetRangeKnown) {
-            g->curveOffsetMinKHz = gpu.minMHz * 1000;
-            g->curveOffsetMaxKHz = gpu.maxMHz * 1000;
+        const VfOffsetRange scalarRange = vf_offset_range_from_probe(
+            true, gpu.minMHz * 1000, gpu.maxMHz * 1000);
+        const VfOffsetRange vfRange = vf_offset_range_for_vf_points(scalarRange);
+        if (!g->curveOffsetRangeKnown || g->curveOffsetMinKHz != vfRange.minKHz ||
+            g->curveOffsetMaxKHz != vfRange.maxKHz) {
+            g->curveOffsetMinKHz = vfRange.minKHz;
+            g->curveOffsetMaxKHz = vfRange.maxKHz;
             g->curveOffsetRangeKnown = true;
+            if (vf_offset_range_was_neg_widened(scalarRange, vfRange)) {
+                lb_log("vf_offset_range: widened VF negative floor from scalar %d..%d kHz to %d..%d kHz\n",
+                       scalarRange.minKHz, scalarRange.maxKHz, vfRange.minKHz, vfRange.maxKHz);
+            }
         }
     }
     NvmlClockOffsetReadback memory =

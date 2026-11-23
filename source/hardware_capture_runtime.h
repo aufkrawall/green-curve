@@ -37,10 +37,15 @@ static inline void hardware_capture_summary(const HardwareCaptureObservation& o,
             hardware_capture_memory_evidence_name(o.memoryEvidence));
         used = strlen(text);
     }
-    if (o.vfLimits.valid && used < size) snprintf(text + used, size - used,
-        "; VF offsets=%lld..%lld Hz (%s), grid=%lld Hz%s",
-        o.vfLimits.minimumHz, o.vfLimits.maximumHz,
-        o.vfLimits.rangeReported ? "reported graphics bounds" : "application policy",
-        o.vfLimits.gridHz, o.vfLimits.gridValid ? "" : " (unknown)");
+    if (o.vfLimits.valid && used < size) {
+        const bool widened = o.vfLimits.rangeReported && o.graphics.rangeValid &&
+            o.vfLimits.minimumHz < o.graphics.minimum;
+        snprintf(text + used, size - used,
+            "; VF offsets=%lld..%lld Hz (%s), grid=%lld Hz%s",
+            o.vfLimits.minimumHz, o.vfLimits.maximumHz,
+            !o.vfLimits.rangeReported ? "application policy" :
+                widened ? "reported graphics bounds, VF negative floor" : "reported graphics bounds",
+            o.vfLimits.gridHz, o.vfLimits.gridValid ? "" : " (unknown)");
+    }
 }
 #endif

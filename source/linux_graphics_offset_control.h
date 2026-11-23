@@ -121,13 +121,18 @@ static inline CurvePlanInput linux_authoring_modeled_plan_input(const LinuxGpuSt
             componentHz[ci] = desired_graphics_hz(*d);
         ++ordinal;
     }
-    int mn = -VF_OFFSET_RANGE_FALLBACK_LIMIT_KHZ, mx = VF_OFFSET_RANGE_FALLBACK_LIMIT_KHZ;
+    VfOffsetRange vfRange = vf_offset_range_fallback();
     bool rangeKnown = false;
     if (g->curveOffsetRangeKnown && g->curveOffsetMinKHz <= g->curveOffsetMaxKHz) {
-        mn = g->curveOffsetMinKHz; mx = g->curveOffsetMaxKHz; rangeKnown = true;
+        vfRange = vf_offset_range_for_vf_points(
+            vf_offset_range_from_probe(true, g->curveOffsetMinKHz, g->curveOffsetMaxKHz));
+        rangeKnown = true;
     } else if (g->gpuOffsetMinMHz <= g->gpuOffsetMaxMHz && (g->gpuOffsetMinMHz || g->gpuOffsetMaxMHz)) {
-        mn = g->gpuOffsetMinMHz * 1000; mx = g->gpuOffsetMaxMHz * 1000; rangeKnown = true;
+        vfRange = vf_offset_range_for_vf_points(
+            vf_offset_range_from_probe(true, g->gpuOffsetMinMHz * 1000, g->gpuOffsetMaxMHz * 1000));
+        rangeKnown = true;
     }
+    int mn = vfRange.minKHz, mx = vfRange.maxKHz;
     CurvePlanInput in{};
     in.curve = g->curve;
     in.programmedOffsetsKHz = g->freqOffsets;

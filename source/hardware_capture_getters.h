@@ -282,14 +282,16 @@ static inline bool hardware_capture_collect(const HardwareCaptureContext& contex
     }
     if (out.topologyComplete && context.backend) {
         auto& vf = out.vfLimits;
-        const auto fallback = vf_offset_range_fallback();
         vf.valid = vf.gridValid = 1;
         vf.backendWritable = gc_bool8_from_bool(context.backend->writeSupported);
         vf.gridHz = vf_graphics_offset_grid_hz(context.backend);
         vf.rangeReported = out.graphics.rangeValid;
         vf.rangeSource = vf.rangeReported ? VF_OFFSET_RANGE_SOURCE_NVML_GRAPHICS : VF_OFFSET_RANGE_SOURCE_FALLBACK;
-        vf.minimumHz = vf.rangeReported ? out.graphics.minimum : (gc_i64)fallback.minKHz * 1000;
-        vf.maximumHz = vf.rangeReported ? out.graphics.maximum : (gc_i64)fallback.maxKHz * 1000;
+        long long vfMinHz = 0, vfMaxHz = 0;
+        vf_offset_range_for_vf_points_hz(vf.rangeReported != 0,
+            out.graphics.minimum, out.graphics.maximum, &vfMinHz, &vfMaxHz);
+        vf.minimumHz = vfMinHz;
+        vf.maximumHz = vfMaxHz;
     }
     if (requested & PROFILE_DOMAIN_GRAPHICS_OFFSET) {
         const bool represented = out.graphics.valid && (out.composition == CAPTURE_COMPOSITION_INDEPENDENT ||
