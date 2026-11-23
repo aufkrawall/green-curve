@@ -48,6 +48,19 @@ static inline const DesiredSettings* gui_editor_base_select(GuiEditorBaseMode mo
     return active && active->applicationScope != DESIRED_SCOPE_LEGACY ? active : nullptr;
 }
 
+// Whether point `ci` is an untouched captured-offset point owned by the
+// editor's current base record (e.g. a loaded "Copy every curve point exactly"
+// profile or a captured flatten pre-tail). Its displayed MHz is only a preview
+// over the current stock base and may dip below a lower-voltage neighbor under
+// thermal Boost bin rounding or deep negative tail offsets; it stays owned in
+// preview/graph and bypasses hand-typed monotonicity validation.
+static inline bool gui_editor_base_owns_captured_point(
+    const DesiredSettings* base, const bool* typed, int ci) {
+    if (!base || ci < 0 || ci >= VF_NUM_POINTS) return false;
+    if (typed && typed[ci]) return false;
+    return base->curvePointCaptured[ci] != 0;
+}
+
 // The applied values the editor compares a domain against when the base does
 // not own that domain (the field then shows the current value).
 struct GuiEditorCurrentScalars {

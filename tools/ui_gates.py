@@ -1974,6 +1974,22 @@ def check_preview_stock_base_crosstalk_protection(ctx, require_text, forbid_text
     require_text(_p(ctx, "main_service_client_commands.cpp"),
                  "StringCchCopyA(request.path, ARRAY_COUNT(request.path), resolvedPath);",
                  "Windows client file-write IPC sends client-resolved absolute paths")
+    ctx.require_order_in_operation(
+        _p(ctx, "main_runtime_control.cpp"),
+        "const DesiredSettings* editorBase = gui_editor_base_current();",
+        "gui_editor_base_owns_captured_point(editorBase, g_app.guiCurvePointTyped, ci)",
+        "The VF curve must remain non-decreasing.",
+        "untouched captured points from the editor base bypass hand-typed monotonicity refusal")
+    ctx.require_order_in_operation(
+        _p(ctx, "gui_profile_commands.cpp"),
+        "static void gui_profile_load_command(",
+        'gui_editor_base_attach(&desired, slot, "load");',
+        "populate_global_controls();",
+        "profile Load attaches the base record before refreshing pending preview and fields")
+    require_text(_p(ctx, "ui_pending_changes.cpp"), "gui_editor_point_is_owned(ci)",
+                 "pending diff and graph preview treat untouched captured base points as owned")
+    require_text(_p(ctx, "ui_main.cpp"), "gui_editor_point_is_owned(ci)",
+                 "VF edit-field sync preserves untouched captured base points")
     require_text(_p(ctx, "ui_main_graph.cpp"), "curve_stock_base_khz_for_point(ci)",
                  "Windows graph preview reads the crosstalk-safe stock base")
     forbid_text(_p(ctx, "ui_main_graph.cpp"), "curve_base_khz_for_point(",

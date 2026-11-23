@@ -67,6 +67,8 @@
             if (g_app.guiCurvePointExplicit[pci]) inferPreTailFromApplied = false;
         }
     }
+    const DesiredSettings* editorBase = gui_editor_base_current();
+    int capturedFromBaseCount = 0;
     for (int vi = 0; vi < g_app.numVisible; vi++) {
         int ci = g_app.visibleMap[vi];
         if (!parsedCurveHave[ci]) continue;
@@ -87,6 +89,19 @@
         if (preTail.retain && preTail.captured) {
             desired->curvePointCaptured[ci] = 1;
             desired->curvePointCapturedOffsetHz[ci] = preTail.capturedOffsetHz;
+            continue;
+        }
+        // An untouched captured-offset point from the loaded/active explicit
+        // base record (e.g. "Copy every curve point exactly") carries an exact
+        // programmed offset, not a hand-typed MHz target; its projected preview
+        // may dip below a lower-voltage neighbor under thermal Boost rounding
+        // or negative tail deltas, so carry the captured offset directly and
+        // bypass hand-typed monotonicity refusal.
+        if (!lockTailPoint &&
+            gui_editor_base_owns_captured_point(editorBase, g_app.guiCurvePointTyped, ci)) {
+            desired->curvePointCaptured[ci] = 1;
+            desired->curvePointCapturedOffsetHz[ci] = editorBase->curvePointCapturedOffsetHz[ci];
+            ++capturedFromBaseCount;
             continue;
         }
         if (preTail.retain && preTail.overrideMHz > 0) {
@@ -119,6 +134,10 @@
                 !lockTailPoint &&
                 ((preTail.retain && preTail.fromGpuOffset) || g_app.guiCurvePointFromGpuOffset[ci]));
         }
+    }
+    if (capturedFromBaseCount > 0) {
+        debug_log("capture_gui_desired_settings: retained %d untouched captured point(s) from editor base\n",
+            capturedFromBaseCount);
     }
 
     if (!desired->hasLock && g_app.guiHasUserModifiedValues) {

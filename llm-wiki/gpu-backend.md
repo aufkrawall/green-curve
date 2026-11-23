@@ -28,9 +28,12 @@ a `-200..+1200 MHz` scalar range; Blackwell captures similarly observed
 - **Diagnostics:** Windows and Linux VF batch writers log
   `offsetRange=%d..%dkHz` on every batch pass; range widening is logged once per
   distinct range tuple, and `--dump` / capture summaries label widened bounds.
-- **Open question:** Physical Pascal GP102 hardware acceptance of uniform
-  `-2500 MHz` flatten tail floors (vs. graduated per-point `-1038 MHz` deltas)
-  remains pending live user confirmation.
+- **Hardware verification (2026-11-23):** Live Windows Pascal GP102 testing
+  confirmed the driver accepts the uniform `-2500000 kHz` (`-2500 MHz`) flatten
+  tail floor across points `22..79` and holds the tail flat (`987 MHz` under
+  Boost 3.0 temperature bins) while retaining `+38000 kHz` on points `0..20`,
+  `-1000 MHz` memory offset, and `50%` power limit; `greencurve.exe --probe`
+  also succeeded under the Windows background service.
 
 ## Exact Windows power reset (2026-11-20)
 

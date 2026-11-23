@@ -286,7 +286,7 @@ static void sync_vf_curve_field_values() {
             set_edit_value(g_app.hEditsMhz[vi], lockTargetMHz);
             continue;
         }
-        bool ownedPoint = g_app.guiCurvePointExplicit[ci];
+        bool ownedPoint = gui_editor_point_is_owned(ci);
         // A uniform offset leaves an owned point's field alone; a selective
         // offset projects it like the graph.  Even then, never rewrite the
         // field the user is actively typing in.

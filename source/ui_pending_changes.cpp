@@ -131,7 +131,7 @@ static void gui_pending_evaluate_curve(GuiPendingChanges* out) {
         if (ci < 0 || ci >= VF_NUM_POINTS) continue;
         GuiPendingCurvePoint point = {};
         point.visible = true;
-        point.ownedByEditor = g_app.guiCurvePointExplicit[ci];
+        point.ownedByEditor = gui_editor_point_is_owned(ci);
         // Existence only: a point the driver never reported cannot be compared.
         // The live FREQUENCY is deliberately never turned into a comparable
         // value here -- it drifts under boost and temperature, so diffing
@@ -182,7 +182,7 @@ static void gui_pending_mark_gpu_offset_shift(GuiPendingChanges* out) {
         if (out->curvePoint[ci]) continue;
         GuiPendingOffsetShift shift = {};
         shift.inLockedTail = gui_pending_point_in_locked_tail(vi);
-        shift.ownedByEditor = g_app.guiCurvePointExplicit[ci];
+        shift.ownedByEditor = gui_editor_point_is_owned(ci);
         shift.selectiveOffsetActive = gui_pending_offset_mode_is_selective(out);
         shift.appliedOffsetComponentMHz = gpu_offset_component_mhz_for_point(
             ci, out->appliedGpuOffsetMHz, out->appliedGpuOffsetExcludeLowCount);
@@ -260,10 +260,11 @@ static void gui_pending_resolve_graph_preview(GuiPendingChanges* out) {
         in.hardPinned = g_app.lockMode == LOCK_MODE_HARD && lockTargetMHz > 0;
         in.inLockedTail = vi >= 0 && gui_pending_point_in_locked_tail(vi);
         in.lockTargetMHz = lockTargetMHz;
-        in.ownedByEditor = g_app.guiCurvePointExplicit[ci];
+        const bool ownedPoint = gui_editor_point_is_owned(ci);
+        in.ownedByEditor = ownedPoint;
         in.releasedToStock =
             gui_applied_curve_mhz_for_pending(ci) != 0 &&
-            !g_app.guiCurvePointExplicit[ci] &&
+            !ownedPoint &&
             !(g_app.lockMode == LOCK_MODE_HARD && lockTargetMHz > 0);
         in.offsetMovesOwnedPoints = gui_pending_offset_mode_is_selective(out);
         in.offsetProjectionValid = out->gpuOffsetValid;

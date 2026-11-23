@@ -54,6 +54,15 @@ static const DesiredSettings* gui_editor_base_current() {
         g_app.serviceActiveDesiredValid ? &g_app.serviceActiveDesired : nullptr);
 }
 
+static bool gui_editor_point_is_captured_from_base(int ci) {
+    return gui_editor_base_owns_captured_point(gui_editor_base_current(), g_app.guiCurvePointTyped, ci);
+}
+
+static bool gui_editor_point_is_owned(int ci) {
+    if (ci < 0 || ci >= VF_NUM_POINTS) return false;
+    return g_app.guiCurvePointExplicit[ci] || gui_editor_point_is_captured_from_base(ci);
+}
+
 // A loaded explicit record that is not what the service runs: Apply has work
 // even when no field differs from the applied state (captured points, exact
 // values and scope are not fields).

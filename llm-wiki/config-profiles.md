@@ -348,9 +348,14 @@ Source anchors: `source/profile_capture_proposals.h` (`profile_capture_judge_cur
   bound to `-2500 MHz` whenever NVML permits negative offsets (allowing both
   Pascal `-1038 MHz` and Blackwell `-2045 MHz` captures and deep flattens),
   `profile_capture_summary()` appends preserved lower-voltage point offset
-  counts to recognized flatten summaries, and `gui_draft_desired_point_mhz()`
+  counts to recognized flatten summaries, `gui_draft_desired_point_mhz()`
   projects `curvePointCaptured[ci]` over `stockBaseKHz` on Windows Load preview
-  to match the Linux TUI.
+  to match the Linux TUI, and untouched captured points from
+  `gui_editor_base_current()` (`gui_editor_base_owns_captured_point()`) stay
+  owned across Load preview/graph and bypass hand-typed monotonicity checks in
+  `main_runtime_control.cpp` so exact-copy captures apply cleanly even when
+  thermal Boost rounding or negative tail deltas project a point below its
+  predecessor.
 
 ## Capture lock proposals (2026-11-15)
 

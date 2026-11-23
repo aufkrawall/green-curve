@@ -15,6 +15,9 @@
 #include "gpu_generation_sim_harness.h"
 #include "apply_clock_ceiling_policy.h"
 #include "apply_correction_policy.h"
+#include "gui_draft_desired_policy.h"
+#include "gui_editor_base_policy.h"
+#include "gui_pending_changes_policy.h"
 #include "linux_curve_targets.h"
 
 #include <memory>
@@ -493,6 +496,50 @@ static int test_weird_valid_curves_and_grid_edge_cases() {
         reqFloor->lockMHz = 450;
         const CurvePlanResult rOk = curve_plan_evaluate(in);
         if (rOk.disposition != CURVE_PLAN_REPRESENTABLE) return 13106;
+    }
+
+    // 13107-13110: Windows "Copy every curve point exactly" loaded over an
+    // active locked curve: untouched captured points stay owned in preview/graph
+    // (never released to stock) and bypass hand-typed monotonicity refusal when
+    // thermal Boost rounding projects point 22 (1012 MHz) below point 21 (1013 MHz).
+    {
+        auto exactSlot = std::make_unique<DesiredSettings>();
+        exactSlot->applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+        for (int i = 0; i <= 20; ++i) {
+            exactSlot->curvePointCaptured[i] = 1;
+            exactSlot->curvePointCapturedOffsetHz[i] = 38000000LL;
+        }
+        exactSlot->curvePointCaptured[21] = 1;
+        exactSlot->curvePointCapturedOffsetHz[21] = 13000000LL;
+        exactSlot->curvePointCaptured[22] = 1;
+        exactSlot->curvePointCapturedOffsetHz[22] = -38000000LL;
+        bool typed[VF_NUM_POINTS]{};
+        if (!gui_editor_base_owns_captured_point(exactSlot.get(), typed, 21) ||
+            !gui_editor_base_owns_captured_point(exactSlot.get(), typed, 22) ||
+            gui_editor_base_owns_captured_point(exactSlot.get(), typed, 23) ||
+            gui_editor_base_owns_captured_point(nullptr, typed, 21) ||
+            gui_editor_base_owns_captured_point(exactSlot.get(), typed, -1))
+            return 13107;
+        // Hand-typing point 22 transfers it out of untouched-captured status.
+        typed[22] = true;
+        if (gui_editor_base_owns_captured_point(exactSlot.get(), typed, 22))
+            return 13108;
+        typed[22] = false;
+
+        // Projected preview over shifted stock (point 21 = 1000+13 = 1013,
+        // point 22 = 1050-38 = 1012): stays absoluteMHz=1012 in graph preview
+        // rather than falling back to releasedToStock.
+        const unsigned int p21 = gui_draft_desired_point_mhz(*exactSlot, 21, nullptr, 1000000LL, 0);
+        const unsigned int p22 = gui_draft_desired_point_mhz(*exactSlot, 22, nullptr, 1050000LL, 0);
+        if (p21 != 1013u || p22 != 1012u) return 13109;
+        GuiGraphPreviewInput pin{};
+        pin.ownedByEditor = gui_editor_base_owns_captured_point(exactSlot.get(), typed, 22);
+        pin.releasedToStock = !pin.ownedByEditor;
+        pin.draftValid = true;
+        pin.draftMHz = p22;
+        const GuiGraphPreviewPoint preview = gui_graph_preview_point(pin);
+        if (preview.offsetFromStockBase || preview.absoluteMHz != 1012u)
+            return 13110;
     }
     return 0;
 }
