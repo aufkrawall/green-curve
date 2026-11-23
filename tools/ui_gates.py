@@ -1963,6 +1963,17 @@ def check_preview_stock_base_crosstalk_protection(ctx, require_text, forbid_text
                  "Windows GUI retains observed unshaped stock snapshots for preview alignment")
     require_text(_p(ctx, "main_runtime_gpu.cpp"), "vf_estimate_stock_base(",
                  "Windows GUI estimates stock bases through the shared crosstalk-safe policy")
+    require_text(_p(ctx, "gui_draft_desired_policy.h"),
+                 "if (!inLockTail && desired.curvePointCaptured[ci] && stockBaseKHz > 0)",
+                 "Windows GUI draft preview projects captured offset points over stock base")
+    require_text(_p(ctx, "profile_summary.h"),
+                 "if (preTailChanged > 0)",
+                 "Save Current summary surfaces preserved lower-voltage points alongside a flatten")
+    require_text(_p(ctx, "entry.cpp"), "cli_select_probe_output_path(",
+                 "Windows --probe defaults inside userDataDir instead of a bare relative filename")
+    require_text(_p(ctx, "main_service_client_commands.cpp"),
+                 "StringCchCopyA(request.path, ARRAY_COUNT(request.path), resolvedPath);",
+                 "Windows client file-write IPC sends client-resolved absolute paths")
     require_text(_p(ctx, "ui_main_graph.cpp"), "curve_stock_base_khz_for_point(ci)",
                  "Windows graph preview reads the crosstalk-safe stock base")
     forbid_text(_p(ctx, "ui_main_graph.cpp"), "curve_base_khz_for_point(",

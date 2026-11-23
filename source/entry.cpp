@@ -5,6 +5,7 @@
 #include "single_instance_ready.h"
 #include "logon_handoff_status.h"
 #include "profile_commands_windows.h"
+#include "cli_output_path_policy.h"
 
 // ============================================================================
 // Entry Point
@@ -394,19 +395,17 @@ static bool handle_cli(LPWSTR wCmdLine) {
     }
 
     if (opts.probe) {
+        SYSTEMTIME now = {};
+        GetLocalTime(&now);
         char probePath[MAX_PATH] = {};
-        if (opts.hasProbeOutputPath) {
-            StringCchCopyA(probePath, ARRAY_COUNT(probePath), opts.probeOutputPath);
-        } else {
-            SYSTEMTIME now = {};
-            GetLocalTime(&now);
-            StringCchPrintfA(probePath, ARRAY_COUNT(probePath),
-                "greencurve_probe_%04u%02u%02u_%02u%02u%02u.json",
-                now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
-        }
+        cli_select_probe_output_path(opts.hasProbeOutputPath, opts.probeOutputPath, g_userDataDir,
+            now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, probePath, ARRAY_COUNT(probePath));
         char result[512] = {};
         if (service_client_write_file_command(SERVICE_CMD_WRITE_PROBE_REPORT, probePath, "client probe", result, sizeof(result))) {
-            CLI_LOG("Probe report written to %s\n", probePath);
+            char resolvedProbePath[MAX_PATH] = {};
+            const char* shownPath = (gc_GetFullPathNameUtf8(probePath, ARRAY_COUNT(resolvedProbePath), resolvedProbePath, nullptr) > 0)
+                ? resolvedProbePath : probePath;
+            CLI_LOG("Probe report written to %s\n", shownPath);
             CLI_LOG("%s\n", result);
         } else {
             CLI_LOG("ERROR: %s\n", result);

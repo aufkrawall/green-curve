@@ -549,7 +549,9 @@ static bool service_client_reset(char* result, size_t resultSize, ServiceSnapsho
     return ok;
 }
 
-static bool is_safe_output_path(const char* path, char* err, size_t errSize) {
+static bool is_safe_output_path(const char* path, char* err, size_t errSize,
+                                char* resolvedOut = nullptr, size_t resolvedOutSize = 0) {
+    if (resolvedOut && resolvedOutSize > 0) resolvedOut[0] = 0;
     if (!path || !path[0]) {
         set_message(err, errSize, "Empty output path");
         return false;
@@ -578,13 +580,20 @@ static bool is_safe_output_path(const char* path, char* err, size_t errSize) {
             return false;
         }
     }
+    if (resolvedOut && resolvedOutSize > 0) {
+        if (FAILED(StringCchCopyA(resolvedOut, resolvedOutSize, absPath))) {
+            set_message(err, errSize, "Resolved output path is too long");
+            return false;
+        }
+    }
     return true;
 }
 
 static bool service_client_write_file_command(DWORD command, const char* path, const char* source, char* result, size_t resultSize) {
+    char resolvedPath[MAX_PATH] = {};
     if (path && path[0]) {
         char pathErr[256] = {};
-        if (!is_safe_output_path(path, pathErr, sizeof(pathErr))) {
+        if (!is_safe_output_path(path, pathErr, sizeof(pathErr), resolvedPath, sizeof(resolvedPath))) {
             set_message(result, resultSize, "Path validation failed: %s", pathErr);
             return false;
         }
@@ -595,8 +604,10 @@ static bool service_client_write_file_command(DWORD command, const char* path, c
     request.command = command;
     request.callerPid = GetCurrentProcessId();
     ProcessIdToSessionId(request.callerPid, &request.callerSessionId);
-    if (path && path[0]) {
-        StringCchCopyA(request.path, ARRAY_COUNT(request.path), path);
+    if (resolvedPath[0]) {
+        // Send the client-resolved absolute path so the background service
+        // does not resolve bare/relative filenames against System32.
+        StringCchCopyA(request.path, ARRAY_COUNT(request.path), resolvedPath);
     }
     StringCchCopyA(request.source, ARRAY_COUNT(request.source), source && source[0] ? source : "client file command");
     ServiceResponse response = {};

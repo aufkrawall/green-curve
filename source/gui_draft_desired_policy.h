@@ -24,6 +24,10 @@
 // there (the draft then keeps its live/applied projection).
 //  - `fromLock` says the value came from the lock target (anchor or a
 //    zero-MHz tail point carried by a portable document).
+//  - A captured offset point (`curvePointCaptured[ci] != 0`) outside a lock
+//    tail resolves from `stockBaseKHz + curvePointCapturedOffsetHz[ci] / 1000`
+//    (`fromProjection=true`), matching the Linux TUI preview so loading a
+//    captured profile shows its lower-voltage offsets over stock.
 //  - A pre-tail projected point saved without an observed frequency
 //    (`curvePointFromGpuOffset[ci] != 0`, `curvePointMHz[ci] == 0`) resolves
 //    from `stockBaseKHz + gpuOffsetComponentMHz * 1000` (`fromProjection=true`)
@@ -43,10 +47,20 @@ static inline unsigned int gui_draft_desired_point_mhz(
     if (desired.hasCurvePoint[ci] && desired.curvePointMHz[ci] > 0) {
         return desired.curvePointMHz[ci];
     }
-    if (desired.hasLock && desired.lockCi >= 0 && ci > desired.lockCi &&
-        desired.lockMHz > 0 && desired.hasCurvePoint[ci]) {
+    const bool inLockTail = desired.hasLock && desired.lockCi >= 0 &&
+        ci > desired.lockCi && desired.lockMHz > 0;
+    if (inLockTail && desired.hasCurvePoint[ci]) {
         if (fromLock) *fromLock = true;
         return desired.lockMHz;
+    }
+    if (!inLockTail && desired.curvePointCaptured[ci] && stockBaseKHz > 0) {
+        const long long offHz = desired.curvePointCapturedOffsetHz[ci];
+        const long long offKHz = (offHz >= 0 ? offHz + 500LL : offHz - 500LL) / 1000LL;
+        long long targetKHz = stockBaseKHz + offKHz;
+        if (targetKHz < 1000LL) targetKHz = 1000LL;
+        if (targetKHz > (long long)UINT_MAX) targetKHz = (long long)UINT_MAX;
+        if (fromProjection) *fromProjection = true;
+        return (unsigned int)((targetKHz + 500LL) / 1000LL);
     }
     if (desired.hasCurvePoint[ci] && desired.curvePointFromGpuOffset[ci] &&
         desired.hasGpuOffset && stockBaseKHz > 0) {

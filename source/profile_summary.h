@@ -130,6 +130,20 @@ static inline ProfileCaptureSummary profile_capture_summary(const HardwareCaptur
         if (proposals && proposals->flatten.selectable()) {
             s.curve.text = "Flat at " + profile_summary_mhz(proposals->flatten.frequencyHz, false) + " MHz from " +
                 profile_summary_mhz(proposals->flatten.anchorVoltageUv * 1000, false) + " mV";
+            int preTailChanged = 0; long long preTailFirst = 0; bool preTailUniform = true;
+            for (gc_u32 i = 0; i < o.pointCount && i < 128; ++i) {
+                const auto& p = o.points[i];
+                if (!p.offsetValid || !p.offsetHz || p.voltageUv >= proposals->flatten.anchorVoltageUv) continue;
+                if (!preTailChanged) preTailFirst = p.offsetHz;
+                else if (p.offsetHz != preTailFirst) preTailUniform = false;
+                ++preTailChanged;
+            }
+            if (preTailChanged > 0) {
+                s.curve.text += preTailUniform
+                    ? " (" + profile_summary_mhz(preTailFirst) + " MHz on " + std::to_string(preTailChanged) +
+                        (preTailChanged == 1 ? " lower point)" : " lower points)")
+                    : " (" + std::to_string(preTailChanged) + " lower points changed)";
+            }
         } else if (!changed) {
             s.curve.text = "Stock curve (no changes)";
         } else if (uniform) {
