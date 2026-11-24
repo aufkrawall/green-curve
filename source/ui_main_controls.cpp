@@ -168,8 +168,8 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
         dp(942), ocY, dp(56), dp(20),
         hParent, (HMENU)(INT_PTR)FAN_CONTROL_ID, hInst, nullptr);
     style_input_control(g_app.hFanEdit);
-    g_app.hFanCurveBtn = CreateWindowExA(
-        0, "BUTTON", "Edit Curve...", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+    g_app.hFanCurveBtn = CreateWindowExW(
+        0, L"BUTTON", L"Edit Curve...", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
         dp(1006), ocY - dp(1), dp(160), dp(24),
         hParent, (HMENU)(INT_PTR)FAN_CURVE_BTN_ID, hInst, nullptr);
 

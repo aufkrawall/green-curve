@@ -185,8 +185,14 @@ def check_themed_message_box(ctx, require_text, forbid_text):
                  "the modal loop keeps Tab/Enter/Escape keyboard navigation")
     require_text(box_cpp, "PostQuitMessage((int)msg.wParam);",
                  "a quit during the modal loop is reposted, not swallowed")
-    require_text(box_cpp, "return MessageBoxA(owner, text, caption, type);",
+    require_text(box_cpp, "return gc_message_box_system_fallback(owner, text, caption, type);",
                  "the themed box falls back to the system box if it cannot build")
+    require_text(box_cpp, "return MessageBoxW(owner, textW.c_str(), captionW.c_str(), type);",
+                 "the system message-box fallback uses wide UTF-16 so non-CP1252 locales never mangle UTF-8")
+    require_text(box_cpp, "DrawTextW(",
+                 "the themed message box measures and paints UTF-8 text via wide DrawTextW")
+    require_text(box_cpp, "SetClipboardData(CF_UNICODETEXT, hMem)",
+                 "Ctrl+C in the themed message box preserves Unicode via CF_UNICODETEXT")
 
     # Every GUI shard that prompts must go through the themed box.  entry.cpp is
     # excluded on purpose (see the docstring); ui_message_box.cpp holds the
@@ -1996,3 +2002,15 @@ def check_preview_stock_base_crosstalk_protection(ctx, require_text, forbid_text
                 "Windows graph preview must not read raw live-minus-offset directly")
     require_text(_p(ctx, "linux_tui_layout.cpp"), "vf_estimate_stock_base(",
                  "Linux TUI preview estimates stock bases through the shared crosstalk-safe policy")
+    forbid_text(_p(ctx, "platform.h"), '"\\xB0"',
+                "GC_DEGREE must stay UTF-8 on every platform rather than raw CP-1252 0xB0")
+    forbid_text(_p(ctx, "fan_curve_dialog.cpp"), "\\xB0",
+                "fan curve dialog must not embed raw CP-1252 0xB0 bytes that corrupt CJK locales")
+    require_text(_p(ctx, "ui_main_controls.cpp"), 'CreateWindowExW(\n        0, L"BUTTON", L"Edit Curve..."',
+                 "fan curve button is a Unicode window so °C survives non-CP1252 Windows code pages")
+    require_text(_p(ctx, "ui_theme_button.cpp"), "DrawTextW(hdc, text, -1, &textRc,",
+                 "themed owner-draw buttons paint captions via wide DrawTextW")
+    require_text(_p(ctx, "entry.cpp"), 'g_app.hProfileStatusLabel = CreateWindowExW(',
+                 "profile status label is a Unicode window so UTF-8 status text survives non-CP1252 locales")
+    require_text(_p(ctx, "main_startup_profiles.cpp"), "startup_logon_skipped_app_launch_slot(",
+                 "logon launch preserves service logon status when app-start auto-load is already disabled")

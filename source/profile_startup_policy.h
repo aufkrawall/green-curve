@@ -21,3 +21,11 @@ static inline StartupEditorSource startup_editor_source(bool launchedFromLogon,
     }
     return STARTUP_EDITOR_SOURCE_LIVE_SNAPSHOT;
 }
+
+// Whether a Windows logon launch actually skipped a configured app-start
+// auto-load slot (as opposed to app-start auto-load already being disabled).
+static inline bool startup_logon_skipped_app_launch_slot(bool launchedFromLogon,
+                                                         int appLaunchSlot,
+                                                         int maxProfileSlots) {
+    return launchedFromLogon && appLaunchSlot >= 1 && appLaunchSlot <= maxProfileSlots;
+}

@@ -204,7 +204,7 @@ static void set_profile_status_text(const char* fmt, ...) {
     va_start(ap, fmt);
     StringCchVPrintfA(buf, ARRAY_COUNT(buf), fmt, ap);
     va_end(ap);
-    SetWindowTextA(g_app.hProfileStatusLabel, buf);
+    gui_set_window_text_if_changed(g_app.hProfileStatusLabel, buf);
 }
 
 static void update_profile_state_label() {

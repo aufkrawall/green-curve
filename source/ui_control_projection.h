@@ -3,18 +3,52 @@
 
 #pragma once
 
+// Convert UTF-8 UI text to a NUL-terminated UTF-16 buffer for wide Win32 APIs.
+// Returns the character count written (excluding NUL).  Truncates cleanly on
+// oversized inputs so callers never depend on the process ANSI code page.
+static inline int gui_utf8_to_wide_buf(const char* text, WCHAR* out, size_t outCount) {
+    if (!out || outCount == 0) return 0;
+    out[0] = L'\0';
+    if (!text || !text[0]) return 0;
+    int cap = (int)outCount;
+    int written = MultiByteToWideChar(CP_UTF8, 0, text, -1, out, cap);
+    if (written > 0) {
+        out[outCount - 1] = L'\0';
+        return written - 1;
+    }
+    if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && cap > 1) {
+        int needed = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+        if (needed > 1) {
+            WCHAR* tmp = (WCHAR*)HeapAlloc(GetProcessHeap(), 0, (size_t)needed * sizeof(WCHAR));
+            if (tmp) {
+                int full = MultiByteToWideChar(CP_UTF8, 0, text, -1, tmp, needed);
+                int copyLen = (full > 0 && full - 1 < cap - 1) ? (full - 1) : (cap - 1);
+                if (copyLen > 0) memcpy(out, tmp, (size_t)copyLen * sizeof(WCHAR));
+                out[copyLen] = L'\0';
+                HeapFree(GetProcessHeap(), 0, tmp);
+                return copyLen;
+            }
+        }
+    }
+    return 0;
+}
+
 // Win32 setters can synchronously repaint owner-drawn children. Keep repeated
 // state projections inert so background service probes cannot create flicker.
+// Uses wide Win32 calls so UTF-8 text (e.g. °C) survives non-CP1252 locales.
 static inline bool gui_set_window_text_if_changed(HWND hwnd, const char* text) {
     if (!hwnd) return false;
     const char* next = text ? text : "";
-    char current[768] = {};
-    int length = GetWindowTextLengthA(hwnd);
-    if (length >= 0 && length < (int)ARRAY_COUNT(current)) {
-        GetWindowTextA(hwnd, current, ARRAY_COUNT(current));
-        if (strcmp(current, next) == 0) return false;
+    WCHAR nextW[768] = {};
+    const size_t cap = sizeof(nextW) / sizeof(nextW[0]);
+    int nextLen = gui_utf8_to_wide_buf(next, nextW, cap);
+    WCHAR currentW[768] = {};
+    int length = GetWindowTextLengthW(hwnd);
+    if (length == nextLen && length >= 0 && length < (int)cap) {
+        GetWindowTextW(hwnd, currentW, (int)cap);
+        if (wcscmp(currentW, nextW) == 0) return false;
     }
-    SetWindowTextA(hwnd, next);
+    SetWindowTextW(hwnd, nextW);
     return true;
 }
 

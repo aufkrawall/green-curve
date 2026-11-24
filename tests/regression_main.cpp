@@ -15,6 +15,7 @@
 #include <aclapi.h>
 #include <shlobj.h>
 #include "installer_move_cleanup.h"
+#include "ui_control_projection.h"
 #endif
 #include "lock_checkbox_policy.h"
 #include "main_layout_policy.h"
@@ -2110,6 +2111,10 @@ static int run_all_tests(int argc, char** argv) {
     if (startup_editor_source(false, 6, 5) != STARTUP_EDITOR_SOURCE_LIVE_SNAPSHOT) return 724;
     if (startup_editor_source(false, 2, 5) != STARTUP_EDITOR_SOURCE_APP_LAUNCH_PROFILE) return 725;
     if (startup_editor_source(true, 2, 5) != STARTUP_EDITOR_SOURCE_LOGON_SERVICE) return 726;
+    if (startup_logon_skipped_app_launch_slot(true, 0, 5)) return 727;
+    if (startup_logon_skipped_app_launch_slot(true, 6, 5)) return 728;
+    if (startup_logon_skipped_app_launch_slot(false, 2, 5)) return 729;
+    if (!startup_logon_skipped_app_launch_slot(true, 2, 5)) return 730;
 
     // Responsive main-window layout: the reported 3440x1440/custom-140% case
     // must fit by shrinking only the graph, while pathological effective work
@@ -6039,21 +6044,31 @@ static int run_all_tests(int argc, char** argv) {
         if (fan_curve_interpolate_percent(&ordinary, 30) != 20) return 1943;
         if (fan_curve_interpolate_percent(&ordinary, 85) != 90) return 1944;
 
-        // The degree sign must be encoded for the platform's display layer: a
-        // lone 0xB0 is invalid UTF-8 and renders as a replacement glyph in the
-        // Linux TUI, while Windows writes CP-1252 through the ANSI entry points.
+        // The degree sign is UTF-8 on every platform so CJK/DBCS Windows ANSI
+        // code pages never turn a raw 0xB0 + 'C' into a single ideograph, and
+        // Linux terminals never see an invalid continuation byte.
         char summary[64] = {};
         fan_curve_format_summary(&ordinary, summary, sizeof(summary));
         const char* degree = strstr(summary, GC_DEGREE "C");
         if (!degree) return 1945;
-#if !defined(_WIN32)
+        if (strcmp(GC_DEGREE, "\xC2\xB0") != 0) return 1946;
         // Every byte of the summary must be valid UTF-8 (ASCII or a 0xC2 lead
         // followed by a continuation byte); a bare 0xB0 must never appear.
         for (const unsigned char* p = (const unsigned char*)summary; *p; ++p) {
             if (*p < 0x80) continue;
             if (*p == 0xC2u && (p[1] & 0xC0u) == 0x80u) { ++p; continue; }
-            return 1946;
+            return 1947;
         }
+#if defined(_WIN32)
+        WCHAR wideSummary[64] = {};
+        int wideLen = gui_utf8_to_wide_buf(summary, wideSummary, 64);
+        if (wideLen <= 0 || !wcsstr(wideSummary, L"2\x00B0" L"C hyst")) return 1948;
+        WCHAR wideDash[32] = {};
+        if (gui_utf8_to_wide_buf("a \xE2\x80\x94 b", wideDash, 32) != 5 ||
+            wcscmp(wideDash, L"a \x2014 b") != 0) return 1949;
+        WCHAR wideTrunc[6] = {};
+        if (gui_utf8_to_wide_buf("1234567890", wideTrunc, 6) != 5 ||
+            wcscmp(wideTrunc, L"12345") != 0) return 1950;
 #endif
     }
 

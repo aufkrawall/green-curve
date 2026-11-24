@@ -31,6 +31,7 @@ struct GcMessageBoxState {
     HICON icon;
     int iconSize;
     const char* text;
+    std::wstring textWide;
     MessageBoxLayoutPlan plan;
     int textWidth;
     int textHeight;
@@ -39,6 +40,23 @@ struct GcMessageBoxState {
     int result;
     bool done;
 };
+
+static std::wstring gc_message_box_utf8_to_wide(const char* text) {
+    if (!text || !text[0]) return std::wstring();
+    int needed = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+    if (needed <= 1) return std::wstring();
+    std::wstring wide((size_t)(needed - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text, -1, &wide[0], needed);
+    return wide;
+}
+
+static int gc_message_box_system_fallback(HWND owner, const char* text,
+                                          const char* caption,
+                                          unsigned int type) {
+    std::wstring textW = gc_message_box_utf8_to_wide(text);
+    std::wstring captionW = gc_message_box_utf8_to_wide(caption ? caption : "Green Curve");
+    return MessageBoxW(owner, textW.c_str(), captionW.c_str(), type);
+}
 
 static GcMessageBoxPalette gc_message_box_palette() {
     GcMessageBoxPalette palette = {};
@@ -135,7 +153,8 @@ static void gc_message_box_paint(HWND hwnd, GcMessageBoxState* state) {
         state->plan.textX + state->textWidth,
         state->plan.textY + state->textHeight,
     };
-    DrawTextA(hdc, state->text, -1, &textRc, DT_WORDBREAK | DT_NOPREFIX);
+    DrawTextW(hdc, state->textWide.c_str(), (int)state->textWide.size(), &textRc,
+              DT_WORDBREAK | DT_NOPREFIX);
     SelectObject(hdc, oldFont);
     EndPaint(hwnd, &ps);
 }
@@ -151,16 +170,20 @@ static void gc_message_box_copy_to_clipboard(HWND hwnd, const GcMessageBoxState*
         caption, state->text, &state->buttons, nullptr, 0);
     if (needed == 0) return;
 
-    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, needed + 1);
+    std::string formatted(needed, '\0');
+    message_box_format_clipboard_text(
+        caption, state->text, &state->buttons, &formatted[0], needed + 1);
+    std::wstring wide = gc_message_box_utf8_to_wide(formatted.c_str());
+
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, (wide.size() + 1) * sizeof(WCHAR));
     if (!hMem) return;
 
-    char* ptr = (char*)GlobalLock(hMem);
+    WCHAR* ptr = (WCHAR*)GlobalLock(hMem);
     if (!ptr) {
         GlobalFree(hMem);
         return;
     }
-    message_box_format_clipboard_text(
-        caption, state->text, &state->buttons, ptr, needed + 1);
+    memcpy(ptr, wide.c_str(), (wide.size() + 1) * sizeof(WCHAR));
     GlobalUnlock(hMem);
 
     bool opened = false;
@@ -176,7 +199,7 @@ static void gc_message_box_copy_to_clipboard(HWND hwnd, const GcMessageBoxState*
         return;
     }
     EmptyClipboard();
-    if (!SetClipboardData(CF_TEXT, hMem)) {
+    if (!SetClipboardData(CF_UNICODETEXT, hMem)) {
         GlobalFree(hMem);
     }
     CloseClipboard();
@@ -287,6 +310,7 @@ int gc_message_box(HWND owner, const char* text, const char* caption,
     state.buttons = message_box_button_set(type);
     state.result = state.buttons.escapeId;
     state.text = text ? text : "";
+    state.textWide = gc_message_box_utf8_to_wide(state.text);
     state.palette = gc_message_box_palette();
     state.font = get_ui_font();
     state.icon = gc_message_box_icon(type);
@@ -306,7 +330,7 @@ int gc_message_box(HWND owner, const char* text, const char* caption,
         debug_log("themed message box: class registration FAILED lastError=%lu; "
                   "falling back to the system message box\n",
                   (unsigned long)GetLastError());
-        return MessageBoxA(owner, text, caption, type);
+        return gc_message_box_system_fallback(owner, text, caption, type);
     }
 
     // Measure the body against a comfortable maximum line length, then let the
@@ -315,7 +339,7 @@ int gc_message_box(HWND owner, const char* text, const char* caption,
     HDC measureDc = GetDC(nullptr);
     HFONT oldFont = (HFONT)SelectObject(measureDc, state.font);
     RECT textRc = { 0, 0, maxTextWidth, 0 };
-    DrawTextA(measureDc, state.text, -1, &textRc,
+    DrawTextW(measureDc, state.textWide.c_str(), (int)state.textWide.size(), &textRc,
               DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
     state.textWidth = textRc.right - textRc.left;
     state.textHeight = textRc.bottom - textRc.top;
@@ -356,7 +380,7 @@ int gc_message_box(HWND owner, const char* text, const char* caption,
         debug_log("themed message box: window creation FAILED lastError=%lu; "
                   "falling back to the system message box\n",
                   (unsigned long)GetLastError());
-        return MessageBoxA(owner, text, caption, type);
+        return gc_message_box_system_fallback(owner, text, caption, type);
     }
     SetWindowLongPtrA(hwnd, GWLP_USERDATA, (LONG_PTR)&state);
     apply_system_titlebar_theme(hwnd);

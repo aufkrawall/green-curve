@@ -1,5 +1,34 @@
 # Windows UI layout
 
+## UTF-8 to UTF-16 Win32 text rendering and logon status (2026-11-24)
+
+Source anchors: `source/platform.h`, `source/ui_control_projection.h`,
+`source/ui_main_controls.cpp`, `source/entry.cpp`,
+`source/config_profiles_gui_state.cpp`, `source/ui_theme_button.cpp`,
+`source/fan_curve_dialog.cpp`, `source/ui_message_box.cpp`,
+`source/profile_startup_policy.h`, `source/main_startup_profiles.cpp`.
+
+- **Invariant (UTF-8 degree sign and Win32 wide rendering):** `GC_DEGREE` is
+  UTF-8 `"\xC2\xB0"` on every platform. Previously, Windows defined it as raw
+  CP-1252 `"\xB0"`, which broke on CJK/DBCS Windows ANSI code pages (where
+  `0xB0 0x43` is decoded as a single DBCS glyph instead of `°C`). Controls that
+  display `°C` or UTF-8 captions (`hFanCurveBtn`, `hProfileStatusLabel`, fan
+  curve dialog `"Temp °C"`, `hysteresisCombo`, `zeroRpmHysteresisCombo`,
+  `zeroRpmDescription`) are created as Unicode windows (`CreateWindowExW`),
+  `gui_set_window_text_if_changed()` converts UTF-8 to UTF-16 via
+  `gui_utf8_to_wide_buf()` and calls `SetWindowTextW`, owner-drawn buttons use
+  `GetWindowTextW` + `DrawTextW`, fan-curve graph labels use `TextOutW`, and
+  `gc_message_box()` measures/paints with `DrawTextW`, copies `CF_UNICODETEXT`,
+  and falls back to `MessageBoxW`. Pinned in `tests/regression_main.cpp`
+  (`1945-1950`) and `tools/ui_gates.py`.
+- **Invariant (logon status line):** `startup_logon_skipped_app_launch_slot()`
+  ensures `maybe_load_app_launch_profile_to_gui()` only overwrites the logon
+  status text with `"Ready. Skipped app-start auto-load for the logon launch."`
+  when an app-launch slot is actually configured (`1..CONFIG_NUM_SLOTS`); when
+  app-start auto-load is already disabled, the service-owned logon status text
+  from `apply_logon_startup_behavior()` is preserved (`tests/regression_main.cpp`
+  `727-730`).
+
 ## Summary
 
 The main Win32 window uses a single responsive layout plan. It must fit inside

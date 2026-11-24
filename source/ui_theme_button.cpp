@@ -184,14 +184,14 @@ static void draw_themed_button(const DRAWITEMSTRUCT* dis) {
     SelectObject(hdc, oldBrush);
     DeleteObject(SelectObject(hdc, oldPen));
 
-    char text[128] = {};
-    GetWindowTextA(dis->hwndItem, text, ARRAY_COUNT(text));
+    WCHAR text[128] = {};
+    GetWindowTextW(dis->hwndItem, text, ARRAY_COUNT(text));
     RECT textRc = rc;
     if (pressed) OffsetRect(&textRc, 0, 1);
     COLORREF labelColor = disabled ? COL_LABEL : COL_BUTTON_LABEL;
     if (pendingAccent) labelColor = disabled ? COL_PENDING_DIM : COL_PENDING;
     SetTextColor(hdc, labelColor);
-    DrawTextA(hdc, text, -1, &textRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    DrawTextW(hdc, text, -1, &textRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     if (focused) {
         RECT focus = rc;

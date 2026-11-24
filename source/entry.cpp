@@ -750,8 +750,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         g_app.hMainWnd, (HMENU)(INT_PTR)LOGON_LABEL_ID, hInstance, nullptr
     );
 
-    g_app.hProfileStatusLabel = CreateWindowExA(
-        0, "STATIC", "",
+    g_app.hProfileStatusLabel = CreateWindowExW(
+        0, L"STATIC", L"",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         0, 0, dp(420), dp(18),
         g_app.hMainWnd, (HMENU)(INT_PTR)PROFILE_STATUS_ID, hInstance, nullptr

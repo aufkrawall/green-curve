@@ -54,7 +54,12 @@ static void maybe_load_app_launch_profile_to_gui() {
     StartupEditorSource editorSource = startup_editor_source(
         g_app.launchedFromLogon, appLaunchSlot, CONFIG_NUM_SLOTS);
     if (editorSource == STARTUP_EDITOR_SOURCE_LOGON_SERVICE) {
-        set_profile_status_text("Ready. Skipped app-start auto-load for the logon launch.");
+        if (startup_logon_skipped_app_launch_slot(
+                g_app.launchedFromLogon, appLaunchSlot, CONFIG_NUM_SLOTS)) {
+            set_profile_status_text("Ready. Skipped app-start auto-load for the logon launch.");
+        } else {
+            debug_log("startup logon: app-start auto-load is disabled; preserving logon service status\n");
+        }
         return;
     }
     if (editorSource == STARTUP_EDITOR_SOURCE_LIVE_SNAPSHOT) {

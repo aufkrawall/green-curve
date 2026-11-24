@@ -39,7 +39,7 @@ static void fan_curve_dialog_update_zero_rpm_description() {
     int startC = fan_curve_first_enabled_temperature(&g_fanCurveDialog.working);
     fan_zero_rpm_gui_format_description(description, sizeof(description), startC,
         fan_curve_zero_rpm_hysteresis(&g_fanCurveDialog.working));
-    SetWindowTextA(g_fanCurveDialog.zeroRpmDescription, description);
+    gui_set_window_text_if_changed(g_fanCurveDialog.zeroRpmDescription, description);
 }
 
 static void fan_curve_dialog_sync_controls() {
@@ -135,10 +135,10 @@ static void fan_curve_dialog_set_temperature_error(const FanCurveConfig* curve, 
     int maximum = 100;
     fan_curve_dialog_temperature_bounds(curve, pointIndex, &minimum, &maximum);
     if (minimum == maximum) {
-        set_message(err, errSize, "Fan point %d temperature must be %d\xB0""C", pointIndex + 1, minimum);
+        set_message(err, errSize, "Fan point %d temperature must be %d" GC_DEGREE "C", pointIndex + 1, minimum);
         return;
     }
-    set_message(err, errSize, "Fan point %d temperature must be between %d\xB0""C and %d\xB0""C", pointIndex + 1, minimum, maximum);
+    set_message(err, errSize, "Fan point %d temperature must be between %d" GC_DEGREE "C and %d" GC_DEGREE "C", pointIndex + 1, minimum, maximum);
 }
 
 static void fan_curve_dialog_set_percent_error(const FanCurveConfig* curve, int pointIndex, char* err, size_t errSize) {
@@ -387,13 +387,14 @@ static void fan_curve_dialog_draw_preview(HWND hwnd, HDC hdc) {
     }
 
     for (int t = 0; t <= 100; t += 10) {
-        char label[16] = {};
-        StringCchPrintfA(label, ARRAY_COUNT(label), "%d\xB0""C", t);
+        WCHAR label[16] = {};
+        StringCchPrintfW(label, ARRAY_COUNT(label), L"%d\x00B0" L"C", t);
+        int labelLen = (int)wcslen(label);
         SIZE textSize = {};
-        GetTextExtentPoint32A(hdc, label, (int)strlen(label), &textSize);
+        GetTextExtentPoint32W(hdc, label, labelLen, &textSize);
         int x = plot.left + (t * (width - 1)) / 100 - textSize.cx / 2;
         x = nvmax(graph.left, nvmin(graph.right - textSize.cx, x));
-        TextOutA(hdc, x, plot.bottom + dp(6), label, (int)strlen(label));
+        TextOutW(hdc, x, plot.bottom + dp(6), label, labelLen);
     }
 
     FanCurveConfig preview = {};
@@ -428,7 +429,9 @@ static void fan_curve_dialog_draw_preview(HWND hwnd, HDC hdc) {
 
     char summary[128] = {};
     fan_curve_format_summary(&preview, summary, sizeof(summary));
-    TextOutA(hdc, graph.left, graph.bottom + dp(6), summary, (int)strlen(summary));
+    WCHAR summaryW[160] = {};
+    int summaryLen = gui_utf8_to_wide_buf(summary, summaryW, ARRAY_COUNT(summaryW));
+    TextOutW(hdc, graph.left, graph.bottom + dp(6), summaryW, summaryLen);
 
     if (hFont) {
         DeleteObject(SelectObject(hdc, oldFont));
@@ -467,7 +470,7 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
 
             CreateWindowExA(0, "STATIC", "Enable", WS_CHILD | WS_VISIBLE | SS_LEFT,
                 dp(18), dp(252), dp(52), dp(18), hwnd, nullptr, g_app.hInst, nullptr);
-            CreateWindowExA(0, "STATIC", "Temp \xB0""C", WS_CHILD | WS_VISIBLE | SS_LEFT,
+            CreateWindowExW(0, L"STATIC", L"Temp \x00B0" L"C", WS_CHILD | WS_VISIBLE | SS_LEFT,
                 dp(110), dp(252), dp(58), dp(18), hwnd, nullptr, g_app.hInst, nullptr);
             CreateWindowExA(0, "STATIC", "Fan %", WS_CHILD | WS_VISIBLE | SS_LEFT,
                 dp(198), dp(252), dp(58), dp(18), hwnd, nullptr, g_app.hInst, nullptr);
@@ -522,17 +525,17 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
 
             CreateWindowExA(0, "STATIC", "Curve downshift", WS_CHILD | WS_VISIBLE | SS_LEFT,
                 dp(304), dp(334), dp(150), dp(18), hwnd, nullptr, g_app.hInst, nullptr);
-            g_fanCurveDialog.hysteresisCombo = CreateWindowExA(
-                0, "COMBOBOX", "",
+            g_fanCurveDialog.hysteresisCombo = CreateWindowExW(
+                0, L"COMBOBOX", L"",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
                 dp(304), dp(354), dp(150), dp(180),
                 hwnd, (HMENU)(INT_PTR)FAN_DIALOG_HYSTERESIS_ID, g_app.hInst, nullptr);
             style_combo_control(g_fanCurveDialog.hysteresisCombo);
             for (int value = 0; value <= FAN_CURVE_MAX_HYSTERESIS_C; value++) {
-                char text[16] = {};
-                StringCchPrintfA(text, ARRAY_COUNT(text), "%d\xB0""C", value);
-                int index = (int)SendMessageA(g_fanCurveDialog.hysteresisCombo, CB_ADDSTRING, 0, (LPARAM)text);
-                SendMessageA(g_fanCurveDialog.hysteresisCombo, CB_SETITEMDATA, (WPARAM)index, (LPARAM)value);
+                WCHAR text[16] = {};
+                StringCchPrintfW(text, ARRAY_COUNT(text), L"%d\x00B0" L"C", value);
+                int index = (int)SendMessageW(g_fanCurveDialog.hysteresisCombo, CB_ADDSTRING, 0, (LPARAM)text);
+                SendMessageW(g_fanCurveDialog.hysteresisCombo, CB_SETITEMDATA, (WPARAM)index, (LPARAM)value);
             }
 
             g_fanCurveDialog.zeroRpmCheck = CreateWindowExA(
@@ -548,21 +551,21 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             CreateWindowExA(0, "STATIC", "Zero-RPM fan-off gap", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX,
                 dp(304), dp(FAN_ZERO_RPM_GUI_GAP_LABEL_Y), dp(178),
                 dp(FAN_ZERO_RPM_GUI_GAP_LABEL_HEIGHT), hwnd, nullptr, g_app.hInst, nullptr);
-            g_fanCurveDialog.zeroRpmHysteresisCombo = CreateWindowExA(
-                0, "COMBOBOX", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+            g_fanCurveDialog.zeroRpmHysteresisCombo = CreateWindowExW(
+                0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
                 dp(304), dp(FAN_ZERO_RPM_GUI_GAP_COMBO_Y), dp(150), dp(240),
                 hwnd, (HMENU)(INT_PTR)FAN_DIALOG_ZERO_RPM_HYSTERESIS_ID, g_app.hInst, nullptr);
             style_combo_control(g_fanCurveDialog.zeroRpmHysteresisCombo);
             for (int value = FAN_ZERO_RPM_MIN_HYSTERESIS_C; value <= FAN_ZERO_RPM_MAX_HYSTERESIS_C; ++value) {
-                char text[16] = {};
-                StringCchPrintfA(text, ARRAY_COUNT(text), "%d\xB0""C", value);
-                int index = (int)SendMessageA(g_fanCurveDialog.zeroRpmHysteresisCombo,
+                WCHAR text[16] = {};
+                StringCchPrintfW(text, ARRAY_COUNT(text), L"%d\x00B0" L"C", value);
+                int index = (int)SendMessageW(g_fanCurveDialog.zeroRpmHysteresisCombo,
                     CB_ADDSTRING, 0, (LPARAM)text);
-                SendMessageA(g_fanCurveDialog.zeroRpmHysteresisCombo,
+                SendMessageW(g_fanCurveDialog.zeroRpmHysteresisCombo,
                     CB_SETITEMDATA, (WPARAM)index, (LPARAM)value);
             }
 
-            g_fanCurveDialog.zeroRpmDescription = CreateWindowExA(0, "STATIC", "",
+            g_fanCurveDialog.zeroRpmDescription = CreateWindowExW(0, L"STATIC", L"",
                 WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_NOPREFIX,
                 dp(304), dp(FAN_ZERO_RPM_GUI_DESCRIPTION_Y), dp(178),
                 dp(FAN_ZERO_RPM_GUI_DESCRIPTION_HEIGHT), hwnd, nullptr,
