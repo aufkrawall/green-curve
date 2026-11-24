@@ -446,14 +446,22 @@ bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
         return false;
     }
     nvml_resolve(g);
-    int initStatus = g->nvml.init
-        ? g->nvml.init() : NVML_ERROR_FUNCTION_NOT_FOUND;
+    // An init reference is only acquired when teardown can release it.
+    if (!g->nvml.init || !g->nvml.shutdown) {
+        gc_snprintf(err, errSize, "NVML lifetime entry points unavailable init=%d shutdown=%d",
+            g->nvml.init ? 1 : 0, g->nvml.shutdown ? 1 : 0);
+        linux_backend_publish_health(g, SERVICE_GPU_HEALTH_NVML_UNAVAILABLE,
+            NVML_ERROR_FUNCTION_NOT_FOUND, err);
+        return false;
+    }
+    int initStatus = g->nvml.init();
     if (initStatus != NVML_SUCCESS) {
         gc_snprintf(err, errSize, "nvmlInit_v2 failed status=%d", initStatus);
         linux_backend_publish_health(g, SERVICE_GPU_HEALTH_NVML_UNAVAILABLE,
             initStatus, err);
         return false;
     }
+    g->nvmlInitialized = true;
     unsigned int count = 0;
     int countStatus = g->nvml.getCount
         ? g->nvml.getCount(&count) : NVML_ERROR_FUNCTION_NOT_FOUND;
@@ -635,7 +643,22 @@ bool linux_backend_select_target(LinuxGpuState* g,
 
 void linux_backend_shutdown(LinuxGpuState* g) {
     if (!g) return;
-    if (g->nvml.shutdown) g->nvml.shutdown();
+    // nvmlInit_v2/nvmlShutdown are process-wide reference counts. Release only
+    // the reference this state acquired: a state whose init failed must not
+    // consume the reference held by a live sibling or replacement backend.
+    if (g->nvmlInitialized && g->nvml.shutdown) {
+        const int status = (int)g->nvml.shutdown();
+        if (status != NVML_SUCCESS)
+            lb_log("linux_backend: nvmlShutdown status=%d\n", status);
+    } else if (g->nvmlLib) {
+        // Expected after every failed init; a driver that stays down can
+        // repeat it per targeted request, so log powers of two only.
+        static pl_atomic32 skipped = 0;
+        const unsigned int count = (unsigned int)pl_atomic_add32(&skipped, 1) + 1u;
+        if ((count & (count - 1)) == 0)
+            lb_log("linux_backend: shutdown skips nvmlShutdown (init not acquired) count=%u\n",
+                count);
+    }
     if (g->nvmlLib) pl_lib_close(g->nvmlLib);
     if (g->nvapiLib) pl_lib_close(g->nvapiLib);
     memset(g, 0, sizeof(*g));

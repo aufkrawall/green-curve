@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-24: Balanced Linux NVML initialization references
+
+- `linux_backend_shutdown()` calls `nvmlShutdown` only when the state's own
+  `nvmlInit_v2` succeeded (`LinuxGpuState::nvmlInitialized`), including
+  partial enumeration failures. A failed startup or replacement init can no
+  longer release the reference held by the live backend, which the daemon's
+  read-time retry and auto-restore re-init did after a driver-not-ready start.
+- Init refuses a library without `nvmlShutdown` before acquiring a reference;
+  `--self-test` releases a failed partial init; the expected skip line is
+  logged at powers of two.
+- First of the multi-GPU PR series (issue 18 maintainer brief, step 1); useful
+  with one GPU. Fixture `tests/linux_nvml_lifetime_tests.cpp` `14200-14211`;
+  `14202` fails without the guard. See linux-scaffold.md, "Read-time backend
+  discovery and post-prepare authority".
+
 ## 2026-11-24: Windows UTF-8 Win32 UI rendering (non-CP1252 `°C` fix), logon status preservation, and live Pascal exact-copy confirmation
 
 - **Windows UTF-8 Win32 text rendering (`platform.h`, `ui_control_projection.h`, `ui_main_controls.cpp`, `entry.cpp`, `config_profiles_gui_state.cpp`, `ui_theme_button.cpp`, `fan_curve_dialog.cpp`, `ui_message_box.cpp`):** unified `GC_DEGREE` to UTF-8 `"\xC2\xB0"` on all platforms (removing raw CP-1252 `"\xB0"` literals that turned `°C` into DBCS mojibake on CJK Windows code pages), added `gui_utf8_to_wide_buf()` and switched `gui_set_window_text_if_changed()`, `draw_themed_button()`, fan-curve dialog controls/graph labels, and `gc_message_box()` (`DrawTextW`, `CF_UNICODETEXT`, `MessageBoxW` fallback) to Unicode Win32 APIs (`tests/regression_main.cpp` `1945-1950`, `tools/ui_gates.py`).

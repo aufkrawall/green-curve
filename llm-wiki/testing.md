@@ -1,5 +1,9 @@
 # Testing
 
+## Linux NVML reference ownership (2026-11-24)
+
+- **`tests/linux_nvml_lifetime_tests.cpp` (`14200-14211`):** compiles the production `linux_backend.cpp` with every external `linux_backend_*` symbol renamed (no strong symbol shared with the real backend object) and replaces `pl_open_driver_library` / `pl_lib_sym` / `pl_lib_close` with a reference-counted fake NVML. `14200-14202` replay the daemon's driver-not-ready retry order (failed startup init, successful replacement, then teardown of the stale state) and fail at `14202` without the `nvmlInitialized` guard; `14203-14204` cover another failing init beside a live backend (the shape of `linux_backend_select_target()`'s failed replacement; the selector itself is not invoked); `14205-14207` cover enumeration failure after a successful init; `14208-14210` cover independent states and exact library-handle close counts; `14211` refuses a library without `nvmlShutdown` before `nvmlInit_v2`.
+
 ## Multi-generation GPU simulation suite and Pascal/probe/capture fixes (2026-11-23)
 
 - **Multi-generation hardware-free simulation (`tests/gpu_generation_sim_harness.h`, `tests/gpu_generation_sim_tests.cpp` `13000-13083`, `tests/gpu_generation_sim_edge_tests.cpp` `13085-13106`):**
