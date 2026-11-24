@@ -490,7 +490,8 @@ static bool desired_has_any_action(const DesiredSettings* desired) {
     // or offsets but still demands an NVML locked-clocks apply.
     if (desired->hasGpuOffset || desired->hasMemOffset || desired->hasPowerLimit ||
         desired->hasFan || desired->hasLock || desired->hasXbarOffsetKhz ||
-        desired->hasXbarMsvddOffsetUv) return true;
+        desired->hasXbarMsvddOffsetUv || desired->hasSysClkOffsetKhz ||
+        desired->hasVideoClkOffsetKhz) return true;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (desired_curve_point_present(desired, i)) return true;
     }

@@ -265,46 +265,10 @@ static bool nvml_reset_gpu_locked_clocks(char* detail, size_t detailSize) {
 
 // The per-fan read every fan path and the stall check rely on.
 #include "main_runtime_nvml_fans.cpp"
+#include "profile_explicit_state_policy.h"
 
 static bool desired_settings_have_explicit_state(const DesiredSettings* desired, bool requireCurve, char* err, size_t errSize) {
-    if (!desired) {
-        set_message(err, errSize, "No desired settings");
-        return false;
-    }
-
-    if (!desired->hasGpuOffset) {
-        set_message(err, errSize, "Profile is missing gpu_offset_mhz");
-        return false;
-    }
-    if (!desired->hasMemOffset) {
-        set_message(err, errSize, "Profile is missing mem_offset_mhz");
-        return false;
-    }
-    if (!desired->hasPowerLimit) {
-        set_message(err, errSize, "Profile is missing power_limit_pct");
-        return false;
-    }
-    if (!desired->hasFan) {
-        set_message(err, errSize, "Profile is missing fan_mode/fan settings");
-        return false;
-    }
-
-    if (requireCurve) {
-        bool haveCurvePoint = false;
-        for (int i = 0; i < VF_NUM_POINTS; i++) {
-            if (desired->hasCurvePoint[i]) {
-                haveCurvePoint = true;
-                break;
-            }
-        }
-        if (!haveCurvePoint) {
-            set_message(err, errSize, "Profile is missing VF curve points");
-            return false;
-        }
-    }
-
-    if (err && errSize > 0) err[0] = 0;
-    return true;
+    return profile_desired_has_explicit_state(desired, requireCurve, err, errSize);
 }
 
 static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_t detailSize, bool runtimeTick) {

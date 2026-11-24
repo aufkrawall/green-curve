@@ -2014,3 +2014,12 @@ def check_preview_stock_base_crosstalk_protection(ctx, require_text, forbid_text
                  "profile status label is a Unicode window so UTF-8 status text survives non-CP1252 locales")
     require_text(_p(ctx, "main_startup_profiles.cpp"), "startup_logon_skipped_app_launch_slot(",
                  "logon launch preserves service logon status when app-start auto-load is already disabled")
+    require_text(_p(ctx, "main_runtime_nvml.cpp"),
+                 "return profile_desired_has_explicit_state(desired, requireCurve, err, errSize);",
+                 "Windows unattended profile validation delegates to the shared explicit-scope policy")
+    require_text(_p(ctx, "profile_explicit_state_policy.h"),
+                 "if (desired->applicationScope != DESIRED_SCOPE_LEGACY)",
+                 "explicit-scope profiles omitting unowned domains pass Windows logon/app-launch validation")
+    require_text(_p(ctx, "main_service_sessions.cpp"),
+                 "configured profile failed validation ",
+                 "Windows logon validation failures log scope and domain presence flags")

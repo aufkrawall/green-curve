@@ -358,8 +358,12 @@ static ServiceLogonProfileResolveResult service_load_logon_profile_from_context(
             return SERVICE_LOGON_PROFILE_NONE;
     }
 
-    debug_log("logon profile context: configured profile failed validation: %s\n",
-        loadErr[0] ? loadErr : "unknown");
+    debug_log("logon profile context: configured profile failed validation "
+              "(source=%d scope=%lu hasGpu=%d hasMem=%d hasPower=%d hasFan=%d hasLock=%d): %s\n",
+        (int)selected, (unsigned long)desired->applicationScope,
+        desired->hasGpuOffset ? 1 : 0, desired->hasMemOffset ? 1 : 0,
+        desired->hasPowerLimit ? 1 : 0, desired->hasFan ? 1 : 0,
+        desired->hasLock ? 1 : 0, loadErr[0] ? loadErr : "unknown");
     // A selected profile can be temporarily unreadable while another process
     // atomically replaces the INI or while the user profile finishes mounting.
     // Treat this as a config prerequisite, never as permission to fall back to

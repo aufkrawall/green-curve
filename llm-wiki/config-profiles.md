@@ -1,5 +1,32 @@
 # Config and Profiles
 
+## Unattended explicit-scope profile validation on Windows (2026-11-24)
+
+Source anchors: `source/profile_explicit_state_policy.h`,
+`source/main_runtime_nvml.cpp`, `source/main_service_sessions.cpp`,
+`source/main_startup_profiles.cpp`, `source/entry.cpp`,
+`source/main_settings_transfer.cpp`, `source/config_profiles_ui.cpp`,
+`tests/gpu_generation_sim_edge_tests.cpp` (`13111-13118`), `tools/ui_gates.py`.
+
+Explicit-scope profile records (`DESIRED_SCOPE_REPLACE_PROFILE` /
+`DESIRED_SCOPE_UPDATE_INCLUDED`) — including every profile created via Save
+Current capture or edited from one — intentionally omit unowned domains (such as
+`gpu_offset_mhz` when external graphics-offset composition is unresolved, or fan
+settings omitted during capture). Previously, `desired_settings_have_explicit_state()`
+still enforced the legacy 5-field completeness check unconditionally, causing
+Windows logon auto-apply, app-start auto-load, CLI logon apply, and upgrade
+settings transfer to reject captured/scoped profiles with
+`Profile is missing gpu_offset_mhz` (or `fan_mode/fan settings`).
+
+- **Invariant:** `profile_desired_has_explicit_state()` preserves the legacy
+  5-field fail-closed check for `DESIRED_SCOPE_LEGACY`, while accepting
+  explicit-scope non-release records that have valid scope, valid authoring
+  metadata (`desired_authoring_runtime_ready()`), and at least one owned control
+  domain (`service_scoped_has_owned_intent()`).
+- **Diagnostics:** `service_load_logon_profile_from_context()` logs `source`,
+  `scope`, and per-domain presence flags (`hasGpu`, `hasMem`, `hasPower`,
+  `hasFan`, `hasLock`) whenever logon profile validation fails.
+
 ## Advanced fields omitted from a scoped profile (2026-11-20)
 
 `config_profiles_gui_state.cpp` projects the current advanced values for

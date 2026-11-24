@@ -19,6 +19,7 @@
 #include "gui_editor_base_policy.h"
 #include "gui_pending_changes_policy.h"
 #include "linux_curve_targets.h"
+#include "profile_explicit_state_policy.h"
 
 #include <memory>
 
@@ -540,6 +541,93 @@ static int test_weird_valid_curves_and_grid_edge_cases() {
         const GuiGraphPreviewPoint preview = gui_graph_preview_point(pin);
         if (preview.offsetFromStockBase || preview.absoluteMHz != 1012u)
             return 13110;
+    }
+
+    // 13111-13118: Unattended Windows logon / app-launch / CLI / settings-transfer
+    // validation (profile_desired_has_explicit_state): explicit-scope profiles
+    // intentionally omitting gpu_offset_mhz, fan, or curve must pass, while empty/
+    // release/corrupt legacy profiles stay rejected fail-closed.
+    {
+        char err[256] = {};
+
+        // 13111: Captured-derived explicit-scope profile omitting gpu_offset_mhz
+        // (live Windows Pascal GP102 Slot 3 logon failure regression).
+        auto slot3 = std::make_unique<DesiredSettings>();
+        slot3->applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+        slot3->hasMemOffset = 1;
+        slot3->memOffsetMHz = -1000;
+        slot3->hasPowerLimit = 1;
+        slot3->powerLimitPct = 50;
+        slot3->hasFan = 1;
+        slot3->fanMode = FAN_MODE_FIXED;
+        slot3->fanPercent = 80;
+        slot3->hasLock = 1;
+        slot3->lockCi = 14;
+        slot3->lockMHz = 721;
+        slot3->lockMode = LOCK_MODE_FLATTEN;
+        slot3->hasCurvePoint[14] = 1;
+        slot3->curvePointMHz[14] = 721;
+        if (!profile_desired_has_explicit_state(slot3.get(), true, err, sizeof(err)))
+            return 13111;
+
+        // 13112: Captured exact-copy profile omitting both gpu_offset_mhz and fan.
+        auto capturedExact = std::make_unique<DesiredSettings>();
+        capturedExact->applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+        capturedExact->hasMemOffset = 1;
+        capturedExact->memOffsetMHz = -1000;
+        capturedExact->hasPowerLimit = 1;
+        capturedExact->powerLimitPct = 50;
+        capturedExact->curvePointCaptured[21] = 1;
+        capturedExact->curvePointCapturedOffsetHz[21] = 13000000LL;
+        if (!profile_desired_has_explicit_state(capturedExact.get(), true, err, sizeof(err)))
+            return 13112;
+
+        // 13113: Explicit-scope hard-pin-only profile (no VF points, no GPU offset, no fan).
+        auto pinOnly = std::make_unique<DesiredSettings>();
+        pinOnly->applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+        pinOnly->hasLock = 1;
+        pinOnly->lockCi = 21;
+        pinOnly->lockMHz = 1000;
+        pinOnly->lockMode = LOCK_MODE_HARD;
+        if (!profile_desired_has_explicit_state(pinOnly.get(), true, err, sizeof(err)))
+            return 13113;
+
+        // 13114: Empty explicit-scope profile must still be rejected.
+        auto emptyExplicit = std::make_unique<DesiredSettings>();
+        emptyExplicit->applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
+        if (profile_desired_has_explicit_state(emptyExplicit.get(), true, err, sizeof(err)))
+            return 13114;
+
+        // 13115: Explicit-release scope and invalid scope values must be rejected.
+        emptyExplicit->applicationScope = DESIRED_SCOPE_EXPLICIT_RELEASE;
+        if (profile_desired_has_explicit_state(emptyExplicit.get(), false, err, sizeof(err)))
+            return 13115;
+        auto badScope = std::make_unique<DesiredSettings>(*slot3);
+        badScope->applicationScope = 99u;
+        if (profile_desired_has_explicit_state(badScope.get(), true, err, sizeof(err)))
+            return 13115;
+
+        // 13116: Invalid authoring metadata under explicit scope must be rejected.
+        auto badAuthoring = std::make_unique<DesiredSettings>(*slot3);
+        badAuthoring->authoring.reserved = 1u;
+        if (profile_desired_has_explicit_state(badAuthoring.get(), true, err, sizeof(err)))
+            return 13116;
+
+        // 13117: Legacy profile missing gpu_offset_mhz stays rejected fail-closed.
+        auto legacyMissingGpu = std::make_unique<DesiredSettings>(*slot3);
+        legacyMissingGpu->applicationScope = DESIRED_SCOPE_LEGACY;
+        if (profile_desired_has_explicit_state(legacyMissingGpu.get(), true, err, sizeof(err)) ||
+            !strstr(err, "gpu_offset_mhz"))
+            return 13117;
+
+        // 13118: Complete legacy profile passes, and missing curve fails only when required.
+        legacyMissingGpu->hasGpuOffset = 1;
+        if (!profile_desired_has_explicit_state(legacyMissingGpu.get(), true, err, sizeof(err)))
+            return 13118;
+        legacyMissingGpu->hasCurvePoint[14] = 0;
+        if (profile_desired_has_explicit_state(legacyMissingGpu.get(), true, err, sizeof(err)) ||
+            !profile_desired_has_explicit_state(legacyMissingGpu.get(), false, err, sizeof(err)))
+            return 13118;
     }
     return 0;
 }
