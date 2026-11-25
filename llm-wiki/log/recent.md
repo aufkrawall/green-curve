@@ -5,6 +5,25 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-25: Process-wide Linux driver context (multi-GPU step 2, part 1)
+
+- `LinuxDriverContext` (`source/linux_driver_context.{h,cpp}`) now owns the
+  NVML/NvAPI library handles, the one `nvmlInit_v2` reference and the NvAPI
+  init. `LinuxGpuState` keeps a non-owning `driver` pointer and copies of the
+  resolved entry points; its shutdown releases no library.
+- Binding keeps today's sequence: each init discovers NVML and binds in the
+  same call, enumerating and matching NvAPI at bind time. After a driver reset
+  a cached NVML session is re-initialized in the same init call (cold starts
+  keep one attempt), and every binding initializes NvAPI before enumerating,
+  as each new GPU state did. NvAPI
+  readiness and the passive-capture lock-log gate are per binding.
+- 2026-11-26: six review rounds kept finding edge cases in binding several
+  GPUs from one shared discovery and proving cached handles; that API and its
+  proofs were removed from step 2 and deferred to the multi-GPU step (see
+  linux-scaffold.md, "Process-wide driver context").
+- Fixture `14200-14249` (with gaps); gate: no load/init/release or NvAPI init
+  anywhere in the backend amalgamation outside the context.
+
 ## 2026-11-24: Balanced Linux NVML initialization references
 
 - `linux_backend_shutdown()` calls `nvmlShutdown` only when the state's own

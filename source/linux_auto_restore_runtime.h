@@ -276,12 +276,10 @@ static bool auto_restore_prepare_backend(const GpuAdapterInfo* target,
         //
         // Into a replacement, not over g_gpu, and using the same idiom as
         // linux_backend_select_target(): linux_backend_init() memsets the state
-        // it is handed but can RETURN failure with the NVML/NvAPI handles
-        // already open (the "nvmlInit_v2 failed" arm does exactly that), so
-        // re-initializing in place would drop the previous attempt's dlopen
-        // handles on the floor.
+        // it is handed, so a failed attempt must not overwrite the published
+        // one. The libraries and NVML reference stay with g_driver.
         LinuxGpuState replacement = {};
-        if (!linux_backend_init(&replacement, nullptr, err, errSize)) {
+        if (!linux_backend_init(&replacement, &g_driver, nullptr, err, errSize)) {
             linux_backend_shutdown(&replacement);
             return false;
         }

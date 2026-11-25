@@ -19,6 +19,23 @@ def _p(ctx, name):
     return os.path.join(ctx.SOURCE_DIR, name)
 
 
+def _linux_amalgamation(ctx, root):
+    """`root` plus every linux_* file it includes, transitively."""
+    order, seen = [], set()
+
+    def walk(name):
+        path = _p(ctx, name)
+        if name in seen or not os.path.exists(path):
+            return
+        seen.add(name)
+        order.append(name)
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for include in re.findall(r'^#include "(linux_[^"]+)"', handle.read(), re.M):
+                walk(include)
+    walk(root)
+    return order
+
+
 def check_tui_layout(ctx, require_text, forbid_text, require_order):
     """F-LNX-TUI: root-cause fix for the reported mouse-offset bug plus the
     keyboard/daemon parity that came with it.  One cell grid owns both painting
@@ -903,6 +920,9 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
     ctx.require_order_in_operation(daemon_cpp, "static int daemon_run_owned(const char* configPath)",
         "daemon_release_fan_to_driver();", "linux_backend_shutdown(&g_gpu);",
         "the common teardown hands fans back before unloading the backend")
+    ctx.require_order_in_operation(daemon_cpp, "static int daemon_run_owned(const char* configPath)",
+        "linux_backend_shutdown(&g_gpu);", "linux_driver_close(&g_driver);",
+        "the process-wide driver context closes after its last GPU state")
 
     # --- the crash-loop guard ----------------------------------------------
     require_text(policy_h, "LINUX_AUTO_RESTORE_MAX_START_ATTEMPTS = 3",
@@ -1225,14 +1245,34 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
                  "automatic restore passes its persisted location role to selection")
     require_text(restore_h, "linux_auto_restore_rebind_hint(trigger, targetUnresolved)",
                  "an aborted automatic restore logs its stored role and remedy")
-    require_text(discovery_cpp, "linux_backend_init(&replacement, target, err, errSize, role, uuid)",
+    require_text(discovery_cpp, "linux_backend_init(&replacement, g->driver, target, err, errSize, role, uuid)",
                  "backend replacement retains the restore location role")
     require_text(discovery_cpp, "linux_gpu_uuid_compatible(uuid, &observed)",
                  "the selection fast path checks fresh optional physical identity evidence")
-    require_text(discovery_cpp, "linux_gpu_read_uuid(g->getUuid, devices[i])",
+    driver_cpp = _p(ctx, "linux_driver_context.cpp")
+    require_text(driver_cpp, "linux_gpu_read_uuid(driver->getUuid, discovery->devices[i])",
                  "enumerated adapters acquire optional UUIDs without a new prerequisite")
-    forbid_text(discovery_cpp, "auto query = sym<LinuxGetGpuUuid>",
-                "the per-request UUID check reuses the symbol resolved at init")
+    forbid_text(discovery_cpp, "sym<LinuxGetGpuUuid>",
+                "the per-request UUID check reuses the symbol resolved once per process")
+    # One process-wide context owns library handles and the NVML reference;
+    # a GPU state never loads, initializes or releases a driver library.
+    # Token patterns, not spellings: whitespace before "(" must not hide a call.
+    library_calls = re.compile(r"\bpl_open_driver_library\s*\(|\bnvml\s*\.\s*init\s*\(|"
+                               r"\bnvml\s*\.\s*shutdown\s*\(|\bpl_lib_close\s*\(|"
+                               r"\"nvapi_QueryInterface\"|\bNVAPI_INIT_ID\b")
+    for shard in _linux_amalgamation(ctx, "linux_backend.cpp"):
+        if shard == "linux_driver_context.cpp":
+            continue
+        with open(_p(ctx, shard), "r", encoding="utf-8", errors="replace") as handle:
+            # Comments must not split a call either: drop them before matching.
+            code = re.sub(r"/\*.*?\*/|//[^\n]*", " ", handle.read(), flags=re.S)
+            found = library_calls.search(code)
+        if found:
+            print("Regression source check FAILED (must be absent): driver libraries are loaded, "
+                  f"initialized and released only by linux_driver_context.cpp ({shard}: {found.group(0)})")
+            sys.exit(1)
+    require_text(driver_cpp, "if (driver->nvmlInitialized && driver->nvml.shutdown)",
+                 "the context releases only the NVML reference it acquired")
     require_text(discovery_cpp, "linux_gpu_read_uuid(g->getUuid, g->nvmlDevice)",
                  "the selection fast path reads the UUID through the cached query")
     require_text(restore_h, "g_activeTargetRole, &g_activeTargetUuid)",

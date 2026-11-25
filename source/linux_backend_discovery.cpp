@@ -55,47 +55,18 @@ static bool linux_backend_cached_architecture_matches(const LinuxGpuState* g,
         linux_gpu_same_pci_nonconflicting(&g->cachedArchitectureGpu, gpu);
 }
 
-static bool linux_backend_ensure_nvapi(LinuxGpuState* g, char* err,
-                                       size_t errSize) {
-    if (!g->nvapiLib) g->nvapiLib = pl_open_driver_library(PL_DRIVER_NVAPI);
-    if (!g->nvapiLib) {
-        gc_strlcpy(err, errSize, "libnvidia-api.so.1 not found");
-        linux_backend_publish_health(g,
-            SERVICE_GPU_HEALTH_NVAPI_LIBRARY_UNAVAILABLE,
-            LB_NVAPI_FUNCTION_MISSING, err);
-        return false;
-    }
-    if (!g->nvapiQi)
-        g->nvapiQi = (nvapi_qi_t)pl_lib_sym(g->nvapiLib,
-            "nvapi_QueryInterface");
-    if (!g->nvapiQi) {
-        gc_strlcpy(err, errSize, "nvapi_QueryInterface unavailable");
-        linux_backend_publish_health(g, SERVICE_GPU_HEALTH_NVAPI_INIT_FAILED,
-            LB_NVAPI_FUNCTION_MISSING, err);
-        return false;
-    }
-    if (g->nvapiInitialized) return true;
-    auto init = (nvapi_init_t)g->nvapiQi(NVAPI_INIT_ID);
-    if (!init) {
-        gc_strlcpy(err, errSize, "NvAPI initialize entry point unavailable");
-        linux_backend_publish_health(g, SERVICE_GPU_HEALTH_NVAPI_INIT_FAILED,
-            LB_NVAPI_FUNCTION_MISSING, err);
-        return false;
-    }
-    int status = init();
-    if (!nvapi_ok(status)) {
-        gc_snprintf(err, errSize, "NvAPI initialize status=%d (%s)", status,
-            nvapi_status_name(status));
-        linux_backend_publish_health(g, SERVICE_GPU_HEALTH_NVAPI_INIT_FAILED,
-            status, err);
-        return false;
-    }
-    g->nvapiInitialized = true;
-    return true;
+// The context's query interface, also after a refused NvAPI initialization:
+// diagnostics such as the clock-domain dump keep using it, as they did when
+// each state resolved its own copy.
+static void linux_backend_adopt_nvapi_query(LinuxGpuState* g) {
+    if (g->driver && g->driver->nvapiQi) g->nvapiQi = g->driver->nvapiQi;
 }
 
-static bool linux_backend_bind_nvapi(LinuxGpuState* g, bool recovery,
-                                     char* err, size_t errSize) {
+// Binds the selected adapter to its NvAPI handle from an inventory; it never
+// enumerates. Every failure is published as this GPU's health.
+static bool linux_backend_match_nvapi(LinuxGpuState* g,
+                                      const LinuxNvapiInventory* inventory,
+                                      bool recovery, char* err, size_t errSize) {
     if (err && errSize) err[0] = 0;
     if (!g || !g->nvmlReady || g->selectedAdapterIndex >= g->adapterCount) {
         gc_strlcpy(err, errSize, "NVML GPU selection is unavailable");
@@ -117,52 +88,33 @@ static bool linux_backend_bind_nvapi(LinuxGpuState* g, bool recovery,
         g->adapters[i].vfWriteSupported = false;
         g->adapters[i].vfBestGuess = false;
     }
-    if (!linux_backend_ensure_nvapi(g, err, errSize)) return false;
-
-    auto enumGpus = (nvapi_enum_t)g->nvapiQi(NVAPI_ENUM_GPU_ID);
-    if (!enumGpus) {
-        gc_strlcpy(err, errSize, "NvAPI GPU enumeration entry point unavailable");
-        linux_backend_publish_health(g, SERVICE_GPU_HEALTH_NVAPI_ENUM_FAILED,
-            LB_NVAPI_FUNCTION_MISSING, err);
+    linux_backend_adopt_nvapi_query(g);
+    g->nvapiReady = inventory && inventory->initialized;
+    if (!inventory || !inventory->enumerated) {
+        gc_strlcpy(err, errSize, inventory ? inventory->error : "NvAPI inventory is missing");
+        linux_backend_publish_health(g,
+            inventory ? inventory->healthReason : SERVICE_GPU_HEALTH_NVAPI_ENUM_FAILED,
+            inventory ? inventory->status : LB_NVAPI_INVALID_DATA, err);
         return false;
     }
-    GPU_HANDLE handles[64] = {};
-    int handleCount = 0;
-    int enumStatus = enumGpus(handles, &handleCount);
-    // F-04-001: the same bound the probe path now asks for, stated once.
-    if (!nvapi_ok(enumStatus) ||
-        !linux_nvapi_enum_count_is_usable(
-            handleCount, (int)(sizeof(handles) / sizeof(handles[0])))) {
-        gc_snprintf(err, errSize, "NvAPI enumerate status=%d (%s), count=%d",
-            enumStatus, nvapi_status_name(enumStatus), handleCount);
-        g->nvapiInitialized = false;
-        linux_backend_publish_health(g, SERVICE_GPU_HEALTH_NVAPI_ENUM_FAILED,
-            enumStatus, err);
-        return false;
-    }
-
-    typedef int (*get_pci_t)(GPU_HANDLE, unsigned int*, unsigned int*,
-                             unsigned int*, unsigned int*);
-    typedef int (*bus_id_t)(GPU_HANDLE, unsigned int*);
-    auto getPci = (get_pci_t)g->nvapiQi(NVAPI_GPU_GET_PCI_IDENTIFIERS_ID);
-    auto getBus = (bus_id_t)g->nvapiQi(NVAPI_GPU_GET_BUS_ID_ID);
-    auto getSlot = (bus_id_t)g->nvapiQi(NVAPI_GPU_GET_BUS_SLOT_ID_ID);
+    const int handleCount = inventory->handleCount;
+    const GPU_HANDLE* handles = inventory->handles;
     auto getArch = (nvapi_arch_t)g->nvapiQi(NVAPI_GPU_GET_ARCH_INFO_ID);
     bool nvapiAssigned[MAX_GPU_ADAPTERS] = {};
-    unsigned int handleArchitectures[64] = {};
-    int handleArchStatuses[64] = {};
+    unsigned int handleArchitectures[LINUX_NVAPI_MAX_HANDLES] = {};
+    int handleArchStatuses[LINUX_NVAPI_MAX_HANDLES] = {};
     bool soleFallback = false;
     char soleBindingFailure[192] = {};
 
     for (int ni = 0; ni < handleCount; ++ni) {
-        unsigned int bus = 0, slot = 0;
-        int busStatus = getBus ? getBus(handles[ni], &bus) :
-            LB_NVAPI_FUNCTION_MISSING;
-        int slotStatus = getSlot ? getSlot(handles[ni], &slot) :
-            LB_NVAPI_FUNCTION_MISSING;
-        unsigned int device = 0, subsystem = 0, revision = 0, extended = 0;
-        int pciStatus = getPci ? getPci(handles[ni], &device, &subsystem,
-            &revision, &extended) : LB_NVAPI_FUNCTION_MISSING;
+        const unsigned int bus = inventory->bus[ni], slot = inventory->slot[ni];
+        const int busStatus = inventory->busStatus[ni];
+        const int slotStatus = inventory->slotStatus[ni];
+        const unsigned int device = inventory->device[ni];
+        const unsigned int subsystem = inventory->subsystem[ni];
+        const unsigned int revision = inventory->revision[ni];
+        const unsigned int extended = inventory->extended[ni];
+        const int pciStatus = inventory->pciStatus[ni];
         LinuxNvapiIdentityObservation observation = {};
         observation.busValid = nvapi_ok(busStatus);
         observation.slotValid = nvapi_ok(slotStatus);
@@ -304,6 +256,18 @@ static bool linux_backend_bind_nvapi(LinuxGpuState* g, bool recovery,
     return true;
 }
 
+// Enumerates NvAPI and matches the selected adapter's handle in one step, as
+// a binding always did: the inventory is never reused by a later binding.
+// initializeSession: a binding initializes NvAPI first, as each new GPU state
+// always did; the recovery rebind keeps the current session.
+static bool linux_backend_bind_nvapi(LinuxGpuState* g, bool recovery,
+                                     char* err, size_t errSize,
+                                     bool initializeSession = false) {
+    LinuxNvapiInventory fresh;
+    linux_driver_enumerate_nvapi(g ? g->driver : nullptr, &fresh, initializeSession);
+    return linux_backend_match_nvapi(g, &fresh, recovery, err, errSize);
+}
+
 static unsigned int linux_backend_vf_failure_reason(const LinuxGpuState* g) {
     if (!g) return SERVICE_GPU_HEALTH_NVAPI_HANDLE_UNRESOLVED;
     if (!g->gpuHandle &&
@@ -351,6 +315,13 @@ static bool linux_backend_reenumerate_same_nvml_gpu(
     }
     unsigned int count = 0;
     int countStatus = g->nvml.getCount(&count);
+    if (countStatus == NVML_ERROR_UNINITIALIZED && g->driver &&
+        g->driver->nvmlInitialized) {
+        // Same rule as discovery: the next init initializes NVML again.
+        g->driver->nvmlInitialized = false;
+        lb_log("linux_backend: NVML reports uninitialized during recovery; "
+               "the next init initializes again\n");
+    }
     if (countStatus != NVML_SUCCESS || count == 0) {
         gc_snprintf(err, errSize,
             "NVML recovery enumeration failed status=%d count=%u",
@@ -425,105 +396,82 @@ static bool linux_backend_reenumerate_same_nvml_gpu(
     return true;
 }
 
-bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
+static void linux_backend_reset_state(LinuxGpuState* g, LinuxDriverContext* driver) {
+    memset(g, 0, sizeof(*g));
+    g->driver = driver;
+    g->health.reason = SERVICE_GPU_HEALTH_NVML_UNAVAILABLE;
+    gc_strlcpy(g->health.detail, sizeof(g->health.detail),
+        "NVML backend has not initialized");
+    if (driver) {
+        // Copies of the resolved entry points, also after a failed init.
+        g->nvml = driver->nvml;
+        g->getUuid = driver->getUuid;
+    }
+}
+
+static bool linux_backend_bind_discovered(LinuxGpuState* g, LinuxDriverContext* driver,
+                                          const GpuAdapterInfo* target,
+                                          char* err, size_t errSize, GpuLocationRole role,
+                                          const LinuxGpuUuid* uuid);
+
+bool linux_backend_init(LinuxGpuState* g, LinuxDriverContext* driver,
+                        const GpuAdapterInfo* target,
                         char* err, size_t errSize, GpuLocationRole role,
                         const LinuxGpuUuid* uuid) {
     if (!g) {
         gc_strlcpy(err, errSize, "Linux GPU state is missing");
         return false;
     }
-    memset(g, 0, sizeof(*g));
     if (err && errSize) err[0] = 0;
-    g->health.reason = SERVICE_GPU_HEALTH_NVML_UNAVAILABLE;
-    gc_strlcpy(g->health.detail, sizeof(g->health.detail),
-        "NVML backend has not initialized");
+    // Only a cached session can have been lost: a cold start that fails keeps
+    // its single attempt, as before.
+    const bool reusedSession = driver && driver->nvmlInitialized;
+    LinuxDriverResult step = linux_driver_open_nvml(driver, err, errSize);
+    if (step.ok) step = linux_driver_discover(driver, err, errSize);
+    if (!step.ok && reusedSession && step.status == NVML_ERROR_UNINITIALIZED &&
+        driver->nvmlLib && !driver->nvmlInitialized) {
+        // The driver dropped NVML since the last discovery (reset/reload) and
+        // discovery just cleared the stale init. Initialize again in this same
+        // call, as a fresh per-state init did before the shared context, so a
+        // one-shot caller (read retry, resume) recovers on its first attempt.
+        lb_log("linux_backend: NVML was reset; initializing again before binding\n");
+        step = linux_driver_open_nvml(driver, err, errSize);
+        if (step.ok) step = linux_driver_discover(driver, err, errSize);
+    }
+    if (!step.ok) {
+        linux_backend_reset_state(g, driver);
+        linux_backend_publish_health(g, step.healthReason, step.status, err);
+        return false;
+    }
+    // The bind resets the state itself before using the discovery.
+    return linux_backend_bind_discovered(g, driver, target, err, errSize, role, uuid);
+}
 
-    g->nvmlLib = pl_open_driver_library(PL_DRIVER_NVML);
-    if (!g->nvmlLib) {
-        gc_strlcpy(err, errSize, "libnvidia-ml.so.1 not found");
-        linux_backend_publish_health(g, SERVICE_GPU_HEALTH_NVML_UNAVAILABLE,
-            NVML_ERROR_FUNCTION_NOT_FOUND, err);
+// Binds `g` from the discovery this same init call just took, exactly as a
+// fresh init always did. Binding several GPUs from one shared discovery (with
+// proof that cached handles still address their cards) belongs to the
+// multi-GPU step.
+static bool linux_backend_bind_discovered(LinuxGpuState* g, LinuxDriverContext* driver,
+                                          const GpuAdapterInfo* target,
+                                          char* err, size_t errSize, GpuLocationRole role,
+                                          const LinuxGpuUuid* uuid) {
+    if (!g) {
+        gc_strlcpy(err, errSize, "Linux GPU state is missing");
         return false;
     }
-    nvml_resolve(g);
-    // An init reference is only acquired when teardown can release it.
-    if (!g->nvml.init || !g->nvml.shutdown) {
-        gc_snprintf(err, errSize, "NVML lifetime entry points unavailable init=%d shutdown=%d",
-            g->nvml.init ? 1 : 0, g->nvml.shutdown ? 1 : 0);
+    if (err && errSize) err[0] = 0;
+    linux_backend_reset_state(g, driver);
+    if (!driver || !driver->discoveryValid) {
+        gc_strlcpy(err, errSize, "GPU discovery is unavailable");
         linux_backend_publish_health(g, SERVICE_GPU_HEALTH_NVML_UNAVAILABLE,
-            NVML_ERROR_FUNCTION_NOT_FOUND, err);
+            NVML_ERROR_UNINITIALIZED, err);
         return false;
     }
-    int initStatus = g->nvml.init();
-    if (initStatus != NVML_SUCCESS) {
-        gc_snprintf(err, errSize, "nvmlInit_v2 failed status=%d", initStatus);
-        linux_backend_publish_health(g, SERVICE_GPU_HEALTH_NVML_UNAVAILABLE,
-            initStatus, err);
-        return false;
-    }
-    g->nvmlInitialized = true;
-    unsigned int count = 0;
-    int countStatus = g->nvml.getCount
-        ? g->nvml.getCount(&count) : NVML_ERROR_FUNCTION_NOT_FOUND;
-    if (countStatus != NVML_SUCCESS || count == 0) {
-        gc_snprintf(err, errSize,
-            "NVML device enumeration failed status=%d count=%u",
-            countStatus, count);
-        linux_backend_publish_health(g, SERVICE_GPU_HEALTH_NVML_UNAVAILABLE,
-            countStatus, err);
-        return false;
-    }
-    if (!g->nvml.getHandleByIndex) {
-        gc_strlcpy(err, errSize,
-            "nvmlDeviceGetHandleByIndex_v2 unavailable");
-        linux_backend_publish_health(g, SERVICE_GPU_HEALTH_NVML_UNAVAILABLE,
-            NVML_ERROR_FUNCTION_NOT_FOUND, err);
-        return false;
-    }
-    nvmlDeviceGetName_t getName = sym<nvmlDeviceGetName_t>(g->nvmlLib,
-        "nvmlDeviceGetName");
-    g->getUuid = sym<LinuxGetGpuUuid>(g->nvmlLib, "nvmlDeviceGetUUID");
-    nvmlDevice_t devices[MAX_GPU_ADAPTERS] = {};
-    unsigned int enumerate = count > MAX_GPU_ADAPTERS
-        ? MAX_GPU_ADAPTERS : count;
-    for (unsigned int i = 0; i < enumerate; ++i) {
-        if (g->nvml.getHandleByIndex(i, &devices[i]) != NVML_SUCCESS)
-            continue;
-        g->adapterUuids[g->adapterCount] = linux_gpu_read_uuid(g->getUuid, devices[i]);
-        GpuAdapterInfo* adapter = &g->adapters[g->adapterCount++];
-        adapter->valid = true;
-        adapter->nvmlIndex = i;
-        adapter->nvapiIndex = MAX_GPU_ADAPTERS;
-        if (getName) getName(devices[i], adapter->name,
-            sizeof(adapter->name));
-        if (!adapter->name[0])
-            gc_strlcpy(adapter->name, sizeof(adapter->name), "NVIDIA GPU");
-        if (g->nvml.getPciInfo) {
-            nvmlPciInfo_t pci = {};
-            if (g->nvml.getPciInfo(devices[i], &pci) == NVML_SUCCESS) {
-                adapter->pciInfoValid = pci.pciDeviceId != 0;
-                adapter->deviceId = pci.pciDeviceId;
-                adapter->subSystemId = pci.pciSubSystemId;
-                adapter->pciDomain = pci.domain;
-                adapter->pciBus = pci.bus;
-                adapter->pciDevice = pci.device;
-                unsigned int domain = 0, bus = 0, device = 0, function = 0;
-                if (parse_pci_bdf_string(nvml_pci_bus_id_text(&pci), &domain, &bus,
-                        &device, &function)) {
-                    adapter->pciDomain = domain;
-                    adapter->pciBus = bus;
-                    adapter->pciDevice = device;
-                    adapter->pciFunction = function;
-                }
-            }
-        }
-    }
-    if (g->adapterCount == 0) {
-        gc_strlcpy(err, errSize, "no accessible NVML devices");
-        linux_backend_publish_health(g, SERVICE_GPU_HEALTH_NVML_UNAVAILABLE,
-            NVML_ERROR_NOT_FOUND, err);
-        return false;
-    }
+    const LinuxGpuDiscovery& discovery = driver->discovery;
+    g->adapterCount = discovery.adapterCount;
+    memcpy(g->adapters, discovery.adapters, sizeof(g->adapters));
+    memcpy(g->adapterUuids, discovery.adapterUuids, sizeof(g->adapterUuids));
+    const nvmlDevice_t* devices = discovery.devices;
 
     // UUID evidence is optional; its fallback is the existing location resolver.
     const bool targeted = target && target->valid;
@@ -572,7 +520,7 @@ bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
     g->health.reason = SERVICE_GPU_HEALTH_ARCHITECTURE_UNAVAILABLE;
     gc_strlcpy(g->health.detail, sizeof(g->health.detail),
         "NvAPI binding has not completed");
-    linux_backend_bind_nvapi(g, false, err, errSize);
+    linux_backend_bind_nvapi(g, false, err, errSize, true);
     linux_backend_refresh(g);
     // The selection reason outranks a later binding detail: it is what a
     // caller that needs a write target has to show.
@@ -618,7 +566,7 @@ bool linux_backend_select_target(LinuxGpuState* g,
         }
     }
     LinuxGpuState replacement = {};
-    if (!linux_backend_init(&replacement, target, err, errSize, role, uuid) ||
+    if (!linux_backend_init(&replacement, g->driver, target, err, errSize, role, uuid) ||
         !replacement.writeIdentityResolved) {
         if (uuidVerdict) *uuidVerdict = replacement.uuidVerdict;
         linux_backend_shutdown(&replacement);
@@ -643,24 +591,8 @@ bool linux_backend_select_target(LinuxGpuState* g,
 
 void linux_backend_shutdown(LinuxGpuState* g) {
     if (!g) return;
-    // nvmlInit_v2/nvmlShutdown are process-wide reference counts. Release only
-    // the reference this state acquired: a state whose init failed must not
-    // consume the reference held by a live sibling or replacement backend.
-    if (g->nvmlInitialized && g->nvml.shutdown) {
-        const int status = (int)g->nvml.shutdown();
-        if (status != NVML_SUCCESS)
-            lb_log("linux_backend: nvmlShutdown status=%d\n", status);
-    } else if (g->nvmlLib) {
-        // Expected after every failed init; a driver that stays down can
-        // repeat it per targeted request, so log powers of two only.
-        static pl_atomic32 skipped = 0;
-        const unsigned int count = (unsigned int)pl_atomic_add32(&skipped, 1) + 1u;
-        if ((count & (count - 1)) == 0)
-            lb_log("linux_backend: shutdown skips nvmlShutdown (init not acquired) count=%u\n",
-                count);
-    }
-    if (g->nvmlLib) pl_lib_close(g->nvmlLib);
-    if (g->nvapiLib) pl_lib_close(g->nvapiLib);
+    // Library handles and the NVML reference belong to the driver context;
+    // a GPU state, failed or live, never releases them.
     memset(g, 0, sizeof(*g));
 }
 

@@ -5,9 +5,10 @@
 
 int linux_backend_clk_domain_dump(const GpuAdapterInfo* target, FILE* out) {
     if (!out) out = stdout;
+    LinuxDriverContext driver = {};
     LinuxGpuState gpu = {};
     char initErr[256] = {};
-    bool initialized = linux_backend_init(&gpu, target, initErr, sizeof(initErr));
+    bool initialized = linux_backend_init(&gpu, &driver, target, initErr, sizeof(initErr));
     // Discovery can expose a telemetry fallback for an unresolved selection.
     // A diagnostic must not present that other GPU's raw data as the target's.
     bool selected = initialized && gpu.writeIdentityResolved;
@@ -18,9 +19,7 @@ int linux_backend_clk_domain_dump(const GpuAdapterInfo* target, FILE* out) {
         clk_domain_dump_api(gpu.nvapiQi), identity);
     // The private NvAPI system-version interface is optional on Linux. NVML
     // supplies the installed driver label even when that interface is absent.
-    auto getDriverVersion = gpu.nvmlLib
-        ? sym<nvmlReturn_t (*)(char*, unsigned int)>(gpu.nvmlLib, "nvmlSystemGetDriverVersion")
-        : nullptr;
+    auto getDriverVersion = driver.getDriverVersion;
     if (getDriverVersion) {
         char version[96] = {};
         int status = (int)getDriverVersion(version, sizeof(version));
@@ -36,6 +35,7 @@ int linux_backend_clk_domain_dump(const GpuAdapterInfo* target, FILE* out) {
     // Partial initialization still owns any libraries it opened. Release them
     // on every exit; this command never talks to or starts the daemon.
     linux_backend_shutdown(&gpu);
+    linux_driver_close(&driver);
     bool written = report.complete && fwrite(report.text, 1, report.size, out) == report.size &&
                    fflush(out) == 0;
     if (!report.complete) fprintf(out, "clk_dump: report allocation or capacity failed\n");

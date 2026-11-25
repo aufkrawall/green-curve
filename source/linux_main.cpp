@@ -225,10 +225,11 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
     globfree(&gpuInfo);
 
     appendf(&report, "## Backend Binding and VF Health (read-only)\n\n");
+    LinuxDriverContext driver = {};
     LinuxGpuState backend = {};
     char backendError[256] = {};
     bool backendReady = linux_backend_init(
-        &backend, nullptr, backendError, sizeof(backendError));
+        &backend, &driver, nullptr, backendError, sizeof(backendError));
     appendf(&report, "- NVML backend ready: `%s`\n",
             backendReady ? "yes" : "no");
     appendf(&report, "- GPU: `%s`\n",
@@ -256,8 +257,8 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
     appendf(&report, "- VF graphics units: `%u driver units per physical kHz` "
                      "(status and control; NVML offsets already physical)\n",
             vf_graphics_frequency_scale(backend.backend));
-    if (backend.nvmlLib || backend.nvapiLib)
-        linux_backend_shutdown(&backend);
+    linux_backend_shutdown(&backend);
+    linux_driver_close(&driver);
 
     ServiceResponse daemonState = {};
     char daemonError[256] = {};
@@ -524,16 +525,17 @@ static int linux_main_impl(int argc, char** argv) {
     }
 
     if (opts.selfTest) {
-        // In-process read-only validation of the NvAPI/NVML control surfaces on
-        // this driver/arch (the arm64 pre-flight). Does not touch the daemon and
-        // does not modify GPU state.
-        LinuxGpuState gpu;
+        // In-process read-only validation of the NvAPI/NVML control surfaces on this
+        // driver/arch (the arm64 pre-flight). Never touches the daemon or GPU state.
+        LinuxDriverContext driver = {};
+        LinuxGpuState gpu = {};
         char initErr[256] = {};
-        const bool ready = linux_backend_init(&gpu, gpuTarget.valid ? &gpuTarget : nullptr, initErr, sizeof(initErr));
+        const bool ready = linux_backend_init(&gpu, &driver, gpuTarget.valid ? &gpuTarget : nullptr, initErr, sizeof(initErr));
         if (!ready) fprintf(stderr, "self-test: cannot initialize GPU backend: %s\n",
                             initErr[0] ? initErr : "unknown error");
         const bool pass = ready && linux_backend_self_test(&gpu, stdout);
-        linux_backend_shutdown(&gpu);  // a failed partial init still owns libraries/NVML
+        linux_backend_shutdown(&gpu);
+        linux_driver_close(&driver);  // also after a failed partial init
         return !ready ? 1 : pass ? 0 : 2;
     }
 

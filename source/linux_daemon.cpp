@@ -97,6 +97,8 @@ static void dlog(const char* fmt, ...) {
 // ===========================================================================
 // Daemon side
 // ===========================================================================
+// Process-wide driver libraries; g_gpu is bound against it (linux_driver_context.h).
+static LinuxDriverContext g_driver = {};
 static LinuxGpuState g_gpu;
 static bool g_gpuReady = false;
 static pl_mutex g_lock;
@@ -627,7 +629,7 @@ static int daemon_run_owned(const char* configPath) {
          daemonLogToken);
 
     char err[256] = {};
-    if (linux_backend_init(&g_gpu, nullptr, err, sizeof(err))) {
+    if (linux_backend_init(&g_gpu, &g_driver, nullptr, err, sizeof(err))) {
         g_gpuReady = true;
         dlog("daemon: GPU backend online (%s family=%d match=%s architectureSource=%s "
              "vfFresh=%d infoStatus=%d statusStatus=%d controlStatus=%d "
@@ -710,7 +712,8 @@ static int daemon_run_owned(const char* configPath) {
     daemon_release_fan_to_driver();
     if (listenerOpened) daemon_close_listener(&listener);
     close_daemon_shutdown_pipe();
-    if (g_gpu.nvmlLib || g_gpu.nvapiLib) linux_backend_shutdown(&g_gpu);
+    linux_backend_shutdown(&g_gpu);
+    linux_driver_close(&g_driver);
     dlog("daemon: exiting with status %d\n", exitStatus);
     return exitStatus;
 }

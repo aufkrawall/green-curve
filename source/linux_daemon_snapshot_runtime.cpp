@@ -280,7 +280,7 @@ static bool daemon_retry_backend_for_read(bool explicitRefresh) {
     // Discovery runs inside this read's deadline, like a targeted GPU switch.
     // The timing makes a slow driver start visible against that budget.
     const unsigned long long initStartMs = monotonic_ms();
-    const bool initOk = linux_backend_init(&replacement, nullptr, err, sizeof(err));
+    const bool initOk = linux_backend_init(&replacement, &g_driver, nullptr, err, sizeof(err));
     const unsigned long long initMs = monotonic_ms() - initStartMs;
     if (initMs > GC_DAEMON_STATE_REFRESH_BUDGET_MS)
         dlog("daemon backend retry: discovery took %llu ms, over the %u ms state"

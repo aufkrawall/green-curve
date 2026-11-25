@@ -4,10 +4,11 @@
 #include "hardware_capture_runtime.h"
 #include "hardware_capture_aux.h"
 
-// Called on the daemon runtime lane by every passive capture read.
-static void linux_capture_log_client_locks(const NvapiClientLocks& locks) {
-    static NvapiClientLocksLogGate gate{};
-    if (!nvapi_client_locks_log_changed(gate, locks)) return;
+// Called on the daemon runtime lane by every passive capture read; `user` is
+// the bound GPU's own repeat gate (LinuxGpuState::clientLocksLog).
+static void linux_capture_log_client_locks(void* user, const NvapiClientLocks& locks) {
+    auto* gate = static_cast<NvapiClientLocksLogGate*>(user);
+    if (!gate || !nvapi_client_locks_log_changed(*gate, locks)) return;
     char line[192];
     nvapi_client_locks_describe(locks, line, sizeof(line));
     lb_log("%s\n", line);
@@ -18,17 +19,19 @@ bool linux_backend_capture_current(const LinuxGpuState* gpu, gc_u64 generation, 
     if (!gpu || !output) return false;
     const auto read = [&](HardwareCaptureObservation& out, char* reason, size_t reasonSize) {
         HardwareCaptureContext c{};
-        c.usable = gpu->nvapiInitialized || gpu->nvmlReady;
+        const LinuxDriverContext* driver = gpu->driver;
+        c.usable = gpu->nvapiReady || gpu->nvmlReady;
         c.gpuHandle = gpu->gpuHandle; c.query = gpu->nvapiQi; c.backend = gpu->backend;
         c.nvmlUsable = gpu->nvmlReady; c.nvml = &gpu->nvml; c.nvmlDevice = gpu->nvmlDevice;
         c.binding = hardware_capture_binding(gpu->selectedGpu); c.gpuGeneration = generation;
         c.osFamily = PROFILE_SOURCE_OS_LINUX; c.backendFamily = (gc_u32)gpu->family;
         char version[65]{};
-        auto getVersion = gpu->nvmlLib ? sym<nvmlReturn_t (*)(char*, unsigned int)>(gpu->nvmlLib, "nvmlSystemGetDriverVersion") : nullptr;
+        auto getVersion = driver ? driver->getDriverVersion : nullptr;
         if (getVersion && getVersion(version, sizeof(version)) == NVML_SUCCESS)
             memcpy(c.driverVersion, version, sizeof(version));
         c.ownedFanIntent = ownedFan;
         c.lockObserved = linux_capture_log_client_locks;
+        c.lockObservedUser = &gpu->clientLocksLog;
         // Leave memoryClockReader null on Linux: unlike Windows, the Linux
         // NVIDIA driver's nvmlDeviceGetMaxClockInfo(NVML_CLOCK_MEM) includes
         // the active NVML memory offset (e.g. 17001 MHz == Pstates20 17001 MHz

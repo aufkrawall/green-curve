@@ -5,7 +5,8 @@
 static void* nvapi_qi_passive(unsigned int id);
 
 // Called under the runtime lock by every passive capture read.
-static void service_log_client_locks(const NvapiClientLocks& locks) {
+// The Windows service binds one GPU; its gate needs no per-GPU user state.
+static void service_log_client_locks(void*, const NvapiClientLocks& locks) {
     static NvapiClientLocksLogGate gate{};
     if (!nvapi_client_locks_log_changed(gate, locks)) return;
     char line[192];

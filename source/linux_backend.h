@@ -25,6 +25,7 @@
 #include "linux_gpu_binding_policy.h"
 #include "linux_gpu_uuid.h"
 #include "linux_transaction.h"
+#include "linux_driver_context.h"
 #include "linux_vf_layout_summary.h"
 #include "vf_writable_point_policy.h"
 #include "fan_fixed_maintenance_policy.h"
@@ -32,23 +33,25 @@
 #include "fan_request_policy.h"
 #include "service_inert_request_domains.h"
 #include "debug_log_steady_state_policy.h"
+#include "nvapi_client_lock_table.h"
 #include "platform.h"
 
 struct LinuxGpuState {
     GraphicsScalarRecoveryState graphicsRecovery;
+    // The process-wide libraries this state is bound against (not owned).
+    // nvml, getUuid and nvapiQi are copies of its resolved entry points.
+    LinuxDriverContext* driver;
     // NvAPI
-    PlLib nvapiLib;
     void* (*nvapiQi)(unsigned int);
     GPU_HANDLE gpuHandle;
-    bool nvapiInitialized;
+    // NvAPI was initialized for this binding (not merely for another GPU on
+    // the same context); capture treats it as this GPU's usability.
+    bool nvapiReady;
 
     // NVML
-    PlLib nvmlLib;
-    // This state owns one successful nvmlInit_v2 reference to release.
-    bool nvmlInitialized;
     NvmlApi nvml;
-    // Optional physical-identity query, resolved once at init: targeted
-    // requests re-check the selected GPU's UUID on every call.
+    // Optional physical-identity query: targeted requests re-check the
+    // selected GPU's UUID on every call.
     LinuxGetGpuUuid getUuid;
     nvmlDevice_t nvmlDevice;
     bool nvmlReady;
@@ -114,6 +117,9 @@ struct LinuxGpuState {
     unsigned int xbarSchemaStatus;
     // Repeat suppression for the per-refresh ClkDomains read; reset on rebind.
     gc_log_steady::Tracker xbarReadLog;
+    // Repeat gate for passive-capture client-lock lines; per GPU, and
+    // mutable because capture reads a const state.
+    mutable NvapiClientLocksLogGate clientLocksLog;
     bool xbarFreqReadbackValid;
     bool xbarMsvddReadbackValid;
     int xbarFreqOffsetKhz;
@@ -253,13 +259,16 @@ bool linux_backend_capture_apply_snapshot(LinuxGpuState* g, const DesiredSetting
 bool linux_backend_capture_reset_snapshot(LinuxGpuState* g, const DesiredSettings* previous,
     LinuxHardwareSnapshot* snapshot, char* err, size_t errSize);
 
-// Load the driver libraries and initialise the selected GPU (ordinal `index`).
-// On success the curve, masks and ranges are read.  Returns false + message on
-// failure (no driver, no GPU, etc.).
-bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
+// Open the process-wide driver libraries in `driver` if needed, enumerate,
+// and bind `g` to the selected GPU.  On success the curve, masks and ranges
+// are read.  Returns false + message on failure (no driver, no GPU, etc.).
+// `driver` must outlive `g`; `g` never releases it.
+bool linux_backend_init(LinuxGpuState* g, LinuxDriverContext* driver,
+                        const GpuAdapterInfo* target,
                         char* err, size_t errSize,
                         GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED,
                         const LinuxGpuUuid* uuid = nullptr);
+// Releases only per-GPU state; the driver context stays open for its owner.
 void linux_backend_shutdown(LinuxGpuState* g);
 
 bool linux_backend_select_target(LinuxGpuState* g, const GpuAdapterInfo* target,
