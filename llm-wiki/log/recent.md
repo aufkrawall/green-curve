@@ -5,6 +5,23 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-25: Explicit Linux daemon per-GPU controller (multi-GPU step 2, part 3)
+
+- The daemon's 21 per-GPU globals (`g_gpu`, `g_activeDesired`,
+  `g_startupPolicy`, the fan ownership/fault statics, ...) are now members of
+  one `LinuxGpuController` (`source/linux_gpu_controller.h`) owned by
+  `daemon_run_owned()` and passed as `LinuxGpuController& ctl` to the 52
+  functions that read or change them, plus the fan worker's thread argument
+  and the operation guard's tracker. No `#define`/`thread_local` indirection.
+- Process-wide state is unchanged. Single-GPU behavior, logs, files and the
+  protocol are unchanged; the single-owner switch guard stays.
+- The fan command generation is per controller (review finding: a
+  process-wide one let another GPU's wake restart a stall window).
+- New gate `check_gpu_controller()` (allowlist of 15 process-wide statics, no
+  anonymous namespaces); isolation fixtures `14230-14234`; request-level
+  commit/rollback fixture `14260-14267` driving the real `handle_request()`. Source gates that pinned the old names now
+  pin the `ctl` forms (1:1).
+
 ## 2026-11-25: Explicit Linux apply-ceiling transaction
 
 - Replaced the seven file-scope F-APPLY-CEILING statics in

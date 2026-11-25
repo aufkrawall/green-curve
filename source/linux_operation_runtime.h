@@ -3,14 +3,15 @@
 
 class LinuxOperationRequestGuard {
 public:
-    LinuxOperationRequestGuard(const ServiceRequest* request,
-        ServiceResponse* response, const char* name)
-        : request_(request), response_(response), name_(name), started_(false),
+    // The tracker belongs to the GPU controller the request is executed on.
+    LinuxOperationRequestGuard(ServiceOperationTracker& tracker,
+        const ServiceRequest* request, ServiceResponse* response, const char* name)
+        : tracker_(tracker), request_(request), response_(response), name_(name), started_(false),
           execute_(false), startedAt_(monotonic_ms()) {
         response_->operationId = request_->operationId;
         const ServiceOperationRecord* existing = nullptr;
         ServiceOperationBeginResult begin = service_operation_begin(
-            &g_operationTracker, request_->operationId, &existing);
+            &tracker_, request_->operationId, &existing);
         if (begin == SERVICE_OPERATION_BEGIN_STARTED) {
             started_ = true;
             execute_ = true;
@@ -45,7 +46,7 @@ public:
         // Windows: this record is what a retry replays.
         response_->outcomeSeverity = service_response_resolve_outcome_severity(
             response_->status, response_->outcomeSeverity);
-        service_operation_complete(&g_operationTracker, request_->operationId,
+        service_operation_complete(&tracker_, request_->operationId,
             response_->status, response_->outcomeSeverity, response_->message);
         response_->operationState = response_->status == SERVICE_STATUS_OK
             ? SERVICE_OPERATION_SUCCEEDED : SERVICE_OPERATION_FAILED;
@@ -60,6 +61,7 @@ public:
     }
     bool execute() const { return execute_; }
 private:
+    ServiceOperationTracker& tracker_;
     const ServiceRequest* request_;
     ServiceResponse* response_;
     const char* name_;

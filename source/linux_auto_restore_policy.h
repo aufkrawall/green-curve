@@ -309,7 +309,7 @@ static inline void linux_auto_restore_note_lockout(
 // What the snapshot publishes in ServiceSnapshot::autoRestoreLockoutReason.
 //
 // This exists because the Linux daemon used to derive that field from
-// g_stateUncertain alone.  That is a proxy for one of the two latching arms:
+// ctl.stateUncertain alone.  That is a proxy for one of the two latching arms:
 // a failed hardware write sets both, but the crash-loop arm
 // (LINUX_AUTO_RESTORE_DENY_ATTEMPTS_EXHAUSTED) latches the guard without ever
 // reaching a write, so the daemon published LOCKOUT_NONE while having

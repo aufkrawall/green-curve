@@ -29,9 +29,10 @@
   `_require_transaction_spans_rollback()` requires exactly one transaction,
   declared before the operation and passed to that path's post-commit
   rollback, with no reset or reassignment in between (a fresh or reset
-  transaction for the rollback fails). There is no daemon request-level
-  harness; the rollback's use of the transaction's bound is executed at the
-  backend level (`14220-14227`). Two transactions, on
+  transaction for the rollback fails). The request-level fixture
+  `tests/linux_daemon_commit_rollback_tests.cpp` (`14260-14267`) executes the
+  daemon's failed-commit path and requires the rollback to receive the same
+  transaction and bound; `14220-14227` cover the backend side. Two transactions, on
   one GPU or two, cannot observe each other's clamp
   (`tests/linux_ceiling_transaction_cases.h`, `14220-14227`).
 - Step 2 of the multi-GPU series (issue 18 brief). Open question: once several

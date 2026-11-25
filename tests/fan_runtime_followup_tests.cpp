@@ -22,21 +22,29 @@ struct LinuxGpuState {
     int fanMinPct = 0, fanMaxPct = 100;
     bool fanRangeKnown = false;
 };
-static LinuxGpuState g_gpu;
-static DesiredSettings g_activeDesired;
-static GpuAdapterInfo g_activeTarget;
-static bool g_gpuReady, g_hasActiveDesired, g_stateUncertain;
+// The LinuxGpuController members linux_fan_runtime.h reads, over this
+// fixture's reduced LinuxGpuState; the worker receives it explicitly.
+struct LinuxGpuController {
+    LinuxGpuState gpu;
+    DesiredSettings activeDesired;
+    GpuAdapterInfo activeTarget;
+    bool gpuReady, hasActiveDesired, stateUncertain;
+    unsigned long long gpuGeneration = 1;
+    unsigned int fanFailureCount;
+    unsigned long long fanWakeGeneration;
+    bool fanOwnershipHandbackDeferred;
+    ServiceFanFault fanFault;
+    gc_u32 fanFaultSerial;
+};
+static LinuxGpuController fixture;
+// A second GPU's controller: its wakes must not touch the fixture's fan.
+static LinuxGpuController otherGpu;
 static int g_lock, g_fanWakeMutex, g_fanWakeCondition, g_running;
-static unsigned long long g_fanWakeGeneration;
-static unsigned long long g_daemonGpuGeneration = 1;
-static unsigned int g_fanFailureCount;
-static bool g_fanOwnershipHandbackDeferred;
-static ServiceFanFault g_daemonFanFault;
-static gc_u32 g_daemonFanFaultSerial;
 static int deferredHandbacks;
 enum Schedule { IDLE, APPLY_BEFORE_WAIT, APPLY_BEFORE_POLL, NORMAL, TELEMETRY_LOST,
                 // Stall schedules (12893-12897) run many polls on a simulated clock.
-                STALL_FIXED, STALL_UNSUPPORTED, STALL_ZERO_RPM, STALL_REAPPLY };
+                STALL_FIXED, STALL_UNSUPPORTED, STALL_ZERO_RPM, STALL_REAPPLY,
+                STALL_OTHER_GPU_WAKE };
 static Schedule schedule;
 static bool injected, afterTimedWait, stateLocked, wakeLocked;
 static bool lockOrderValid, autoRefused, lockoutAutoOk;
@@ -46,21 +54,21 @@ static int stallSamples;
 
 static bool stall_schedule() { return schedule >= STALL_FIXED; }
 static void commit_fixed(int duty) {
-    g_hasActiveDesired = true;
-    g_activeDesired.hasFan = true;
-    g_activeDesired.fanMode = FAN_MODE_FIXED;
-    g_activeDesired.fanPercent = duty;
-    ++g_fanWakeGeneration;
+    fixture.hasActiveDesired = true;
+    fixture.activeDesired.hasFan = true;
+    fixture.activeDesired.fanMode = FAN_MODE_FIXED;
+    fixture.activeDesired.fanPercent = duty;
+    ++fixture.fanWakeGeneration;
 }
 
 static void commit_curve(int duty) {
-    g_hasActiveDesired = true;
-    g_activeDesired.hasFan = true;
-    g_activeDesired.fanMode = FAN_MODE_CURVE;
-    fan_curve_set_default(&g_activeDesired.fanCurve);
-    for (auto& point : g_activeDesired.fanCurve.points)
+    fixture.hasActiveDesired = true;
+    fixture.activeDesired.hasFan = true;
+    fixture.activeDesired.fanMode = FAN_MODE_CURVE;
+    fan_curve_set_default(&fixture.activeDesired.fanCurve);
+    for (auto& point : fixture.activeDesired.fanCurve.points)
         point.fanPercent = duty;
-    ++g_fanWakeGeneration;
+    ++fixture.fanWakeGeneration;
 }
 static void pl_mutex_lock(int*) {
     if (wakeLocked) lockOrderValid = false;
@@ -77,6 +85,12 @@ static void pl_mutex_unlock(int*) {
     if (schedule == STALL_REAPPLY && stallSamples == 3 && !injected) {
         injected = true;
         commit_fixed(40);
+    }
+    // Another GPU's Apply wakes the shared signal but advances only its own
+    // command generation.
+    if (schedule == STALL_OTHER_GPU_WAKE && stallSamples == 3 && !injected) {
+        injected = true;
+        ++otherGpu.fanWakeGeneration;
     }
 }
 static int fixture_mutex_lock(int*) { wakeLocked = true; return 0; }
@@ -151,25 +165,25 @@ static bool linux_backend_set_curve_fan_percent(LinuxGpuState*, unsigned int dut
 }
 static bool linux_backend_set_fan_auto(LinuxGpuState*) { return !autoRefused; }
 static bool linux_backend_fans_are_auto(LinuxGpuState*) { return false; }
-static bool daemon_fan_ownership_resume_deferred_handback() {
-    if (!g_fanOwnershipHandbackDeferred) return false;
-    g_fanOwnershipHandbackDeferred = false;
+static bool daemon_fan_ownership_resume_deferred_handback(LinuxGpuController& ctl) {
+    if (!ctl.fanOwnershipHandbackDeferred) return false;
+    ctl.fanOwnershipHandbackDeferred = false;
     ++deferredHandbacks;
     return true;
 }
 static DesiredSettings storedUncertainDesired;
 static int storeUncertainCalls;
 static void dlog(const char*, ...) {}
-static bool store_daemon_record(int, const GpuAdapterInfo*, const DesiredSettings* desired, char*, size_t) {
+static bool store_daemon_record(LinuxGpuController&, int, const GpuAdapterInfo*, const DesiredSettings* desired, char*, size_t) {
     ++storeUncertainCalls;
     if (desired) storedUncertainDesired = *desired;
     return true;
 }
-static void daemon_enter_uncertain_after_fan_lockout(const char*, bool autoOk) {
+static void daemon_enter_uncertain_after_fan_lockout(LinuxGpuController& ctl, const char*, bool autoOk) {
     ++lockouts;
     lockoutAtMs = nowMs;
     lockoutAutoOk = autoOk;
-    g_stateUncertain = true;
+    ctl.stateUncertain = true;
 }
 #define LINUX_DAEMON_RECORD_UNCERTAIN 1
 #define pthread_mutex_lock fixture_mutex_lock
@@ -194,19 +208,19 @@ static void daemon_enter_uncertain_after_fan_lockout(const char*, bool autoOk) {
 #endif
 
 static void initialize(Schedule next) {
-    g_gpu = {};
-    g_gpu.nvml.getTemperature = temperature;
-    g_activeDesired = {};
-    g_activeTarget = {};
-    g_gpuReady = true;
-    g_hasActiveDesired = g_stateUncertain = false;
+    fixture.gpu = {};
+    fixture.gpu.nvml.getTemperature = temperature;
+    fixture.activeDesired = {};
+    fixture.activeTarget = {};
+    fixture.gpuReady = true;
+    fixture.hasActiveDesired = fixture.stateUncertain = false;
     g_running = 1;
-    g_fanWakeGeneration = 0;
-    g_daemonGpuGeneration = 1;
-    g_fanFailureCount = 0;
-    g_fanOwnershipHandbackDeferred = false;
-    g_daemonFanFault = {};
-    g_daemonFanFaultSerial = 0;
+    fixture.fanWakeGeneration = 0;
+    fixture.gpuGeneration = 1;
+    fixture.fanFailureCount = 0;
+    fixture.fanOwnershipHandbackDeferred = false;
+    fixture.fanFault = {};
+    fixture.fanFaultSerial = 0;
     deferredHandbacks = 0;
     injected = afterTimedWait = stateLocked = wakeLocked = false;
     lockOrderValid = true;
@@ -225,55 +239,63 @@ static int run_stall() {
     // reading that completes 20 s (5 s cadence: proof at 5 s, stopped from 10 s).
     initialize(STALL_FIXED);
     commit_fixed(40);
-    fan_reassert_thread(nullptr);
+    fan_reassert_thread(&fixture);
     if (lockouts != 1 || !lockoutAutoOk || lockoutAtMs != 30000 || writes ||
-        g_daemonFanFault.kind != SERVICE_FAN_FAULT_STALL || g_daemonFanFault.fanIndex != 1 ||
-        g_daemonFanFault.commandedPercent != 40 || g_daemonFanFault.stalledForMs != 20000 ||
-        g_daemonFanFault.handback != SERVICE_FAN_HANDBACK_DRIVER_AUTO ||
-        !std::strstr(g_daemonFanFault.detail, "Fan 2 did not turn at 40%") ||
-        !service_fan_fault_wire_valid(&g_daemonFanFault) || !lockOrderValid) return 12893;
+        fixture.fanFault.kind != SERVICE_FAN_FAULT_STALL || fixture.fanFault.fanIndex != 1 ||
+        fixture.fanFault.commandedPercent != 40 || fixture.fanFault.stalledForMs != 20000 ||
+        fixture.fanFault.handback != SERVICE_FAN_HANDBACK_DRIVER_AUTO ||
+        !std::strstr(fixture.fanFault.detail, "Fan 2 did not turn at 40%") ||
+        !service_fan_fault_wire_valid(&fixture.fanFault) || !lockOrderValid) return 12893;
     // No RPM channel: never judged, however long.
     initialize(STALL_UNSUPPORTED);
     commit_fixed(40);
-    fan_reassert_thread(nullptr);
+    fan_reassert_thread(&fixture);
     if (lockouts || stallSamples < 20) return 12894;
     // A zero-RPM curve below its start temperature commands no manual duty.
     initialize(STALL_ZERO_RPM);
     commit_curve(40);
-    g_activeDesired.fanCurve.zeroRpmEnabled = true;
-    fan_reassert_thread(nullptr);
+    fixture.activeDesired.fanCurve.zeroRpmEnabled = true;
+    fan_reassert_thread(&fixture);
     if (lockouts || stallSamples < 20) return 12895;
     // A new Apply restarts the window: confirmed 20 s after its first stopped
     // reading (20 s), not 20 s after the first stopped reading overall (10 s).
     initialize(STALL_REAPPLY);
     commit_fixed(40);
-    fan_reassert_thread(nullptr);
+    fan_reassert_thread(&fixture);
     if (!injected || lockouts != 1 || lockoutAtMs != 40000 ||
-        g_daemonFanFault.kind != SERVICE_FAN_FAULT_STALL) return 12896;
+        fixture.fanFault.kind != SERVICE_FAN_FAULT_STALL) return 12896;
+    // 14234: another GPU's wake does not restart this fan's stall window; the
+    // handback lands at 30 s exactly as without it (a process-wide command
+    // generation delayed it to 40 s).
+    initialize(STALL_OTHER_GPU_WAKE);
+    commit_fixed(40);
+    fan_reassert_thread(&fixture);
+    if (!injected || lockouts != 1 || lockoutAtMs != 30000 ||
+        fixture.fanFault.kind != SERVICE_FAN_FAULT_STALL) return 14234;
     // The driver refuses the fan back: forced to 100%, reported as such, and
     // the owned intent switches to emergency 100% fixed rather than keeping
     // the stalled curve/duty.
     initialize(STALL_FIXED);
     autoRefused = true;
     commit_fixed(40);
-    fan_reassert_thread(nullptr);
+    fan_reassert_thread(&fixture);
     if (lockouts != 1 || writes != 1 || lastDuty != FAN_RUNTIME_EMERGENCY_PERCENT ||
-        g_daemonFanFault.handback != SERVICE_FAN_HANDBACK_EMERGENCY_MAX ||
-        !g_hasActiveDesired || !g_activeDesired.hasFan ||
-        g_activeDesired.fanMode != FAN_MODE_FIXED ||
-        g_activeDesired.fanPercent != FAN_RUNTIME_EMERGENCY_PERCENT ||
+        fixture.fanFault.handback != SERVICE_FAN_HANDBACK_EMERGENCY_MAX ||
+        !fixture.hasActiveDesired || !fixture.activeDesired.hasFan ||
+        fixture.activeDesired.fanMode != FAN_MODE_FIXED ||
+        fixture.activeDesired.fanPercent != FAN_RUNTIME_EMERGENCY_PERCENT ||
         storedUncertainDesired.fanMode != FAN_MODE_FIXED ||
         storedUncertainDesired.fanPercent != FAN_RUNTIME_EMERGENCY_PERCENT) return 12897;
-    // Driver-auto lockout drops fan ownership (and drops g_hasActiveDesired
+    // Driver-auto lockout drops fan ownership (and drops fixture.hasActiveDesired
     // when fan was the last domain) so a subsequent non-fan Apply cannot
     // resurrect the stalled curve.
     initialize(STALL_FIXED);
     commit_curve(40);
-    g_activeDesired.hasPowerLimit = 1;
-    g_activeDesired.powerLimitPct = 90;
-    fan_reassert_thread(nullptr);
-    if (lockouts != 1 || !g_hasActiveDesired || g_activeDesired.hasFan ||
-        g_activeDesired.fanMode != FAN_MODE_AUTO || !g_activeDesired.hasPowerLimit ||
+    fixture.activeDesired.hasPowerLimit = 1;
+    fixture.activeDesired.powerLimitPct = 90;
+    fan_reassert_thread(&fixture);
+    if (lockouts != 1 || !fixture.hasActiveDesired || fixture.activeDesired.hasFan ||
+        fixture.activeDesired.fanMode != FAN_MODE_AUTO || !fixture.activeDesired.hasPowerLimit ||
         storedUncertainDesired.hasFan || !storedUncertainDesired.hasPowerLimit)
         return 12898;
     // Shared worker/snapshot runtime activity predicate: uncertainty, missing
@@ -288,26 +310,26 @@ static int run_stall() {
 }
 static int run() {
     initialize(IDLE);
-    fan_reassert_thread(nullptr);
+    fan_reassert_thread(&fixture);
     if (waits != 1 || polls || writes || !lockOrderValid) return 7520;
     initialize(APPLY_BEFORE_WAIT);
-    fan_reassert_thread(nullptr);
+    fan_reassert_thread(&fixture);
     if (!injected || waits || polls != 1 || writes != 1 || lastDuty != 70 || !lockOrderValid) return 7521;
     initialize(APPLY_BEFORE_POLL);
     commit_curve(30);
-    fan_reassert_thread(nullptr);
+    fan_reassert_thread(&fixture);
     if (!injected || waits || polls != 2 || writes != 2 || lastDuty != 70 || !lockOrderValid) return 7522;
     initialize(NORMAL);
     commit_curve(30);
-    fan_reassert_thread(nullptr);
+    fan_reassert_thread(&fixture);
     if (waits || polls != 1 || writes != 1 || lastDuty != 30 || !lockOrderValid) return 7523;
     // Backend discovery may finish outside a request. The worker performs the
     // deferred fan handback once before normal fan maintenance.
     initialize(NORMAL);
     commit_curve(30);
-    g_fanOwnershipHandbackDeferred = true;
-    fan_reassert_thread(nullptr);
-    if (deferredHandbacks != 1 || g_fanOwnershipHandbackDeferred ||
+    fixture.fanOwnershipHandbackDeferred = true;
+    fan_reassert_thread(&fixture);
+    if (deferredHandbacks != 1 || fixture.fanOwnershipHandbackDeferred ||
         polls != 1 || writes != 1 || !lockOrderValid) return 7631;
     if (fan_manual_write_confirmed(80, 80, 30, true)) return 7524;
     if (fan_manual_write_confirmed(0, 0, 30, true)) return 7525;
@@ -320,30 +342,30 @@ static int run() {
     // retires a marker the driver took the fan back for.
     initialize(TELEMETRY_LOST);
     commit_curve(30);
-    fan_reassert_thread(nullptr);
-    if (lockouts != 1 || !lockoutAutoOk || !g_stateUncertain || writes ||
+    fan_reassert_thread(&fixture);
+    if (lockouts != 1 || !lockoutAutoOk || !fixture.stateUncertain || writes ||
         polls != (int)FAN_RUNTIME_DEFAULT_FAILURE_LIMIT || !lockOrderValid ||
-        g_activeDesired.hasFan || g_hasActiveDesired ||
+        fixture.activeDesired.hasFan || fixture.hasActiveDesired ||
         storedUncertainDesired.hasFan) return 7546;
     // Clients are told (protocol v39): which kind of handback, and its outcome.
-    if (g_daemonFanFault.kind != SERVICE_FAN_FAULT_REPEATED_FAILURES ||
-        g_daemonFanFault.handback != SERVICE_FAN_HANDBACK_DRIVER_AUTO ||
-        g_daemonFanFault.serial != 1 || g_daemonFanFault.fanIndex ||
-        std::strcmp(g_daemonFanFault.detail, "fan curve runtime locked out") != 0 ||
-        !service_fan_fault_wire_valid(&g_daemonFanFault)) return 12890;
+    if (fixture.fanFault.kind != SERVICE_FAN_FAULT_REPEATED_FAILURES ||
+        fixture.fanFault.handback != SERVICE_FAN_HANDBACK_DRIVER_AUTO ||
+        fixture.fanFault.serial != 1 || fixture.fanFault.fanIndex ||
+        std::strcmp(fixture.fanFault.detail, "fan curve runtime locked out") != 0 ||
+        !service_fan_fault_wire_valid(&fixture.fanFault)) return 12890;
     // A refused handback forces the emergency duty first and keeps the marker.
     initialize(TELEMETRY_LOST);
     autoRefused = true;
     commit_curve(30);
-    fan_reassert_thread(nullptr);
+    fan_reassert_thread(&fixture);
     if (lockouts != 1 || lockoutAutoOk || writes != 1 ||
         lastDuty != FAN_RUNTIME_EMERGENCY_PERCENT) return 7547;
-    if (g_daemonFanFault.handback != SERVICE_FAN_HANDBACK_EMERGENCY_MAX ||
-        !service_fan_fault_wire_valid(&g_daemonFanFault)) return 12891;
+    if (fixture.fanFault.handback != SERVICE_FAN_HANDBACK_EMERGENCY_MAX ||
+        !service_fan_fault_wire_valid(&fixture.fanFault)) return 12891;
     // A committed Apply or Reset ends the lockout's bookkeeping.
-    g_fanFailureCount = 2;
-    daemon_fan_runtime_note_commit("test");
-    if (g_fanFailureCount || g_daemonFanFault.kind != SERVICE_FAN_FAULT_NONE) return 12892;
+    fixture.fanFailureCount = 2;
+    daemon_fan_runtime_note_commit(fixture, "test");
+    if (fixture.fanFailureCount || fixture.fanFault.kind != SERVICE_FAN_FAULT_NONE) return 12892;
     return run_stall();
 }
 } // namespace fan_runtime_fixture

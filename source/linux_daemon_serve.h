@@ -176,7 +176,7 @@ static void daemon_close_listener(const DaemonListener* listener) {
 // a liveness protocol the manager owns the period of, not a poll for work, and
 // with no watchdog configured the timeout is still -1 and nothing wakes this
 // thread but a connection or the shutdown pipe.
-static int daemon_serve_until_stopped(int srv) {
+static int daemon_serve_until_stopped(LinuxGpuController& ctl, int srv) {
     // Reserved descriptor for the EMFILE/ENFILE recovery idiom: close it,
     // accept the pending connection, close that connection, then reopen the
     // reserve.  Drains the backlog without sleeps, polling delays, or spinning.
@@ -275,7 +275,7 @@ static int daemon_serve_until_stopped(int srv) {
             unsigned long long writeMs = 0;
             if (requestRead) {
                 ServiceResponse resp;
-                handle_request(&req, &resp);
+                handle_request(ctl, &req, &resp);
                 // Measured from here so handler time never counts as a stall.
                 const unsigned long long writeStartMs = monotonic_ms();
                 const bool responded = daemon_write_response(conn, &resp);
@@ -295,23 +295,23 @@ static int daemon_serve_until_stopped(int srv) {
 // this process exits, so hand the fan back to the driver before leaving.
 // Otherwise `systemctl stop` strands the fan at the last written percentage.
 // Call only after the fan worker is joined, so the two cannot race.
-static void daemon_release_fan_to_driver() {
-    const bool activeManual = g_hasActiveDesired &&
-        daemon_desired_takes_manual_fan(&g_activeDesired);
-    if (!g_gpuReady || (!activeManual &&
-                       !daemon_fan_ownership_shutdown_should_release())) return;
+static void daemon_release_fan_to_driver(LinuxGpuController& ctl) {
+    const bool activeManual = ctl.hasActiveDesired &&
+        daemon_desired_takes_manual_fan(&ctl.activeDesired);
+    if (!ctl.gpuReady || (!activeManual &&
+                       !daemon_fan_ownership_shutdown_should_release(ctl))) return;
     char ownershipErr[192] = {};
-    if (!daemon_fan_ownership_allows_selected_write(ownershipErr, sizeof(ownershipErr))) return;
-    bool autoOk = linux_backend_set_fan_auto(&g_gpu);
+    if (!daemon_fan_ownership_allows_selected_write(ctl, ownershipErr, sizeof(ownershipErr))) return;
+    bool autoOk = linux_backend_set_fan_auto(&ctl.gpu);
     dlog("daemon: shutdown fan handback: driver auto restore ok=%d\n",
          autoOk ? 1 : 0);
     // Only a confirmed handback retires the marker; a forced emergency duty is
     // still a manual fan the next start should return.
-    if (autoOk) daemon_fan_ownership_retire("shutdown fan handback");
+    if (autoOk) daemon_fan_ownership_retire(ctl, "shutdown fan handback");
     if (fan_runtime_escalation_after_auto_restore(autoOk) ==
             FAN_RUNTIME_ESCALATION_EMERGENCY_MAX) {
         bool emergencyOk = linux_backend_set_curve_fan_percent(
-            &g_gpu, (unsigned int)FAN_RUNTIME_EMERGENCY_PERCENT);
+            &ctl.gpu, (unsigned int)FAN_RUNTIME_EMERGENCY_PERCENT);
         dlog("daemon: shutdown fan handback failed; forced %d%% ok=%d\n",
              FAN_RUNTIME_EMERGENCY_PERCENT, emergencyOk ? 1 : 0);
     }

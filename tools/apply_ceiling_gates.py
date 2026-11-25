@@ -435,19 +435,19 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         "linux_apply_ceiling_begin(ceiling, nullptr);",
         "linux_reset_capture_rollback_ceiling(g, ceiling, previous);",
         "a Linux Reset resets its ceiling transaction before capturing the rollback bound")
-    restore = "linux_backend_restore_snapshot(&g_gpu, ceiling, &before,"
+    restore = "linux_backend_restore_snapshot(&ctl.gpu, ceiling, &before,"
     _require_transaction_spans_rollback(
         ctx, "linux_daemon.cpp", "case SERVICE_CMD_APPLY: {", "case SERVICE_CMD_RESET: {",
-        "linux_backend_apply(&g_gpu, ceiling,", restore,
+        "linux_backend_apply(&ctl.gpu, ceiling,", restore,
         "a failed Linux Apply commit rolls back with the transaction it is undoing")
     _require_transaction_spans_rollback(
         ctx, "linux_daemon.cpp", "case SERVICE_CMD_RESET: {", "        default:",
-        "linux_backend_reset(&g_gpu, ceiling,", restore,
+        "linux_backend_reset(&ctl.gpu, ceiling,", restore,
         "a failed Linux Reset commit rolls back with the transaction it is undoing")
     _require_transaction_spans_rollback(
         ctx, "linux_auto_restore_runtime.h", "static LinuxAutoRestoreOutcome daemon_automatic_restore_write(",
-        "\n}\n", "linux_backend_apply(&g_gpu, ceiling,",
-        "&g_gpu, ceiling, &before, mutation.attemptedPhases,",
+        "\n}\n", "linux_backend_apply(&ctl.gpu, ceiling,",
+        "&ctl.gpu, ceiling, &before, mutation.attemptedPhases,",
         "a failed unattended commit rolls back with its own transaction")
 
     forbid_text(guard_h, "bool ok = nvml_reset_gpu_locked_clocks(detail, sizeof(detail));",
@@ -1099,14 +1099,14 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         _p(ctx, "linux_graphics_offset_control.h"), "static inline bool linux_write_named_graphics(",
         "!(state.prepared & bit)", "nvml_exact_clock_write(",
         "Linux named graphics writes require durable preparation before a setter")
-    require_text(_p(ctx, "linux_daemon.cpp"), "graphics_scalar_operation_prepare(g_gpu.graphicsRecovery, record.graphicsControlSurfaces,",
+    require_text(_p(ctx, "linux_daemon.cpp"), "graphics_scalar_operation_prepare(ctl.gpu.graphicsRecovery, record.graphicsControlSurfaces,",
                  "the Linux journal publishes named write permission only after a durable store")
     require_order_in_operation(
         _p(ctx, "linux_auto_restore_runtime.h"), "static LinuxAutoRestoreOutcome daemon_automatic_restore_write(",
-        "!store_daemon_record(LINUX_DAEMON_RECORD_PREPARED", "linux_backend_apply(&g_gpu, ceiling, &request,",
+        "!store_daemon_record(ctl, LINUX_DAEMON_RECORD_PREPARED", "linux_backend_apply(&ctl.gpu, ceiling, &request,",
         "automatic Linux replay prepares a durable recovery journal before hardware writes")
     require_text(_p(ctx, "linux_daemon_boot.h"),
-                 'daemon_enter_uncertain_state("saved named graphics controls were not restored")',
+                 'daemon_enter_uncertain_state(ctl, "saved named graphics controls were not restored")',
                  "an aborted startup replay retains pending named-control recovery")
     require_order_in_operation(
         _p(ctx, "linux_graphics_offset_control.h"), "static inline bool linux_finalize_named_graphics_reset(",
@@ -1188,39 +1188,39 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     linux_daemon_cpp = _p(ctx, "linux_daemon.cpp")
     require_order_in_operation(
         linux_daemon_cpp, "static int daemon_run_owned(const char* configPath)",
-        "daemon_fan_ownership_handback_at_start();",
-        "load_startup_policy_at_boot();",
+        "daemon_fan_ownership_handback_at_start(ctl);",
+        "load_startup_policy_at_boot(ctl);",
         "the Linux fan handback runs before any startup write")
     require_order_in_operation(
         linux_daemon_cpp, "static int daemon_run_owned(const char* configPath)",
-        "load_auto_restore_guard_at_boot();",
-        "daemon_fan_ownership_handback_at_start();",
+        "load_auto_restore_guard_at_boot(ctl);",
+        "daemon_fan_ownership_handback_at_start(ctl);",
         "the guard is loaded before a handback give-up latches it")
     require_order_in_operation(
         linux_daemon_cpp, "static int daemon_run_owned(const char* configPath)",
-        "daemon_fan_ownership_handback_at_start();",
+        "daemon_fan_ownership_handback_at_start(ctl);",
         "pl_thread_start(&fanThread, fan_reassert_thread",
         "the Linux fan handback runs before the fan worker exists")
     require_text(linux_daemon_cpp,
-                 "!daemon_fan_ownership_ensure_before_write(&committedDesired,",
+                 "!daemon_fan_ownership_ensure_before_write(ctl, &committedDesired,",
                  "an explicit Linux apply records fan ownership before writing")
     require_order_in_operation(
         _p(ctx, "linux_auto_restore_runtime.h"),
         "static LinuxAutoRestoreOutcome daemon_automatic_restore_write(",
-        "daemon_fan_ownership_ensure_before_write(&committed,",
+        "daemon_fan_ownership_ensure_before_write(ctl, &committed,",
         "LinuxMutationResult mutation = linux_backend_apply(",
         "an unattended Linux write records fan ownership before writing")
     require_order_in_operation(
         _p(ctx, "linux_fan_ownership.h"),
         "// Return an inherited manual fan on its recorded adapter.",
         "inFlight.handbackAttempts = marker.handbackAttempts + 1u;",
-        "bool autoOk = linux_backend_set_fan_auto(&g_gpu);",
+        "bool autoOk = linux_backend_set_fan_auto(&ctl.gpu);",
         "the Linux handback records itself in flight before writing (loop guard)")
     require_order_in_operation(
         _p(ctx, "linux_fan_ownership.h"),
-        "static void daemon_fan_ownership_handback_at_start()",
-        "g_fanOwnershipHandbackDeferred = true;",
-        "daemon_fan_ownership_run_handback(marker);",
+        "static void daemon_fan_ownership_handback_at_start(LinuxGpuController& ctl)",
+        "ctl.fanOwnershipHandbackDeferred = true;",
+        "daemon_fan_ownership_run_handback(ctl, marker);",
         "startup defers or runs the counted handback, never an uncounted write")
     # A clean Windows stop returns every write this process made whose return
     # was never proven, so the next start never runs a crash handback for it.

@@ -11,9 +11,9 @@
 // root-owned checksummed atomic write as the committed intent because it
 // authorizes an unattended hardware write.
 //
-// Included by linux_daemon.cpp; it uses that file's daemon-side globals
-// (g_startupPolicy, g_gpu, g_activeDesired, ...) and is addressed together with
-// it by the source guards.  Do not compile separately.
+// Included by linux_daemon.cpp; it works on the GPU controller it is handed
+// (ctl.startupPolicy, ctl.gpu, ctl.activeDesired, ...) and is addressed together
+// with that file by the source guards.  Do not compile separately.
 
 #ifndef GREEN_CURVE_LINUX_STARTUP_POLICY_H
 #define GREEN_CURVE_LINUX_STARTUP_POLICY_H
@@ -24,40 +24,40 @@
 
 // Publish the committed boot-apply snapshot on a startup-policy response.
 //
-// Read from g_startupPolicy, never from the request: a set or refresh that
+// Read from ctl.startupPolicy, never from the request: a set or refresh that
 // failed to reach disk leaves the stored record untouched, and the client must
 // see what will actually boot rather than what it asked for.  resp->desired is
 // deliberately NOT touched here -- it belongs to the active intent, and
 // daemon_stamp_state_envelope() fills it on the way out.  v15 returned the
 // snapshot in that member instead, so the stamp overwrote it and every
 // staleness check ran against the applied settings.
-static void daemon_publish_startup_snapshot(ServiceResponse* resp) {
-    if (g_startupPolicy.mode != SERVICE_STARTUP_POLICY_PROFILE) return;
-    resp->startupProfile = g_startupPolicy.desired;
+static void daemon_publish_startup_snapshot(LinuxGpuController& ctl, ServiceResponse* resp) {
+    if (ctl.startupPolicy.mode != SERVICE_STARTUP_POLICY_PROFILE) return;
+    resp->startupProfile = ctl.startupPolicy.desired;
     resp->startupProfileValid = true;
 }
 
-static void daemon_handle_get_startup_policy(ServiceResponse* resp) {
+static void daemon_handle_get_startup_policy(LinuxGpuController& ctl, ServiceResponse* resp) {
     // The mode/slot pair is stamped onto every envelope; this command
     // additionally returns the stored settings and the profile name, so
     // a client can show *what* would be applied, not just that it would.
-    if (g_startupPolicy.mode == SERVICE_STARTUP_POLICY_PROFILE) {
+    if (ctl.startupPolicy.mode == SERVICE_STARTUP_POLICY_PROFILE) {
         gc_snprintf(resp->message, sizeof(resp->message),
             "startup policy: apply profile %u (%s) to %s",
-            (unsigned int)g_startupPolicy.profileSlot,
-            g_startupPolicy.profileName[0] ? g_startupPolicy.profileName
+            (unsigned int)ctl.startupPolicy.profileSlot,
+            ctl.startupPolicy.profileName[0] ? ctl.startupPolicy.profileName
                                            : "unnamed",
-            g_startupPolicy.targetGpu.name[0]
-                ? g_startupPolicy.targetGpu.name : "the stored GPU");
+            ctl.startupPolicy.targetGpu.name[0]
+                ? ctl.startupPolicy.targetGpu.name : "the stored GPU");
     } else {
         gc_snprintf(resp->message, sizeof(resp->message),
             "startup policy: %s",
-            service_startup_policy_mode_name(g_startupPolicy.mode));
+            service_startup_policy_mode_name(ctl.startupPolicy.mode));
     }
     resp->status = SERVICE_STATUS_OK;
 }
 
-static void daemon_handle_set_startup_policy(const ServiceRequest* req,
+static void daemon_handle_set_startup_policy(LinuxGpuController& ctl, const ServiceRequest* req,
                                             ServiceResponse* resp) {
     LinuxDaemonStartupRecord record = {};
     DesiredSettings requested = req->desired;
@@ -65,9 +65,9 @@ static void daemon_handle_set_startup_policy(const ServiceRequest* req,
     linux_daemon_startup_initialize(&record, req->startupMode,
         req->profileSlot, req->source, &req->targetGpu, &requested,
         linux_gpu_location_role_for_selection(&req->targetGpu,
-            g_gpu.adapters, g_gpu.adapterCount),
-        linux_gpu_uuid_for_target(&req->targetGpu, g_gpu.adapters, g_gpu.adapterCount,
-            g_gpu.adapterUuids));
+            ctl.gpu.adapters, ctl.gpu.adapterCount),
+        linux_gpu_uuid_for_target(&req->targetGpu, ctl.gpu.adapters, ctl.gpu.adapterCount,
+            ctl.gpu.adapterUuids));
     char storeErr[256] = {};
     if (!linux_daemon_startup_valid(&record)) {
         resp->status = SERVICE_STATUS_ERROR;
@@ -88,7 +88,7 @@ static void daemon_handle_set_startup_policy(const ServiceRequest* req,
         dlog("daemon startup policy: store failed: %s\n",
              storeErr[0] ? storeErr : "unknown error");
     } else {
-        g_startupPolicy = record;
+        ctl.startupPolicy = record;
         resp->status = SERVICE_STATUS_OK;
         gc_snprintf(resp->message, sizeof(resp->message),
             "startup policy set to %s%s",
@@ -122,28 +122,28 @@ static void daemon_handle_set_startup_policy(const ServiceRequest* req,
 // binding are reused verbatim.  Only the settings change, and only for a policy
 // that already names the same slot, so a refresh can never create a boot-apply
 // or move one to another GPU.
-static void daemon_handle_refresh_startup_profile(const ServiceRequest* req,
+static void daemon_handle_refresh_startup_profile(LinuxGpuController& ctl, const ServiceRequest* req,
                                                   ServiceResponse* resp) {
-    if (!startup_snapshot_refresh_allowed(g_startupPolicy.mode,
-                                          g_startupPolicy.profileSlot,
+    if (!startup_snapshot_refresh_allowed(ctl.startupPolicy.mode,
+                                          ctl.startupPolicy.profileSlot,
                                           req->profileSlot)) {
         resp->status = SERVICE_STATUS_ERROR;
         gc_snprintf(resp->message, sizeof(resp->message),
             "no startup profile %u to refresh (policy is %s slot %u)",
             (unsigned int)req->profileSlot,
-            service_startup_policy_mode_name(g_startupPolicy.mode),
-            (unsigned int)g_startupPolicy.profileSlot);
+            service_startup_policy_mode_name(ctl.startupPolicy.mode),
+            (unsigned int)ctl.startupPolicy.profileSlot);
         dlog("daemon startup policy: refresh rejected for slot=%u; stored mode=%s slot=%u\n",
              (unsigned int)req->profileSlot,
-             service_startup_policy_mode_name(g_startupPolicy.mode),
-             (unsigned int)g_startupPolicy.profileSlot);
+             service_startup_policy_mode_name(ctl.startupPolicy.mode),
+             (unsigned int)ctl.startupPolicy.profileSlot);
     } else {
         if (req->expectedTopologySignature) {
             ServiceSnapshot current{};
-            populate_snapshot(&current, nullptr);
-            if (!daemon_selected_startup_topology() || !linux_mutation_authority_matches(req,
-                    daemon_service_instance_id(), g_daemonGpuGeneration, service_snapshot_topology_signature(&current),
-                    &g_gpu.selectedGpu, SERVICE_MUTATION_DOMAIN_VF_CURVE)) {
+            populate_snapshot(ctl, &current, nullptr);
+            if (!daemon_selected_startup_topology(ctl) || !linux_mutation_authority_matches(req,
+                    daemon_service_instance_id(), ctl.gpuGeneration, service_snapshot_topology_signature(&current),
+                    &ctl.gpu.selectedGpu, SERVICE_MUTATION_DOMAIN_VF_CURVE)) {
                 resp->status = SERVICE_STATUS_STALE_STATE;
                 gc_strlcpy(resp->message, sizeof(resp->message), "startup GPU topology changed during refresh");
                 dlog("startup sync: refusing stale topology attachment\n");
@@ -153,10 +153,10 @@ static void daemon_handle_refresh_startup_profile(const ServiceRequest* req,
         DesiredSettings requested = req->desired;
         validate_desired_settings_for_ipc(&requested);
         LinuxDaemonStartupRecord record = {};
-        linux_daemon_startup_initialize(&record, g_startupPolicy.mode,
-            g_startupPolicy.profileSlot, g_startupPolicy.profileName,
-            &g_startupPolicy.targetGpu, &requested,
-            (GpuLocationRole)g_startupPolicy.targetLocationRole, &g_startupPolicy.targetUuid);
+        linux_daemon_startup_initialize(&record, ctl.startupPolicy.mode,
+            ctl.startupPolicy.profileSlot, ctl.startupPolicy.profileName,
+            &ctl.startupPolicy.targetGpu, &requested,
+            (GpuLocationRole)ctl.startupPolicy.targetLocationRole, &ctl.startupPolicy.targetUuid);
         char storeErr[256] = {};
         if (!linux_daemon_startup_valid(&record)) {
             resp->status = SERVICE_STATUS_ERROR;
@@ -175,9 +175,9 @@ static void daemon_handle_refresh_startup_profile(const ServiceRequest* req,
             dlog("daemon startup policy: refresh store failed: %s\n",
                  storeErr[0] ? storeErr : "unknown error");
         } else {
-            bool changed = !desired_settings_equal(&g_startupPolicy.desired,
+            bool changed = !desired_settings_equal(&ctl.startupPolicy.desired,
                                                    &record.desired);
-            g_startupPolicy = record;
+            ctl.startupPolicy = record;
             resp->status = SERVICE_STATUS_OK;
             gc_snprintf(resp->message, sizeof(resp->message),
                 "startup profile %u snapshot %s",
@@ -204,31 +204,31 @@ static void daemon_handle_refresh_startup_profile(const ServiceRequest* req,
 // All three publish the committed snapshot afterwards, from one place: a get
 // answers "what boots", and a set/refresh answers "what boots NOW", which is
 // what lets a client verify the write it just made instead of re-reading.
-static void daemon_handle_startup_policy_command(const ServiceRequest* req,
+static void daemon_handle_startup_policy_command(LinuxGpuController& ctl, const ServiceRequest* req,
                                                  ServiceResponse* resp) {
     if (req->command == SERVICE_CMD_GET_STARTUP_POLICY)
-        daemon_handle_get_startup_policy(resp);
+        daemon_handle_get_startup_policy(ctl, resp);
     else if (req->command == SERVICE_CMD_SET_STARTUP_POLICY)
-        daemon_handle_set_startup_policy(req, resp);
+        daemon_handle_set_startup_policy(ctl, req, resp);
     else
-        daemon_handle_refresh_startup_profile(req, resp);
-    daemon_publish_startup_snapshot(resp);
+        daemon_handle_refresh_startup_profile(ctl, req, resp);
+    daemon_publish_startup_snapshot(ctl, resp);
 }
 
 // Boot-apply of an explicitly configured profile.  This is a deliberate,
 // administrator-configured write, not drift correction: it happens exactly once
 // per daemon start, only for the exact GPU identity recorded with the policy,
 // and a failure locks the daemon out of retrying instead of looping.
-static bool apply_startup_profile_policy(const LinuxDaemonStateRecord* previous) {
-    const DesiredSettings& desired = g_startupPolicy.desired;
+static bool apply_startup_profile_policy(LinuxGpuController& ctl, const LinuxDaemonStateRecord* previous) {
+    const DesiredSettings& desired = ctl.startupPolicy.desired;
     // The snapshot's own values are logged before the write, not just
     // "applied": when a boot-applied profile disagrees with config.ini, this
     // line is what identifies the stale snapshot without a debugger.
     dlog("daemon: startup profile %u (%s) requested "
          "[fanMode=%d fanPct=%d pollMs=%d hysteresisC=%d gpuOffset=%d "
          "memOffset=%d powerPct=%d]\n",
-         (unsigned int)g_startupPolicy.profileSlot,
-         g_startupPolicy.profileName[0] ? g_startupPolicy.profileName : "-",
+         (unsigned int)ctl.startupPolicy.profileSlot,
+         ctl.startupPolicy.profileName[0] ? ctl.startupPolicy.profileName : "-",
          desired.fanMode, desired.fanPercent,
          desired.fanCurve.pollIntervalMs, desired.fanCurve.hysteresisC,
          desired.gpuOffsetMHz, desired.memOffsetMHz, desired.powerLimitPct);
@@ -236,15 +236,15 @@ static bool apply_startup_profile_policy(const LinuxDaemonStateRecord* previous)
     // restore: it owns the crash-loop guard, the GPU resolution, the reset-to-
     // stock baseline that keeps a boot apply from stacking onto whatever the
     // driver already holds, and the committed record on success.
-    LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(
+    LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(ctl,
         LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE,
-        &g_startupPolicy.targetGpu, &g_startupPolicy.desired,
-        (GpuLocationRole)g_startupPolicy.targetLocationRole, &g_startupPolicy.targetUuid, previous);
+        &ctl.startupPolicy.targetGpu, &ctl.startupPolicy.desired,
+        (GpuLocationRole)ctl.startupPolicy.targetLocationRole, &ctl.startupPolicy.targetUuid, previous);
     if (!outcome.success) {
         // daemon_automatic_restore_write owns the uncertainty transition and
         // its fan handback on every path that reached a write.
         dlog("daemon: startup profile %u did not commit -> %s\n",
-             (unsigned int)g_startupPolicy.profileSlot,
+             (unsigned int)ctl.startupPolicy.profileSlot,
              outcome.message[0] ? outcome.message : "unknown reason");
         return false;
     }
@@ -252,44 +252,44 @@ static bool apply_startup_profile_policy(const LinuxDaemonStateRecord* previous)
     // (linux_resolve_stored_gpu_target followed the model). Re-bind the record
     // to the live location, as the committed ACTIVE record already was, so it
     // stays exact if an identical GPU is added later.
-    if (!linux_gpu_bdf_valid(&g_activeTarget) ||
-        (linux_gpu_bdf_equal(&g_startupPolicy.targetGpu, &g_activeTarget) &&
-         g_startupPolicy.targetLocationRole == (gc_u32)g_activeTargetRole &&
-         memcmp(&g_startupPolicy.targetUuid, &g_activeTargetUuid, sizeof(g_activeTargetUuid)) == 0) ||
-        !linux_gpu_model_matches(&g_startupPolicy.targetGpu, &g_activeTarget))
+    if (!linux_gpu_bdf_valid(&ctl.activeTarget) ||
+        (linux_gpu_bdf_equal(&ctl.startupPolicy.targetGpu, &ctl.activeTarget) &&
+         ctl.startupPolicy.targetLocationRole == (gc_u32)ctl.activeTargetRole &&
+         memcmp(&ctl.startupPolicy.targetUuid, &ctl.activeTargetUuid, sizeof(ctl.activeTargetUuid)) == 0) ||
+        !linux_gpu_model_matches(&ctl.startupPolicy.targetGpu, &ctl.activeTarget))
         return true;
     LinuxDaemonStartupRecord rebound = {};
-    linux_daemon_startup_initialize(&rebound, g_startupPolicy.mode,
-        g_startupPolicy.profileSlot, g_startupPolicy.profileName,
-        &g_activeTarget, &g_startupPolicy.desired, g_activeTargetRole, &g_activeTargetUuid);
+    linux_daemon_startup_initialize(&rebound, ctl.startupPolicy.mode,
+        ctl.startupPolicy.profileSlot, ctl.startupPolicy.profileName,
+        &ctl.activeTarget, &ctl.startupPolicy.desired, ctl.activeTargetRole, &ctl.activeTargetUuid);
     char storeErr[160] = {};
     if (!linux_daemon_startup_valid(&rebound) ||
         !linux_daemon_startup_store(GC_DAEMON_STARTUP_FILE, &rebound,
                                     storeErr, sizeof(storeErr))) {
         // Not fatal: the stale record keeps resolving under the same rule.
         dlog("daemon startup policy: re-binding profile %u to %04x:%02x:%02x.%u "
-             "failed: %s\n", (unsigned int)g_startupPolicy.profileSlot,
-             g_activeTarget.pciDomain, g_activeTarget.pciBus,
-             g_activeTarget.pciDevice, g_activeTarget.pciFunction,
+             "failed: %s\n", (unsigned int)ctl.startupPolicy.profileSlot,
+             ctl.activeTarget.pciDomain, ctl.activeTarget.pciBus,
+             ctl.activeTarget.pciDevice, ctl.activeTarget.pciFunction,
              storeErr[0] ? storeErr : "record failed validation");
         return true;
     }
     dlog("daemon startup policy: profile %u re-bound from %04x:%02x:%02x.%u to "
          "%04x:%02x:%02x.%u (role=%s)\n",
-         (unsigned int)g_startupPolicy.profileSlot,
-         g_startupPolicy.targetGpu.pciDomain, g_startupPolicy.targetGpu.pciBus,
-         g_startupPolicy.targetGpu.pciDevice,
-         g_startupPolicy.targetGpu.pciFunction, g_activeTarget.pciDomain,
-         g_activeTarget.pciBus, g_activeTarget.pciDevice,
-         g_activeTarget.pciFunction, configured_gpu_location_role_name(g_activeTargetRole));
-    g_startupPolicy = rebound;
+         (unsigned int)ctl.startupPolicy.profileSlot,
+         ctl.startupPolicy.targetGpu.pciDomain, ctl.startupPolicy.targetGpu.pciBus,
+         ctl.startupPolicy.targetGpu.pciDevice,
+         ctl.startupPolicy.targetGpu.pciFunction, ctl.activeTarget.pciDomain,
+         ctl.activeTarget.pciBus, ctl.activeTarget.pciDevice,
+         ctl.activeTarget.pciFunction, configured_gpu_location_role_name(ctl.activeTargetRole));
+    ctl.startupPolicy = rebound;
     return true;
 }
 
 // Read the committed policy once at daemon start.  A present-but-unreadable
 // record is deliberately NOT downgraded to "replay the old intent": a policy the
 // administrator cannot read back is a reason to leave the GPU alone.
-static void load_startup_policy_at_boot() {
+static void load_startup_policy_at_boot(LinuxGpuController& ctl) {
     // The boot-apply policy decides *whether* the block below may write at all.
     // A present-but-unusable record is never downgraded to "replay the old
     // intent": a policy the administrator cannot read back is a reason to leave
@@ -297,7 +297,7 @@ static void load_startup_policy_at_boot() {
     bool startupPolicyCorrupt = false;
     bool startupPolicyMigratedFromLegacy = false;
     char startupErr[256] = {};
-    if (linux_daemon_startup_load(GC_DAEMON_STARTUP_FILE, &g_startupPolicy,
+    if (linux_daemon_startup_load(GC_DAEMON_STARTUP_FILE, &ctl.startupPolicy,
                                   &startupPolicyCorrupt, startupErr,
                                   sizeof(startupErr),
                                   &startupPolicyMigratedFromLegacy)) {
@@ -310,7 +310,7 @@ static void load_startup_policy_at_boot() {
             // same record to the same result.
             char storeErr[128] = {};
             if (!linux_daemon_startup_store(GC_DAEMON_STARTUP_FILE,
-                                            &g_startupPolicy, storeErr,
+                                            &ctl.startupPolicy, storeErr,
                                             sizeof(storeErr))) {
                 dlog("daemon: startup policy rewrite after generation "
                      "migration failed (%s); re-migrated identically on next "
@@ -319,17 +319,17 @@ static void load_startup_policy_at_boot() {
             }
         }
         dlog("daemon: startup policy=%s slot=%u name=%s\n",
-             service_startup_policy_mode_name(g_startupPolicy.mode),
-             (unsigned int)g_startupPolicy.profileSlot,
-             g_startupPolicy.profileName[0] ? g_startupPolicy.profileName : "-");
+             service_startup_policy_mode_name(ctl.startupPolicy.mode),
+             (unsigned int)ctl.startupPolicy.profileSlot,
+             ctl.startupPolicy.profileName[0] ? ctl.startupPolicy.profileName : "-");
     } else if (startupPolicyCorrupt) {
-        memset(&g_startupPolicy, 0, sizeof(g_startupPolicy));
-        g_startupPolicy.mode = SERVICE_STARTUP_POLICY_NONE;
+        memset(&ctl.startupPolicy, 0, sizeof(ctl.startupPolicy));
+        ctl.startupPolicy.mode = SERVICE_STARTUP_POLICY_NONE;
         dlog("daemon: startup policy unreadable (%s); applying nothing at "
              "startup until it is set again\n",
              startupErr[0] ? startupErr : "invalid record");
     } else {
-        memset(&g_startupPolicy, 0, sizeof(g_startupPolicy));
+        memset(&ctl.startupPolicy, 0, sizeof(ctl.startupPolicy));
         dlog("daemon: no startup policy configured; restoring the last "
              "committed intent\n");
     }

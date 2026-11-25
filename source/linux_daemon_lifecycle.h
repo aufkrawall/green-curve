@@ -13,11 +13,9 @@
 #ifndef GREEN_CURVE_LINUX_DAEMON_LIFECYCLE_H
 #define GREEN_CURVE_LINUX_DAEMON_LIFECYCLE_H
 
-static unsigned int g_fanFailureCount = 0;
 static volatile sig_atomic_t g_running = 1;
 static pthread_mutex_t g_fanWakeMutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_fanWakeCondition = PTHREAD_COND_INITIALIZER;
-static unsigned long long g_fanWakeGeneration = 0;
 
 // Written by the signal handler, read by the accept loop.  A self-pipe is the
 // only async-signal-safe way to break the accept wait without polling or a
@@ -37,9 +35,9 @@ static bool init_fan_wake_condition() {
     return ok;
 }
 
-static void wake_fan_runtime() {
+static void wake_fan_runtime(LinuxGpuController& ctl) {
     pthread_mutex_lock(&g_fanWakeMutex);
-    ++g_fanWakeGeneration;
+    ++ctl.fanWakeGeneration;
     pthread_cond_broadcast(&g_fanWakeCondition);
     pthread_mutex_unlock(&g_fanWakeMutex);
 }

@@ -4,16 +4,16 @@
 // Included daemon shard: atomic Linux snapshot/control publication,
 // selected-GPU generation tracking, and mutation precondition validation.
 
-static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
+static void populate_snapshot(LinuxGpuController& ctl, ServiceSnapshot* s, ControlState* control) {
     memset(s, 0, sizeof(*s));
     if (control) memset(control, 0, sizeof(*control));
-    s->adapterCount = g_gpu.adapterCount;
-    s->selectedAdapterIndex = g_gpu.selectedAdapterIndex;
-    s->selectedAdapterOrdinalFallback = g_gpu.adapterCount == 1 &&
-                                        !linux_gpu_bdf_valid(&g_gpu.selectedGpu);
-    for (unsigned int i = 0; i < g_gpu.adapterCount && i < MAX_GPU_ADAPTERS; ++i)
-        s->adapters[i] = g_gpu.adapters[i];
-    // The guard is the authority here, not g_stateUncertain.  Deriving this
+    s->adapterCount = ctl.gpu.adapterCount;
+    s->selectedAdapterIndex = ctl.gpu.selectedAdapterIndex;
+    s->selectedAdapterOrdinalFallback = ctl.gpu.adapterCount == 1 &&
+                                        !linux_gpu_bdf_valid(&ctl.gpu.selectedGpu);
+    for (unsigned int i = 0; i < ctl.gpu.adapterCount && i < MAX_GPU_ADAPTERS; ++i)
+        s->adapters[i] = ctl.gpu.adapters[i];
+    // The guard is the authority here, not ctl.stateUncertain.  Deriving this
     // field from the uncertain flag alone published LOCKOUT_NONE for the whole
     // crash-loop arm -- three refused start-time replays latch the guard
     // without ever reaching a hardware write, so the daemon reported a healthy
@@ -21,54 +21,54 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
     // debug log as the only evidence.  Windows has always fed the same field
     // from its real lockout state (service_auto_restore_is_locked_out).
     s->autoRestoreLockoutReason = linux_auto_restore_published_lockout_reason(
-        &g_autoRestoreGuard, g_stateUncertain);
+        &ctl.autoRestoreGuard, ctl.stateUncertain);
     // Published only with the lockout it explains (protocol v29).
     if (s->autoRestoreLockoutReason ==
             SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED)
-        s->autoApplyFailure = g_autoApplyFailure;
-    s->fanFault = g_daemonFanFault;  // v39
-    s->health = g_gpu.health;
-    if (g_stateUncertain) {
+        s->autoApplyFailure = ctl.autoApplyFailure;
+    s->fanFault = ctl.fanFault;  // v39
+    s->health = ctl.gpu.health;
+    if (ctl.stateUncertain) {
         s->health.reason = SERVICE_GPU_HEALTH_STATE_UNCERTAIN;
         s->health.driverStatus = 0;
         gc_strlcpy(s->health.detail, sizeof(s->health.detail),
             "previous daemon state or rollback is uncertain; explicit Apply/Reset is required");
     }
-    if (!g_gpuReady) return;
+    if (!ctl.gpuReady) return;
     s->initialized = true;
-    s->loaded = g_gpu.vfSnapshotFresh && g_gpu.numPopulated > 0;
-    s->gpuFamily = g_gpu.family;
-    s->numPopulated = s->loaded ? g_gpu.numPopulated : 0;
-    s->vfReadSupported = s->loaded && g_gpu.gpuHandle && g_gpu.backend &&
-        g_gpu.backend->readSupported;
-    s->vfWriteSupported = s->loaded && g_gpu.gpuHandle && g_gpu.backend &&
-        g_gpu.backend->writeSupported;
-    s->vfBestGuess = s->loaded && g_gpu.backend &&
-        g_gpu.backend->bestGuessOnly;
-    s->gpuClockOffsetMinMHz = g_gpu.gpuOffsetMinMHz;
-    s->gpuClockOffsetMaxMHz = g_gpu.gpuOffsetMaxMHz;
-    s->memOffsetMinMHz = g_gpu.memOffsetMinMHz;
-    s->memOffsetMaxMHz = g_gpu.memOffsetMaxMHz;
-    s->curveOffsetMinkHz = g_gpu.curveOffsetMinKHz;
-    s->curveOffsetMaxkHz = g_gpu.curveOffsetMaxKHz;
-    s->curveOffsetRangeKnown = g_gpu.curveOffsetRangeKnown;
-    s->powerLimitMinmW = g_gpu.powerLimitMinmW;
-    s->powerLimitMaxmW = g_gpu.powerLimitMaxmW;
-    s->powerLimitDefaultmW = g_gpu.powerLimitDefaultmW;
+    s->loaded = ctl.gpu.vfSnapshotFresh && ctl.gpu.numPopulated > 0;
+    s->gpuFamily = ctl.gpu.family;
+    s->numPopulated = s->loaded ? ctl.gpu.numPopulated : 0;
+    s->vfReadSupported = s->loaded && ctl.gpu.gpuHandle && ctl.gpu.backend &&
+        ctl.gpu.backend->readSupported;
+    s->vfWriteSupported = s->loaded && ctl.gpu.gpuHandle && ctl.gpu.backend &&
+        ctl.gpu.backend->writeSupported;
+    s->vfBestGuess = s->loaded && ctl.gpu.backend &&
+        ctl.gpu.backend->bestGuessOnly;
+    s->gpuClockOffsetMinMHz = ctl.gpu.gpuOffsetMinMHz;
+    s->gpuClockOffsetMaxMHz = ctl.gpu.gpuOffsetMaxMHz;
+    s->memOffsetMinMHz = ctl.gpu.memOffsetMinMHz;
+    s->memOffsetMaxMHz = ctl.gpu.memOffsetMaxMHz;
+    s->curveOffsetMinkHz = ctl.gpu.curveOffsetMinKHz;
+    s->curveOffsetMaxkHz = ctl.gpu.curveOffsetMaxKHz;
+    s->curveOffsetRangeKnown = ctl.gpu.curveOffsetRangeKnown;
+    s->powerLimitMinmW = ctl.gpu.powerLimitMinmW;
+    s->powerLimitMaxmW = ctl.gpu.powerLimitMaxmW;
+    s->powerLimitDefaultmW = ctl.gpu.powerLimitDefaultmW;
     if (s->loaded) {
         for (int i = 0; i < VF_NUM_POINTS; i++) {
-            s->curve[i] = g_gpu.curve[i];
-            s->freqOffsets[i] = g_gpu.freqOffsets[i];
+            s->curve[i] = ctl.gpu.curve[i];
+            s->freqOffsets[i] = ctl.gpu.freqOffsets[i];
         }
     }
-    gc_strlcpy(s->gpuName, sizeof(s->gpuName), g_gpu.gpuName[0] ? g_gpu.gpuName : "NVIDIA GPU");
+    gc_strlcpy(s->gpuName, sizeof(s->gpuName), ctl.gpu.gpuName[0] ? ctl.gpu.gpuName : "NVIDIA GPU");
 
     // Preserve the backend's complete adapter list and exact selected index.
     // The old Linux snapshot replaced it with one fabricated name-only entry,
     // which made multi-GPU selection and reconnect-safe identity checks
     // impossible even though enumeration had succeeded.
     if (s->selectedAdapterIndex < s->adapterCount) {
-        s->adapters[s->selectedAdapterIndex] = g_gpu.selectedGpu;
+        s->adapters[s->selectedAdapterIndex] = ctl.gpu.selectedGpu;
         if (!s->adapters[s->selectedAdapterIndex].name[0])
             gc_strlcpy(s->adapters[s->selectedAdapterIndex].name,
                        sizeof(s->adapters[s->selectedAdapterIndex].name),
@@ -78,26 +78,26 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
     LinuxHardwareSnapshot hardware = {};
     char hardwareErr[160] = {};
     bool hardwareAvailable = linux_backend_capture_snapshot(
-        &g_gpu, &hardware, hardwareErr, sizeof(hardwareErr));
+        &ctl.gpu, &hardware, hardwareErr, sizeof(hardwareErr));
     // capture_snapshot performs the fresh shared ClkDomains read; publish only
     // after it so this envelope never lags its own availability proof.
-    s->xbarSupported = g_gpu.xbarProbeValid;
-    s->xbarOffsetReadbackValid = g_gpu.xbarFreqReadbackValid;
-    s->xbarOffsetKhz = g_gpu.xbarFreqOffsetKhz;
-    s->xbarMsvddOffsetReadbackValid = g_gpu.xbarMsvddReadbackValid;
-    s->xbarMsvddOffsetUv = g_gpu.xbarMsvddOffsetUv;
-    s->xbarMeasuredClockKhz = g_gpu.xbarMeasuredClockKhz;
-    s->xbarMeasuredVoltageUv = g_gpu.xbarMeasuredVoltageUv;
-    s->sysClkSupported = g_gpu.sysClkProbeValid;
-    s->sysClkOffsetReadbackValid = g_gpu.sysClkFreqReadbackValid;
-    s->sysClkOffsetKhz = g_gpu.sysClkFreqOffsetKhz;
-    s->sysClkMeasuredClockKhz = g_gpu.sysClkMeasuredClockKhz;
-    s->videoClkSupported = g_gpu.videoClkProbeValid;
-    s->videoClkOffsetReadbackValid = g_gpu.videoClkFreqReadbackValid;
-    s->videoClkOffsetKhz = g_gpu.videoClkFreqOffsetKhz;
-    s->videoClkMeasuredClockKhz = g_gpu.videoClkMeasuredClockKhz;
-    s->health = g_gpu.health;
-    if (g_stateUncertain) {
+    s->xbarSupported = ctl.gpu.xbarProbeValid;
+    s->xbarOffsetReadbackValid = ctl.gpu.xbarFreqReadbackValid;
+    s->xbarOffsetKhz = ctl.gpu.xbarFreqOffsetKhz;
+    s->xbarMsvddOffsetReadbackValid = ctl.gpu.xbarMsvddReadbackValid;
+    s->xbarMsvddOffsetUv = ctl.gpu.xbarMsvddOffsetUv;
+    s->xbarMeasuredClockKhz = ctl.gpu.xbarMeasuredClockKhz;
+    s->xbarMeasuredVoltageUv = ctl.gpu.xbarMeasuredVoltageUv;
+    s->sysClkSupported = ctl.gpu.sysClkProbeValid;
+    s->sysClkOffsetReadbackValid = ctl.gpu.sysClkFreqReadbackValid;
+    s->sysClkOffsetKhz = ctl.gpu.sysClkFreqOffsetKhz;
+    s->sysClkMeasuredClockKhz = ctl.gpu.sysClkMeasuredClockKhz;
+    s->videoClkSupported = ctl.gpu.videoClkProbeValid;
+    s->videoClkOffsetReadbackValid = ctl.gpu.videoClkFreqReadbackValid;
+    s->videoClkOffsetKhz = ctl.gpu.videoClkFreqOffsetKhz;
+    s->videoClkMeasuredClockKhz = ctl.gpu.videoClkMeasuredClockKhz;
+    s->health = ctl.gpu.health;
+    if (ctl.stateUncertain) {
         s->health.reason = SERVICE_GPU_HEALTH_STATE_UNCERTAIN;
         s->health.driverStatus = 0;
         gc_strlcpy(s->health.detail, sizeof(s->health.detail),
@@ -123,20 +123,20 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
                                      s->powerLimitDefaultmW);
         }
     }
-    if (g_gpu.nvml.getTemperature) {
+    if (ctl.gpu.nvml.getTemperature) {
         unsigned int t = 0;
-        if (g_gpu.nvml.getTemperature(g_gpu.nvmlDevice, NVML_TEMPERATURE_GPU, &t) == NVML_SUCCESS) {
+        if (ctl.gpu.nvml.getTemperature(ctl.gpu.nvmlDevice, NVML_TEMPERATURE_GPU, &t) == NVML_SUCCESS) {
             s->gpuTemperatureC = (int)t;
             s->gpuTemperatureValid = true;
         }
     }
-    if (g_gpu.nvml.getPowerLimit) {
+    if (ctl.gpu.nvml.getPowerLimit) {
         unsigned int p = 0;
-        if (g_gpu.nvml.getPowerLimit(g_gpu.nvmlDevice, &p) == NVML_SUCCESS) s->powerLimitCurrentmW = (int)p;
+        if (ctl.gpu.nvml.getPowerLimit(ctl.gpu.nvmlDevice, &p) == NVML_SUCCESS) s->powerLimitCurrentmW = (int)p;
     }
-    if (g_gpu.nvml.getNumFans) {
+    if (ctl.gpu.nvml.getNumFans) {
         unsigned int fans = 0;
-        if (g_gpu.nvml.getNumFans(g_gpu.nvmlDevice, &fans) == NVML_SUCCESS) {
+        if (ctl.gpu.nvml.getNumFans(ctl.gpu.nvmlDevice, &fans) == NVML_SUCCESS) {
             s->fanCount = fans;
             s->fanSupported = (fans > 0);
             // Publish the range the driver actually honors.  This used to be
@@ -146,12 +146,12 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
             // controls, and a driver without the range getter can still be
             // driven manually over the full 0..100 span.
             s->fanRangeKnown = (fans > 0);
-            s->fanMinPct = g_gpu.fanRangeKnown ? (unsigned int)g_gpu.fanMinPct : 0u;
-            s->fanMaxPct = g_gpu.fanRangeKnown ? (unsigned int)g_gpu.fanMaxPct : 100u;
+            s->fanMinPct = ctl.gpu.fanRangeKnown ? (unsigned int)ctl.gpu.fanMinPct : 0u;
+            s->fanMaxPct = ctl.gpu.fanRangeKnown ? (unsigned int)ctl.gpu.fanMaxPct : 100u;
             for (unsigned int f = 0; f < fans && f < MAX_GPU_FANS; f++) {
                 // fanPercent is measured telemetry; fanTargetPercent is intent.
                 unsigned int pct = 0;
-                if (g_gpu.nvml.getFanSpeed && g_gpu.nvml.getFanSpeed(g_gpu.nvmlDevice, f, &pct) == NVML_SUCCESS)
+                if (ctl.gpu.nvml.getFanSpeed && ctl.gpu.nvml.getFanSpeed(ctl.gpu.nvmlDevice, f, &pct) == NVML_SUCCESS)
                     s->fanPercent[f] = pct;
                 if (f < hardware.fanCount) {
                     s->fanPolicy[f] = hardware.fanPolicy[f];
@@ -161,31 +161,31 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
         }
     }
 
-    const bool intentMatchesSelected = g_hasActiveDesired &&
-        linux_gpu_identity_matches(&g_activeTarget, &g_gpu.selectedGpu);
-    const bool fanRuntimeActive = linux_daemon_fan_runtime_active(g_gpuReady,
-        g_hasActiveDesired, g_stateUncertain, intentMatchesSelected,
-        g_activeDesired.hasFan != 0, g_activeDesired.fanMode,
-        g_activeDesired.fanAuto != 0);
+    const bool intentMatchesSelected = ctl.hasActiveDesired &&
+        linux_gpu_identity_matches(&ctl.activeTarget, &ctl.gpu.selectedGpu);
+    const bool fanRuntimeActive = linux_daemon_fan_runtime_active(ctl.gpuReady,
+        ctl.hasActiveDesired, ctl.stateUncertain, intentMatchesSelected,
+        ctl.activeDesired.hasFan != 0, ctl.activeDesired.fanMode,
+        ctl.activeDesired.fanAuto != 0);
     const bool intentOwnsSelectedFan = intentMatchesSelected &&
-        !g_stateUncertain && g_activeDesired.hasFan != 0;
-    if (g_hasActiveDesired) {
-        s->hasLock = g_activeDesired.hasLock;
-        s->lockCi = g_activeDesired.lockCi;
-        s->lockMHz = g_activeDesired.lockMHz;
-        s->lockMode = g_activeDesired.lockMode;
-        s->lockTracksAnchor = g_activeDesired.lockTracksAnchor;
-        s->appliedGpuOffsetMHz = g_activeDesired.gpuOffsetMHz;
+        !ctl.stateUncertain && ctl.activeDesired.hasFan != 0;
+    if (ctl.hasActiveDesired) {
+        s->hasLock = ctl.activeDesired.hasLock;
+        s->lockCi = ctl.activeDesired.lockCi;
+        s->lockMHz = ctl.activeDesired.lockMHz;
+        s->lockMode = ctl.activeDesired.lockMode;
+        s->lockTracksAnchor = ctl.activeDesired.lockTracksAnchor;
+        s->appliedGpuOffsetMHz = ctl.activeDesired.gpuOffsetMHz;
         s->appliedGpuOffsetExcludeLowCount =
-            g_activeDesired.gpuOffsetExcludeLowCount;
-        s->lastApplyUsedGpuOffset = g_activeDesired.hasGpuOffset;
+            ctl.activeDesired.gpuOffsetExcludeLowCount;
+        s->lastApplyUsedGpuOffset = ctl.activeDesired.hasGpuOffset;
         // An unclaimed, uncertain, or other-GPU fan is not driven by the
         // worker (fan_intent_policy.h); the runtime flags agree with the worker.
         s->activeFanMode = fan_owned_intent_mode(intentOwnsSelectedFan,
-            g_activeDesired.fanMode, g_activeDesired.fanAuto != 0);
+            ctl.activeDesired.fanMode, ctl.activeDesired.fanAuto != 0);
         s->activeFanFixedPercent = intentOwnsSelectedFan
-            ? g_activeDesired.fanPercent : 0;
-        s->activeFanCurve = g_activeDesired.fanCurve;
+            ? ctl.activeDesired.fanPercent : 0;
+        s->activeFanCurve = ctl.activeDesired.fanCurve;
         s->fanCurveRuntimeActive = fanRuntimeActive &&
                                    s->activeFanMode == FAN_MODE_CURVE;
         s->fanFixedRuntimeActive = fanRuntimeActive &&
@@ -193,29 +193,29 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
     }
 
     if (!control) return;
-    control->valid = hardwareAvailable || g_hasActiveDesired;
+    control->valid = hardwareAvailable || ctl.hasActiveDesired;
     control->hasGpuOffset = hardware.gpuOffsetValid ||
-                            (g_hasActiveDesired && g_activeDesired.hasGpuOffset);
+                            (ctl.hasActiveDesired && ctl.activeDesired.hasGpuOffset);
     control->gpuOffsetReadbackValid = hardware.gpuOffsetValid;
     control->gpuOffsetMHz = hardware.gpuOffsetValid
         ? hardware.gpuOffsetMHz
-        : g_activeDesired.gpuOffsetMHz;
-    control->gpuOffsetExcludeLowCount = g_hasActiveDesired
-        ? g_activeDesired.gpuOffsetExcludeLowCount : 0;
+        : ctl.activeDesired.gpuOffsetMHz;
+    control->gpuOffsetExcludeLowCount = ctl.hasActiveDesired
+        ? ctl.activeDesired.gpuOffsetExcludeLowCount : 0;
     control->hasMemOffset = hardware.memOffsetValid ||
-                            (g_hasActiveDesired && g_activeDesired.hasMemOffset);
+                            (ctl.hasActiveDesired && ctl.activeDesired.hasMemOffset);
     control->memOffsetReadbackValid = hardware.memOffsetValid;
     control->memOffsetMHz = hardware.memOffsetValid
         ? hardware.memOffsetMHz
-        : g_activeDesired.memOffsetMHz;
+        : ctl.activeDesired.memOffsetMHz;
     control->hasPowerLimit = hardware.powerValid ||
-                             (g_hasActiveDesired && g_activeDesired.hasPowerLimit);
+                             (ctl.hasActiveDesired && ctl.activeDesired.hasPowerLimit);
     control->powerLimitReadbackValid = hardware.powerValid;
     control->powerLimitPct = s->powerLimitPct > 0
         ? s->powerLimitPct
-        : (g_hasActiveDesired ? g_activeDesired.powerLimitPct : 100);
+        : (ctl.hasActiveDesired ? ctl.activeDesired.powerLimitPct : 100);
     control->hasFan = s->fanSupported ||
-                      (g_hasActiveDesired && g_activeDesired.hasFan);
+                      (ctl.hasActiveDesired && ctl.activeDesired.hasFan);
     control->fanPolicyReadbackValid = hardware.fanValid &&
         hardware.fanCount > 0;
     bool allFanTargetsKnown = hardware.fanValid && hardware.fanCount > 0;
@@ -227,8 +227,8 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
         ? s->gpuTemperatureC : 0;
     if (intentOwnsSelectedFan) {
         control->fanMode = s->activeFanMode;
-        control->fanFixedPercent = g_activeDesired.fanPercent;
-        control->fanCurve = g_activeDesired.fanCurve;
+        control->fanFixedPercent = ctl.activeDesired.fanPercent;
+        control->fanCurve = ctl.activeDesired.fanCurve;
     } else {
         bool automatic = hardware.fanValid && hardware.fanCount > 0;
         for (unsigned int i = 0; i < hardware.fanCount; ++i) {
@@ -240,41 +240,40 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
         fan_curve_set_default(&control->fanCurve);
     }
     control->hasXbarOffset = hardware.xbarValid ||
-        (g_hasActiveDesired && g_activeDesired.hasXbarOffsetKhz);
+        (ctl.hasActiveDesired && ctl.activeDesired.hasXbarOffsetKhz);
     control->xbarOffsetReadbackValid = hardware.xbarValid;
     control->xbarOffsetKhz = hardware.xbarValid
-        ? hardware.xbarOffsetKhz : g_activeDesired.xbarOffsetKhz;
+        ? hardware.xbarOffsetKhz : ctl.activeDesired.xbarOffsetKhz;
     control->hasXbarMsvddOffset = hardware.xbarValid ||
-        (g_hasActiveDesired && g_activeDesired.hasXbarMsvddOffsetUv);
+        (ctl.hasActiveDesired && ctl.activeDesired.hasXbarMsvddOffsetUv);
     control->xbarMsvddOffsetReadbackValid = hardware.xbarValid;
     control->xbarMsvddOffsetUv = hardware.xbarValid
-        ? hardware.xbarMsvddOffsetUv : g_activeDesired.xbarMsvddOffsetUv;
+        ? hardware.xbarMsvddOffsetUv : ctl.activeDesired.xbarMsvddOffsetUv;
     control->hasSysClkOffset = hardware.sysClkValid ||
-        (g_hasActiveDesired && g_activeDesired.hasSysClkOffsetKhz);
+        (ctl.hasActiveDesired && ctl.activeDesired.hasSysClkOffsetKhz);
     control->sysClkOffsetReadbackValid = hardware.sysClkValid;
     control->sysClkOffsetKhz = hardware.sysClkValid
-        ? hardware.sysClkOffsetKhz : g_activeDesired.sysClkOffsetKhz;
+        ? hardware.sysClkOffsetKhz : ctl.activeDesired.sysClkOffsetKhz;
     control->hasVideoClkOffset = hardware.videoClkValid ||
-        (g_hasActiveDesired && g_activeDesired.hasVideoClkOffsetKhz);
+        (ctl.hasActiveDesired && ctl.activeDesired.hasVideoClkOffsetKhz);
     control->videoClkOffsetReadbackValid = hardware.videoClkValid;
     control->videoClkOffsetKhz = hardware.videoClkValid
-        ? hardware.videoClkOffsetKhz : g_activeDesired.videoClkOffsetKhz;
+        ? hardware.videoClkOffsetKhz : ctl.activeDesired.videoClkOffsetKhz;
 }
 
 #include "linux_daemon_identity.cpp"
 #include "linux_fan_runtime.h"
 
-static bool g_backendReadInitAttempted = false;
 
 // A one-shot read may safely retry backend discovery without selecting write
 // authority. An automatic tick gets one attempt; an explicit user refresh asks
 // for another through the existing interactive request flag.
-static bool daemon_retry_backend_for_read(bool explicitRefresh) {
-    if (g_gpuReady) return true;
+static bool daemon_retry_backend_for_read(LinuxGpuController& ctl, bool explicitRefresh) {
+    if (ctl.gpuReady) return true;
     if (!linux_backend_read_init_needed(
-            g_gpuReady, g_backendReadInitAttempted, explicitRefresh))
+            ctl.gpuReady, ctl.backendReadInitAttempted, explicitRefresh))
         return false;
-    g_backendReadInitAttempted = true;
+    ctl.backendReadInitAttempted = true;
     LinuxGpuState replacement = {};
     char err[256] = {};
     // Discovery runs inside this read's deadline, like a targeted GPU switch.
@@ -292,33 +291,33 @@ static bool daemon_retry_backend_for_read(bool explicitRefresh) {
              initMs, err[0] ? err : "unknown error");
         return false;
     }
-    const GpuAdapterInfo previous = g_gpu.selectedGpu;
-    linux_backend_shutdown(&g_gpu);
-    g_gpu = replacement;
-    g_gpuReady = true;
+    const GpuAdapterInfo previous = ctl.gpu.selectedGpu;
+    linux_backend_shutdown(&ctl.gpu);
+    ctl.gpu = replacement;
+    ctl.gpuReady = true;
     if (previous.valid &&
-        !linux_gpu_identity_matches(&previous, &g_gpu.selectedGpu))
-        ++g_daemonGpuGeneration;
+        !linux_gpu_identity_matches(&previous, &ctl.gpu.selectedGpu))
+        ++ctl.gpuGeneration;
     dlog("daemon backend retry: untargeted discovery online adapters=%u"
          " writeIdentityResolved=%d explicit=%d initMs=%llu\n",
-         g_gpu.adapterCount, g_gpu.writeIdentityResolved ? 1 : 0,
+         ctl.gpu.adapterCount, ctl.gpu.writeIdentityResolved ? 1 : 0,
          explicitRefresh ? 1 : 0, initMs);
     // The worker performs any deferred fan handback outside this read request.
-    wake_fan_runtime();
+    wake_fan_runtime(ctl);
     return true;
 }
 
-static bool select_request_gpu(const ServiceRequest* req, char* err, size_t errSize) {
+static bool select_request_gpu(LinuxGpuController& ctl, const ServiceRequest* req, char* err, size_t errSize) {
     if (req && req->expectedControlFingerprint) {
-        if (g_gpuReady && g_gpu.writeIdentityResolved && req->targetGpu.valid &&
-            req->targetGpu.nvapiIndex == g_gpu.selectedGpu.nvapiIndex &&
-            req->targetGpu.nvmlIndex == g_gpu.selectedGpu.nvmlIndex &&
-            linux_gpu_identity_matches(&req->targetGpu, &g_gpu.selectedGpu)) return true;
+        if (ctl.gpuReady && ctl.gpu.writeIdentityResolved && req->targetGpu.valid &&
+            req->targetGpu.nvapiIndex == ctl.gpu.selectedGpu.nvapiIndex &&
+            req->targetGpu.nvmlIndex == ctl.gpu.selectedGpu.nvmlIndex &&
+            linux_gpu_identity_matches(&req->targetGpu, &ctl.gpu.selectedGpu)) return true;
         gc_strlcpy(err, errSize, "Reviewed GPU session changed; capture and review again before Apply");
         return false;
     }
-    if (g_gpu.adapterCount == 1 && (!req || !req->targetGpu.valid)) {
-        if (!g_gpu.writeIdentityResolved) {
+    if (ctl.gpu.adapterCount == 1 && (!req || !req->targetGpu.valid)) {
+        if (!ctl.gpu.writeIdentityResolved) {
             gc_strlcpy(err, errSize, "single GPU identity is not safe for writes");
             return false;
         }
@@ -335,10 +334,10 @@ static bool select_request_gpu(const ServiceRequest* req, char* err, size_t errS
     GpuAdapterInfo requested = req->targetGpu;
     bool moved = false;
     int live = linux_resolve_stored_gpu_target(&req->targetGpu,
-        GPU_LOCATION_ROLE_UNRECORDED, g_gpu.adapters, g_gpu.adapterCount,
+        GPU_LOCATION_ROLE_UNRECORDED, ctl.gpu.adapters, ctl.gpu.adapterCount,
         &moved);
     if (live >= 0) {
-        requested = g_gpu.adapters[live];
+        requested = ctl.gpu.adapters[live];
         if (moved) {
             static unsigned long long movedRequests = 0;
             ++movedRequests;
@@ -351,11 +350,11 @@ static bool select_request_gpu(const ServiceRequest* req, char* err, size_t errS
         }
     }
     if (!linux_gpu_switch_preserves_active_intent(
-            g_hasActiveDesired, &g_activeTarget, &requested)) {
+            ctl.hasActiveDesired, &ctl.activeTarget, &requested)) {
         char activeBdf[32] = {}, requestedBdf[32] = {};
         gc_snprintf(activeBdf, sizeof(activeBdf), "%04x:%02x:%02x.%u",
-            g_activeTarget.pciDomain, g_activeTarget.pciBus,
-            g_activeTarget.pciDevice, g_activeTarget.pciFunction);
+            ctl.activeTarget.pciDomain, ctl.activeTarget.pciBus,
+            ctl.activeTarget.pciDevice, ctl.activeTarget.pciFunction);
         gc_snprintf(requestedBdf, sizeof(requestedBdf), "%04x:%02x:%02x.%u",
             req->targetGpu.pciDomain, req->targetGpu.pciBus,
             req->targetGpu.pciDevice, req->targetGpu.pciFunction);
@@ -367,33 +366,33 @@ static bool select_request_gpu(const ServiceRequest* req, char* err, size_t errS
              activeBdf, requestedBdf);
         return false;
     }
-    GpuAdapterInfo previous = g_gpu.selectedGpu;
-    if (!linux_backend_select_target(&g_gpu, &requested, err, errSize)) return false;
-    if (!g_gpuReady) {
+    GpuAdapterInfo previous = ctl.gpu.selectedGpu;
+    if (!linux_backend_select_target(&ctl.gpu, &requested, err, errSize)) return false;
+    if (!ctl.gpuReady) {
         // This read-only request brought the backend up. Deferred fan recovery
         // runs in the fan worker, outside the state-read deadline.
-        g_gpuReady = true;
-        wake_fan_runtime();
+        ctl.gpuReady = true;
+        wake_fan_runtime(ctl);
     }
-    if (!linux_gpu_identity_matches(&previous, &g_gpu.selectedGpu)) {
-        ++g_daemonGpuGeneration;
+    if (!linux_gpu_identity_matches(&previous, &ctl.gpu.selectedGpu)) {
+        ++ctl.gpuGeneration;
         dlog("daemon state: selected GPU changed; generation=%llu\n",
-             (unsigned long long)g_daemonGpuGeneration);
+             (unsigned long long)ctl.gpuGeneration);
     }
-    g_gpuReady = true;
+    ctl.gpuReady = true;
     return true;
 }
 
-static bool mutation_preconditions_match(const ServiceRequest* req,
+static bool mutation_preconditions_match(LinuxGpuController& ctl, const ServiceRequest* req,
                                          ServiceResponse* resp) {
     if (!req || !resp) return false;
     if (!req->expectedServiceInstanceId && !req->expectedGpuGeneration &&
         !req->expectedTopologySignature) return true;
 
-    if (g_gpuReady && !req->expectedControlFingerprint) linux_backend_refresh(&g_gpu);
+    if (ctl.gpuReady && !req->expectedControlFingerprint) linux_backend_refresh(&ctl.gpu);
     ServiceSnapshot current = {};
     ControlState controls = {};
-    populate_snapshot(&current, &controls);
+    populate_snapshot(ctl, &current, &controls);
     gc_u64 topology = current.loaded && current.numPopulated > 0
         ? service_snapshot_topology_signature(&current) : 0;
     gc_u32 requestedDomains = service_requested_mutation_domains(
@@ -454,7 +453,7 @@ static bool mutation_preconditions_match(const ServiceRequest* req,
     bool identityMatches = currentGpu && linux_gpu_identity_matches(
         &req->targetGpu, currentGpu);
     bool matches = linux_mutation_authority_matches(
-        req, daemon_service_instance_id(), g_daemonGpuGeneration,
+        req, daemon_service_instance_id(), ctl.gpuGeneration,
         topology, currentGpu, requestedDomains);
     if (matches) return true;
 
@@ -463,7 +462,7 @@ static bool mutation_preconditions_match(const ServiceRequest* req,
         "stale Linux GUI state; refresh before applying "
         "(instance=%llu generation=%llu topology=%llu)",
         (unsigned long long)daemon_service_instance_id(),
-        (unsigned long long)g_daemonGpuGeneration,
+        (unsigned long long)ctl.gpuGeneration,
         (unsigned long long)topology);
     dlog("daemon mutation rejected: expected instance=%llu generation=%llu "
          "topology=%llu identity=%d; current instance=%llu generation=%llu "
@@ -473,7 +472,7 @@ static bool mutation_preconditions_match(const ServiceRequest* req,
          (unsigned long long)req->expectedTopologySignature,
          identityMatches ? 1 : 0,
          (unsigned long long)daemon_service_instance_id(),
-         (unsigned long long)g_daemonGpuGeneration,
+         (unsigned long long)ctl.gpuGeneration,
          (unsigned long long)topology);
     return false;
 }

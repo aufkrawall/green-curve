@@ -32,24 +32,24 @@ def check_all(ctx, require_text, forbid_text):
     require_text(_p(ctx, "nvapi_loader.cpp"), "return g_app.hNvApi && g_nvapiQi ? g_nvapiQi(id) : nullptr;",
                  "passive query cannot load or initialize a driver")
     require_text(_p(ctx, "linux_daemon_identity.cpp"),
-                 "if (!passive) populate_snapshot(&response->snapshot, &response->controlState);",
+                 "if (!passive) populate_snapshot(ctl, &response->snapshot, &response->controlState);",
                  "passive capture envelope stamping performs no additional hardware reads")
     require_text(_p(ctx, "linux_daemon.cpp"),
-                 "daemon_stamp_state_envelope(resp, req->command == SERVICE_CMD_CAPTURE_CURRENT);",
+                 "daemon_stamp_state_envelope(ctl, resp, req->command == SERVICE_CMD_CAPTURE_CURRENT);",
                  "capture selects the passive envelope path")
     ctx.require_order(_p(ctx, "main_service_pipe_switch.cpp"),
                       "service_control_preconditions_match_locked(request,",
                       "service_explicit_supersede_automatic_work_locked(",
                       "stale reviewed Apply cannot cancel automatic work before refusal")
     ctx.require_order(_p(ctx, "linux_daemon.cpp"),
-                      "!daemon_control_preconditions_match(req, resp)",
-                      "!mutation_preconditions_match(req, resp)",
+                      "!daemon_control_preconditions_match(ctl, req, resp)",
+                      "!mutation_preconditions_match(ctl, req, resp)",
                       "stale reviewed Apply is refused before mutation refresh")
     require_text(_p(ctx, "main_service_request_policy.cpp"),
                  "!existingSessionOnly && !hardware_initialize(",
                  "reviewed shared binding resolves against the existing session")
     require_text(_p(ctx, "linux_daemon_snapshot_runtime.cpp"),
-                 "g_gpuReady && !req->expectedControlFingerprint",
+                 "ctl.gpuReady && !req->expectedControlFingerprint",
                  "reviewed preconditions cannot refresh recovery after the passive comparison")
     # The executing Linux VF fixture covers the raw driver boundary. Pin its
     # Windows/probe counterparts so a normalized cache cannot be copied back

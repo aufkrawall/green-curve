@@ -124,7 +124,7 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
     require_text(linux_daemon_serve_h, "daemon_release_fan_to_driver",
                  "Linux daemon hands the fan back to the driver on shutdown")
     require_order(linux_daemon_cpp, "pl_thread_join(fanThread)",
-                  "daemon_release_fan_to_driver()",
+                  "daemon_release_fan_to_driver(ctl)",
                   "fan worker is joined before the shutdown handback, so they cannot race")
     require_text(_p(ctx, "gpu_backend_apply.cpp"),
                  "service_apply_core_was_attempted(",
@@ -141,9 +141,9 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
     runtime = _p(ctx, "linux_auto_restore_runtime.h")
     ctx.require_order_in_operation(
         runtime, "static bool auto_restore_note_explicit_success(",
-        "g_fanOwnershipHandbackPending", "linux_auto_restore_note_explicit_success(",
+        "ctl.fanOwnershipHandbackPending", "linux_auto_restore_note_explicit_success(",
         "unrecovered fan ownership cannot clear the automatic-restore lockout")
-    require_text(linux_daemon_serve_h, "daemon_fan_ownership_shutdown_should_release()",
+    require_text(linux_daemon_serve_h, "daemon_fan_ownership_shutdown_should_release(ctl)",
                  "shutdown preserves inherited handback while releasing this process's writes")
 
     # Uncertainty idles the worker. Entering it after a write must first return
@@ -151,7 +151,7 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
     ownership_h = _p(ctx, "linux_fan_ownership.h")
     ctx.require_order_in_operation(
         ownership_h, "static void daemon_enter_uncertain_state(",
-        "g_stateUncertain = true", "daemon_fan_ownership_release_for_uncertain(",
+        "ctl.stateUncertain = true", "daemon_fan_ownership_release_for_uncertain(",
         "entering uncertainty returns an owned manual fan")
     ctx.require_order_in_operation(
         ownership_h, "static void daemon_fan_ownership_release_for_uncertain(",
@@ -159,45 +159,45 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
         "a refused uncertainty handback escalates to emergency cooling")
     for command in ("APPLY", "RESET"):
         ctx.forbid_text_in_operation(
-            linux_daemon_cpp, f"case SERVICE_CMD_{command}:", "g_stateUncertain = true",
+            linux_daemon_cpp, f"case SERVICE_CMD_{command}:", "ctl.stateUncertain = true",
             f"Linux {command} enters uncertainty through the fan-returning helper")
         ctx.require_text_in_operation(
             linux_daemon_cpp, f"case SERVICE_CMD_{command}:", "daemon_enter_uncertain_state(",
             f"Linux {command} failures return an owned manual fan")
     for name in ("linux_auto_restore_runtime.h", "linux_startup_policy.h"):
-        forbid_text(_p(ctx, name), "g_stateUncertain = true",
+        forbid_text(_p(ctx, name), "ctl.stateUncertain = true",
                     f"{name} enters uncertainty through the fan-returning helper")
     forbid_text(_p(ctx, "linux_startup_policy.h"), "daemon_enter_uncertain_state(",
                 "automatic restore owns the startup uncertainty transition")
     # The worker's lockout already returned the fan; its helper records the
     # uncertainty and retires the marker without a second fan write.
-    forbid_text(_p(ctx, "linux_fan_runtime.h"), "g_stateUncertain = true",
+    forbid_text(_p(ctx, "linux_fan_runtime.h"), "ctl.stateUncertain = true",
                 "the fan worker's lockout enters uncertainty through the ownership helper")
     require_text(_p(ctx, "linux_fan_runtime.h"),
-                 "    daemon_enter_uncertain_after_fan_lockout(why, autoOk);",
+                 "    daemon_enter_uncertain_after_fan_lockout(ctl, why, autoOk);",
                  "a worker lockout retires the marker once the driver holds the fan")
     require_text(_p(ctx, "linux_fan_runtime.h"),
-                 'daemon_fan_runtime_lockout(SERVICE_FAN_FAULT_REPEATED_FAILURES,\n'
+                 'daemon_fan_runtime_lockout(ctl, SERVICE_FAN_FAULT_REPEATED_FAILURES,\n'
                  '                    "fan curve runtime locked out", 0, 0, 0);',
                  "a curve lockout goes through the shared lockout helper")
     require_text(_p(ctx, "linux_fan_runtime.h"),
-                 'daemon_fan_runtime_lockout(SERVICE_FAN_FAULT_REPEATED_FAILURES,\n'
+                 'daemon_fan_runtime_lockout(ctl, SERVICE_FAN_FAULT_REPEATED_FAILURES,\n'
                  '                    "fixed fan maintenance locked out", 0, 0, 0);',
                  "a fixed-duty lockout goes through the shared lockout helper")
     # A backend brought up by a request is recovered by the fan worker, outside
     # the request deadline. Automatic restore remains mutation-class and runs
     # the handback before selecting its restore target.
     forbid_text(_p(ctx, "linux_daemon_snapshot_runtime.cpp"),
-                "daemon_fan_ownership_resume_deferred_handback()",
+                "daemon_fan_ownership_resume_deferred_handback(ctl)",
                 "state reads do not perform fan hardware or durable-record writes")
     ctx.require_order_in_operation(
         linux_fan_runtime_h, "static pl_thread_ret fan_reassert_thread(",
-        "daemon_fan_ownership_resume_deferred_handback()",
-        "observedGeneration = fan_runtime_generation();",
+        "daemon_fan_ownership_resume_deferred_handback(ctl)",
+        "observedGeneration = fan_runtime_generation(ctl);",
         "the fan worker performs deferred recovery before its normal poll")
     ctx.require_order_in_operation(
-        runtime, "g_gpuReady = true;", "daemon_fan_ownership_resume_deferred_handback();",
-        "linux_backend_select_target(&g_gpu, target,",
+        runtime, "ctl.gpuReady = true;", "daemon_fan_ownership_resume_deferred_handback(ctl);",
+        "linux_backend_select_target(&ctl.gpu, target,",
         "an automatic-restore re-init runs the deferred fan handback before selecting")
     ctx.require_order_in_operation(
         runtime, "static LinuxAutoRestoreOutcome daemon_automatic_restore_write(",
@@ -222,7 +222,7 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
             f"a failed Linux {command} never clears existing uncertainty")
         ctx.forbid_text_in_operation(
             linux_daemon_cpp, f"case SERVICE_CMD_{command}:",
-            "restore_committed_record(hadPrevious",
+            "restore_committed_record(ctl, hadPrevious",
             f"Linux {command} passes its starting uncertainty to the record restore")
 
 
@@ -304,7 +304,7 @@ def check_native_zero_rpm(ctx, require_text, forbid_text):
                  "the initial Linux curve transaction can start in driver auto")
     forbid_text(win_runtime_cpp, "nvml_set_fan_manual(0",
                 "zero-RPM must not bypass a VBIOS minimum with a manual 0% write")
-    forbid_text(linux_runtime_h, "linux_backend_set_curve_fan_percent(&g_gpu, 0",
+    forbid_text(linux_runtime_h, "linux_backend_set_curve_fan_percent(&ctl.gpu, 0",
                 "Linux zero-RPM must not issue a manual 0% write")
 
     require_text(_p(ctx, "fan_curve_dialog.cpp"), "FAN_DIALOG_ZERO_RPM_ID",
@@ -598,23 +598,23 @@ def check_fan_fault_reporting(ctx, require_text, forbid_text, require_order):
                  "the strict envelope check refuses a malformed fan fault record")
     require_text(validation_h, "if (!service_fan_fault_is_zero(snapshot.fanFault)) return false;",
                  "a stateless refusal carries no fan fault")
-    require_text(_p(ctx, "linux_daemon_snapshot_runtime.cpp"), "s->fanFault = g_daemonFanFault;",
+    require_text(_p(ctx, "linux_daemon_snapshot_runtime.cpp"), "s->fanFault = ctl.fanFault;",
                  "the Linux snapshot carries the fan fault record")
     require_text(_p(ctx, "linux_daemon_snapshot_runtime.cpp"),
-                 "linux_daemon_fan_runtime_active(g_gpuReady,",
+                 "linux_daemon_fan_runtime_active(ctl.gpuReady,",
                  "the Linux snapshot derives fan runtime activity with the worker's own predicate")
-    require_text(_p(ctx, "linux_fan_runtime.h"), "g_activeDesired.hasFan = 0;",
+    require_text(_p(ctx, "linux_fan_runtime.h"), "ctl.activeDesired.hasFan = 0;",
                  "a Linux driver-auto fan lockout stops claiming the released fan")
     require_text(_p(ctx, "linux_fan_runtime.h"),
-                 "g_activeDesired.fanPercent = FAN_RUNTIME_EMERGENCY_PERCENT;",
+                 "ctl.activeDesired.fanPercent = FAN_RUNTIME_EMERGENCY_PERCENT;",
                  "a Linux refused fan lockout owns the emergency duty, never the failed curve")
     require_text(_p(ctx, "linux_daemon.cpp"),
-                 'if (req->desired.hasFan) daemon_fan_runtime_note_commit("a committed Apply");',
+                 'if (req->desired.hasFan) daemon_fan_runtime_note_commit(ctl, "a committed Apply");',
                  "only a Linux Apply that sets the fan clears the fan fault record")
     require_text(_p(ctx, "linux_daemon.cpp"),
-                 'daemon_fan_runtime_note_commit("a committed Reset");',
+                 'daemon_fan_runtime_note_commit(ctl, "a committed Reset");',
                  "a committed Linux Reset clears the fan fault record")
-    require_text(_p(ctx, "linux_fan_runtime.h"), "    daemon_fan_fault_record(kind,",
+    require_text(_p(ctx, "linux_fan_runtime.h"), "    daemon_fan_fault_record(ctl, kind,",
                  "every Linux worker lockout records the fan fault")
     require_text(_p(ctx, "linux_tui_refresh.cpp"),
                  "gc_fan_fault_observe(&state->fanFaultObserver, &next.snapshot.fanFault)",
@@ -663,16 +663,16 @@ def check_fan_stall_detection(ctx, require_text, forbid_text, require_order):
                  "the Linux stall sample reports the driver's own fan policy")
     linux_runtime_h = _p(ctx, "linux_fan_runtime.h")
     require_text(linux_runtime_h,
-                 "daemon_fan_stall_check(&stall, &stallLog, observedGeneration, true,",
+                 "daemon_fan_stall_check(ctl, &stall, &stallLog, observedGeneration, true,",
                  "the Linux fixed-duty poll runs the stall check, keyed to the wake generation")
     require_text(linux_runtime_h,
-                 "daemon_fan_stall_check(&stall, &stallLog, observedGeneration,\n"
+                 "daemon_fan_stall_check(ctl, &stall, &stallLog, observedGeneration,\n"
                  "                                       manualCommanded, pct);",
                  "the Linux curve poll runs the stall check, keyed to the wake generation")
     require_text(linux_runtime_h, "manualCommanded = !decision.useDriverAuto;",
                  "a Linux zero-RPM curve's driver-automatic phase commands no manual duty")
     require_text(linux_runtime_h,
-                 "daemon_fan_runtime_lockout(SERVICE_FAN_FAULT_STALL, summary, r.fanIndex,",
+                 "daemon_fan_runtime_lockout(ctl, SERVICE_FAN_FAULT_STALL, summary, r.fanIndex,",
                  "a confirmed Linux stall locks the worker out and is reported as a stall")
 
 

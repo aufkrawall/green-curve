@@ -6,9 +6,9 @@ static const unsigned int LINUX_FAN_FIXED_MAINTENANCE_INTERVAL_MS = 5000u;
 
 // Capture under g_lock, in the same lock order as Apply's notification. The
 // generation must describe the state snapshot, not the later start of a wait.
-static unsigned long long fan_runtime_generation() {
+static unsigned long long fan_runtime_generation(LinuxGpuController& ctl) {
     pthread_mutex_lock(&g_fanWakeMutex);
-    unsigned long long generation = g_fanWakeGeneration;
+    unsigned long long generation = ctl.fanWakeGeneration;
     pthread_mutex_unlock(&g_fanWakeMutex);
     return generation;
 }
@@ -16,37 +16,37 @@ static unsigned long long fan_runtime_generation() {
 // A committed fixed duty the driver no longer holds is written again; a read
 // that cannot tell counts toward the same escalation as a curve failure.
 // Caller holds g_lock.
-static FanRuntimeOutcome daemon_fixed_fan_maintain(const char** reasonOut) {
-    int target = g_activeDesired.fanPercent;
+static FanRuntimeOutcome daemon_fixed_fan_maintain(LinuxGpuController& ctl, const char** reasonOut) {
+    int target = ctl.activeDesired.fanPercent;
     if (target < 0) target = 0;
     if (target > 100) target = 100;
-    FanFixedMaintenanceDecision d = linux_backend_fixed_fan_check(&g_gpu, target);
+    FanFixedMaintenanceDecision d = linux_backend_fixed_fan_check(&ctl.gpu, target);
     if (reasonOut) *reasonOut = d.reason;
     if (d.failure) return FAN_RUNTIME_OUTCOME_TELEMETRY_FAILED;
     if (!d.write) return FAN_RUNTIME_OUTCOME_SUCCESS;
-    bool ok = linux_backend_set_curve_fan_percent(&g_gpu, (unsigned int)target);
+    bool ok = linux_backend_set_curve_fan_percent(&ctl.gpu, (unsigned int)target);
     dlog("daemon: fixed fan re-asserted at %d%% (%s) ok=%d\n", target, d.reason,
          ok ? 1 : 0);
     return ok ? FAN_RUNTIME_OUTCOME_SUCCESS : FAN_RUNTIME_OUTCOME_WRITE_FAILED;
 }
 
-static void daemon_fan_fault_clear(const char* why) {
-    if (g_daemonFanFault.kind == SERVICE_FAN_FAULT_NONE) return;
+static void daemon_fan_fault_clear(LinuxGpuController& ctl, const char* why) {
+    if (ctl.fanFault.kind == SERVICE_FAN_FAULT_NONE) return;
     dlog("daemon fan fault: record kind=%u serial=%u cleared by %s\n",
-         (unsigned int)g_daemonFanFault.kind, (unsigned int)g_daemonFanFault.serial,
+         (unsigned int)ctl.fanFault.kind, (unsigned int)ctl.fanFault.serial,
          why ? why : "unspecified");
-    g_daemonFanFault = ServiceFanFault{};
+    ctl.fanFault = ServiceFanFault{};
 }
 
 // A committed Apply or Reset ends any worker lockout: its failure count and its
 // fault record are history.  Caller holds g_lock.
-static void daemon_fan_runtime_note_commit(const char* why) {
-    g_fanFailureCount = 0;
-    daemon_fan_fault_clear(why);
+static void daemon_fan_runtime_note_commit(LinuxGpuController& ctl, const char* why) {
+    ctl.fanFailureCount = 0;
+    daemon_fan_fault_clear(ctl, why);
 }
 
 // The v39 record clients announce (service_fan_fault.h).  Caller holds g_lock.
-static void daemon_fan_fault_record(gc_u32 kind, gc_u8 handback, unsigned int fanIndex,
+static void daemon_fan_fault_record(LinuxGpuController& ctl, gc_u32 kind, gc_u8 handback, unsigned int fanIndex,
                                     int commandedPercent, unsigned long long stalledForMs,
                                     const char* detail) {
     ServiceFanFault record = {};
@@ -60,9 +60,9 @@ static void daemon_fan_fault_record(gc_u32 kind, gc_u8 handback, unsigned int fa
                                                            : (gc_u32)stalledForMs;
     }
     gc_strlcpy(record.detail, sizeof(record.detail), detail ? detail : "");
-    if (g_daemonFanFaultSerial == 0xFFFFFFFFu) g_daemonFanFaultSerial = 0;
-    record.serial = ++g_daemonFanFaultSerial;
-    g_daemonFanFault = record;
+    if (ctl.fanFaultSerial == 0xFFFFFFFFu) ctl.fanFaultSerial = 0;
+    record.serial = ++ctl.fanFaultSerial;
+    ctl.fanFault = record;
     dlog("daemon fan fault: recorded for clients kind=%u serial=%u fan=%u pct=%u stalledMs=%u handback=%u\n",
          (unsigned int)record.kind, (unsigned int)record.serial,
          (unsigned int)record.fanIndex, (unsigned int)record.commandedPercent,
@@ -74,62 +74,62 @@ static void daemon_fan_fault_record(gc_u32 kind, gc_u8 handback, unsigned int fa
 // uncertainty through the ownership helper (which retires the marker only when
 // the driver took the fan back).  Every later fan write waits for an explicit
 // Apply or Reset.  Caller holds g_lock.
-static void daemon_fan_runtime_lockout(gc_u32 kind, const char* reason,
+static void daemon_fan_runtime_lockout(LinuxGpuController& ctl, gc_u32 kind, const char* reason,
                                        unsigned int fanIndex, int commandedPercent,
                                        unsigned long long stalledForMs) {
     const char* why = reason && reason[0] ? reason : "fan runtime locked out";
-    bool autoOk = linux_backend_set_fan_auto(&g_gpu);
+    bool autoOk = linux_backend_set_fan_auto(&ctl.gpu);
     bool emergencyOk = false;
     if (fan_runtime_escalation_after_auto_restore(autoOk) ==
             FAN_RUNTIME_ESCALATION_EMERGENCY_MAX) {
         emergencyOk = linux_backend_set_curve_fan_percent(
-            &g_gpu, (unsigned int)FAN_RUNTIME_EMERGENCY_PERCENT);
+            &ctl.gpu, (unsigned int)FAN_RUNTIME_EMERGENCY_PERCENT);
         dlog("daemon: fan runtime emergency: driver auto restore failed, forced %d%% ok=%d\n",
              FAN_RUNTIME_EMERGENCY_PERCENT, emergencyOk ? 1 : 0);
     }
     const gc_u8 handback = autoOk ? (gc_u8)SERVICE_FAN_HANDBACK_DRIVER_AUTO
         : (emergencyOk ? (gc_u8)SERVICE_FAN_HANDBACK_EMERGENCY_MAX
                        : (gc_u8)SERVICE_FAN_HANDBACK_FAILED);
-    const bool hadIntent = g_hasActiveDesired;
+    const bool hadIntent = ctl.hasActiveDesired;
     const int previousMode = fan_owned_intent_mode(
-        hadIntent && g_activeDesired.hasFan, g_activeDesired.fanMode,
-        g_activeDesired.fanAuto != 0);
-    const GpuAdapterInfo recordTarget = g_activeTarget.valid
-        ? g_activeTarget : g_gpu.selectedGpu;
+        hadIntent && ctl.activeDesired.hasFan, ctl.activeDesired.fanMode,
+        ctl.activeDesired.fanAuto != 0);
+    const GpuAdapterInfo recordTarget = ctl.activeTarget.valid
+        ? ctl.activeTarget : ctl.gpu.selectedGpu;
     if (autoOk) {
         // The driver has the fan back: stop claiming the failed/stalled fan so
         // snapshots and later non-fan Applies cannot resurrect it.
-        g_activeDesired.hasFan = 0;
-        g_activeDesired.fanAuto = 1;
-        g_activeDesired.fanMode = FAN_MODE_AUTO;
-        g_activeDesired.fanPercent = 0;
+        ctl.activeDesired.hasFan = 0;
+        ctl.activeDesired.fanAuto = 1;
+        ctl.activeDesired.fanMode = FAN_MODE_AUTO;
+        ctl.activeDesired.fanPercent = 0;
     } else {
         // Driver refused auto: own the emergency duty, never the failed curve.
         if (!hadIntent) {
-            g_activeDesired = {};
-            g_activeDesired.lockCi = -1;
-            g_activeDesired.powerLimitPct = POWER_LIMIT_DEFAULT_PCT;
-            g_activeTarget = recordTarget;
+            ctl.activeDesired = {};
+            ctl.activeDesired.lockCi = -1;
+            ctl.activeDesired.powerLimitPct = POWER_LIMIT_DEFAULT_PCT;
+            ctl.activeTarget = recordTarget;
         }
-        g_activeDesired.hasFan = 1;
-        g_activeDesired.fanAuto = 0;
-        g_activeDesired.fanMode = FAN_MODE_FIXED;
-        g_activeDesired.fanPercent = FAN_RUNTIME_EMERGENCY_PERCENT;
+        ctl.activeDesired.hasFan = 1;
+        ctl.activeDesired.fanAuto = 0;
+        ctl.activeDesired.fanMode = FAN_MODE_FIXED;
+        ctl.activeDesired.fanPercent = FAN_RUNTIME_EMERGENCY_PERCENT;
     }
-    g_hasActiveDesired = service_scoped_has_owned_intent(g_activeDesired);
-    if (!g_hasActiveDesired) g_activeTarget = {};
+    ctl.hasActiveDesired = service_scoped_has_owned_intent(ctl.activeDesired);
+    if (!ctl.hasActiveDesired) ctl.activeTarget = {};
     char stateErr[256] = {};
-    store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &recordTarget,
-                        &g_activeDesired, stateErr, sizeof(stateErr));
+    store_daemon_record(ctl, LINUX_DAEMON_RECORD_UNCERTAIN, &recordTarget,
+                        &ctl.activeDesired, stateErr, sizeof(stateErr));
     dlog("daemon: %s; auto=%d handback=%u fanIntent=%d->%d owned=%d state=%s\n",
          why, autoOk ? 1 : 0, (unsigned int)handback, previousMode,
-         fan_owned_intent_mode(g_hasActiveDesired && g_activeDesired.hasFan,
-             g_activeDesired.fanMode, g_activeDesired.fanAuto != 0),
-         g_hasActiveDesired ? 1 : 0,
+         fan_owned_intent_mode(ctl.hasActiveDesired && ctl.activeDesired.hasFan,
+             ctl.activeDesired.fanMode, ctl.activeDesired.fanAuto != 0),
+         ctl.hasActiveDesired ? 1 : 0,
          stateErr[0] ? stateErr : "persisted");
-    daemon_fan_fault_record(kind, handback,
+    daemon_fan_fault_record(ctl, kind, handback,
         fanIndex, commandedPercent, stalledForMs, why);
-    daemon_enter_uncertain_after_fan_lockout(why, autoOk);
+    daemon_enter_uncertain_after_fan_lockout(ctl, why, autoOk);
 }
 
 // Monotonic milliseconds: the clock the worker's waits use.
@@ -145,26 +145,26 @@ static unsigned long long daemon_fan_monotonic_ms() {
 // exactly like repeated failures and is reported as a stall.  `commandKey` is
 // the wake generation, so every Apply or Reset starts the windows over; sensor
 // proof belongs to the selected GPU's generation.  Caller holds g_lock.
-static void daemon_fan_stall_check(FanStallTracker* tracker, FanStallLogLimiter* limiter,
+static void daemon_fan_stall_check(LinuxGpuController& ctl, FanStallTracker* tracker, FanStallLogLimiter* limiter,
                                    unsigned long long commandKey, bool manualCommanded,
                                    int requestedPercent) {
     const unsigned long long now = daemon_fan_monotonic_ms();
     if (!fan_stall_sample_due(tracker, now)) return;
     FanStallFanSample samples[MAX_GPU_FANS] = {};
     unsigned int fanCount = 0;
-    if (!linux_backend_fan_stall_sample(&g_gpu, samples, &fanCount)) {
+    if (!linux_backend_fan_stall_sample(&ctl.gpu, samples, &fanCount)) {
         if (fan_stall_note_sample_unavailable(tracker, now))
             dlog("daemon fan stall: fan read failed; open stall windows closed\n");
         return;
     }
     FanStallCommand command = {};
     command.manualCommanded = manualCommanded;
-    command.rangeKnown = g_gpu.fanRangeKnown;
-    command.minPercent = g_gpu.fanMinPct;
+    command.rangeKnown = ctl.gpu.fanRangeKnown;
+    command.minPercent = ctl.gpu.fanMinPct;
     command.commandedPercent = fan_manual_effective_percent(requestedPercent,
-        g_gpu.fanMinPct, g_gpu.fanMaxPct, g_gpu.fanRangeKnown);
+        ctl.gpu.fanMinPct, ctl.gpu.fanMaxPct, ctl.gpu.fanRangeKnown);
     const FanStallReport r = fan_stall_observe(tracker,
-        (unsigned long long)g_daemonGpuGeneration, commandKey, now, &command,
+        (unsigned long long)ctl.gpuGeneration, commandKey, now, &command,
         samples, fanCount);
     if (r.reset == FAN_STALL_RESET_DEVICE)
         dlog("daemon fan stall: tracking restarted for another GPU; sensor proof dropped\n");
@@ -196,11 +196,12 @@ static void daemon_fan_stall_check(FanStallTracker* tracker, FanStallLogLimiter*
              rpmText, measuredText);
     dlog("daemon FAN STALL: %s over %u readings; handing the fan back to the driver\n",
          summary, r.observations);
-    daemon_fan_runtime_lockout(SERVICE_FAN_FAULT_STALL, summary, r.fanIndex,
+    daemon_fan_runtime_lockout(ctl, SERVICE_FAN_FAULT_STALL, summary, r.fanIndex,
                                r.judgedPercent, r.stalledForMs);
 }
 
-static pl_thread_ret fan_reassert_thread(void*) {
+static pl_thread_ret fan_reassert_thread(void* arg) {
+    LinuxGpuController& ctl = *static_cast<LinuxGpuController*>(arg);
     FanRuntimeState runtime = {};
     FanStallTracker stall = {};
     FanStallLogLimiter stallLog = {};
@@ -209,31 +210,31 @@ static pl_thread_ret fan_reassert_thread(void*) {
     while (g_running) {
         unsigned int pollMs = 0;
         pl_mutex_lock(&g_lock);
-        if (g_fanOwnershipHandbackDeferred && g_gpuReady) {
-            const GpuAdapterInfo before = g_gpu.selectedGpu;
-            if (daemon_fan_ownership_resume_deferred_handback()) {
-                const GpuAdapterInfo& after = g_gpu.selectedGpu;
+        if (ctl.fanOwnershipHandbackDeferred && ctl.gpuReady) {
+            const GpuAdapterInfo before = ctl.gpu.selectedGpu;
+            if (daemon_fan_ownership_resume_deferred_handback(ctl)) {
+                const GpuAdapterInfo& after = ctl.gpu.selectedGpu;
                 const bool changed = before.valid != after.valid ||
                     (before.valid && after.valid &&
                      !linux_gpu_identity_matches(&before, &after));
                 if (changed) {
-                    ++g_daemonGpuGeneration;
+                    ++ctl.gpuGeneration;
                     dlog("daemon fan ownership: deferred handback changed the"
                          " selected GPU; generation=%llu\n",
-                         (unsigned long long)g_daemonGpuGeneration);
+                         (unsigned long long)ctl.gpuGeneration);
                 }
             }
         }
-        observedGeneration = fan_runtime_generation();
-        bool active = linux_daemon_fan_runtime_active(g_gpuReady,
-            g_hasActiveDesired, g_stateUncertain,
-            linux_gpu_identity_matches(&g_activeTarget, &g_gpu.selectedGpu),
-            g_activeDesired.hasFan != 0, g_activeDesired.fanMode,
-            g_activeDesired.fanAuto != 0);
-        if (active && g_activeDesired.fanMode == FAN_MODE_FIXED) {
+        observedGeneration = fan_runtime_generation(ctl);
+        bool active = linux_daemon_fan_runtime_active(ctl.gpuReady,
+            ctl.hasActiveDesired, ctl.stateUncertain,
+            linux_gpu_identity_matches(&ctl.activeTarget, &ctl.gpu.selectedGpu),
+            ctl.activeDesired.hasFan != 0, ctl.activeDesired.fanMode,
+            ctl.activeDesired.fanAuto != 0);
+        if (active && ctl.activeDesired.fanMode == FAN_MODE_FIXED) {
             pollMs = LINUX_FAN_FIXED_MAINTENANCE_INTERVAL_MS;
         } else if (active) {
-            pollMs = (unsigned int)g_activeDesired.fanCurve.pollIntervalMs;
+            pollMs = (unsigned int)ctl.activeDesired.fanCurve.pollIntervalMs;
             if (pollMs < 250) pollMs = 250;
         } else {
             memset(&runtime, 0, sizeof(runtime));
@@ -241,7 +242,7 @@ static pl_thread_ret fan_reassert_thread(void*) {
         pl_mutex_unlock(&g_lock);
 
         pthread_mutex_lock(&g_fanWakeMutex);
-        if (observedGeneration != g_fanWakeGeneration) {
+        if (observedGeneration != ctl.fanWakeGeneration) {
             pthread_mutex_unlock(&g_fanWakeMutex);
             dlog("daemon: fan runtime state changed before wait; refreshing generation=%llu\n",
                  observedGeneration);
@@ -260,7 +261,7 @@ static pl_thread_ret fan_reassert_thread(void*) {
             break;
         }
         if (!active) {
-            while (g_running && observedGeneration == g_fanWakeGeneration)
+            while (g_running && observedGeneration == ctl.fanWakeGeneration)
                 pthread_cond_wait(&g_fanWakeCondition, &g_fanWakeMutex);
             pthread_mutex_unlock(&g_fanWakeMutex);
             continue;
@@ -279,45 +280,45 @@ static pl_thread_ret fan_reassert_thread(void*) {
             deadline.tv_nsec -= 1000000000L;
         }
         int waitResult = 0;
-        while (g_running && observedGeneration == g_fanWakeGeneration &&
+        while (g_running && observedGeneration == ctl.fanWakeGeneration &&
                waitResult != ETIMEDOUT) {
             waitResult = pthread_cond_timedwait(&g_fanWakeCondition,
                 &g_fanWakeMutex, &deadline);
         }
         bool pollDue = waitResult == ETIMEDOUT && g_running &&
-            observedGeneration == g_fanWakeGeneration;
+            observedGeneration == ctl.fanWakeGeneration;
         pthread_mutex_unlock(&g_fanWakeMutex);
         if (!pollDue) continue;
 
         pl_mutex_lock(&g_lock);
-        if (observedGeneration != fan_runtime_generation()) {
+        if (observedGeneration != fan_runtime_generation(ctl)) {
             pl_mutex_unlock(&g_lock);
             dlog("daemon: fan runtime state changed before poll; discarding generation=%llu\n",
                  observedGeneration);
             continue;
         }
-        active = linux_daemon_fan_runtime_active(g_gpuReady,
-            g_hasActiveDesired, g_stateUncertain,
-            linux_gpu_identity_matches(&g_activeTarget, &g_gpu.selectedGpu),
-            g_activeDesired.hasFan != 0, g_activeDesired.fanMode,
-            g_activeDesired.fanAuto != 0);
-        if (active && g_activeDesired.fanMode == FAN_MODE_FIXED) {
+        active = linux_daemon_fan_runtime_active(ctl.gpuReady,
+            ctl.hasActiveDesired, ctl.stateUncertain,
+            linux_gpu_identity_matches(&ctl.activeTarget, &ctl.gpu.selectedGpu),
+            ctl.activeDesired.hasFan != 0, ctl.activeDesired.fanMode,
+            ctl.activeDesired.fanAuto != 0);
+        if (active && ctl.activeDesired.fanMode == FAN_MODE_FIXED) {
             const char* reason = "";
-            FanRuntimeOutcome outcome = daemon_fixed_fan_maintain(&reason);
+            FanRuntimeOutcome outcome = daemon_fixed_fan_maintain(ctl, &reason);
             FanRuntimeFailureDecision failure = fan_runtime_observe_result(
-                g_fanFailureCount, outcome, FAN_RUNTIME_DEFAULT_FAILURE_LIMIT);
-            g_fanFailureCount = failure.failureCount;
+                ctl.fanFailureCount, outcome, FAN_RUNTIME_DEFAULT_FAILURE_LIMIT);
+            ctl.fanFailureCount = failure.failureCount;
             if (failure.shouldLogFailure) {
                 dlog("daemon: fixed fan maintenance failed (%u/%u) target=%d%%: %s\n",
                      failure.failureCount, FAN_RUNTIME_DEFAULT_FAILURE_LIMIT,
-                     g_activeDesired.fanPercent, reason ? reason : "unknown");
+                     ctl.activeDesired.fanPercent, reason ? reason : "unknown");
             }
             if (failure.escalation == FAN_RUNTIME_ESCALATION_RESTORE_AUTO) {
-                daemon_fan_runtime_lockout(SERVICE_FAN_FAULT_REPEATED_FAILURES,
+                daemon_fan_runtime_lockout(ctl, SERVICE_FAN_FAULT_REPEATED_FAILURES,
                     "fixed fan maintenance locked out", 0, 0, 0);
             } else if (outcome == FAN_RUNTIME_OUTCOME_SUCCESS) {
-                daemon_fan_stall_check(&stall, &stallLog, observedGeneration, true,
-                                       g_activeDesired.fanPercent);
+                daemon_fan_stall_check(ctl, &stall, &stallLog, observedGeneration, true,
+                                       ctl.activeDesired.fanPercent);
             }
         } else if (active) {
             // Telemetry loss is escalated exactly like a refused write: either
@@ -329,11 +330,11 @@ static pl_thread_ret fan_reassert_thread(void*) {
             int pct = -1;
             unsigned int t = 0;
             const char* reason = "temperature source unavailable";
-            if (!g_gpu.nvml.getTemperature) {
+            if (!ctl.gpu.nvml.getTemperature) {
                 reason = "nvmlDeviceGetTemperature is unavailable";
             } else {
-                nvmlReturn_t tempStatus = g_gpu.nvml.getTemperature(
-                    g_gpu.nvmlDevice, NVML_TEMPERATURE_GPU, &t);
+                nvmlReturn_t tempStatus = ctl.gpu.nvml.getTemperature(
+                    ctl.gpu.nvmlDevice, NVML_TEMPERATURE_GPU, &t);
                 if (tempStatus != NVML_SUCCESS) {
                     reason = "temperature read failed";
                     dlog("daemon: fan reassert temperature read failed (nvml=%d)\n",
@@ -343,20 +344,20 @@ static pl_thread_ret fan_reassert_thread(void*) {
                         runtime.initialized = true;
                         runtime.lastTemperatureC = (int)t;
                         runtime.lastPercent = fan_curve_interpolate_percent(
-                            &g_activeDesired.fanCurve, (int)t);
+                            &ctl.activeDesired.fanCurve, (int)t);
                         runtime.driverAutoActive =
-                            linux_backend_fans_are_auto(&g_gpu);
+                            linux_backend_fans_are_auto(&ctl.gpu);
                     }
                     FanRuntimeDecision decision = fan_runtime_next_action(&runtime,
-                        &g_activeDesired.fanCurve, (int)t, false);
+                        &ctl.activeDesired.fanCurve, (int)t, false);
                     pct = decision.targetPercent;
                     bool writeOk = false;
                     if (decision.useDriverAuto) {
-                        writeOk = linux_backend_fans_are_auto(&g_gpu) ||
-                            linux_backend_set_fan_auto(&g_gpu);
+                        writeOk = linux_backend_fans_are_auto(&ctl.gpu) ||
+                            linux_backend_set_fan_auto(&ctl.gpu);
                     } else {
                         writeOk = linux_backend_set_curve_fan_percent(
-                            &g_gpu, (unsigned int)pct);
+                            &ctl.gpu, (unsigned int)pct);
                     }
                     if (writeOk) {
                         outcome = FAN_RUNTIME_OUTCOME_SUCCESS;
@@ -370,15 +371,15 @@ static pl_thread_ret fan_reassert_thread(void*) {
                                     ? "driver-auto/native-zero-RPM"
                                     : "manual",
                                  pct,
-                                 g_activeDesired.fanCurve.hysteresisC,
+                                 ctl.activeDesired.fanCurve.hysteresisC,
                                  fan_curve_zero_rpm_hysteresis(
-                                     &g_activeDesired.fanCurve),
+                                     &ctl.activeDesired.fanCurve),
                                  fan_curve_first_enabled_temperature(
-                                     &g_activeDesired.fanCurve),
+                                     &ctl.activeDesired.fanCurve),
                                  fan_curve_first_enabled_temperature(
-                                     &g_activeDesired.fanCurve) -
+                                     &ctl.activeDesired.fanCurve) -
                                      fan_curve_zero_rpm_hysteresis(
-                                         &g_activeDesired.fanCurve));
+                                         &ctl.activeDesired.fanCurve));
                         }
                     } else {
                         outcome = FAN_RUNTIME_OUTCOME_WRITE_FAILED;
@@ -390,18 +391,18 @@ static pl_thread_ret fan_reassert_thread(void*) {
             }
 
             FanRuntimeFailureDecision failure = fan_runtime_observe_result(
-                g_fanFailureCount, outcome, FAN_RUNTIME_DEFAULT_FAILURE_LIMIT);
-            g_fanFailureCount = failure.failureCount;
+                ctl.fanFailureCount, outcome, FAN_RUNTIME_DEFAULT_FAILURE_LIMIT);
+            ctl.fanFailureCount = failure.failureCount;
             if (failure.shouldLogFailure) {
                 dlog("daemon: fan reassert failed (%u/%u) target=%d%% temp=%uC: %s\n",
                      failure.failureCount, FAN_RUNTIME_DEFAULT_FAILURE_LIMIT,
                      pct, t, reason);
             }
             if (failure.escalation == FAN_RUNTIME_ESCALATION_RESTORE_AUTO) {
-                daemon_fan_runtime_lockout(SERVICE_FAN_FAULT_REPEATED_FAILURES,
+                daemon_fan_runtime_lockout(ctl, SERVICE_FAN_FAULT_REPEATED_FAILURES,
                     "fan curve runtime locked out", 0, 0, 0);
             } else if (outcome == FAN_RUNTIME_OUTCOME_SUCCESS) {
-                daemon_fan_stall_check(&stall, &stallLog, observedGeneration,
+                daemon_fan_stall_check(ctl, &stall, &stallLog, observedGeneration,
                                        manualCommanded, pct);
             }
         }

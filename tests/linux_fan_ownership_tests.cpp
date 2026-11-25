@@ -6,6 +6,7 @@
 #include "fan_runtime_policy.h"
 #include "linux_backend.h"
 #include "linux_daemon_state.h"
+#include "linux_gpu_controller.h"
 #include <cstdio>
 #include <cstring>
 
@@ -16,11 +17,11 @@
 #define linux_backend_set_fan_auto fixture_fan_auto
 #define linux_backend_set_curve_fan_percent fixture_fan_percent
 namespace linux_fan_ownership_fixture {
-static LinuxGpuState g_gpu;
-static bool g_gpuReady, g_stateUncertain, removed, storeFails, autoFails, lockedOut;
+// The daemon's per-GPU state, passed explicitly like the daemon does.
+static LinuxGpuController fixture;
+static bool removed, storeFails, autoFails, lockedOut;
 static int writtenAdapter, stores, writes, autoWrites, emergencyPercent;
 static LinuxFanOwnershipMarker saved;
-static LinuxAutoRestoreGuard g_autoRestoreGuard;
 static void dlog(const char*, ...) {}
 static void gc_strlcpy(char* out, size_t size, const char* text) {
     if (out && size) std::snprintf(out, size, "%s", text);
@@ -76,27 +77,27 @@ static bool linux_backend_set_curve_fan_percent(LinuxGpuState* gpu, unsigned int
 #undef linux_backend_set_curve_fan_percent
 
 static void initialize(unsigned int count = 2) {
-    g_gpu = {};
-    g_gpu.adapterCount = count;
+    fixture.gpu = {};
+    fixture.gpu.adapterCount = count;
     for (unsigned int i = 0; i < count; ++i) {
-        auto& gpu = g_gpu.adapters[i];
+        auto& gpu = fixture.gpu.adapters[i];
         gpu.valid = gpu.pciInfoValid = true;
         gpu.deviceId = 0x1234;
         gpu.pciBus = i + 1;
     }
-    g_gpu.selectedGpu = g_gpu.adapters[0];
-    g_gpu.writeIdentityResolved = count == 1;
-    g_gpuReady = true;
-    g_autoRestoreGuard = {};
-    g_fanOwnershipMarkerCommitted = false;
-    g_fanOwnershipHandbackPending = false;
-    g_fanOwnershipHandbackDeferred = false;
-    g_fanOwnershipRecord = {};
-    removed = storeFails = autoFails = lockedOut = g_stateUncertain = false;
+    fixture.gpu.selectedGpu = fixture.gpu.adapters[0];
+    fixture.gpu.writeIdentityResolved = count == 1;
+    fixture.gpuReady = true;
+    fixture.autoRestoreGuard = {};
+    fixture.fanOwnershipMarkerCommitted = false;
+    fixture.fanOwnershipHandbackPending = false;
+    fixture.fanOwnershipHandbackDeferred = false;
+    fixture.fanOwnershipRecord = {};
+    removed = storeFails = autoFails = lockedOut = fixture.stateUncertain = false;
     stores = writes = autoWrites = emergencyPercent = 0;
     writtenAdapter = -1;
     linux_fan_ownership_marker_initialize(&saved, "fixture-boot",
-        &g_gpu.adapters[count - 1]);
+        &fixture.gpu.adapters[count - 1]);
 }
 static int run() {
     LinuxAutoRestoreGuard gate = {};
@@ -118,54 +119,54 @@ static int run() {
             &gate, false, false, false)) return 7633;
 
     initialize();
-    daemon_fan_ownership_handback_at_start();
-    if (writtenAdapter != 1 || writes != 1 || !removed || !g_gpu.writeIdentityResolved) return 7530;
+    daemon_fan_ownership_handback_at_start(fixture);
+    if (writtenAdapter != 1 || writes != 1 || !removed || !fixture.gpu.writeIdentityResolved) return 7530;
     initialize();
     saved.targetGpu.deviceId++;
-    daemon_fan_ownership_handback_at_start();
+    daemon_fan_ownership_handback_at_start(fixture);
     if (writes || removed || stores || !lockedOut) return 7531;
     initialize();
     saved.targetGpu.pciBus = 9;
-    daemon_fan_ownership_handback_at_start();
+    daemon_fan_ownership_handback_at_start(fixture);
     if (writes || removed || !lockedOut) return 7532;
     initialize();
     saved.targetUuid = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000001");
-    g_gpu.adapterUuids[1] = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000002");
-    daemon_fan_ownership_handback_at_start();
+    fixture.gpu.adapterUuids[1] = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000002");
+    daemon_fan_ownership_handback_at_start(fixture);
     if (writes || removed || !lockedOut) return 7533;
     initialize();
     saved.targetUuid = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000001");
-    g_gpu.adapterUuids[0] = saved.targetUuid;
-    daemon_fan_ownership_handback_at_start();
+    fixture.gpu.adapterUuids[0] = saved.targetUuid;
+    daemon_fan_ownership_handback_at_start(fixture);
     if (writtenAdapter != 0 || !removed) return 7534;
     initialize();
     storeFails = true;
-    daemon_fan_ownership_handback_at_start();
+    daemon_fan_ownership_handback_at_start(fixture);
     if (writes || removed) return 7535;
     initialize();
     autoFails = true;
-    daemon_fan_ownership_handback_at_start();
+    daemon_fan_ownership_handback_at_start(fixture);
     if (writes != 2 || writtenAdapter != 1 || removed || !lockedOut || saved.handbackAttempts) return 7536;
     initialize();
     std::memset(&saved.targetGpu, 0, sizeof(saved.targetGpu));
-    daemon_fan_ownership_handback_at_start();
+    daemon_fan_ownership_handback_at_start(fixture);
     if (writes || removed || !lockedOut) return 7537;
     initialize(1);
     std::memset(&saved.targetGpu, 0, sizeof(saved.targetGpu));
-    daemon_fan_ownership_handback_at_start();
+    daemon_fan_ownership_handback_at_start(fixture);
     if (writes != 1 || writtenAdapter != 0 || !removed || !saved.targetGpu.valid) return 7538;
     initialize();
     DesiredSettings desired = {};
     desired.hasFan = true;
     desired.fanMode = FAN_MODE_CURVE;
     char error[128] = {};
-    if (daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7539;
-    g_gpu.writeIdentityResolved = true;
-    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error)) ||
-        !linux_gpu_identity_matches(&saved.targetGpu, &g_gpu.selectedGpu)) return 7540;
-    g_gpu.selectedGpu = g_gpu.adapters[1];
-    g_gpu.selectedAdapterIndex = 1;
-    if (daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7541;
+    if (daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error))) return 7539;
+    fixture.gpu.writeIdentityResolved = true;
+    if (!daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error)) ||
+        !linux_gpu_identity_matches(&saved.targetGpu, &fixture.gpu.selectedGpu)) return 7540;
+    fixture.gpu.selectedGpu = fixture.gpu.adapters[1];
+    fixture.gpu.selectedAdapterIndex = 1;
+    if (daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error))) return 7541;
     LinuxFanOwnershipMarker decoded = {};
     if (!linux_fan_ownership_marker_decode(&saved, sizeof(saved), &decoded) ||
         !linux_gpu_identity_matches(&decoded.targetGpu, &saved.targetGpu)) return 7542;
@@ -185,163 +186,205 @@ static int run() {
     // A later manual Apply on another adapter must not replace that record.
     initialize();
     autoFails = true;
-    daemon_fan_ownership_handback_at_start();
+    daemon_fan_ownership_handback_at_start(fixture);
     const LinuxFanOwnershipMarker outstanding = saved;
-    g_gpu.selectedAdapterIndex = 0;
-    g_gpu.selectedGpu = g_gpu.adapters[0];
-    if (daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error)) ||
+    fixture.gpu.selectedAdapterIndex = 0;
+    fixture.gpu.selectedGpu = fixture.gpu.adapters[0];
+    if (daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error)) ||
         std::memcmp(&saved, &outstanding, sizeof(saved))) return 7560;
-    if (daemon_fan_ownership_allows_selected_write(error, sizeof(error), true)) return 7561;
-    daemon_fan_ownership_retire("unrelated reset", true);
+    if (daemon_fan_ownership_allows_selected_write(fixture, error, sizeof(error), true)) return 7561;
+    daemon_fan_ownership_retire(fixture, "unrelated reset", true);
     if (removed || std::memcmp(&saved, &outstanding, sizeof(saved))) return 7561;
-    if (daemon_fan_ownership_shutdown_should_release()) return 7562;
-    g_gpu.selectedAdapterIndex = 1;
-    g_gpu.selectedGpu = g_gpu.adapters[1];
-    if (!daemon_fan_ownership_allows_selected_write(error, sizeof(error), true)) return 7563;
-    daemon_fan_ownership_retire("owned GPU reset", true);
-    if (!removed || g_fanOwnershipMarkerCommitted || g_fanOwnershipHandbackPending) return 7563;
+    if (daemon_fan_ownership_shutdown_should_release(fixture)) return 7562;
+    fixture.gpu.selectedAdapterIndex = 1;
+    fixture.gpu.selectedGpu = fixture.gpu.adapters[1];
+    if (!daemon_fan_ownership_allows_selected_write(fixture, error, sizeof(error), true)) return 7563;
+    daemon_fan_ownership_retire(fixture, "owned GPU reset", true);
+    if (!removed || fixture.fanOwnershipMarkerCommitted || fixture.fanOwnershipHandbackPending) return 7563;
 
     initialize();
     autoFails = true;
-    daemon_fan_ownership_handback_at_start();
+    daemon_fan_ownership_handback_at_start(fixture);
     const int startupStores = stores;
-    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error)) ||
+    if (!daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error)) ||
         stores != startupStores + 1 || saved.handbackAttempts ||
-        g_fanOwnershipHandbackPending || !daemon_fan_ownership_shutdown_should_release()) return 7564;
+        fixture.fanOwnershipHandbackPending || !daemon_fan_ownership_shutdown_should_release(fixture)) return 7564;
 
     initialize();
     saved.targetGpu.deviceId++;
-    daemon_fan_ownership_handback_at_start();
-    g_gpu.writeIdentityResolved = true;
-    if (!g_fanOwnershipMarkerCommitted || !g_fanOwnershipHandbackPending ||
-        daemon_fan_ownership_allows_selected_write(error, sizeof(error))) return 7565;
+    daemon_fan_ownership_handback_at_start(fixture);
+    fixture.gpu.writeIdentityResolved = true;
+    if (!fixture.fanOwnershipMarkerCommitted || !fixture.fanOwnershipHandbackPending ||
+        daemon_fan_ownership_allows_selected_write(fixture, error, sizeof(error))) return 7565;
     // A recorded GPU missing from enumeration keeps the binding (even for an
     // explicit Reset elsewhere) and says how the user gets out of it.
-    if (daemon_fan_ownership_allows_selected_write(error, sizeof(error), true) ||
+    if (daemon_fan_ownership_allows_selected_write(fixture, error, sizeof(error), true) ||
         !std::strstr(error, "not present") || removed) return 7548;
     initialize();
-    g_gpuReady = false;
-    daemon_fan_ownership_handback_at_start();
-    if (!g_fanOwnershipMarkerCommitted || !g_fanOwnershipHandbackPending ||
-        daemon_fan_ownership_shutdown_should_release() || removed || writes) return 7566;
+    fixture.gpuReady = false;
+    daemon_fan_ownership_handback_at_start(fixture);
+    if (!fixture.fanOwnershipMarkerCommitted || !fixture.fanOwnershipHandbackPending ||
+        daemon_fan_ownership_shutdown_should_release(fixture) || removed || writes) return 7566;
 
     initialize();
     saved.handbackAttempts = OWNERSHIP_HANDBACK_MAX_ATTEMPTS;
-    daemon_fan_ownership_handback_at_start();
+    daemon_fan_ownership_handback_at_start(fixture);
     if (writes || stores || removed || !lockedOut ||
-        !g_fanOwnershipMarkerCommitted || !g_fanOwnershipHandbackPending) return 7567;
+        !fixture.fanOwnershipMarkerCommitted || !fixture.fanOwnershipHandbackPending) return 7567;
 
     initialize();
     saved.targetUuid = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000001");
-    g_gpu.adapterUuids[1] = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000002");
-    daemon_fan_ownership_handback_at_start();
-    g_gpu.selectedAdapterIndex = 1;
-    g_gpu.selectedGpu = g_gpu.adapters[1];
-    g_gpu.writeIdentityResolved = true;
-    if (daemon_fan_ownership_allows_selected_write(error, sizeof(error), true)) return 7568;
+    fixture.gpu.adapterUuids[1] = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000002");
+    daemon_fan_ownership_handback_at_start(fixture);
+    fixture.gpu.selectedAdapterIndex = 1;
+    fixture.gpu.selectedGpu = fixture.gpu.adapters[1];
+    fixture.gpu.writeIdentityResolved = true;
+    if (daemon_fan_ownership_allows_selected_write(fixture, error, sizeof(error), true)) return 7568;
 
     initialize();
     saved.targetUuid = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000001");
-    g_gpu.adapterUuids[0] = saved.targetUuid;
+    fixture.gpu.adapterUuids[0] = saved.targetUuid;
     autoFails = true;
-    daemon_fan_ownership_handback_at_start();
-    if (!daemon_fan_ownership_allows_selected_write(error, sizeof(error)) ||
-        !linux_gpu_bdf_equal(&g_fanOwnershipRecord.targetGpu, &g_gpu.selectedGpu)) return 7569;
+    daemon_fan_ownership_handback_at_start(fixture);
+    if (!daemon_fan_ownership_allows_selected_write(fixture, error, sizeof(error)) ||
+        !linux_gpu_bdf_equal(&fixture.fanOwnershipRecord.targetGpu, &fixture.gpu.selectedGpu)) return 7569;
 
     initialize();
     saved.targetGpu = {};
-    daemon_fan_ownership_handback_at_start();
-    g_gpu.writeIdentityResolved = true;
-    if (daemon_fan_ownership_allows_selected_write(error, sizeof(error)) ||
-        !daemon_fan_ownership_allows_selected_write(error, sizeof(error), true)) return 7570;
-    daemon_fan_ownership_retire("explicit legacy recovery", true);
-    if (!removed || g_fanOwnershipMarkerCommitted) return 7570;
+    daemon_fan_ownership_handback_at_start(fixture);
+    fixture.gpu.writeIdentityResolved = true;
+    if (daemon_fan_ownership_allows_selected_write(fixture, error, sizeof(error)) ||
+        !daemon_fan_ownership_allows_selected_write(fixture, error, sizeof(error), true)) return 7570;
+    daemon_fan_ownership_retire(fixture, "explicit legacy recovery", true);
+    if (!removed || fixture.fanOwnershipMarkerCommitted) return 7570;
 
     // Uncertainty idles the worker: an owned manual fan returns to the driver
     // first. Before this, the curve's last duty stayed pinned untracked.
     initialize();
-    g_gpu.writeIdentityResolved = true;
-    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7580;
+    fixture.gpu.writeIdentityResolved = true;
+    if (!daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error))) return 7580;
     writes = 0;
-    daemon_enter_uncertain_state("fixture apply rollback failed");
-    if (!g_stateUncertain || writes != 1 || autoWrites != 1 || writtenAdapter != 0 ||
-        !removed || g_fanOwnershipMarkerCommitted) return 7581;
+    daemon_enter_uncertain_state(fixture, "fixture apply rollback failed");
+    if (!fixture.stateUncertain || writes != 1 || autoWrites != 1 || writtenAdapter != 0 ||
+        !removed || fixture.fanOwnershipMarkerCommitted) return 7581;
     initialize();
-    g_gpu.writeIdentityResolved = true;
-    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7582;
+    fixture.gpu.writeIdentityResolved = true;
+    if (!daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error))) return 7582;
     writes = autoWrites = 0;
     autoFails = true;
-    daemon_enter_uncertain_state("fixture refused handback");
+    daemon_enter_uncertain_state(fixture, "fixture refused handback");
     if (writes != 2 || autoWrites != 1 || emergencyPercent != FAN_RUNTIME_EMERGENCY_PERCENT ||
-        removed || !g_fanOwnershipMarkerCommitted) return 7583;
+        removed || !fixture.fanOwnershipMarkerCommitted) return 7583;
     initialize();
-    g_gpu.writeIdentityResolved = true;
-    daemon_enter_uncertain_state("fixture without manual fan");
-    if (!g_stateUncertain || writes || removed) return 7584;
+    fixture.gpu.writeIdentityResolved = true;
+    daemon_enter_uncertain_state(fixture, "fixture without manual fan");
+    if (!fixture.stateUncertain || writes || removed) return 7584;
     initialize();
-    g_gpu.writeIdentityResolved = true;
-    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7585;
+    fixture.gpu.writeIdentityResolved = true;
+    if (!daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error))) return 7585;
     writes = 0;
-    g_gpu.selectedGpu = g_gpu.adapters[1];
-    g_gpu.selectedAdapterIndex = 1;
-    daemon_enter_uncertain_state("fixture other adapter selected");
-    if (writes || removed || !g_fanOwnershipMarkerCommitted) return 7586;
+    fixture.gpu.selectedGpu = fixture.gpu.adapters[1];
+    fixture.gpu.selectedAdapterIndex = 1;
+    daemon_enter_uncertain_state(fixture, "fixture other adapter selected");
+    if (writes || removed || !fixture.fanOwnershipMarkerCommitted) return 7586;
     initialize();
-    g_gpu.writeIdentityResolved = true;
-    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7587;
+    fixture.gpu.writeIdentityResolved = true;
+    if (!daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error))) return 7587;
     writes = 0;
-    g_gpuReady = false;
-    daemon_enter_uncertain_state("fixture backend unavailable");
-    if (writes || removed || !g_fanOwnershipMarkerCommitted) return 7588;
+    fixture.gpuReady = false;
+    daemon_enter_uncertain_state(fixture, "fixture backend unavailable");
+    if (writes || removed || !fixture.fanOwnershipMarkerCommitted) return 7588;
     // The fan worker's own lockout already wrote the fan: uncertainty follows
     // without a second write, and a fan the driver took back is not owned.
     initialize();
-    g_gpu.writeIdentityResolved = true;
-    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7549;
+    fixture.gpu.writeIdentityResolved = true;
+    if (!daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error))) return 7549;
     writes = 0;
-    daemon_enter_uncertain_after_fan_lockout("fixture worker lockout", true);
-    if (!g_stateUncertain || writes || !removed || g_fanOwnershipMarkerCommitted) return 7549;
+    daemon_enter_uncertain_after_fan_lockout(fixture, "fixture worker lockout", true);
+    if (!fixture.stateUncertain || writes || !removed || fixture.fanOwnershipMarkerCommitted) return 7549;
     initialize();
-    g_gpu.writeIdentityResolved = true;
-    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7549;
+    fixture.gpu.writeIdentityResolved = true;
+    if (!daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error))) return 7549;
     writes = 0;
-    daemon_enter_uncertain_after_fan_lockout("fixture worker lockout refused", false);
-    if (!g_stateUncertain || writes || removed || !g_fanOwnershipMarkerCommitted) return 7549;
+    daemon_enter_uncertain_after_fan_lockout(fixture, "fixture worker lockout refused", false);
+    if (!fixture.stateUncertain || writes || removed || !fixture.fanOwnershipMarkerCommitted) return 7549;
     // Inherited recovery on its own adapter is returned too.
     initialize();
     autoFails = true;
-    daemon_fan_ownership_handback_at_start();
+    daemon_fan_ownership_handback_at_start(fixture);
     autoFails = false;
     writes = autoWrites = 0;
-    daemon_enter_uncertain_state("fixture inherited ownership");
-    if (autoWrites != 1 || writtenAdapter != 1 || g_fanOwnershipMarkerCommitted ||
-        g_fanOwnershipHandbackPending) return 7589;
+    daemon_enter_uncertain_state(fixture, "fixture inherited ownership");
+    if (autoWrites != 1 || writtenAdapter != 1 || fixture.fanOwnershipMarkerCommitted ||
+        fixture.fanOwnershipHandbackPending) return 7589;
 
     // A handback deferred for an unusable backend runs once the backend comes
     // up later in the same process. Before, it waited for the next start.
     initialize();
-    g_gpuReady = false;
-    daemon_fan_ownership_handback_at_start();
-    if (writes || daemon_fan_ownership_resume_deferred_handback()) return 7595;
-    g_gpuReady = true;
-    if (!daemon_fan_ownership_resume_deferred_handback() || writes != 1 ||
-        writtenAdapter != 1 || !removed || g_fanOwnershipMarkerCommitted) return 7596;
-    if (daemon_fan_ownership_resume_deferred_handback() || writes != 1) return 7597;
+    fixture.gpuReady = false;
+    daemon_fan_ownership_handback_at_start(fixture);
+    if (writes || daemon_fan_ownership_resume_deferred_handback(fixture)) return 7595;
+    fixture.gpuReady = true;
+    if (!daemon_fan_ownership_resume_deferred_handback(fixture) || writes != 1 ||
+        writtenAdapter != 1 || !removed || fixture.fanOwnershipMarkerCommitted) return 7596;
+    if (daemon_fan_ownership_resume_deferred_handback(fixture) || writes != 1) return 7597;
     initialize();
-    g_gpuReady = false;
-    daemon_fan_ownership_handback_at_start();
-    g_gpuReady = true;
-    g_gpu.writeIdentityResolved = true;
-    g_gpu.selectedAdapterIndex = 1;
-    g_gpu.selectedGpu = g_gpu.adapters[1];
-    if (!daemon_fan_ownership_ensure_before_write(&desired, error, sizeof(error))) return 7598;
+    fixture.gpuReady = false;
+    daemon_fan_ownership_handback_at_start(fixture);
+    fixture.gpuReady = true;
+    fixture.gpu.writeIdentityResolved = true;
+    fixture.gpu.selectedAdapterIndex = 1;
+    fixture.gpu.selectedGpu = fixture.gpu.adapters[1];
+    if (!daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error))) return 7598;
     writes = 0;
-    if (daemon_fan_ownership_resume_deferred_handback() || writes) return 7599;
+    if (daemon_fan_ownership_resume_deferred_handback(fixture) || writes) return 7599;
+
+    // 14230-14233: two GPU controllers are independent. They select different
+    // adapters (fixture: 1, other: 0), so a fan write reaching the wrong card
+    // is visible. Uncertainty entered on one changes only its own state and
+    // hands back only the fan it owns, on its own adapter.
+    initialize();
+    static LinuxGpuController other;
+    linux_gpu_controller_init(&other);
+    other.gpu = fixture.gpu;
+    other.gpu.writeIdentityResolved = true;
+    other.gpu.selectedAdapterIndex = 0;
+    other.gpu.selectedGpu = other.gpu.adapters[0];
+    other.gpuReady = true;
+    fixture.gpu.writeIdentityResolved = true;
+    fixture.gpu.selectedAdapterIndex = 1;
+    fixture.gpu.selectedGpu = fixture.gpu.adapters[1];
+    fixture.gpuReady = true;
+    fixture.stateUncertain = false;
+    fixture.fanOwnershipMarkerCommitted = true;
+    fixture.fanOwnershipRecord.targetGpu = fixture.gpu.adapters[1];
+    fixture.fanOwnershipRecord.targetLocationRole = GPU_LOCATION_ROLE_REQUIRED;
+    writes = 0;
+    writtenAdapter = -1;
+    daemon_enter_uncertain_state(other, "fixture: other GPU owns no fan");
+    if (!other.stateUncertain || fixture.stateUncertain || writes ||
+        !fixture.fanOwnershipMarkerCommitted) return 14230;
+    other.stateUncertain = false;
+    other.fanOwnershipMarkerCommitted = true;
+    other.fanOwnershipRecord.targetGpu = other.gpu.adapters[0];
+    other.fanOwnershipRecord.targetLocationRole = GPU_LOCATION_ROLE_REQUIRED;
+    removed = false;
+    daemon_enter_uncertain_state(other, "fixture: other GPU owns its fan");
+    if (writes != 1 || writtenAdapter != 0 || !removed ||
+        other.fanOwnershipMarkerCommitted) return 14231;
+    if (fixture.stateUncertain || !fixture.fanOwnershipMarkerCommitted) return 14232;
+    other.fanOwnershipMarkerCommitted = true;
+    writes = 0;
+    writtenAdapter = -1;
+    daemon_enter_uncertain_state(fixture, "fixture: first GPU owns its fan");
+    if (!fixture.stateUncertain || writes != 1 || writtenAdapter != 1 ||
+        !other.fanOwnershipMarkerCommitted || !other.stateUncertain) return 14233;
     return 0;
 }
 } // namespace linux_fan_ownership_fixture
 
 int run_linux_fan_ownership_tests() {
+    linux_gpu_controller_init(&linux_fan_ownership_fixture::fixture);
     int result = linux_fan_ownership_fixture::run();
     if (result) std::fprintf(stderr, "regression assertion failed: %d\n", result);
     return result;

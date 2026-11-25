@@ -682,6 +682,38 @@ once, stamped by `[meta] linux_mem_migrated`:
 
 ## Daemon lifecycle and serve loop
 
+- Per-GPU controller (2026-11-25, `source/linux_gpu_controller.h`): everything
+  the daemon knows or owns about its GPU (bound backend, committed intent and
+  target, uncertainty, operation tracker, startup policy, auto-restore guard
+  and failure, fan ownership/fault/failure count, GPU generation) is one
+  `LinuxGpuController`. `daemon_run_owned()` owns the single instance and
+  passes it as `LinuxGpuController& ctl` to the serve loop, request handlers,
+  boot/resume and restore paths; the fan worker receives it as its thread
+  argument; `LinuxOperationRequestGuard` takes the controller's tracker.
+  Process-wide state stays outside: `g_driver`, `g_lock`, the fan wake signal,
+  the shutdown pipe, socket admission and the service identity/revision.
+  `check_gpu_controller()` in `tools/linux_gates.py` forbids file-scope
+  per-GPU statics, the 22 retired global names (the 21 moved members plus the
+  old fan wake generation) and `thread_local` across the
+  daemon amalgamation and requires exactly one instance. The daemon still
+  binds one GPU and keeps the single-owner switch guard; nothing on disk or on
+  the wire changed. The fan worker's command generation (`fanWakeGeneration`)
+  is per controller: it resets curve hysteresis and is the stall detector's
+  command identity, so another GPU's wake must not restart a stall window; the
+  wake mutex/condition and shutdown broadcast stay process-wide. The gate
+  allowlists the daemon's 15 process-wide file-scope variables and rejects any
+  other (static or not), any global or function-local static of a per-GPU
+  type (value or pointer) other than the one controller instance, and the
+  retired names.
+  Namespaces (named or anonymous, outside comments) are rejected too: they
+  would hide state from the column-0 checks, and the daemon files use none. Two-controller isolation: `tests/linux_fan_ownership_tests.cpp`
+  `14230-14233` (distinct adapters) and `tests/fan_runtime_followup_tests.cpp`
+  `14234`. `tests/linux_daemon_commit_rollback_tests.cpp` (`14260-14267`)
+  compiles the production `linux_daemon.cpp` over fake backend, persistence
+  and log functions and drives `handle_request()`: a failed durable commit
+  after a successful Apply or Reset rolls back once with the very transaction
+  the mutation recorded its clamp in (every field the rollback reads arrives
+  intact); a successful commit never rolls back.
 - `linux_daemon_lock_instance()` locks the protected persistent state directory
   before GPU initialization, replay or socket setup. The descriptor stays open
   through fan and socket teardown, independently of systemd's runtime directory.
@@ -1269,13 +1301,13 @@ cross-linked and source-gated rather than executed on Linux hardware.
 ### The published lockout (fixed 2026-07-31, v0.22.1)
 
 `ServiceSnapshot::autoRestoreLockoutReason` is what the TUI, `--status` and the
-JSON export read. The daemon derived it from `g_stateUncertain` alone, which is
+JSON export read. The daemon derived it from `ctl.stateUncertain` alone, which is
 a proxy for only **one** of the two latching arms:
 
 - a failed hardware write sets both the flag and the guard, so that case looked
   right;
 - the crash-loop arm (`DENY_ATTEMPTS_EXHAUSTED`) latches the guard **without
-  ever issuing a write**, so nothing set `g_stateUncertain`.
+  ever issuing a write**, so nothing set `ctl.stateUncertain`.
 
 A machine that tripped the crash-loop guard therefore published `LOCKOUT_NONE`,
 reported a healthy GPU everywhere, and silently never restored settings at boot
@@ -1285,11 +1317,11 @@ evidence. Windows has always fed the same field from its real lockout state
 
 - `linux_auto_restore_published_lockout_reason()` is the pure decision; the
   snapshot calls it and nothing else. `tools/linux_gates.py` forbids the old
-  `s->autoRestoreLockoutReason = g_stateUncertain` spelling outright.
+  `s->autoRestoreLockoutReason = ctl.stateUncertain` spelling outright.
 - An **uncertain state with a clear guard still reports a lockout**: the
   rollback or the record did not settle, so no unattended write may run until a
   user resolves it, which is exactly what the field means. Since 2026-08-01 the
-  runtime enforces it: `linux_auto_restore_decide()` takes `g_stateUncertain`
+  runtime enforces it: `linux_auto_restore_decide()` takes `ctl.stateUncertain`
   and returns the new `LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN` verdict, so
   every automatic trigger — including the otherwise unrationed resume — is
   refused while the daemon state is unsettled (a latched guard outranks it,
@@ -1363,7 +1395,7 @@ once, with no proof gate.
   daemon is not running **skips** the unit rather than failing it once per wake.
 - No active intent is reported as success, not failure: a machine with no Green
   Curve settings has nothing to lose across a suspend.
-- A resume restore while `g_stateUncertain` is set is refused with the new
+- A resume restore while `ctl.stateUncertain` is set is refused with the new
   `DENY_STATE_UNCERTAIN` verdict until an explicit Apply/Reset resolves the
   state — the flag is a gate, not just a published label (2026-08-01).
 
@@ -1427,7 +1459,7 @@ behaves exactly as every pre-v13 build did.
       (`service_response_startup_profile_is_coherent`): the flag is a boolean,
       an unset flag means byte-zero settings, and a set flag is only accepted
       while the published policy really is `profile N` with a nonzero slot.
-    - `daemon_publish_startup_snapshot()` fills it from `g_startupPolicy` — the
+    - `daemon_publish_startup_snapshot()` fills it from `ctl.startupPolicy` — the
       *committed* record — for all three startup commands, so a set or refresh
       that failed to reach disk still answers with what will actually boot.
   - Client half: `source/linux_startup_sync.{h,cpp}`, shared by the TUI and the

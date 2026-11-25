@@ -42,23 +42,23 @@ struct LinuxAutoRestoreOutcome {
     char message[256];
 };
 
-static bool persist_auto_restore_guard(const char* why,
+static bool persist_auto_restore_guard(LinuxGpuController& ctl, const char* why,
                                        char* errorOut = nullptr,
                                        size_t errorSize = 0) {
     char err[256] = {};
     bool ok = linux_daemon_guard_store(GC_DAEMON_GUARD_FILE,
-                                       &g_autoRestoreGuard, err, sizeof(err));
+                                       &ctl.autoRestoreGuard, err, sizeof(err));
     if (errorOut && errorSize) {
         gc_strlcpy(errorOut, errorSize,
                    ok ? "" : (err[0] ? err : "unknown error"));
     }
     dlog("daemon auto-restore: guard persisted (%s) lockedOut=%d reason=%u (%s) "
          "startAttempts=%u boot=%s ok=%d%s%s\n",
-         why ? why : "-", (int)g_autoRestoreGuard.lockedOut,
-         (unsigned int)g_autoRestoreGuard.lockoutReason,
-         linux_auto_restore_lockout_reason_name(g_autoRestoreGuard.lockoutReason),
-         (unsigned int)g_autoRestoreGuard.startAttempts,
-         g_autoRestoreGuard.bootId[0] ? g_autoRestoreGuard.bootId : "<unknown>",
+         why ? why : "-", (int)ctl.autoRestoreGuard.lockedOut,
+         (unsigned int)ctl.autoRestoreGuard.lockoutReason,
+         linux_auto_restore_lockout_reason_name(ctl.autoRestoreGuard.lockoutReason),
+         (unsigned int)ctl.autoRestoreGuard.startAttempts,
+         ctl.autoRestoreGuard.bootId[0] ? ctl.autoRestoreGuard.bootId : "<unknown>",
          ok ? 1 : 0, ok ? "" : ": ", ok ? "" : (err[0] ? err : "unknown error"));
     return ok;
 }
@@ -69,7 +69,7 @@ static bool persist_auto_restore_guard(const char* why,
 // nothing at all in exactly the loop this exists to break.  A guard that cannot
 // be committed refuses the write, mirroring the Windows rule that an
 // uncommittable proof invalidation aborts before touching the GPU.
-static bool auto_restore_authorize(LinuxAutoRestoreTrigger trigger,
+static bool auto_restore_authorize(LinuxGpuController& ctl, LinuxAutoRestoreTrigger trigger,
                                    LinuxAutoRestoreVerdict* verdictOut) {
     gc_u32 nowMs = gc_auto_restore_now_ms();
     // Count the resume BEFORE deciding, so the very first request in a window
@@ -77,18 +77,18 @@ static bool auto_restore_authorize(LinuxAutoRestoreTrigger trigger,
     // memory only: unlike the per-boot counter this is not persisted, because a
     // one-minute window has no meaning across a daemon restart.
     if (!linux_auto_restore_trigger_is_start(trigger)) {
-        linux_auto_restore_note_resume_attempt(&g_autoRestoreGuard, nowMs);
+        linux_auto_restore_note_resume_attempt(&ctl.autoRestoreGuard, nowMs);
     }
     LinuxAutoRestoreVerdict verdict =
-        linux_auto_restore_decide(&g_autoRestoreGuard, trigger,
-                                  g_stateUncertain, nowMs);
+        linux_auto_restore_decide(&ctl.autoRestoreGuard, trigger,
+                                  ctl.stateUncertain, nowMs);
     // Reported to the caller rather than recomputed by it: latching the lockout
     // below changes what a second call would answer, so "attempts exhausted"
     // would come back as the less specific "locked out".
     if (verdictOut) *verdictOut = verdict;
     if (verdict != LINUX_AUTO_RESTORE_ALLOW) {
         if (verdict == LINUX_AUTO_RESTORE_DENY_ATTEMPTS_EXHAUSTED &&
-            !g_autoRestoreGuard.lockedOut) {
+            !ctl.autoRestoreGuard.lockedOut) {
             // Latch it, so the next boot does not hand the same crash three
             // fresh attempts.  Only an explicit Apply or Reset clears this.
             //
@@ -96,15 +96,15 @@ static bool auto_restore_authorize(LinuxAutoRestoreTrigger trigger,
             // here.  What this arm knows is that replaying the stored settings
             // did not survive repeated starts, which is the same statement
             // Windows makes when an apply fails its proving period.
-            linux_auto_restore_note_lockout(&g_autoRestoreGuard,
+            linux_auto_restore_note_lockout(&ctl.autoRestoreGuard,
                 SERVICE_AUTO_RESTORE_LOCKOUT_UNSTABLE_APPLY);
-            persist_auto_restore_guard("attempts exhausted");
+            persist_auto_restore_guard(ctl, "attempts exhausted");
         }
         dlog("daemon auto-restore: %s %s (startAttempts=%u lockedOut=%d)\n",
              linux_auto_restore_trigger_name(trigger),
              linux_auto_restore_verdict_name(verdict),
-             (unsigned int)g_autoRestoreGuard.startAttempts,
-             (int)g_autoRestoreGuard.lockedOut);
+             (unsigned int)ctl.autoRestoreGuard.startAttempts,
+             (int)ctl.autoRestoreGuard.lockedOut);
         return false;
     }
     if (!linux_auto_restore_trigger_is_start(trigger)) {
@@ -112,10 +112,10 @@ static bool auto_restore_authorize(LinuxAutoRestoreTrigger trigger,
              linux_auto_restore_trigger_name(trigger));
         return true;
     }
-    LinuxAutoRestoreGuard previous = g_autoRestoreGuard;
-    linux_auto_restore_note_start_attempt(&g_autoRestoreGuard);
-    if (!persist_auto_restore_guard("start attempt")) {
-        g_autoRestoreGuard = previous;
+    LinuxAutoRestoreGuard previous = ctl.autoRestoreGuard;
+    linux_auto_restore_note_start_attempt(&ctl.autoRestoreGuard);
+    if (!persist_auto_restore_guard(ctl, "start attempt")) {
+        ctl.autoRestoreGuard = previous;
         dlog("daemon auto-restore: %s refused; the attempt could not be recorded, "
              "so the write is not attempted\n",
              linux_auto_restore_trigger_name(trigger));
@@ -123,7 +123,7 @@ static bool auto_restore_authorize(LinuxAutoRestoreTrigger trigger,
     }
     dlog("daemon auto-restore: %s allowed (attempt %u of %d this boot)\n",
          linux_auto_restore_trigger_name(trigger),
-         (unsigned int)g_autoRestoreGuard.startAttempts,
+         (unsigned int)ctl.autoRestoreGuard.startAttempts,
          (int)LINUX_AUTO_RESTORE_MAX_START_ATTEMPTS);
     return true;
 }
@@ -133,21 +133,21 @@ static bool auto_restore_authorize(LinuxAutoRestoreTrigger trigger,
 // being cleared by the very replay that caused it.  The in-memory transition
 // is transactional with its record: otherwise the current response/snapshot
 // would claim re-armed while the old lockout returns on daemon restart.
-static bool auto_restore_note_explicit_success(const char* origin,
+static bool auto_restore_note_explicit_success(LinuxGpuController& ctl, const char* origin,
                                                char* errorOut,
                                                size_t errorSize) {
     if (errorOut && errorSize) errorOut[0] = 0;
-    if (g_fanOwnershipHandbackPending) {
+    if (ctl.fanOwnershipHandbackPending) {
         gc_strlcpy(errorOut, errorSize,
             "fan recovery is still pending; apply a fan setting or Reset the owned GPU");
         dlog("daemon auto-restore: explicit %s left fan recovery pending; retaining the previous guard\n",
              origin ? origin : "operation");
         return false;
     }
-    LinuxAutoRestoreGuard previous = g_autoRestoreGuard;
-    if (!linux_auto_restore_note_explicit_success(&g_autoRestoreGuard)) return true;
-    if (!persist_auto_restore_guard("explicit success", errorOut, errorSize)) {
-        g_autoRestoreGuard = previous;
+    LinuxAutoRestoreGuard previous = ctl.autoRestoreGuard;
+    if (!linux_auto_restore_note_explicit_success(&ctl.autoRestoreGuard)) return true;
+    if (!persist_auto_restore_guard(ctl, "explicit success", errorOut, errorSize)) {
+        ctl.autoRestoreGuard = previous;
         dlog("daemon auto-restore: explicit %s committed, but automatic "
              "restoration could not be re-armed durably; previous guard "
              "restored in memory (%s)\n",
@@ -155,7 +155,7 @@ static bool auto_restore_note_explicit_success(const char* origin,
              errorOut && errorOut[0] ? errorOut : "unknown error");
         return false;
     }
-    g_autoApplyFailure = ServiceAutoApplyFailure{};
+    ctl.autoApplyFailure = ServiceAutoApplyFailure{};
     dlog("daemon auto-restore: explicit %s succeeded; automatic restoration "
          "re-armed durably\n",
          origin ? origin : "operation");
@@ -170,21 +170,21 @@ static bool auto_restore_note_explicit_success(const char* origin,
 // would hand a crash loop unlimited retries precisely when the filesystem is
 // already misbehaving.  An ABSENT record is the ordinary first-run state and
 // means nothing has gone wrong yet.
-static void load_auto_restore_guard_at_boot() {
+static void load_auto_restore_guard_at_boot(LinuxGpuController& ctl) {
     char bootId[LINUX_BOOT_ID_MAX] = {};
     bool haveBootId = linux_read_boot_id(bootId, sizeof(bootId));
     bool corrupt = false;
     char err[256] = {};
-    if (!linux_daemon_guard_load(GC_DAEMON_GUARD_FILE, &g_autoRestoreGuard,
+    if (!linux_daemon_guard_load(GC_DAEMON_GUARD_FILE, &ctl.autoRestoreGuard,
                                  &corrupt, err, sizeof(err))) {
-        memset(&g_autoRestoreGuard, 0, sizeof(g_autoRestoreGuard));
+        memset(&ctl.autoRestoreGuard, 0, sizeof(ctl.autoRestoreGuard));
         if (corrupt) {
             // Latched through the policy helper rather than by assigning the
             // flag, so the fail-closed state is as coherent as any other and
             // publishes a reason instead of an unexplained lockout.  This is
             // also the version-1 upgrade path: an older record fails the
             // validator and arrives here.
-            linux_auto_restore_note_lockout(&g_autoRestoreGuard,
+            linux_auto_restore_note_lockout(&ctl.autoRestoreGuard,
                 SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED);
             dlog("daemon auto-restore: guard unreadable (%s); automatic "
                  "restoration is locked out until an explicit Apply or Reset\n",
@@ -199,31 +199,31 @@ static void load_auto_restore_guard_at_boot() {
         // counting stops an unattended write, under-counting authorizes one.
         dlog("daemon auto-restore: boot id unavailable; the per-boot attempt "
              "counter carries over (startAttempts=%u lockedOut=%d)\n",
-             (unsigned int)g_autoRestoreGuard.startAttempts,
-             (int)g_autoRestoreGuard.lockedOut);
+             (unsigned int)ctl.autoRestoreGuard.startAttempts,
+             (int)ctl.autoRestoreGuard.lockedOut);
         return;
     }
-    bool sameBoot = linux_auto_restore_guard_adopt_boot(&g_autoRestoreGuard,
+    bool sameBoot = linux_auto_restore_guard_adopt_boot(&ctl.autoRestoreGuard,
                                                         bootId);
     dlog("daemon auto-restore: guard loaded boot=%s (%s) startAttempts=%u "
          "lockedOut=%d reason=%u (%s) maxStartAttempts=%d\n",
          bootId, sameBoot ? "same boot" : "new boot",
-         (unsigned int)g_autoRestoreGuard.startAttempts,
-         (int)g_autoRestoreGuard.lockedOut,
-         (unsigned int)g_autoRestoreGuard.lockoutReason,
-         linux_auto_restore_lockout_reason_name(g_autoRestoreGuard.lockoutReason),
+         (unsigned int)ctl.autoRestoreGuard.startAttempts,
+         (int)ctl.autoRestoreGuard.lockedOut,
+         (unsigned int)ctl.autoRestoreGuard.lockoutReason,
+         linux_auto_restore_lockout_reason_name(ctl.autoRestoreGuard.lockoutReason),
          (int)LINUX_AUTO_RESTORE_MAX_START_ATTEMPTS);
 }
 
 // Reaching the ordinary teardown proves this process ran long enough to be
 // asked to stop, so the starts that led here were not a crash loop.  Called
 // from the shutdown path only -- a crash never gets here, which is the point.
-static void clear_auto_restore_attempts_on_clean_stop() {
-    if (!linux_auto_restore_note_clean_stop(&g_autoRestoreGuard)) return;
+static void clear_auto_restore_attempts_on_clean_stop(LinuxGpuController& ctl) {
+    if (!linux_auto_restore_note_clean_stop(&ctl.autoRestoreGuard)) return;
     dlog("daemon auto-restore: clean stop; per-boot attempt counter cleared "
          "(lockedOut=%d is unchanged and needs an explicit Apply or Reset)\n",
-         (int)g_autoRestoreGuard.lockedOut);
-    persist_auto_restore_guard("clean stop");
+         (int)ctl.autoRestoreGuard.lockedOut);
+    persist_auto_restore_guard(ctl, "clean stop");
 }
 
 // A failed unattended write is terminal for that event and latches automatic
@@ -235,10 +235,10 @@ static void clear_auto_restore_attempts_on_clean_stop() {
 // to the pre-write state verified; both become the v29 cause record.  The
 // record never claims stock clocks (coreRecovered stays 0): Linux rolls back to
 // whatever was on the hardware before the write, not to defaults.
-static void auto_restore_note_automatic_failure(LinuxAutoRestoreTrigger trigger,
+static void auto_restore_note_automatic_failure(LinuxGpuController& ctl, LinuxAutoRestoreTrigger trigger,
                                                 const char* detail,
                                                 bool rollbackOk) {
-    if (g_autoRestoreGuard.lockedOut) return;
+    if (ctl.autoRestoreGuard.lockedOut) return;
     ServiceAutoApplyFailure record = {};
     record.trigger = linux_auto_restore_trigger_is_start(trigger)
         ? SERVICE_LIFECYCLE_TRIGGER_DAEMON_START
@@ -247,34 +247,34 @@ static void auto_restore_note_automatic_failure(LinuxAutoRestoreTrigger trigger,
                 "previous state %s", detail && detail[0] ? detail : "write failed",
                 rollbackOk ? "verified" : "is uncertain");
     // Before the lockout, so no snapshot shows the lockout without its cause.
-    g_autoApplyFailure = record;
+    ctl.autoApplyFailure = record;
     dlog("daemon auto-restore: failure recorded for clients trigger=%u "
          "rollbackOk=%d detailChars=%u\n", (unsigned int)record.trigger,
          rollbackOk ? 1 : 0, (unsigned int)strlen(record.detail));
-    linux_auto_restore_note_lockout(&g_autoRestoreGuard,
+    linux_auto_restore_note_lockout(&ctl.autoRestoreGuard,
         SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED);
     dlog("daemon auto-restore: %s failed after reaching hardware or its durable "
          "state did not commit; automatic restoration is latched off until an "
          "explicit Apply or Reset succeeds\n",
          linux_auto_restore_trigger_name(trigger));
-    persist_auto_restore_guard("automatic write failed");
+    persist_auto_restore_guard(ctl, "automatic write failed");
 }
 
 // Bring the backend back to a usable state for `target` without sleeping or
 // polling.  The resume edge IS the readiness signal (greencurve-resume.service
 // is ordered after the driver's own resume unit); if the driver still is not
 // there, this fails and the caller refuses to write rather than guessing.
-static bool auto_restore_prepare_backend(const GpuAdapterInfo* target,
+static bool auto_restore_prepare_backend(LinuxGpuController& ctl, const GpuAdapterInfo* target,
                                          GpuLocationRole role,
                                          const LinuxGpuUuid* uuid,
                                          LinuxGpuUuidVerdict* uuidVerdict,
                                          char* err, size_t errSize) {
-    if (!g_gpuReady) {
+    if (!ctl.gpuReady) {
         // One re-init attempt: across a suspend the NVIDIA character devices
         // are torn down and rebuilt, so a daemon that started before the driver
         // was usable can legitimately become usable here.
         //
-        // Into a replacement, not over g_gpu, and using the same idiom as
+        // Into a replacement, not over ctl.gpu, and using the same idiom as
         // linux_backend_select_target(): linux_backend_init() memsets the state
         // it is handed, so a failed attempt must not overwrite the published
         // one. The libraries and NVML reference stay with g_driver.
@@ -283,26 +283,26 @@ static bool auto_restore_prepare_backend(const GpuAdapterInfo* target,
             linux_backend_shutdown(&replacement);
             return false;
         }
-        linux_backend_shutdown(&g_gpu);
-        g_gpu = replacement;
-        g_gpuReady = true;
+        linux_backend_shutdown(&ctl.gpu);
+        ctl.gpu = replacement;
+        ctl.gpuReady = true;
         // The target is selected below, after any deferred fan handback.
-        daemon_fan_ownership_resume_deferred_handback();
+        daemon_fan_ownership_resume_deferred_handback(ctl);
         dlog("daemon auto-restore: GPU backend re-initialized (%s health=%s)\n",
-             g_gpu.gpuName,
-             service_gpu_health_reason_name(g_gpu.health.reason));
+             ctl.gpu.gpuName,
+             service_gpu_health_reason_name(ctl.gpu.health.reason));
     }
-    if (!linux_backend_select_target(&g_gpu, target, err, errSize, role, uuid, uuidVerdict)) return false;
+    if (!linux_backend_select_target(&ctl.gpu, target, err, errSize, role, uuid, uuidVerdict)) return false;
     // Same-PCI rebind plus a fresh VF snapshot; linux_backend_refresh() already
     // performs exactly one read-only re-enumeration when a refresh fails.
-    linux_backend_refresh(&g_gpu);
+    linux_backend_refresh(&ctl.gpu);
     return true;
 }
 
 // The single unattended-write entry point.  Callers own *deciding* that an
 // automatic restore is wanted; this owns whether it is allowed, what request it
 // becomes, and what the failure means.
-static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
+static LinuxAutoRestoreOutcome daemon_automatic_restore_write(LinuxGpuController& ctl,
     LinuxAutoRestoreTrigger trigger, const GpuAdapterInfo* target,
     const DesiredSettings* intent, GpuLocationRole role, const LinuxGpuUuid* uuid,
     const LinuxDaemonStateRecord* previousRecord = nullptr) {
@@ -313,7 +313,7 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
         return outcome;
     }
     LinuxAutoRestoreVerdict verdict = LINUX_AUTO_RESTORE_ALLOW;
-    if (!auto_restore_authorize(trigger, &verdict)) {
+    if (!auto_restore_authorize(ctl, trigger, &verdict)) {
         gc_snprintf(outcome.message, sizeof(outcome.message),
             "%s %s", linux_auto_restore_trigger_name(trigger),
             linux_auto_restore_verdict_name(verdict));
@@ -323,12 +323,12 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
 
     char err[256] = {};
     LinuxGpuUuidVerdict uuidVerdict = LINUX_GPU_UUID_FALLBACK;
-    if (!auto_restore_prepare_backend(target, role, uuid, &uuidVerdict, err, sizeof(err))) {
+    if (!auto_restore_prepare_backend(ctl, target, role, uuid, &uuidVerdict, err, sizeof(err))) {
         // Nothing was written, so this is a missing prerequisite rather than a
         // failed write: it does not latch the lockout.  The attempt it consumed
         // is still spent, which is deliberate -- a daemon that cannot reach its
         // GPU on three consecutive starts must stop trying by itself.
-        // F-PREP-NO-UNCERTAIN: it must also NOT set g_stateUncertain.  That
+        // F-PREP-NO-UNCERTAIN: it must also NOT set ctl.stateUncertain.  That
         // flag says the daemon state or a rollback did not settle; a GPU that
         // was merely not ready disturbed no state, and setting it here disabled
         // the fan reassertion thread and published a lockout until an explicit
@@ -337,11 +337,11 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
         gc_snprintf(outcome.message, sizeof(outcome.message),
                     "GPU not available for automatic restore: %s", err);
         // Judged against the adapters the backend enumerated; a failed
-        // re-selection leaves g_gpu untouched.
+        // re-selection leaves ctl.gpu untouched.
         const bool targetUnresolved = uuidVerdict == LINUX_GPU_UUID_MISMATCH ||
-            uuidVerdict == LINUX_GPU_UUID_AMBIGUOUS || (g_gpuReady &&
-            linux_resolve_stored_gpu_target(target, role, g_gpu.adapters,
-                                            g_gpu.adapterCount, nullptr) < 0);
+            uuidVerdict == LINUX_GPU_UUID_AMBIGUOUS || (ctl.gpuReady &&
+            linux_resolve_stored_gpu_target(target, role, ctl.gpu.adapters,
+                                            ctl.gpu.adapterCount, nullptr) < 0);
         dlog("daemon auto-restore: %s aborted before any write: %s "
              "[stored=%04x:%02x:%02x.%u role=%s remedy=%s]\n",
              linux_auto_restore_trigger_name(trigger), err, target->pciDomain,
@@ -352,15 +352,15 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     }
 
     if (role != GPU_LOCATION_ROLE_REQUIRED)
-        role = linux_gpu_location_role_for_selection(&g_gpu.selectedGpu,
-            g_gpu.adapters, g_gpu.adapterCount);
+        role = linux_gpu_location_role_for_selection(&ctl.gpu.selectedGpu,
+            ctl.gpu.adapters, ctl.gpu.adapterCount);
     const bool bootProfile = trigger == LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE;
     if (bootProfile && previousRecord) {
         const auto previousSelection = linux_gpu_restore_selection(&previousRecord->targetGpu,
-            (GpuLocationRole)previousRecord->targetLocationRole, g_gpu.adapters, g_gpu.adapterCount,
-            &previousRecord->targetUuid, g_gpu.adapterUuids, nullptr);
+            (GpuLocationRole)previousRecord->targetLocationRole, ctl.gpu.adapters, ctl.gpu.adapterCount,
+            &previousRecord->targetUuid, ctl.gpu.adapterUuids, nullptr);
         if (previousSelection.index < 0 ||
-            (unsigned int)previousSelection.index != g_gpu.selectedAdapterIndex) {
+            (unsigned int)previousSelection.index != ctl.gpu.selectedAdapterIndex) {
             gc_strlcpy(outcome.message, sizeof(outcome.message),
                 "Reset the previous GPU before applying a startup profile to a different or unresolved GPU");
             return outcome;
@@ -368,55 +368,55 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     }
     const DesiredSettings* previous = previousRecord ? &previousRecord->desired
         : bootProfile ? nullptr : intent;
-    GraphicsScalarOperation graphicsOperation(g_gpu.graphicsRecovery);
+    GraphicsScalarOperation graphicsOperation(ctl.gpu.graphicsRecovery);
     const gc_u32 graphicsCoverage = previousRecord ? previousRecord->graphicsControlSurfaces : 0;
     if (graphicsCoverage) {
         const gc_u32 ownedSurface = desired_named_graphics_surface(*previous);
         if (graphicsCoverage & ~graphics_scalar_recovery_bit(ownedSurface)) {
-            daemon_enter_uncertain_state("automatic restore has unresolved named graphics controls");
+            daemon_enter_uncertain_state(ctl, "automatic restore has unresolved named graphics controls");
             gc_strlcpy(outcome.message, sizeof(outcome.message), "Named graphics recovery requires explicit Reset");
             return outcome;
         }
-        g_gpu.graphicsRecovery.covered |= graphicsCoverage;
-        g_gpu.graphicsRecovery.ownedSurface = ownedSurface;
+        ctl.gpu.graphicsRecovery.covered |= graphicsCoverage;
+        ctl.gpu.graphicsRecovery.ownedSurface = ownedSurface;
     }
     char postPrepareOwnershipErr[192] = {};
     const bool selectedFanTargetOwned =
-        daemon_fan_ownership_allows_selected_write(
+        daemon_fan_ownership_allows_selected_write(ctl,
             postPrepareOwnershipErr, sizeof(postPrepareOwnershipErr));
     if (!linux_auto_restore_may_write_after_prepare(
-            &g_autoRestoreGuard, g_stateUncertain,
-            g_fanOwnershipHandbackPending, selectedFanTargetOwned)) {
+            &ctl.autoRestoreGuard, ctl.stateUncertain,
+            ctl.fanOwnershipHandbackPending, selectedFanTargetOwned)) {
         gc_snprintf(outcome.message, sizeof(outcome.message),
             "automatic restore stopped after backend preparation: %s",
             !selectedFanTargetOwned && postPrepareOwnershipErr[0]
                 ? postPrepareOwnershipErr
-                : g_autoRestoreGuard.lockedOut
+                : ctl.autoRestoreGuard.lockedOut
                     ? linux_auto_restore_lockout_reason_name(
-                          g_autoRestoreGuard.lockoutReason)
-                    : g_fanOwnershipHandbackPending
+                          ctl.autoRestoreGuard.lockoutReason)
+                    : ctl.fanOwnershipHandbackPending
                         ? "fan ownership recovery is still pending"
                         : "daemon state became uncertain");
         dlog("daemon auto-restore: %s aborted after prepare; lockedOut=%d"
              " reason=%u stateUncertain=%d handbackPending=%d ownership=%d%s%s\n",
              linux_auto_restore_trigger_name(trigger),
-             g_autoRestoreGuard.lockedOut ? 1 : 0,
-             (unsigned int)g_autoRestoreGuard.lockoutReason,
-             g_stateUncertain ? 1 : 0,
-             g_fanOwnershipHandbackPending ? 1 : 0,
+             ctl.autoRestoreGuard.lockedOut ? 1 : 0,
+             (unsigned int)ctl.autoRestoreGuard.lockoutReason,
+             ctl.stateUncertain ? 1 : 0,
+             ctl.fanOwnershipHandbackPending ? 1 : 0,
              selectedFanTargetOwned ? 1 : 0,
              postPrepareOwnershipErr[0] ? ": " : "",
              postPrepareOwnershipErr);
         return outcome;
     }
-    const LinuxGpuUuid binding = linux_gpu_uuid_retain(linux_backend_selected_uuid(&g_gpu), uuid);
+    const LinuxGpuUuid binding = linux_gpu_uuid_retain(linux_backend_selected_uuid(&ctl.gpu), uuid);
     dlog("daemon auto-restore: UUID binding readable=%d retained=%d\n",
-        linux_gpu_uuid_valid(linux_backend_selected_uuid(&g_gpu)) ? 1 : 0,
+        linux_gpu_uuid_valid(linux_backend_selected_uuid(&ctl.gpu)) ? 1 : 0,
         linux_gpu_uuid_valid(&binding) ? 1 : 0);
     dlog("daemon auto-restore: target role=%s location=%04x:%02x:%02x.%u\n",
-        configured_gpu_location_role_name(role), g_gpu.selectedGpu.pciDomain,
-        g_gpu.selectedGpu.pciBus, g_gpu.selectedGpu.pciDevice,
-        g_gpu.selectedGpu.pciFunction);
+        configured_gpu_location_role_name(role), ctl.gpu.selectedGpu.pciDomain,
+        ctl.gpu.selectedGpu.pciBus, ctl.gpu.selectedGpu.pciDevice,
+        ctl.gpu.selectedGpu.pciFunction);
     DesiredSettings committed = *intent;
     LockMode storedLockMode = committed.lockMode;
     committed.lockMode = profile_lock_mode_after_load(committed.hasLock, true,
@@ -438,13 +438,13 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
         return outcome;
     }
     if (request.applicationScope != DESIRED_SCOPE_LEGACY &&
-        !daemon_resolve_scoped_ownership(previous, &request, &committed, err, sizeof(err))) {
+        !daemon_resolve_scoped_ownership(ctl, previous, &request, &committed, err, sizeof(err))) {
         gc_strlcpy(outcome.message, sizeof(outcome.message), err);
         return outcome;
     }
     LinuxHardwareSnapshot before = {};
     char captureErr[256] = {};
-    if (!linux_backend_capture_apply_snapshot(&g_gpu, &request, &before, captureErr,
+    if (!linux_backend_capture_apply_snapshot(&ctl.gpu, &request, &before, captureErr,
                                         sizeof(captureErr), previous, &committed)) {
         gc_snprintf(outcome.message, sizeof(outcome.message),
                     "could not capture hardware state before automatic "
@@ -457,8 +457,8 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
         return outcome;
     }
     char ownershipErr[256] = {};
-    if (!daemon_fan_ownership_ensure_before_write(&committed, ownershipErr, sizeof(ownershipErr)) ||
-        !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu, &committed,
+    if (!daemon_fan_ownership_ensure_before_write(ctl, &committed, ownershipErr, sizeof(ownershipErr)) ||
+        !store_daemon_record(ctl, LINUX_DAEMON_RECORD_PREPARED, &ctl.gpu.selectedGpu, &committed,
             ownershipErr, sizeof(ownershipErr), 0, SERVICE_OPERATION_NONE, role, &binding)) {
         gc_snprintf(outcome.message, sizeof(outcome.message),
                     "recovery ownership could not be recorded before automatic "
@@ -482,15 +482,15 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
 
     outcome.attempted = true;
     LinuxApplyCeilingTransaction ceiling = {};
-    LinuxMutationResult mutation = linux_backend_apply(&g_gpu, ceiling, &request,
+    LinuxMutationResult mutation = linux_backend_apply(&ctl.gpu, ceiling, &request,
         previous, &committed, outcome.message, sizeof(outcome.message));
     if (!mutation.success) {
         outcome.success = false;
         char stateErr[256] = {};
-        store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, target, &committed,
+        store_daemon_record(ctl, LINUX_DAEMON_RECORD_UNCERTAIN, target, &committed,
                             stateErr, sizeof(stateErr), 0, SERVICE_OPERATION_NONE, role, &binding);
-        daemon_enter_uncertain_state("automatic restore write failed");
-        auto_restore_note_automatic_failure(trigger, outcome.message,
+        daemon_enter_uncertain_state(ctl, "automatic restore write failed");
+        auto_restore_note_automatic_failure(ctl, trigger, outcome.message,
                                             mutation.rollbackSucceeded);
         dlog("daemon auto-restore: %s failed -> %s (rollback=%d anyWrite=%d)\n",
              linux_auto_restore_trigger_name(trigger), outcome.message,
@@ -502,26 +502,26 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     // record read back through the compatibility path, would otherwise leave
     // the file disagreeing with what is now on the hardware.
     char stateErr[256] = {};
-    GpuAdapterInfo committedTarget = g_gpu.selectedGpu;
-    if (!store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE, &committedTarget,
+    GpuAdapterInfo committedTarget = ctl.gpu.selectedGpu;
+    if (!store_daemon_record(ctl, LINUX_DAEMON_RECORD_ACTIVE, &committedTarget,
                              &committed, stateErr, sizeof(stateErr), 0, SERVICE_OPERATION_NONE, role, &binding)) {
         char commitErr[256] = {};
         gc_strlcpy(commitErr, sizeof(commitErr),
                    stateErr[0] ? stateErr : "unknown error");
         char rollbackErr[256] = {};
         bool rollbackOk = linux_backend_restore_snapshot(
-            &g_gpu, ceiling, &before, mutation.attemptedPhases,
+            &ctl.gpu, ceiling, &before, mutation.attemptedPhases,
             rollbackErr, sizeof(rollbackErr));
         char uncertainErr[256] = {};
-        bool uncertaintyRecorded = store_daemon_record(
+        bool uncertaintyRecorded = store_daemon_record(ctl,
             LINUX_DAEMON_RECORD_UNCERTAIN, &committedTarget, &committed,
             uncertainErr, sizeof(uncertainErr), 0, SERVICE_OPERATION_NONE, role, &binding);
-        daemon_enter_uncertain_state("automatic restore persistence failed");
+        daemon_enter_uncertain_state(ctl, "automatic restore persistence failed");
         gc_snprintf(outcome.message, sizeof(outcome.message),
                     "automatic restore persistence failed after hardware "
                     "write; hardware rollback %s: %s",
                     rollbackOk ? "succeeded" : "is uncertain", commitErr);
-        auto_restore_note_automatic_failure(trigger, outcome.message, rollbackOk);
+        auto_restore_note_automatic_failure(ctl, trigger, outcome.message, rollbackOk);
         dlog("daemon auto-restore: %s applied but ACTIVE commit failed: %s; "
              "hardware rollback=%d%s%s; uncertain record persisted=%d%s%s\n",
              linux_auto_restore_trigger_name(trigger),
@@ -533,20 +533,20 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
              uncertaintyRecorded ? "" : ": ",
              uncertaintyRecorded ? "" :
                  (uncertainErr[0] ? uncertainErr : "unknown error"));
-        wake_fan_runtime();
+        wake_fan_runtime(ctl);
         return outcome;
     }
     outcome.success = true;
-    g_activeDesired = committed;
-    g_activeTarget = committedTarget;
-    g_activeTargetRole = role;
-    g_activeTargetUuid = binding;
-    g_hasActiveDesired = true;
-    g_stateUncertain = false;
-    g_fanFailureCount = 0;
+    ctl.activeDesired = committed;
+    ctl.activeTarget = committedTarget;
+    ctl.activeTargetRole = role;
+    ctl.activeTargetUuid = binding;
+    ctl.hasActiveDesired = true;
+    ctl.stateUncertain = false;
+    ctl.fanFailureCount = 0;
     if (committed.hasFan && committed.fanMode == FAN_MODE_AUTO)
-        daemon_fan_ownership_retire("automatic restore returned the fan");
-    wake_fan_runtime();
+        daemon_fan_ownership_retire(ctl, "automatic restore returned the fan");
+    wake_fan_runtime(ctl);
     dlog("daemon auto-restore: %s committed -> %s\n",
          linux_auto_restore_trigger_name(trigger), outcome.message);
     return outcome;
@@ -555,9 +555,9 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
 // SERVICE_CMD_RESUME_RESTORE.  The Linux counterpart of the Windows
 // PBT_APMRESUME* path: restore the complete in-memory intent exactly once,
 // with no proof gate, using nothing the caller supplied.
-static void daemon_handle_resume_restore(ServiceResponse* resp) {
+static void daemon_handle_resume_restore(LinuxGpuController& ctl, ServiceResponse* resp) {
     if (!resp) return;
-    if (!g_hasActiveDesired) {
+    if (!ctl.hasActiveDesired) {
         // Not an error: a machine with no Green Curve settings applied has
         // nothing to lose across a suspend, and saying so keeps the resume unit
         // from reporting a failure on every wake.
@@ -565,19 +565,19 @@ static void daemon_handle_resume_restore(ServiceResponse* resp) {
         gc_strlcpy(resp->message, sizeof(resp->message),
             "no active Green Curve intent; nothing to restore after resume");
         dlog("daemon resume: no active intent; nothing to restore\n");
-        populate_snapshot(&resp->snapshot, &resp->controlState);
+        populate_snapshot(ctl, &resp->snapshot, &resp->controlState);
         return;
     }
     dlog("daemon resume: restoring the complete active intent after suspend\n");
-    LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(
-        LINUX_AUTO_RESTORE_TRIGGER_RESUME, &g_activeTarget, &g_activeDesired,
-        g_activeTargetRole, &g_activeTargetUuid);
+    LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(ctl,
+        LINUX_AUTO_RESTORE_TRIGGER_RESUME, &ctl.activeTarget, &ctl.activeDesired,
+        ctl.activeTargetRole, &ctl.activeTargetUuid);
     resp->status = outcome.success ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
     gc_strlcpy(resp->message, sizeof(resp->message),
                outcome.message[0] ? outcome.message : "resume restore failed");
-    populate_snapshot(&resp->snapshot, &resp->controlState);
-    if (g_hasActiveDesired) resp->desired = g_activeDesired;
-    if (g_stateUncertain) wake_fan_runtime();
+    populate_snapshot(ctl, &resp->snapshot, &resp->controlState);
+    if (ctl.hasActiveDesired) resp->desired = ctl.activeDesired;
+    if (ctl.stateUncertain) wake_fan_runtime(ctl);
 }
 
 #endif // GREEN_CURVE_LINUX_AUTO_RESTORE_RUNTIME_H
