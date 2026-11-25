@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-25: Explicit Linux apply-ceiling transaction
+
+- Replaced the seven file-scope F-APPLY-CEILING statics in
+  `source/linux_apply_ceiling.h` with a caller-owned
+  `LinuxApplyCeilingTransaction` passed to apply, Reset and the post-commit
+  rollback; no behaviour, log or file-format change (multi-GPU brief step 2).
+- New gate rejects file-scope/`thread_local` ceiling state in the Linux
+  transaction shards; fixture `tests/linux_ceiling_transaction_cases.h`
+  `14220-14227` (fails at `14222` with ambient state). See
+  clock-transition-audit.md, "Linux per-transaction ceiling state".
+
 ## 2026-11-25: Process-wide Linux driver context (multi-GPU step 2, part 1)
 
 - `LinuxDriverContext` (`source/linux_driver_context.{h,cpp}`) now owns the

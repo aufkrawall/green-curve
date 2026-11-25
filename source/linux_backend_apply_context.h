@@ -15,6 +15,9 @@
 
 struct LinuxApplyTransactionContext {
     LinuxGpuState* gpu;
+    // This apply's F-APPLY-CEILING state, owned by linux_backend_apply()'s
+    // caller (linux_apply_ceiling_transaction.h).
+    LinuxApplyCeilingTransaction* ceiling;
     const DesiredSettings* desired;
     const LinuxHardwareSnapshot* snapshot;
     // The intent this daemon last committed.  NVML exposes no getter for a

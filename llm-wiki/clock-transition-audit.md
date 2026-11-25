@@ -1,5 +1,43 @@
 # Clock transition hardening
 
+## Linux per-transaction ceiling state (2026-11-25)
+
+- F-APPLY-CEILING state for one Linux apply or Reset is a single explicit
+  `LinuxApplyCeilingTransaction` (`source/linux_apply_ceiling_transaction.h`):
+  scoped-curve transition, arm result, armed, write attempted, the plan as
+  armed, the outgoing HARD pin and the outgoing rollback bound. It replaced
+  seven file-scope statics in `source/linux_apply_ceiling.h`.
+- Ownership: the caller of `linux_backend_apply()` / `linux_backend_reset()`
+  owns the value and passes it by reference. `linux_apply_ceiling_begin()`
+  clears it on transaction entry. The daemon (`linux_daemon.cpp`) and the
+  unattended writer (`linux_auto_restore_runtime.h`) hand the same value to
+  `linux_backend_restore_snapshot()` when a successful write cannot be
+  committed, so the post-commit rollback is bounded by that transaction's own
+  clamp and outgoing facts, as before.
+- The transaction travels through `LinuxApplyTransactionContext::ceiling` and
+  `LinuxResetTransactionContext::ceiling`; direct helpers
+  (`linux_clock_control_proven_absent()`, `linux_apply_write_final_lock()`,
+  `linux_apply_reset_baseline[_locked_clocks]()`, `linux_backend_preflight()`,
+  the witness and the arming steps) take it as a parameter. Behaviour, logs
+  and file formats are unchanged.
+- Invariant: no file-scope, function-local or `thread_local` ceiling state
+  (and none of the seven retired names) in the Linux transaction shards,
+  including `linux_backend_mutation.cpp`, nor a namespace-scope transaction
+  (static or not) or any namespace; `tools/apply_ceiling_gates.py`
+  (`_forbid_linux_ceiling_ambient_state`) rejects one. Separately for the
+  daemon's Apply case, its Reset case and the unattended writer,
+  `_require_transaction_spans_rollback()` requires exactly one transaction,
+  declared before the operation and passed to that path's post-commit
+  rollback, with no reset or reassignment in between (a fresh or reset
+  transaction for the rollback fails). There is no daemon request-level
+  harness; the rollback's use of the transaction's bound is executed at the
+  backend level (`14220-14227`). Two transactions, on
+  one GPU or two, cannot observe each other's clamp
+  (`tests/linux_ceiling_transaction_cases.h`, `14220-14227`).
+- Step 2 of the multi-GPU series (issue 18 brief). Open question: once several
+  GPUs share a daemon, the process-wide hardware lock still serializes
+  transactions; this value only removes the shared state.
+
 ## Startup, memory and Reset transition ordering (2026-11-21)
 
 - Linux startup profile selection passes the incoming journal's committed
@@ -34,7 +72,7 @@
 `source/linux_backend_reset.h` captures the outgoing bound before the first
 Reset write. `source/linux_apply_ceiling.h` prefers a retained protection
 ceiling, then the selected GPU's recorded hard pin, then the live VF peak.
-The serialized daemon retains the transaction facts through its state-file
+The daemon keeps that `LinuxApplyCeilingTransaction` through its state-file
 commit, so the same bound protects restoration if that commit fails. A
 restored curve whose original restriction cannot be proved still keeps
 protection and reports uncertainty. The fake driver exercises restoring
@@ -130,7 +168,7 @@ reset phase instead of refusing from stale pre-reset readings, then rebuild and
 enforce the post-reset modeled review before mutating the VF curve
 (`gpu_backend_apply_authoring.h`, `linux_apply_modeled_review.h`,
 `linux_backend_mutation.cpp`). Incoming `Replace` scope vs partial update scope
-and known outgoing clock caps (`outgoingCeilingMHz` / `g_linuxOutgoingCeilingMHz`)
+and known outgoing clock caps (`outgoingCeilingMHz` / `LinuxApplyCeilingTransaction::outgoingCeilingMHz`)
 govern whether omitted/unknown caps may release or tighten across reset.
 
 The modeled reason is strict when a clamp is unavailable or rejected and never

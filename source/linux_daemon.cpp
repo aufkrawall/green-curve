@@ -390,7 +390,9 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                             "Apply aborted before hardware write: %s", stateErr);
                 break;
             }
-            LinuxMutationResult mutation = linux_backend_apply(&g_gpu, &d,
+            // One ceiling transaction for the apply and any rollback of it.
+            LinuxApplyCeilingTransaction ceiling = {};
+            LinuxMutationResult mutation = linux_backend_apply(&g_gpu, ceiling, &d,
                 hadPrevious ? &previousDesired : nullptr, &committedDesired,
                 resp->message, sizeof(resp->message));
             bool committed = false;
@@ -403,7 +405,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                     : linux_daemon_state_remove(GC_DAEMON_STATE_FILE, stateErr, sizeof(stateErr));
                 if (!committed) {
                     char rollbackErr[256] = {};
-                    bool rollbackOk = linux_backend_restore_snapshot(&g_gpu, &before,
+                    bool rollbackOk = linux_backend_restore_snapshot(&g_gpu, ceiling, &before,
                         mutation.attemptedPhases, rollbackErr, sizeof(rollbackErr));
                     bool recordOk = restore_committed_record(wasUncertain, hadPrevious,
                                                               &previousTarget, &previousDesired,
@@ -506,13 +508,14 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                             "Reset aborted before hardware write: %s", stateErr);
                 break;
             }
-            LinuxMutationResult mutation = linux_backend_reset(&g_gpu, previous,
+            LinuxApplyCeilingTransaction ceiling = {};
+            LinuxMutationResult mutation = linux_backend_reset(&g_gpu, ceiling, previous,
                 resp->message, sizeof(resp->message));
             bool committed = mutation.success &&
                 linux_daemon_state_remove(GC_DAEMON_STATE_FILE, stateErr, sizeof(stateErr));
             if (mutation.success && !committed) {
                 char rollbackErr[256] = {};
-                bool rollbackOk = linux_backend_restore_snapshot(&g_gpu, &before,
+                bool rollbackOk = linux_backend_restore_snapshot(&g_gpu, ceiling, &before,
                     mutation.attemptedPhases, rollbackErr, sizeof(rollbackErr));
                 bool recordOk = restore_committed_record(wasUncertain, hadPrevious,
                                                          &previousTarget, &previousDesired,

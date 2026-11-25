@@ -7,13 +7,15 @@ struct LinuxApplyTransactionContext {
     const DesiredSettings* committedIntent;
     ScalarCurveSubmissionReview scalarReview{};
     bool composedGpuOffset = false;
+    LinuxApplyCeilingTransaction* ceiling = nullptr;
 };
-static bool g_linuxCeilingArmed;
 static int handoffUnlocks;
-static bool linux_apply_reset_baseline(LinuxGpuState* g, const DesiredSettings* d) {
+static bool linux_apply_reset_baseline(LinuxGpuState* g, const LinuxApplyCeilingTransaction&, const DesiredSettings* d) {
     return linux_write_named_graphics(g, desired_named_graphics_surface(*d), 0);
 }
-static bool linux_apply_write_final_lock(LinuxGpuState*, const DesiredSettings*) { ++handoffUnlocks; return true; }
+static bool linux_apply_write_final_lock(LinuxGpuState*, const LinuxApplyCeilingTransaction&, const DesiredSettings*) {
+    ++handoffUnlocks; return true;
+}
 #include "linux_apply_graphics_submission.h"
 
 static int linux_graphics_handoff_cases() {
@@ -22,8 +24,9 @@ static int linux_graphics_handoff_cases() {
     d.authoring.graphicsPrecise = 1; d.authoring.graphicsSurface = DESIRED_GRAPHICS_GLOBAL;
     d.authoring.graphicsOffsetHz = 100000000;
     LinuxHardwareSnapshot snapshot{}; ScalarCurveSubmissionReview review{}; char why[256]{};
+    LinuxApplyCeilingTransaction tx = {};
     auto prepare = [&] {
-        initialize(&state, &g); snapshot = {}; review = {}; handoffUnlocks = 0; g_linuxCeilingArmed = false;
+        initialize(&state, &g); snapshot = {}; review = {}; handoffUnlocks = 0; tx.armed = false;
         state.p0Value = -50; state.globalValue = 17;
         g.graphicsRecovery.ownedSurface = CLOCK_OFFSET_SURFACE_P0;
         g.graphicsRecovery.covered = GRAPHICS_SCALAR_RECOVERY_P0;
@@ -38,9 +41,10 @@ static int linux_graphics_handoff_cases() {
         !review.installedGuardRequired || review.outgoingSurface != CLOCK_OFFSET_SURFACE_P0 || !review.beforeValid ||
         !linux_graphics_apply_precheck(&g, &d, true, why, sizeof(why), true)) return 9123;
     LinuxApplyTransactionContext context{&g, &d, &d, review};
+    context.ceiling = &tx;
     if (linux_apply_graphics_submission(&context) || state.p0Writes || state.globalWrites ||
         !context.scalarReview.refusedWithoutWrite) return 9124;
-    g_linuxCeilingArmed = true; ++state.p0Value;
+    tx.armed = true; ++state.p0Value;
     if (linux_apply_graphics_submission(&context) || state.p0Writes || state.globalWrites) return 9125;
     --state.p0Value; ++state.globalValue;
     if (linux_apply_graphics_submission(&context) || state.p0Writes || state.globalWrites) return 9126;
@@ -60,7 +64,7 @@ static int linux_graphics_handoff_cases() {
     if (!restore() || state.p0Value != -50 || state.globalValue != 17 ||
         g.graphicsRecovery.covered != GRAPHICS_SCALAR_RECOVERY_P0 || g.graphicsRecovery.uncertain) return 9129;
     if (!prepare() || !linux_authoring_scalar_transition_precheck(&g, &d, snapshot, review, why, sizeof(why))) return 9130;
-    context.scalarReview = review; g_linuxCeilingArmed = true;
+    context.scalarReview = review; tx.armed = true;
     if (!linux_release_graphics_handoff(&g, &d, context.scalarReview, true)) return 9131;
     state.failGlobalRead = true;
     if (linux_apply_graphics_submission(&context) || context.scalarReview.refusedWithoutWrite ||
@@ -69,7 +73,7 @@ static int linux_graphics_handoff_cases() {
     state.failGlobalRead = false;
     if (!restore() || state.p0Value != -50 || state.globalValue != 17) return 9133;
     if (!prepare() || !linux_authoring_scalar_transition_precheck(&g, &d, snapshot, review, why, sizeof(why))) return 9134;
-    context.scalarReview = review; g_linuxCeilingArmed = true; state.globalWriteClobbersP0 = true;
+    context.scalarReview = review; tx.armed = true; state.globalWriteClobbersP0 = true;
     if (!linux_apply_graphics_submission(&context) || linux_apply_graphics_finish(&context) ||
         handoffUnlocks || !g.graphicsRecovery.uncertain) return 9135;
     state.globalWriteClobbersP0 = false;
@@ -77,7 +81,7 @@ static int linux_graphics_handoff_cases() {
     // VF routing releases the owned API, preserving the other observed API.
     d.authoring.graphicsSurface = DESIRED_GRAPHICS_VF_COMPONENT;
     if (!prepare() || !linux_authoring_scalar_transition_precheck(&g, &d, snapshot, review, why, sizeof(why))) return 9137;
-    context.scalarReview = review; context.composedGpuOffset = true; g_linuxCeilingArmed = true;
+    context.scalarReview = review; context.composedGpuOffset = true; tx.armed = true;
     if (!linux_apply_graphics_submission(&context) || state.p0Value || state.globalValue != 17 ||
         state.p0Writes != 1 || state.globalWrites || !linux_apply_graphics_finish(&context)) return 9138;
     // Owned zero needs no clamp or setter, and verification must not reset an external pin.
@@ -93,7 +97,7 @@ static int linux_graphics_handoff_cases() {
     d.authoring.graphicsSurface = DESIRED_GRAPHICS_GLOBAL; d.hasLock = 1;
     d.lockMode = LOCK_MODE_FLATTEN; d.lockMHz = 1000; d.resetOcBeforeApply = 1;
     if (!prepare() || !linux_authoring_scalar_transition_precheck(&g, &d, snapshot, review, why, sizeof(why))) return 9142;
-    context.scalarReview = review; context.composedGpuOffset = false; g_linuxCeilingArmed = true;
+    context.scalarReview = review; context.composedGpuOffset = false; tx.armed = true;
     if (!linux_apply_graphics_baseline(&context) || context.scalarReview.beforeHz ||
         snapshot.graphicsPreimage.globalMHz != 17 || !linux_apply_graphics_submission(&context) ||
         !linux_apply_graphics_finish(&context) || state.p0Value || state.globalValue != 100) return 9143;
@@ -117,7 +121,7 @@ static int linux_graphics_handoff_cases() {
     d.hasLock = 1; d.lockMode = LOCK_MODE_FLATTEN; d.lockMHz = 1000;
     if (!linux_capture_named_graphics(&g, &snapshot, GRAPHICS_SCALAR_RECOVERY_GLOBAL) ||
         !linux_authoring_scalar_transition_precheck(&g, &d, snapshot, review, why, sizeof(why))) return 9150;
-    context.scalarReview = review; context.composedGpuOffset = true; g_linuxCeilingArmed = true;
+    context.scalarReview = review; context.composedGpuOffset = true; tx.armed = true;
     if (!linux_apply_graphics_baseline(&context) || !linux_apply_graphics_submission(&context) ||
         !linux_apply_graphics_finish(&context) || state.p0Value != 17 || state.globalValue ||
         state.p0Writes || state.globalWrites != 2 || handoffUnlocks != 1) return 9151;

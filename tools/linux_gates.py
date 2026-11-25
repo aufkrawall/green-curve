@@ -1007,7 +1007,7 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
         "outcome.success = true;",
         "an unattended write reports success only after its ACTIVE record commits")
     require_text(runtime_h, "linux_backend_restore_snapshot(\n"
-                 "            &g_gpu, &before, mutation.attemptedPhases,",
+                 "            &g_gpu, ceiling, &before, mutation.attemptedPhases,",
                  "an ACTIVE persistence failure rolls the hardware transaction back")
     require_text(runtime_h, "uncertain record persisted=%d",
                  "automatic persistence failure logs whether its fail-closed record committed")
@@ -1403,7 +1403,7 @@ def check_profile_interchange_and_curve_correction(ctx, require_text, forbid_tex
                  "Linux curve apply runs bounded post-write correction on verification miss")
     require_text(mutation_cpp, "linux_apply_needs_vf_baseline_reset(",
                  "Linux scoped VF replacement over a shaped curve resets the VF baseline first")
-    require_text(mutation_cpp, "if (vfBaselineReset) g_linuxScopedCurveCeilingTransition = true;",
+    require_text(mutation_cpp, "if (vfBaselineReset) ceiling.scopedCurveTransition = true;",
                  "Linux VF baseline reset arms the transition clock ceiling before zeroing VF")
     require_text(mutation_cpp, "linux_apply_reset_baseline_vf_curve(g, context->plannedBuild.pointMask)",
                  "Linux scoped VF preparation uses the transaction write set")
@@ -1416,7 +1416,7 @@ def check_profile_interchange_and_curve_correction(ctx, require_text, forbid_tex
     reset_h = _p(ctx, "linux_backend_reset.h")
     ctx.require_order_in_operation(
         reset_h, "LinuxMutationResult linux_backend_reset(",
-        "linux_reset_capture_rollback_ceiling(g, previous);",
+        "linux_reset_capture_rollback_ceiling(g, ceiling, previous);",
         "mutation = linux_execute_transaction(",
         "Linux Reset captures its pre-write rollback ceiling")
     require_text(_p(ctx, "linux_backend_rollback.h"),

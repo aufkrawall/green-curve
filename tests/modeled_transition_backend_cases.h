@@ -9,7 +9,6 @@ static int modeled_transition_backend_cases() {
         ~Restore() {
             g_app = app; g_nvml_api = api; cap = oldCap; resets = oldResets; armCalls = oldCalls;
             refuseArm = oldRefuse; refuseReset = oldReset; armRefusalCode = oldCode;
-            linux_apply_ceiling_reset_state();
         }
     } restore;
     DesiredSettings request{}; request.hasGpuOffset = true; request.gpuOffsetMHz = 100;
@@ -40,22 +39,23 @@ static int modeled_transition_backend_cases() {
         if (guarded.arm() != APPLY_CEILING_ARM_UNSUPPORTED || !guarded.must_refuse_transition() || armCalls != before) return 9586;
     }
     LinuxGpuState gpu{}; gpu.family = GPU_FAMILY_TURING;
+    LinuxApplyCeilingTransaction tx = {};
     gpu.nvml.setGpuLockedClocks = setCap; gpu.nvml.resetGpuLockedClocks = resetCap;
-    refuseArm = false; linux_apply_ceiling_reset_state(); before = armCalls;
-    if (!linux_apply_arm_transition_ceiling(&gpu, &request, nullptr, false, &modeled) ||
-        cap != 1800 || armCalls != before + 1 || g_linuxCeilingPlan.symmetricFallbackAllowed ||
-        !linux_apply_write_final_lock(&gpu, &request) || cap) return 9587;
-    refuseArm = true; before = armCalls; linux_apply_ceiling_reset_state();
-    if (linux_apply_arm_transition_ceiling(&gpu, &request, nullptr, false, &modeled) ||
-        g_linuxCeilingArmResult != APPLY_CEILING_ARM_UNSUPPORTED || g_linuxCeilingArmed || armCalls != before + 1) return 9588;
-    gpu.nvml.setGpuLockedClocks = nullptr; before = armCalls; linux_apply_ceiling_reset_state();
-    if (linux_apply_arm_transition_ceiling(&gpu, &request, nullptr, true, &modeled) || armCalls != before) return 9589;
+    refuseArm = false; tx = {}; before = armCalls;
+    if (!linux_apply_arm_transition_ceiling(&gpu, tx, &request, nullptr, false, &modeled) ||
+        cap != 1800 || armCalls != before + 1 || tx.plan.symmetricFallbackAllowed ||
+        !linux_apply_write_final_lock(&gpu, tx, &request) || cap) return 9587;
+    refuseArm = true; before = armCalls; tx = {};
+    if (linux_apply_arm_transition_ceiling(&gpu, tx, &request, nullptr, false, &modeled) ||
+        tx.armResult != APPLY_CEILING_ARM_UNSUPPORTED || tx.armed || armCalls != before + 1) return 9588;
+    gpu.nvml.setGpuLockedClocks = nullptr; before = armCalls; tx = {};
+    if (linux_apply_arm_transition_ceiling(&gpu, tx, &request, nullptr, true, &modeled) || armCalls != before) return 9589;
     gpu.nvml.setGpuLockedClocks = setCap; refuseArm = false;
     DesiredSettings outgoing{}; outgoing.hasLock = true; outgoing.lockMode = LOCK_MODE_HARD; outgoing.lockMHz = 1200;
-    request.resetOcBeforeApply = true; linux_apply_ceiling_reset_state(); linux_apply_ceiling_note_outgoing(&outgoing);
-    g_linuxOutgoingCeilingMHz = 1200;
-    if (!linux_apply_arm_transition_ceiling(&gpu, &request, &outgoing, true, &modeled) || cap != 1200 ||
-        g_linuxCeilingPlan.ceilingMHz != 1200 || g_linuxCeilingPlan.symmetricFallbackAllowed) return 9590;
+    request.resetOcBeforeApply = true; tx = {}; linux_apply_ceiling_note_outgoing(tx, &outgoing);
+    tx.outgoingCeilingMHz = 1200;
+    if (!linux_apply_arm_transition_ceiling(&gpu, tx, &request, &outgoing, true, &modeled) || cap != 1200 ||
+        tx.plan.ceilingMHz != 1200 || tx.plan.symmetricFallbackAllowed) return 9590;
     g_app = {}; g_app.lockMode = LOCK_MODE_HARD; g_app.appliedLockFreq = 1200;
     g_nvml_api.setGpuLockedClocks = setCap; before = armCalls;
     {
@@ -64,8 +64,8 @@ static int modeled_transition_backend_cases() {
             armCalls != before + 1 || guarded.plan.symmetricFallbackAllowed) return 9591;
     }
     before = armCalls;
-    if (linux_apply_arm_transition_ceiling(nullptr, &request, nullptr, false, &modeled) || armCalls != before) return 9594;
-    if (linux_apply_arm_transition_ceiling(&gpu, nullptr, nullptr, false, &modeled) || armCalls != before) return 9595;
+    if (linux_apply_arm_transition_ceiling(nullptr, tx, &request, nullptr, false, &modeled) || armCalls != before) return 9594;
+    if (linux_apply_arm_transition_ceiling(&gpu, tx, nullptr, nullptr, false, &modeled) || armCalls != before) return 9595;
     {
         ApplyClockCeilingGuard guarded(nullptr, false, false, &modeled);
         guarded.arm(); if (!guarded.must_refuse_transition() || armCalls != before) return 9596;

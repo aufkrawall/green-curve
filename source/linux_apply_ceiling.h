@@ -12,6 +12,8 @@
 #ifndef GREEN_CURVE_LINUX_APPLY_CEILING_H
 #define GREEN_CURVE_LINUX_APPLY_CEILING_H
 
+#include "linux_apply_ceiling_transaction.h"
+
 // Same decision as Windows, same reason: the transaction order used to be
 // reset -> offsets -> curve -> lock, so a switch from an unpinned profile to a
 // pinned one ran the newly raised curve with no clamp at all between the curve
@@ -66,8 +68,6 @@ static bool linux_outgoing_state_holds_clocks_down(const LinuxGpuState* g,
     return linux_outgoing_curve_has_negative_offsets(g);
 }
 
-static bool g_linuxScopedCurveCeilingTransition = false;
-
 template <class D>
 static inline auto linux_apply_ceiling_scope_is_replace_profile(const D* d, int)
     -> decltype((void)d->applicationScope, bool()) {
@@ -77,12 +77,12 @@ template <class D>
 static inline bool linux_apply_ceiling_scope_is_replace_profile(const D*, long) { return false; }
 
 static ApplyClockCeilingPlan linux_apply_clock_ceiling_plan(
-    LinuxGpuState* g, const DesiredSettings* d,
+    LinuxGpuState* g, const LinuxApplyCeilingTransaction& t, const DesiredSettings* d,
     const DesiredSettings* committed = nullptr) {
     if (!g || !d) return ApplyClockCeilingPlan{};
-    const bool resetsToStock = d->resetOcBeforeApply != 0 || g_linuxScopedCurveCeilingTransition;
+    const bool resetsToStock = d->resetOcBeforeApply != 0 || t.scopedCurveTransition;
     const bool replacesClockDomain = service_request_replaces_lock_domain(d) ||
-        g_linuxScopedCurveCeilingTransition ||
+        t.scopedCurveTransition ||
         (d->resetOcBeforeApply && linux_apply_ceiling_scope_is_replace_profile(d, 0));
     const bool outgoingHardPin = committed && committed->hasLock &&
         committed->lockMode == LOCK_MODE_HARD && committed->lockMHz > 0;
@@ -98,64 +98,42 @@ static ApplyClockCeilingPlan linux_apply_clock_ceiling_plan(
         linux_outgoing_ceiling_mhz(g, committed), memoryMayDropFlatten);
 }
 
-// What arming actually did, so the witness and the phase result can both stop
-// guessing.  `linux_apply_ceiling_armed` is written by the phase body and read
-// by the witness; the pre-fix witness used the PLAN's `arm` flag as evidence
-// of installation, so a refused clamp still produced a HELD verdict in the
-// journal (audit CT-07).
-static ApplyClockCeilingArmResult g_linuxCeilingArmResult =
-    APPLY_CEILING_ARM_NOT_NEEDED;
-static bool g_linuxCeilingArmed = false;
-static bool g_linuxCeilingWriteAttempted = false;
-// The plan AS ARMED, cached for the rest of the transaction.
-//
-// Every later consumer used to recompute it from `g` and `d`.  That is wrong
-// for two independent reasons now that the plan reads the outgoing state: the
-// reset and curve phases CHANGE that state, so a recomputed plan describes a
-// transition that is already half-done, and the witness would print a ceiling
-// value that never existed.  The clamp that is physically installed is a fact,
-// not something to re-derive.
-static ApplyClockCeilingPlan g_linuxCeilingPlan = {};
-// Whether the state this transaction is leaving was a HARD pin.
-//
-// CT-07.  Rollback needs this and cannot derive it: a HARD profile's VF tail
-// is deliberately left raw and high because the pin -- not the curve -- is
-// what makes it safe.  Restoring that curve and then releasing the lock is the
-// one rollback outcome that is worse than doing nothing.  It is a transaction
-// fact recorded at entry, not something the restore can infer from a snapshot
-// full of positive offsets, which an ordinary unpinned overclock also has.
-static bool g_linuxOutgoingHadHardPin = false;
-static unsigned int g_linuxOutgoingCeilingMHz = 0;
-
-static void linux_apply_ceiling_reset_state() {
-    g_linuxScopedCurveCeilingTransition = false;
-    g_linuxCeilingArmResult = APPLY_CEILING_ARM_NOT_NEEDED;
-    g_linuxCeilingArmed = false;
-    g_linuxCeilingWriteAttempted = false;
-    g_linuxCeilingPlan = ApplyClockCeilingPlan{};
-    g_linuxOutgoingHadHardPin = false;
-    g_linuxOutgoingCeilingMHz = 0;
-}
+// The transaction's arm result, armed clamp, cached plan and outgoing facts
+// live in LinuxApplyCeilingTransaction (linux_apply_ceiling_transaction.h),
+// owned by the caller of linux_backend_apply()/linux_backend_reset() and
+// passed to every function below that reads or writes them.
 
 // Record what the transaction is leaving, before any phase runs.
-static void linux_apply_ceiling_note_outgoing(const DesiredSettings* committed) {
-    g_linuxOutgoingHadHardPin = committed && committed->hasLock &&
+static void linux_apply_ceiling_note_outgoing(LinuxApplyCeilingTransaction& t,
+                                              const DesiredSettings* committed) {
+    t.outgoingHadHardPin = committed && committed->hasLock &&
         committed->lockMode == LOCK_MODE_HARD && committed->lockMHz > 0;
+}
+
+// Transaction entry: start from a clean value, then record what is being left.
+// The caller keeps the value after the transaction returns, because a failed
+// commit rolls back through linux_backend_restore_snapshot() with it.
+static void linux_apply_ceiling_begin(LinuxApplyCeilingTransaction& t,
+                                      const DesiredSettings* outgoing) {
+    t = LinuxApplyCeilingTransaction{};
+    linux_apply_ceiling_note_outgoing(t, outgoing);
 }
 
 // Capture Reset's rollback bound before any offset, VF or lock write. The
 // daemon may also need it if the successful hardware Reset cannot commit.
 static void linux_reset_capture_rollback_ceiling(const LinuxGpuState* g,
+                                                 LinuxApplyCeilingTransaction& t,
                                                  const DesiredSettings* previous) {
-    linux_apply_ceiling_note_outgoing(previous);
-    g_linuxOutgoingCeilingMHz = linux_outgoing_ceiling_mhz(g, previous);
+    linux_apply_ceiling_note_outgoing(t, previous);
+    t.outgoingCeilingMHz = linux_outgoing_ceiling_mhz(g, previous);
 }
 
 // Whether a curve this rollback is about to restore is one that needs a pin to
 // be safe.
-static bool linux_snapshot_curve_needs_a_pin(const LinuxHardwareSnapshot* s) {
+static bool linux_snapshot_curve_needs_a_pin(const LinuxApplyCeilingTransaction& t,
+                                             const LinuxHardwareSnapshot* s) {
     if (!s || !s->curveValid) return false;
-    return g_linuxOutgoingHadHardPin;
+    return t.outgoingHadHardPin;
 }
 
 // The LINUX_MUTATION_LOCK_CEILING phase body.
@@ -170,6 +148,7 @@ static bool linux_snapshot_curve_needs_a_pin(const LinuxHardwareSnapshot* s) {
 // fails the phase, which the transaction turns into a refusal before the reset
 // and curve phases run.
 static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
+                                               LinuxApplyCeilingTransaction& t,
                                                const DesiredSettings* d,
                                                const DesiredSettings* committed, bool installedGuardRequired = false,
                                                const ApplyClockCeilingPlan* modeled = nullptr) {
@@ -177,20 +156,20 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
         lb_log("apply: modeled clock ceiling refused without a GPU and desired settings\n"); return false;
     }
     // Transaction entry already initialized state and recorded outgoing ownership.
-    ApplyClockCeilingPlan plan = linux_apply_clock_ceiling_plan(g, d, committed);
+    ApplyClockCeilingPlan plan = linux_apply_clock_ceiling_plan(g, t, d, committed);
     if (modeled) plan = apply_clock_ceiling_merge_modeled(plan, *modeled,
         g && g->nvml.setGpuLockedClocks && g->nvml.resetGpuLockedClocks);
-    g_linuxCeilingPlan = plan;
+    t.plan = plan;
     if (!plan.arm) {
         if (!plan.required && !installedGuardRequired) return true;
         // No entry points at all is a fact about the driver, not about this
         // attempt.  A plan with no defensible ceiling value is neither, and
         // stays UNAVAILABLE so it keeps refusing.
-        g_linuxCeilingArmResult = plan.clampControlAbsent
+        t.armResult = plan.clampControlAbsent
             ? APPLY_CEILING_ARM_UNSUPPORTED
             : APPLY_CEILING_ARM_UNAVAILABLE;
         const bool refuse = apply_clock_ceiling_transition_must_refuse(
-            plan.required, g_linuxCeilingArmResult, plan.reason, installedGuardRequired);
+            plan.required, t.armResult, plan.reason, installedGuardRequired);
         // Two different facts reach this branch and they need different words:
         // missing entry points really are "no control on this driver", while a
         // plan with no defensible ceiling value has everything it needs except
@@ -202,13 +181,13 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
                plan.clampControlAbsent
                    ? "this driver exposes no locked-clock entry points at all"
                    : "no defensible ceiling value could be derived",
-               apply_clock_ceiling_arm_result_name(g_linuxCeilingArmResult),
+               apply_clock_ceiling_arm_result_name(t.armResult),
                refuse ? "refusing the transition before any write"
                       : "PROCEEDING UNPROTECTED -- the final state needs no"
                         " NVML hard pin and this driver has no clamp to install");
         return !refuse;
     }
-    g_linuxCeilingWriteAttempted = true;
+    t.writeAttempted = true;
     // Every permitted form has to answer NOT_SUPPORTED before the attempt
     // counts as unsupported: one form unsupported while another is merely
     // declined is still a clamp this request could have installed.
@@ -220,9 +199,9 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
     // form adds a FLOOR, so it is only used where the plan permits it.
     armRc = g->nvml.setGpuLockedClocks(g->nvmlDevice, 0, plan.ceilingMHz);
     if (armRc == NVML_SUCCESS) {
-        g_linuxCeilingArmed = true;
+        t.armed = true;
         g->retainedTransitionCeilingMHz = plan.ceilingMHz;
-        g_linuxCeilingArmResult = APPLY_CEILING_ARM_INSTALLED;
+        t.armResult = APPLY_CEILING_ARM_INSTALLED;
         lb_log("apply: transition clock ceiling armed 0..%u MHz before the"
                " reset/curve writes\n", plan.ceilingMHz);
         return true;
@@ -232,9 +211,9 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
         armRc = g->nvml.setGpuLockedClocks(g->nvmlDevice, plan.ceilingMHz,
                                            plan.ceilingMHz);
         if (armRc == NVML_SUCCESS) {
-            g_linuxCeilingArmed = true;
+            t.armed = true;
             g->retainedTransitionCeilingMHz = plan.ceilingMHz;
-            g_linuxCeilingArmResult = APPLY_CEILING_ARM_INSTALLED;
+            t.armResult = APPLY_CEILING_ARM_INSTALLED;
             lb_log("apply: transition clock ceiling armed %u..%u MHz before the"
                    " reset/curve writes\n", plan.ceilingMHz, plan.ceilingMHz);
             return true;
@@ -251,15 +230,15 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
     // apply_clock_ceiling_policy.h.
     const bool unsupported = openNotSupported &&
         (!plan.symmetricFallbackAllowed || symmetricNotSupported);
-    g_linuxCeilingArmResult = unsupported ? APPLY_CEILING_ARM_UNSUPPORTED
+    t.armResult = unsupported ? APPLY_CEILING_ARM_UNSUPPORTED
                                           : APPLY_CEILING_ARM_REFUSED;
     const bool refuse = apply_clock_ceiling_transition_must_refuse(
-        plan.required, g_linuxCeilingArmResult, plan.reason, installedGuardRequired);
+        plan.required, t.armResult, plan.reason, installedGuardRequired);
     lb_log("apply: COULD NOT ARM transition clock ceiling at %u MHz (symmetric"
            " fallback %s, armResult=%s); protection was %s\n",
            plan.ceilingMHz,
            plan.symmetricFallbackAllowed ? "also refused" : "not permitted here",
-           apply_clock_ceiling_arm_result_name(g_linuxCeilingArmResult),
+           apply_clock_ceiling_arm_result_name(t.armResult),
            !plan.required ? "optional -- continuing"
                           : (refuse ? "REQUIRED -- refusing the transition before"
                                       " the reset and curve writes"
@@ -274,7 +253,8 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
 // Install or tighten a post-reset modeled transition ceiling before scalar/VF
 // writes. Never loosen an already-armed tighter ceiling; on failure while
 // armed, preserve existing ceiling state so rollback stays protected.
-static bool linux_apply_arm_modeled_post_reset(LinuxGpuState* g, const DesiredSettings* d,
+static bool linux_apply_arm_modeled_post_reset(LinuxGpuState* g, LinuxApplyCeilingTransaction& t,
+    const DesiredSettings* d,
     const ApplyClockCeilingPlan& modeled, char* why, size_t size) {
     if (!modeled.required && !modeled.arm) return true;
     if (!g || !d) {
@@ -284,37 +264,37 @@ static bool linux_apply_arm_modeled_post_reset(LinuxGpuState* g, const DesiredSe
     const bool cap = g->nvml.setGpuLockedClocks != nullptr &&
         g->nvml.resetGpuLockedClocks != nullptr;
     const ApplyClockCeilingPlan merged = apply_clock_ceiling_merge_modeled(
-        g_linuxCeilingPlan, modeled, cap);
+        t.plan, modeled, cap);
     if (!merged.arm) {
-        if (!g_linuxCeilingArmed) {
-            g_linuxCeilingPlan = merged;
-            g_linuxCeilingArmResult = merged.clampControlAbsent
+        if (!t.armed) {
+            t.plan = merged;
+            t.armResult = merged.clampControlAbsent
                 ? APPLY_CEILING_ARM_UNSUPPORTED
                 : APPLY_CEILING_ARM_UNAVAILABLE;
         }
         if (why && size)
             snprintf(why, size, "Post-reset modeled transition clock ceiling is unavailable (%s)",
-                apply_clock_ceiling_arm_result_name(g_linuxCeilingArmResult));
+                apply_clock_ceiling_arm_result_name(t.armResult));
         lb_log("apply: post-reset modeled ceiling unavailable (armResult=%s)\n",
-            apply_clock_ceiling_arm_result_name(g_linuxCeilingArmResult));
+            apply_clock_ceiling_arm_result_name(t.armResult));
         return false;
     }
-    if (g_linuxCeilingArmed && g_linuxCeilingPlan.ceilingMHz > 0 &&
-        g_linuxCeilingPlan.ceilingMHz <= merged.ceilingMHz) {
-        g_linuxCeilingPlan.required = merged.required;
-        g_linuxCeilingPlan.finalPinIsCeiling = merged.finalPinIsCeiling;
+    if (t.armed && t.plan.ceilingMHz > 0 &&
+        t.plan.ceilingMHz <= merged.ceilingMHz) {
+        t.plan.required = merged.required;
+        t.plan.finalPinIsCeiling = merged.finalPinIsCeiling;
         lb_log("apply: post-reset modeled cap (%u MHz) covered by armed %u MHz\n",
-            merged.ceilingMHz, g_linuxCeilingPlan.ceilingMHz);
+            merged.ceilingMHz, t.plan.ceilingMHz);
         return true;
     }
-    g_linuxCeilingWriteAttempted = true;
+    t.writeAttempted = true;
     bool openNotSupported = false, symmetricNotSupported = false;
     int armRc = g->nvml.setGpuLockedClocks(g->nvmlDevice, 0, merged.ceilingMHz);
     if (armRc == NVML_SUCCESS) {
-        g_linuxCeilingPlan = merged;
-        g_linuxCeilingArmed = true;
+        t.plan = merged;
+        t.armed = true;
         g->retainedTransitionCeilingMHz = merged.ceilingMHz;
-        g_linuxCeilingArmResult = APPLY_CEILING_ARM_INSTALLED;
+        t.armResult = APPLY_CEILING_ARM_INSTALLED;
         lb_log("apply: post-reset modeled transition ceiling armed 0..%u MHz\n", merged.ceilingMHz);
         return true;
     }
@@ -322,10 +302,10 @@ static bool linux_apply_arm_modeled_post_reset(LinuxGpuState* g, const DesiredSe
     if (merged.symmetricFallbackAllowed) {
         armRc = g->nvml.setGpuLockedClocks(g->nvmlDevice, merged.ceilingMHz, merged.ceilingMHz);
         if (armRc == NVML_SUCCESS) {
-            g_linuxCeilingPlan = merged;
-            g_linuxCeilingArmed = true;
+            t.plan = merged;
+            t.armed = true;
             g->retainedTransitionCeilingMHz = merged.ceilingMHz;
-            g_linuxCeilingArmResult = APPLY_CEILING_ARM_INSTALLED;
+            t.armResult = APPLY_CEILING_ARM_INSTALLED;
             lb_log("apply: post-reset modeled transition ceiling armed %u..%u MHz\n",
                 merged.ceilingMHz, merged.ceilingMHz);
             return true;
@@ -334,14 +314,14 @@ static bool linux_apply_arm_modeled_post_reset(LinuxGpuState* g, const DesiredSe
     }
     const bool unsupported = openNotSupported &&
         (!merged.symmetricFallbackAllowed || symmetricNotSupported);
-    if (!g_linuxCeilingArmed) g_linuxCeilingPlan = merged;
-    g_linuxCeilingArmResult = unsupported ? APPLY_CEILING_ARM_UNSUPPORTED : APPLY_CEILING_ARM_REFUSED;
+    if (!t.armed) t.plan = merged;
+    t.armResult = unsupported ? APPLY_CEILING_ARM_UNSUPPORTED : APPLY_CEILING_ARM_REFUSED;
     if (why && size)
         snprintf(why, size, "Post-reset modeled transition clock ceiling at %u MHz could not be armed (%s)",
-            merged.ceilingMHz, apply_clock_ceiling_arm_result_name(g_linuxCeilingArmResult));
+            merged.ceilingMHz, apply_clock_ceiling_arm_result_name(t.armResult));
     lb_log("apply: post-reset modeled ceiling at %u MHz failed (armResult=%s, retainedArmed=%d)\n",
-        merged.ceilingMHz, apply_clock_ceiling_arm_result_name(g_linuxCeilingArmResult),
-        g_linuxCeilingArmed ? 1 : 0);
+        merged.ceilingMHz, apply_clock_ceiling_arm_result_name(t.armResult),
+        t.armed ? 1 : 0);
     return false;
 }
 
@@ -352,14 +332,15 @@ static bool linux_apply_arm_modeled_post_reset(LinuxGpuState* g, const DesiredSe
 // Sampled synchronously between phases -- never from another thread, which
 // would add a concurrent NVML reader alongside an in-flight VF write.
 static void linux_apply_log_clock_witness(LinuxGpuState* g,
+                                          const LinuxApplyCeilingTransaction& t,
                                           const DesiredSettings* d,
                                           const char* stage, bool finalState = false) {
     if (!g || !stage) return;
     // The plan as it was ARMED, not a fresh one: the phases between arming and
     // this sample have already changed the live state the plan is derived from,
     // so recomputing would print a ceiling that never existed.
-    ApplyClockCeilingPlan ceiling = g_linuxCeilingPlan;
-    bool armed = g_linuxCeilingArmed;
+    ApplyClockCeilingPlan ceiling = t.plan;
+    bool armed = t.armed;
     if (finalState && d) {
         armed = d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
         ceiling.required = ceiling.arm = armed;
@@ -406,21 +387,23 @@ static void linux_apply_log_clock_witness(LinuxGpuState* g,
 // state (a hard pin, or the release that also hands over any F-APPLY-CEILING
 // transition clamp), then witness the result.  The witness runs either way --
 // a failed lock write is exactly when knowing the live clock matters most.
-static bool linux_clock_control_proven_absent(const LinuxGpuState* g) {
+static bool linux_clock_control_proven_absent(const LinuxGpuState* g,
+                                              const LinuxApplyCeilingTransaction& t) {
     return g && apply_clock_control_proven_absent(
         g->family == GPU_FAMILY_PASCAL,
-        g_linuxCeilingArmed || g->retainedTransitionCeilingMHz != 0,
-        g_linuxOutgoingHadHardPin);
+        t.armed || g->retainedTransitionCeilingMHz != 0,
+        t.outgoingHadHardPin);
 }
 
 static bool linux_apply_write_final_lock(LinuxGpuState* g,
+                                         const LinuxApplyCeilingTransaction& t,
                                          const DesiredSettings* d) {
     bool lockOk;
     if (d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0)
         lockOk = g->nvml.setGpuLockedClocks &&
                  g->nvml.setGpuLockedClocks(g->nvmlDevice, d->lockMHz,
                                             d->lockMHz) == NVML_SUCCESS;
-    else if (linux_clock_control_proven_absent(g)) {
+    else if (linux_clock_control_proven_absent(g, t)) {
         lb_log("apply: final NVML locked-clock reset is inapplicable on Pascal;"
                " no hard pin or retained cap exists\n");
         lockOk = true;
@@ -430,9 +413,9 @@ static bool linux_apply_write_final_lock(LinuxGpuState* g,
     if (lockOk) {
         g->retainedTransitionCeilingMHz = 0;
         // Post-handoff clocks obey the final state, not the old lower cap.
-        linux_apply_log_clock_witness(g, d, "post-lock final state", true);
+        linux_apply_log_clock_witness(g, t, d, "post-lock final state", true);
     } else {
-        linux_apply_log_clock_witness(g, d, "post-lock failure");
+        linux_apply_log_clock_witness(g, t, d, "post-lock failure");
     }
     return lockOk;
 }
@@ -443,18 +426,19 @@ static bool linux_apply_write_final_lock(LinuxGpuState* g,
 // the pre-fix code did, unconditionally, immediately before writing the new
 // curve.  With no ceiling armed this still clears any stale pin, as before.
 static bool linux_apply_reset_baseline_locked_clocks(LinuxGpuState* g,
+                                                     const LinuxApplyCeilingTransaction& t,
                                                      const DesiredSettings* d) {
     (void)d;
     // Keyed off the clamp that is ACTUALLY installed, not off a freshly
     // recomputed plan.  Recomputing here would consult a live state the arming
     // phase has already begun changing, and would keep the pin standing on the
     // strength of an intention rather than a fact.
-    if (g_linuxCeilingArmed) {
+    if (t.armed) {
         lb_log("apply: reset baseline keeps the %u MHz transition ceiling\n",
-               g_linuxCeilingPlan.ceilingMHz);
+               t.plan.ceilingMHz);
         return true;
     }
-    if (linux_clock_control_proven_absent(g)) {
+    if (linux_clock_control_proven_absent(g, t)) {
         lb_log("apply: baseline NVML locked-clock reset is inapplicable on Pascal\n");
         return true;
     }

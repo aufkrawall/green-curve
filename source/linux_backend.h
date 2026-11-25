@@ -26,6 +26,7 @@
 #include "linux_gpu_uuid.h"
 #include "linux_transaction.h"
 #include "linux_driver_context.h"
+#include "linux_apply_ceiling_transaction.h"
 #include "linux_vf_layout_summary.h"
 #include "vf_writable_point_policy.h"
 #include "fan_fixed_maintenance_policy.h"
@@ -278,7 +279,10 @@ bool linux_backend_select_target(LinuxGpuState* g, const GpuAdapterInfo* target,
                                  LinuxGpuUuidVerdict* uuidVerdict = nullptr);
 bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* snapshot,
                                     char* err, size_t errSize);
-bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapshot* snapshot,
+// `ceiling` is the transaction whose phases are being undone; a rollback after
+// a failed commit passes the same value the apply/reset just used.
+bool linux_backend_restore_snapshot(LinuxGpuState* g, LinuxApplyCeilingTransaction& ceiling,
+                                    const LinuxHardwareSnapshot* snapshot,
                                     unsigned int phaseMask, char* err, size_t errSize);
 
 // Refresh the live curve + offsets + ranges from the driver.
@@ -306,14 +310,18 @@ int linux_backend_clk_domain_dump(const GpuAdapterInfo* target, FILE* out);
 // fan.  For a VF-domain replacement, previousIntent and committedIntent let
 // the transaction release points that are no longer owned.  Startup replay
 // passes no previous intent.  Writes a human-readable summary to `result`.
-LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings* d,
+// `ceiling` is reset on entry and left describing this transaction, for a
+// later linux_backend_restore_snapshot() of the same operation.
+LinuxMutationResult linux_backend_apply(LinuxGpuState* g, LinuxApplyCeilingTransaction& ceiling,
+                                        const DesiredSettings* d,
                                         const DesiredSettings* previousIntent,
                                         const DesiredSettings* committedIntent,
                                         char* result, size_t resultSize);
 
 // Reset OC/UV to driver defaults (curve offsets 0, clock offsets 0, power
 // default, locked clocks released, fan auto).
-LinuxMutationResult linux_backend_reset(LinuxGpuState* g, const DesiredSettings* previous,
+LinuxMutationResult linux_backend_reset(LinuxGpuState* g, LinuxApplyCeilingTransaction& ceiling,
+                                        const DesiredSettings* previous,
                                         char* result, size_t resultSize);
 bool linux_backend_set_curve_fan_percent(LinuxGpuState* g, unsigned int percent);
 bool linux_backend_set_fan_auto(LinuxGpuState* g);

@@ -6,7 +6,9 @@
 #include <cstring>
 
 static void lb_log(const char*, ...) {}
-static bool linux_clock_control_proven_absent(const LinuxGpuState*) { return false; }
+static bool linux_clock_control_proven_absent(const LinuxGpuState*, const LinuxApplyCeilingTransaction&) {
+    return false;
+}
 static bool desired_gpu_offset_uses_curve(const DesiredSettings* d) {
     return d && d->hasGpuOffset && (d->gpuOffsetExcludeLowCount > 0 || d->hasLock || service_desired_has_curve_point(d));
 }
@@ -30,6 +32,7 @@ static nvmlReturn_t power_set(nvmlDevice_t, unsigned int) { ++writes; return NVM
 
 int run_linux_scope_preflight_tests() {
     LinuxGpuState g{};
+    const LinuxApplyCeilingTransaction ceiling = {};
     g.backend = &g_vfBackendFuture;
     g.nvmlReady = g.writeIdentityResolved = true;
     g.nvml.resetGpuLockedClocks = counted_reset;
@@ -43,43 +46,43 @@ int run_linux_scope_preflight_tests() {
     request.hasCurvePoint[4] = 1; request.curvePointMHz[4] = 1700;
     char why[192]{};
     writes = 0;
-    if (!linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8133;
+    if (!linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes) return 8133;
     request.hasMemOffset = 1;
-    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8134;
+    if (linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes) return 8134;
     snapshot.availableMutationDomains |= SERVICE_MUTATION_DOMAIN_MEM_OFFSET;
-    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8135;
+    if (linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes) return 8135;
     snapshot.memOffsetValid = true;
-    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8136;
+    if (linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes) return 8136;
     g.nvml.setMemClkVfOffset = counted_offset;
-    if (!linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8137;
+    if (!linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes) return 8137;
     request = {}; request.applicationScope = DESIRED_SCOPE_REPLACE_PROFILE;
     request.hasGpuOffset = 1; request.gpuOffsetMHz = 100;
     request.curvePointCaptured[4] = 1; // compiled cleanup is independent of the scalar
     g.nvml.setGpcClkVfOffset = nullptr;
-    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why), 1) || writes) return 8142;
+    if (linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why), 1) || writes) return 8142;
     g.nvml.setGpcClkVfOffset = counted_offset;
     snapshot.availableMutationDomains &= ~(gc_u32)SERVICE_MUTATION_DOMAIN_GPU_OFFSET;
-    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why), 1) || writes) return 8143;
+    if (linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why), 1) || writes) return 8143;
     snapshot.availableMutationDomains |= SERVICE_MUTATION_DOMAIN_GPU_OFFSET;
-    if (!linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why), 1) || writes) return 8144;
+    if (!linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why), 1) || writes) return 8144;
     request = {}; request.hasPowerLimit = true; request.powerLimitPct = 80;
     snapshot.powerValid = true;
     snapshot.availableMutationDomains |= SERVICE_MUTATION_DOMAIN_POWER;
     g.nvml.getPowerLimit = power_current; g.nvml.getPowerDefaultLimit = power_default;
     g.nvml.getPowerConstraints = power_range; g.nvml.setPowerLimit = power_set;
-    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8197;
+    if (linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes) return 8197;
     powerMaximum = 300000;
-    if (!linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8198;
+    if (!linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes) return 8198;
     powerDefault = 250001;
-    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8199;
+    if (linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes) return 8199;
     powerDefault = 250000; powerMaximum = 190000;
     request = {}; request.hasMemOffset = 1; request.memOffsetMHz = 1;
     snapshot.curveOffsetsExact = false;
-    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8621;
+    if (linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes) return 8621;
     snapshot.curveOffsetsExact = true;
-    if (!linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8622;
+    if (!linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes) return 8622;
     snapshot.curveMask[4] = true; snapshot.curveOffsetsHz[4] = 500;
-    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 8623;
+    if (linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes) return 8623;
     snapshot.curveMask[4] = false; snapshot.curveOffsetsHz[4] = 0;
 
     // fan_request_policy.h: a notebook board answers the fan count with zero.
@@ -93,24 +96,24 @@ int run_linux_scope_preflight_tests() {
     gpu_capability_set(&g.capability, SERVICE_MUTATION_DOMAIN_FAN, GPU_DOMAIN_CAP_ABSENT);
     if (linux_fan_request_disposition(&request, snapshot.fanCount, &g.capability) !=
             FAN_REQUEST_INERT_NO_FAN) return 12140;
-    if (!linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 12141;
+    if (!linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes) return 12141;
     // Fixed and Curve cannot exist there: refused by name, before any write.
     request.fanMode = FAN_MODE_FIXED; request.fanAuto = false; request.fanPercent = 50;
     why[0] = 0;
-    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes ||
+    if (linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes ||
         !std::strstr(why, "fan mode Fixed")) return 12142;
     request.fanMode = FAN_MODE_CURVE;
-    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 12143;
+    if (linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes) return 12143;
     // No evidence of absence keeps the domain gate.
     request.fanMode = FAN_MODE_AUTO; request.fanAuto = true;
     gpu_capability_set(&g.capability, SERVICE_MUTATION_DOMAIN_FAN, GPU_DOMAIN_CAP_UNPROBED);
-    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes) return 12144;
+    if (linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes) return 12144;
     // A reported fan whose state could not be read is still a fan: never inert.
     gpu_capability_set(&g.capability, SERVICE_MUTATION_DOMAIN_FAN, GPU_DOMAIN_CAP_REFUSED);
     snapshot.fanCount = 2;
     snapshot.availableMutationDomains |= SERVICE_MUTATION_DOMAIN_FAN;
     why[0] = 0;
-    if (linux_backend_preflight(&g, &request, &snapshot, why, sizeof(why)) || writes ||
+    if (linux_backend_preflight(&g, ceiling, &request, &snapshot, why, sizeof(why)) || writes ||
         !std::strstr(why, "cannot be snapshotted")) return 12145;
     return 0;
 }

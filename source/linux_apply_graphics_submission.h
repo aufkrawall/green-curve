@@ -5,7 +5,7 @@
 static bool linux_apply_graphics_baseline(LinuxApplyTransactionContext* context) {
     auto* g = context->gpu;
     auto& review = context->scalarReview;
-    if (!linux_release_graphics_handoff(g, context->desired, review, g_linuxCeilingArmed)) return false;
+    if (!linux_release_graphics_handoff(g, context->desired, review, context->ceiling->armed)) return false;
     DesiredSettings baseline = *context->desired;
     if (review.outgoingSurface && !desired_named_graphics_surface(baseline)) {
         // Reset the known owned API; a preferred getter is not authority to
@@ -15,7 +15,7 @@ static bool linux_apply_graphics_baseline(LinuxApplyTransactionContext* context)
         baseline.authoring.graphicsSurface = review.outgoingSurface == CLOCK_OFFSET_SURFACE_P0
             ? DESIRED_GRAPHICS_P0 : DESIRED_GRAPHICS_GLOBAL;
     }
-    if (!linux_apply_reset_baseline(g, &baseline)) return false;
+    if (!linux_apply_reset_baseline(g, *context->ceiling, &baseline)) return false;
     const gc_u32 incoming = desired_named_graphics_surface(*context->desired);
     if (incoming && review.beforeValid) {
         // This is an authorized zero from the baseline, not a new drift sample.
@@ -28,7 +28,7 @@ static bool linux_apply_graphics_submission(LinuxApplyTransactionContext* contex
     auto* g = context->gpu;
     const auto* d = context->desired;
     auto& review = context->scalarReview;
-    if (!linux_release_graphics_handoff(g, d, review, g_linuxCeilingArmed)) return false;
+    if (!linux_release_graphics_handoff(g, d, review, context->ceiling->armed)) return false;
     if (desired_named_graphics_surface(*d)) return linux_apply_named_graphics_offset(g, d, &review);
     // The owned named control was released explicitly. A VF component must
     // not also zero an unrelated preferred scalar through legacy routing.
@@ -39,7 +39,7 @@ static bool linux_apply_graphics_submission(LinuxApplyTransactionContext* contex
 static bool linux_apply_graphics_finish(LinuxApplyTransactionContext* context) {
     if (!linux_verify_graphics_handoff(context->gpu, context->desired, context->scalarReview)) return false;
     // A verification-only phase preserves an unrelated external pin.
-    if (!context->desired->hasLock && !g_linuxCeilingArmed) return true;
-    return linux_apply_write_final_lock(context->gpu,
+    if (!context->desired->hasLock && !context->ceiling->armed) return true;
+    return linux_apply_write_final_lock(context->gpu, *context->ceiling,
         context->committedIntent ? context->committedIntent : context->desired);
 }

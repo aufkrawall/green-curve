@@ -481,7 +481,8 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
          request.hasFan ? request.fanPercent : 0);
 
     outcome.attempted = true;
-    LinuxMutationResult mutation = linux_backend_apply(&g_gpu, &request,
+    LinuxApplyCeilingTransaction ceiling = {};
+    LinuxMutationResult mutation = linux_backend_apply(&g_gpu, ceiling, &request,
         previous, &committed, outcome.message, sizeof(outcome.message));
     if (!mutation.success) {
         outcome.success = false;
@@ -509,7 +510,7 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
                    stateErr[0] ? stateErr : "unknown error");
         char rollbackErr[256] = {};
         bool rollbackOk = linux_backend_restore_snapshot(
-            &g_gpu, &before, mutation.attemptedPhases,
+            &g_gpu, ceiling, &before, mutation.attemptedPhases,
             rollbackErr, sizeof(rollbackErr));
         char uncertainErr[256] = {};
         bool uncertaintyRecorded = store_daemon_record(

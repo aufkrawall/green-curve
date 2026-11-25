@@ -165,15 +165,15 @@ static bool linux_write_named_graphics(LinuxGpuState* g, gc_u32 surface, int val
  return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, value, surface);
 }
 #include "linux_apply_baseline.h"
-struct ProbeContext {LinuxGpuState* gpu; DesiredSettings* d; LinuxHardwareSnapshot* s;};
+struct ProbeContext {LinuxGpuState* gpu; DesiredSettings* d; LinuxHardwareSnapshot* s; LinuxApplyCeilingTransaction* tx;};
 static bool probeStep(void* raw,unsigned int phase){
  auto* p=(ProbeContext*)raw;
  if(phase!=LINUX_MUTATION_LOCK_CEILING)return false;
- return linux_apply_arm_transition_ceiling(p->gpu,p->d,p->d);
+ return linux_apply_arm_transition_ceiling(p->gpu,*p->tx,p->d,p->d);
 }
 static bool probeRollback(void* raw,unsigned int phases){
  auto* p=(ProbeContext*)raw; char err[128]{};
- return linux_backend_restore_snapshot(p->gpu,p->s,phases,err,sizeof(err));
+ return linux_backend_restore_snapshot(p->gpu,*p->tx,p->s,phases,err,sizeof(err));
 }
 #include "vf_offset_range_policy.h"
 static VfOffsetRange vf_offset_range_current(){return vf_offset_range_fallback();}
@@ -263,8 +263,11 @@ static void refresh_global_state(char*,size_t){}
 #undef ARRAY_COUNT
 #define CHECK(condition) do { if(!(condition)){std::fprintf(stderr,"clock transition check failed at %d: %s\n",__LINE__,#condition);return __LINE__;} } while(0)
 #include "modeled_transition_backend_cases.h"
+#include "linux_ceiling_transaction_cases.h"
 
 static int run(){
+ // One explicit F-APPLY-CEILING transaction per scenario; `tx = {}` starts the next.
+ LinuxApplyCeilingTransaction tx = {};
  CHECK(apply_clock_requires_unavailable_scalar_guard(true,true,true,150,0,true,150000));
  CHECK(apply_clock_requires_unavailable_scalar_guard(true,true,true,150,0,false,0));
  CHECK(apply_clock_requires_unavailable_scalar_guard(true,true,true,-100,0,true,0));
@@ -292,15 +295,15 @@ static int run(){
    old.lockMode=(LockMode)from;old.lockMHz=repeat==1?3000:2500;
    next.lockMode=(LockMode)to;next.lockMHz=repeat==1?2500:3000;
    next.hasLock=to!=0;g.freqOffsets[0]=from==0?-200000:0;
-   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&old);
-   g_linuxOutgoingCeilingMHz=linux_outgoing_ceiling_mhz(&g,&old);
-   auto planned=linux_apply_clock_ceiling_plan(&g,&next,&old);
-   CHECK(planned.required);CHECK(linux_apply_arm_transition_ceiling(&g,&next,&old));
+   tx = {};linux_apply_ceiling_note_outgoing(tx,&old);
+   tx.outgoingCeilingMHz=linux_outgoing_ceiling_mhz(&g,&old);
+   auto planned=linux_apply_clock_ceiling_plan(&g,tx,&next,&old);
+   CHECK(planned.required);CHECK(linux_apply_arm_transition_ceiling(&g,tx,&next,&old));
    CHECK(cap==planned.ceilingMHz);
    if(from==LOCK_MODE_HARD)CHECK(cap<=old.lockMHz);
-   CHECK(linux_snapshot_curve_needs_a_pin(&snapshot)==(from==LOCK_MODE_HARD));
-   CHECK(linux_apply_reset_baseline_locked_clocks(&g,&next));CHECK(cap==planned.ceilingMHz);
-   CHECK(linux_apply_write_final_lock(&g,&next));
+   CHECK(linux_snapshot_curve_needs_a_pin(tx,&snapshot)==(from==LOCK_MODE_HARD));
+   CHECK(linux_apply_reset_baseline_locked_clocks(&g,tx,&next));CHECK(cap==planned.ceilingMHz);
+   CHECK(linux_apply_write_final_lock(&g,tx,&next));
    CHECK(cap==(to==LOCK_MODE_HARD?next.lockMHz:0));
  }
  old.lockMode=next.lockMode=LOCK_MODE_HARD;old.lockMHz=2500;next.lockMHz=3000;next.hasLock=true;
@@ -310,8 +313,8 @@ static int run(){
    DesiredSettings flattened = old, memory{};
    flattened.lockMode = LOCK_MODE_FLATTEN;
    memory.hasMemOffset = true;
-   linux_apply_ceiling_reset_state();
-   auto plan = linux_apply_clock_ceiling_plan(&g, &memory, &flattened);
+   tx = {};
+   auto plan = linux_apply_clock_ceiling_plan(&g,tx,&memory, &flattened);
    CHECK(plan.required && plan.arm && !plan.symmetricFallbackAllowed &&
          plan.reason == APPLY_CEILING_REASON_MEMORY_DROPS_FLATTEN);
    auto fixedOnly = [](int, unsigned int low, unsigned int high) -> int {
@@ -323,13 +326,13 @@ static int run(){
    g.nvml.setGpuLockedClocks = fixedOnly;
    cap = 0;
    const unsigned int calls = armCalls;
-   CHECK(!linux_apply_arm_transition_ceiling(&g, &memory, &flattened));
+   CHECK(!linux_apply_arm_transition_ceiling(&g,tx,&memory, &flattened));
    CHECK(cap == 0 && armCalls == calls + 1);
    DesiredSettings cold = flattened;
    cold.resetOcBeforeApply = true;
-   linux_apply_ceiling_reset_state();
-   CHECK(linux_apply_arm_transition_ceiling(&g, &cold, nullptr));
-   CHECK(!g_linuxCeilingArmed && !g_linuxCeilingPlan.symmetricFallbackAllowed &&
+   tx = {};
+   CHECK(linux_apply_arm_transition_ceiling(&g,tx,&cold, nullptr));
+   CHECK(!tx.armed && !tx.plan.symmetricFallbackAllowed &&
          cap == 0 && armCalls == calls + 2);
    g.nvml.setGpuLockedClocks = setCap;
 
@@ -354,38 +357,38 @@ static int run(){
    flattenToFlatten.resetOcBeforeApply = true;
    flattenToFlatten.hasMemOffset = true;
    flattenToFlatten.lockMHz = 2800;
-   linux_apply_ceiling_reset_state();
-   auto flattenPlan = linux_apply_clock_ceiling_plan(&g, &flattenToFlatten, &flattened);
+   tx = {};
+   auto flattenPlan = linux_apply_clock_ceiling_plan(&g,tx,&flattenToFlatten, &flattened);
    CHECK(flattenPlan.required &&
          flattenPlan.reason == APPLY_CEILING_REASON_REQUESTED_FLATTEN &&
          !flattenPlan.symmetricFallbackAllowed);
-   CHECK(linux_apply_arm_transition_ceiling(&g, &flattenToFlatten, &flattened));
-   CHECK(!g_linuxCeilingArmed);
+   CHECK(linux_apply_arm_transition_ceiling(&g,tx,&flattenToFlatten, &flattened));
+   CHECK(!tx.armed);
 
    DesiredSettings flattenToStock{};
    flattenToStock.resetOcBeforeApply = true;
    flattenToStock.hasMemOffset = true;
    flattenToStock.hasGpuOffset = true;
-   linux_apply_ceiling_reset_state();
-   auto stockPlan = linux_apply_clock_ceiling_plan(&g, &flattenToStock, &flattened);
+   tx = {};
+   auto stockPlan = linux_apply_clock_ceiling_plan(&g,tx,&flattenToStock, &flattened);
    CHECK(stockPlan.required &&
          stockPlan.reason == APPLY_CEILING_REASON_RESET_DROPS_CAP &&
          !stockPlan.symmetricFallbackAllowed);
-   CHECK(linux_apply_arm_transition_ceiling(&g, &flattenToStock, &flattened));
-   CHECK(!g_linuxCeilingArmed);
+   CHECK(linux_apply_arm_transition_ceiling(&g,tx,&flattenToStock, &flattened));
+   CHECK(!tx.armed);
 
    g.nvml.setGpuLockedClocks = fixedOnly;
    cap = 0;
    DesiredSettings flattenToHard = next;
    flattenToHard.resetOcBeforeApply = true;
    flattenToHard.hasMemOffset = true;
-   linux_apply_ceiling_reset_state();
-   auto hardPlan = linux_apply_clock_ceiling_plan(&g, &flattenToHard, &flattened);
+   tx = {};
+   auto hardPlan = linux_apply_clock_ceiling_plan(&g,tx,&flattenToHard, &flattened);
    CHECK(hardPlan.required &&
          hardPlan.reason == APPLY_CEILING_REASON_REQUESTED_LOCK &&
          hardPlan.symmetricFallbackAllowed);
-   CHECK(linux_apply_arm_transition_ceiling(&g, &flattenToHard, &flattened));
-   CHECK(g_linuxCeilingArmed && cap == hardPlan.ceilingMHz);
+   CHECK(linux_apply_arm_transition_ceiling(&g,tx,&flattenToHard, &flattened));
+   CHECK(tx.armed && cap == hardPlan.ceilingMHz);
    g.retainedTransitionCeilingMHz = 0;
    cap = 0;
 
@@ -393,8 +396,8 @@ static int run(){
    // outgoing flatten, the requested HARD lock keeps symmetric fallback.
    DesiredSettings nonResetHard = flattenToHard;
    nonResetHard.resetOcBeforeApply = false;
-   linux_apply_ceiling_reset_state();
-   auto nonResetHardPlan = linux_apply_clock_ceiling_plan(&g, &nonResetHard, &flattened);
+   tx = {};
+   auto nonResetHardPlan = linux_apply_clock_ceiling_plan(&g,tx,&nonResetHard, &flattened);
    CHECK(nonResetHardPlan.required &&
          nonResetHardPlan.reason == APPLY_CEILING_REASON_REQUESTED_LOCK &&
          nonResetHardPlan.symmetricFallbackAllowed);
@@ -402,21 +405,21 @@ static int run(){
    // Linux sparse memory-only Apply with committed == nullptr still detects a
    // live flattened/negative VF curve and requires maximum-only protection.
    g.freqOffsets[0] = -300000;
-   linux_apply_ceiling_reset_state();
-   auto liveFlattenMemPlan = linux_apply_clock_ceiling_plan(&g, &memory, nullptr);
+   tx = {};
+   auto liveFlattenMemPlan = linux_apply_clock_ceiling_plan(&g,tx,&memory, nullptr);
    CHECK(liveFlattenMemPlan.required && liveFlattenMemPlan.arm &&
          !liveFlattenMemPlan.symmetricFallbackAllowed &&
          liveFlattenMemPlan.reason == APPLY_CEILING_REASON_MEMORY_DROPS_FLATTEN);
    cap = 0;
-   CHECK(!linux_apply_arm_transition_ceiling(&g, &memory, nullptr));
+   CHECK(!linux_apply_arm_transition_ceiling(&g,tx,&memory, nullptr));
    CHECK(cap == 0);
    // Over an active HARD pin or a clean stock curve, sparse memory-only Apply
    // needs no extra ceiling.
-   linux_apply_ceiling_reset_state();
-   CHECK(!linux_apply_clock_ceiling_plan(&g, &memory, &old).required);
+   tx = {};
+   CHECK(!linux_apply_clock_ceiling_plan(&g,tx,&memory, &old).required);
    g.freqOffsets[0] = 0;
-   linux_apply_ceiling_reset_state();
-   CHECK(!linux_apply_clock_ceiling_plan(&g, &memory, nullptr).required);
+   tx = {};
+   CHECK(!linux_apply_clock_ceiling_plan(&g,tx,&memory, nullptr).required);
    g.retainedTransitionCeilingMHz = 0;
    cap = 0;
    g.nvml.setGpuLockedClocks = setCap;
@@ -454,9 +457,9 @@ static int run(){
    CHECK(failedCurve.count == 2 && failedCurve.order[1] == LINUX_MUTATION_CURVE);
  }
  // Rejected arm through the real transaction and real rollback: no old-pin reset.
- cap=2500;resets=0;refuseArm=true;linux_apply_ceiling_reset_state();
- linux_apply_ceiling_note_outgoing(&old);g_linuxOutgoingCeilingMHz=2500;
- ProbeContext context{&g,&next,&snapshot};
+ cap=2500;resets=0;refuseArm=true;tx = {};
+ linux_apply_ceiling_note_outgoing(tx,&old);tx.outgoingCeilingMHz=2500;
+ ProbeContext context{&g,&next,&snapshot,&tx};
  auto failed=linux_execute_transaction(LINUX_MUTATION_LOCK_CEILING,probeStep,probeRollback,&context);
  CHECK(!failed.success&&failed.rollbackAttempted);CHECK(resets==0&&cap==2500);
  refuseArm=false;
@@ -519,142 +522,142 @@ static int run(){
    DesiredSettings undervolt{};g.freqOffsets[0]=-200000;
    // Pascal-shaped driver: every form NOT_SUPPORTED, request names no lock.
    refuseArm=true;armRefusalCode=NVML_ERROR_NOT_SUPPORTED;
-   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&undervolt);
-   CHECK(linux_apply_arm_transition_ceiling(&g,&unlocked,&undervolt));
-   CHECK(g_linuxCeilingArmResult==APPLY_CEILING_ARM_UNSUPPORTED);
-   CHECK(!g_linuxCeilingArmed&&g_linuxCeilingPlan.required);
+   tx = {};linux_apply_ceiling_note_outgoing(tx,&undervolt);
+   CHECK(linux_apply_arm_transition_ceiling(&g,tx,&unlocked,&undervolt));
+   CHECK(tx.armResult==APPLY_CEILING_ARM_UNSUPPORTED);
+   CHECK(!tx.armed&&tx.plan.required);
    // Same driver, but the request needs an NVML HARD pin: refuse before writes.
    DesiredSettings pinned=unlocked;pinned.hasLock=true;
    pinned.lockMode=LOCK_MODE_HARD;pinned.lockMHz=2400;
-   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&undervolt);
-   CHECK(!linux_apply_arm_transition_ceiling(&g,&pinned,&undervolt));
-   CHECK(g_linuxCeilingArmResult==APPLY_CEILING_ARM_UNSUPPORTED);
+   tx = {};linux_apply_ceiling_note_outgoing(tx,&undervolt);
+   CHECK(!linux_apply_arm_transition_ceiling(&g,tx,&pinned,&undervolt));
+   CHECK(tx.armResult==APPLY_CEILING_ARM_UNSUPPORTED);
    // Both NVML commands are unsupported on Pascal. Curve FLATTEN and a
    // lock-free transition still complete without issuing a reset, while a
    // retained cap or capable family continues to treat reset refusal as real.
    DesiredSettings flat=unlocked;flat.hasLock=true;
    flat.lockMode=LOCK_MODE_FLATTEN;flat.lockMHz=2400;
    g.family=GPU_FAMILY_PASCAL;refuseReset=true;resets=0;
-   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&undervolt);
-   CHECK(linux_apply_arm_transition_ceiling(&g,&unlocked,&undervolt));
-   CHECK(linux_apply_reset_baseline_locked_clocks(&g,&unlocked));
-   CHECK(linux_apply_write_final_lock(&g,&unlocked));
+   tx = {};linux_apply_ceiling_note_outgoing(tx,&undervolt);
+   CHECK(linux_apply_arm_transition_ceiling(&g,tx,&unlocked,&undervolt));
+   CHECK(linux_apply_reset_baseline_locked_clocks(&g,tx,&unlocked));
+   CHECK(linux_apply_write_final_lock(&g,tx,&unlocked));
    CHECK(resets==0);
-   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&undervolt);
-   CHECK(linux_apply_arm_transition_ceiling(&g,&flat,&undervolt));
-   CHECK(linux_apply_reset_baseline_locked_clocks(&g,&flat));
-   CHECK(linux_apply_write_final_lock(&g,&flat));
+   tx = {};linux_apply_ceiling_note_outgoing(tx,&undervolt);
+   CHECK(linux_apply_arm_transition_ceiling(&g,tx,&flat,&undervolt));
+   CHECK(linux_apply_reset_baseline_locked_clocks(&g,tx,&flat));
+   CHECK(linux_apply_write_final_lock(&g,tx,&flat));
    CHECK(resets==0);
    LinuxHardwareSnapshot pascalSnapshot{};pascalSnapshot.valid=true;
    pascalSnapshot.gpuOffsetValid=true;pascalSnapshot.memOffsetValid=true;
    pascalSnapshot.curveValid=true;
    int oldOffsetWrites=clockOffsetWrites,oldCurveWrites=curveOffsetWrites;
    char pascalErr[128]{};
-   CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
+   CHECK(linux_backend_restore_snapshot(&g,tx,&pascalSnapshot,
      LINUX_MUTATION_RESET_BASELINE|LINUX_MUTATION_CURVE,pascalErr,sizeof(pascalErr)));
    CHECK(clockOffsetWrites==oldOffsetWrites+1&&curveOffsetWrites==oldCurveWrites+1);
    pascalSnapshot.curveOffsetsExact=true;pascalSnapshot.curveOffsetsHz[0]=15000500;
    pascalSnapshot.curveMask[0]=true;
-   CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
+   CHECK(linux_backend_restore_snapshot(&g,tx,&pascalSnapshot,
      LINUX_MUTATION_CURVE,pascalErr,sizeof(pascalErr)));
    CHECK(lastCurveExact&&lastCurveOffsetHz==15000500);
    int oldMemoryWrites=memoryOffsetWrites;
    oldCurveWrites=curveOffsetWrites;
-   CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
+   CHECK(linux_backend_restore_snapshot(&g,tx,&pascalSnapshot,
      LINUX_MUTATION_RESET_BASELINE,pascalErr,sizeof(pascalErr)));
    CHECK(curveOffsetWrites==oldCurveWrites+1&&memoryOffsetWrites==oldMemoryWrites);
    // Execute the production Apply baseline with and without a memory request.
    // Both preserve memory until its own phase; failed baselines do too.
    for(bool includeMemory:{false,true}) {
      DesiredSettings request{};request.hasMemOffset=includeMemory;
-     CHECK(linux_apply_reset_baseline(&g,&request));
+     CHECK(linux_apply_reset_baseline(&g,tx,&request));
      CHECK(memoryOffsetWrites==oldMemoryWrites);
    }
    {
      DesiredSettings request{}; request.hasGpuOffset=true;
      request.authoring.graphicsPrecise=1; request.authoring.graphicsSurface=DESIRED_GRAPHICS_GLOBAL;
-     CHECK(linux_apply_reset_baseline(&g,&request));
+     CHECK(linux_apply_reset_baseline(&g,tx,&request));
      CHECK(lastGraphicsOffsetMHz==0&&lastGraphicsOffsetSurface==CLOCK_OFFSET_SURFACE_GLOBAL);
      pascalSnapshot.gpuOffsetValid=pascalSnapshot.gpuOffsetExact=true;
      pascalSnapshot.gpuOffsetSurface=CLOCK_OFFSET_SURFACE_GLOBAL; pascalSnapshot.gpuOffsetMHz=-247;
-     CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,LINUX_MUTATION_GPU_OFFSET,pascalErr,sizeof(pascalErr)));
+     CHECK(linux_backend_restore_snapshot(&g,tx,&pascalSnapshot,LINUX_MUTATION_GPU_OFFSET,pascalErr,sizeof(pascalErr)));
      CHECK(lastGraphicsOffsetMHz==-247&&lastGraphicsOffsetSurface==CLOCK_OFFSET_SURFACE_GLOBAL);
      int oldClockWrites=clockOffsetWrites; pascalSnapshot.gpuOffsetSurface=0;
-     CHECK(!linux_backend_restore_snapshot(&g,&pascalSnapshot,LINUX_MUTATION_GPU_OFFSET,pascalErr,sizeof(pascalErr)));
+     CHECK(!linux_backend_restore_snapshot(&g,tx,&pascalSnapshot,LINUX_MUTATION_GPU_OFFSET,pascalErr,sizeof(pascalErr)));
      CHECK(clockOffsetWrites==oldClockWrites);
      pascalSnapshot.gpuOffsetValid=pascalSnapshot.gpuOffsetExact=false;
    }
    oldCurveWrites=curveOffsetWrites;
-   CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
+   CHECK(linux_backend_restore_snapshot(&g,tx,&pascalSnapshot,
      LINUX_MUTATION_MEM_OFFSET,pascalErr,sizeof(pascalErr)));
    CHECK(memoryOffsetWrites==oldMemoryWrites+1&&curveOffsetWrites==oldCurveWrites+1);
    CHECK(lastCurveExact&&lastCurveOffsetHz==15000500);
    pascalSnapshot.memOffsetExact=true;pascalSnapshot.memOffsetEffectiveMHz=247;
    pascalSnapshot.memOffsetSurface=1;
    pascalSnapshot.memOffsetMHz=123;
-   CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
+   CHECK(linux_backend_restore_snapshot(&g,tx,&pascalSnapshot,
      LINUX_MUTATION_MEM_OFFSET,pascalErr,sizeof(pascalErr)));
    CHECK(lastMemoryOffsetMHz==247&&lastMemoryOffsetSurface==1);
    int verifiedMemoryWrites=memoryOffsetWrites;
    pascalSnapshot.memOffsetSurface=0;
-   CHECK(!linux_backend_restore_snapshot(&g,&pascalSnapshot,
+   CHECK(!linux_backend_restore_snapshot(&g,tx,&pascalSnapshot,
      LINUX_MUTATION_MEM_OFFSET,pascalErr,sizeof(pascalErr)));
    CHECK(memoryOffsetWrites==verifiedMemoryWrites);
    pascalSnapshot.memOffsetSurface=1;
    CHECK(resets==0);
    g.retainedTransitionCeilingMHz=2300;
-   CHECK(!linux_apply_reset_baseline_locked_clocks(&g,&flat));
+   CHECK(!linux_apply_reset_baseline_locked_clocks(&g,tx,&flat));
    CHECK(resets==1);
    g.retainedTransitionCeilingMHz=0;g.family=GPU_FAMILY_TURING;
-   CHECK(!linux_apply_reset_baseline_locked_clocks(&g,&flat));
+   CHECK(!linux_apply_reset_baseline_locked_clocks(&g,tx,&flat));
    CHECK(resets==2);
    g.family=GPU_FAMILY_UNKNOWN;refuseReset=false;
    // A generic refusal on capable hardware keeps refusing even without a lock.
    armRefusalCode=1;
-   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&undervolt);
-   CHECK(!linux_apply_arm_transition_ceiling(&g,&unlocked,&undervolt));
-   CHECK(g_linuxCeilingArmResult==APPLY_CEILING_ARM_REFUSED);
+   tx = {};linux_apply_ceiling_note_outgoing(tx,&undervolt);
+   CHECK(!linux_apply_arm_transition_ceiling(&g,tx,&unlocked,&undervolt));
+   CHECK(tx.armResult==APPLY_CEILING_ARM_REFUSED);
    // No entry point at all is the absent case, not the declined one.
    Api saved=g.nvml;g.nvml.setGpuLockedClocks=nullptr;
-   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&undervolt);
-   CHECK(linux_apply_arm_transition_ceiling(&g,&unlocked,&undervolt));
-   CHECK(g_linuxCeilingArmResult==APPLY_CEILING_ARM_UNSUPPORTED);
-   CHECK(!linux_apply_arm_transition_ceiling(&g,&pinned,&undervolt));
+   tx = {};linux_apply_ceiling_note_outgoing(tx,&undervolt);
+   CHECK(linux_apply_arm_transition_ceiling(&g,tx,&unlocked,&undervolt));
+   CHECK(tx.armResult==APPLY_CEILING_ARM_UNSUPPORTED);
+   CHECK(!linux_apply_arm_transition_ceiling(&g,tx,&pinned,&undervolt));
    g.nvml=saved;refuseArm=false;armRefusalCode=1;g.freqOffsets[0]=0;
    // Hand the fixture back exactly the state the rollback cases below expect:
    // an outgoing HARD pin on record, which is what decides whether a restored
    // curve is one that needs a pin to be safe.
-   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&old);
+   tx = {};linux_apply_ceiling_note_outgoing(tx,&old);
  }
  // Re-establish low protection BEFORE restoring a previous HARD curve after a
  // higher final pin, release, or failed baseline. Never unlock on rollback.
  for(unsigned int mask:{(unsigned int)LINUX_MUTATION_LOCK_CEILING,
        (unsigned int)LINUX_MUTATION_RESET_BASELINE,
        (unsigned int)(LINUX_MUTATION_CURVE|LINUX_MUTATION_LOCK)}){
-   cap=3000;resets=0;g_linuxOutgoingCeilingMHz=2500;
-   char err[128]{};CHECK(!linux_backend_restore_snapshot(&g,&snapshot,mask,err,sizeof(err)));
+   cap=3000;resets=0;tx.outgoingCeilingMHz=2500;
+   char err[128]{};CHECK(!linux_backend_restore_snapshot(&g,tx,&snapshot,mask,err,sizeof(err)));
    CHECK(cap==2500&&resets==0);
  }
- linux_apply_ceiling_reset_state();
+ tx = {};
  CHECK(linux_outgoing_ceiling_mhz(&g,nullptr)==2500);
  CHECK(linux_outgoing_state_holds_clocks_down(&g,nullptr));
  {
    // Reset keeps its pre-write bound for a later phase failure and for
    // daemon persistence recovery after the hardware restriction is released.
    char detail[128]{};
-   linux_reset_capture_rollback_ceiling(&g, &old);
-   CHECK(g_linuxOutgoingCeilingMHz == 2500 && g_linuxOutgoingHadHardPin);
-   CHECK(linux_apply_write_final_lock(&g, &next));
+   linux_reset_capture_rollback_ceiling(&g,tx,&old);
+   CHECK(tx.outgoingCeilingMHz == 2500 && tx.outgoingHadHardPin);
+   CHECK(linux_apply_write_final_lock(&g,tx,&next));
    const int beforeMemory = memoryOffsetWrites;
    snapshot.memOffsetValid = true;
    snapshot.memOffsetMHz = 30;
-   CHECK(!linux_backend_restore_snapshot(&g, &snapshot,
+   CHECK(!linux_backend_restore_snapshot(&g,tx,&snapshot,
        LINUX_MUTATION_GPU_OFFSET | LINUX_MUTATION_MEM_OFFSET | LINUX_MUTATION_LOCK,
        detail, sizeof(detail)));
    CHECK(cap == 2500 && memoryOffsetWrites == beforeMemory + 1 && lastMemoryOffsetMHz == 60);
    snapshot.memOffsetValid = false;
  }
- CHECK(linux_apply_write_final_lock(&g,&next));
+ CHECK(linux_apply_write_final_lock(&g,tx,&next));
  CHECK(g.retainedTransitionCeilingMHz==0);
  // Captured offsets (including zero) stay independent of sampled MHz,
  // graphics-offset components and the scalar-shift projection adjustment.
@@ -1070,11 +1073,11 @@ static int run(){
    previousFlat.lockMHz=1500;g_app.lockMode=LOCK_MODE_FLATTEN;g_app.transitionClockCapActive=false;
    CHECK(!ApplyClockCeilingGuard(&cleanup).plan.required);
    CHECK(ApplyClockCeilingGuard(&cleanup,true).plan.required);
-   linux_apply_ceiling_reset_state();
-   CHECK(!linux_apply_clock_ceiling_plan(&g,&cleanup,&previousFlat).required);
-   g_linuxScopedCurveCeilingTransition=true;
-   CHECK(linux_apply_clock_ceiling_plan(&g,&cleanup,&previousFlat).required);
-   linux_apply_ceiling_reset_state();CHECK(!g_linuxScopedCurveCeilingTransition);
+   tx = {};
+   CHECK(!linux_apply_clock_ceiling_plan(&g,tx,&cleanup,&previousFlat).required);
+   tx.scopedCurveTransition=true;
+   CHECK(linux_apply_clock_ceiling_plan(&g,tx,&cleanup,&previousFlat).required);
+   tx = {};CHECK(!tx.scopedCurveTransition);
  }
  g_nvml_api=g.nvml;g_app.lockMode=LOCK_MODE_HARD;g_app.appliedLockFreq=2500;
  // A guard's destructor never releases an abandoned/partly written state.
@@ -1115,11 +1118,11 @@ static int run(){
    {ApplyClockCeilingGuard guarded(&split,false,true);guarded.arm();
     CHECK(guarded.must_refuse_transition());CHECK(!guarded.armed);}
    CHECK(armCalls==before+1&&cap==0);
-   linux_apply_ceiling_reset_state();
-   CHECK(!linux_apply_arm_transition_ceiling(&g,&split,nullptr,true));
-   CHECK(!g_linuxCeilingArmed&&armCalls==before+2&&cap==0);
+   tx = {};
+   CHECK(!linux_apply_arm_transition_ceiling(&g,tx,&split,nullptr,true));
+   CHECK(!tx.armed&&armCalls==before+2&&cap==0);
    {ApplyClockCeilingGuard historical(&split);historical.arm();CHECK(!historical.must_refuse_transition());}
-   linux_apply_ceiling_reset_state();CHECK(linux_apply_arm_transition_ceiling(&g,&split,nullptr));
+   tx = {};CHECK(linux_apply_arm_transition_ceiling(&g,tx,&split,nullptr));
    refuseArm=false;
    {ApplyClockCeilingGuard guarded(&split,false,true);guarded.arm();CHECK(!guarded.must_refuse_transition());guarded.adopt("fixture");}
    CHECK(cap==1000);cap=0;
@@ -1128,14 +1131,14 @@ static int run(){
    LinuxGpuState pending{}; LinuxHardwareSnapshot before{}; before.valid=true;
    pending.graphicsRecovery.attempted=GRAPHICS_SCALAR_RECOVERY_ALL;
    char why[160]{}; const auto writesBefore=clockOffsetWrites;
-   CHECK(!linux_backend_restore_snapshot(&pending,&before,LINUX_MUTATION_GPU_OFFSET,why,sizeof(why)));
+   CHECK(!linux_backend_restore_snapshot(&pending,tx,&before,LINUX_MUTATION_GPU_OFFSET,why,sizeof(why)));
    CHECK(pending.graphicsRecovery.covered==GRAPHICS_SCALAR_RECOVERY_ALL);
    CHECK(pending.graphicsRecovery.uncertain==GRAPHICS_SCALAR_RECOVERY_ALL);
    CHECK(clockOffsetWrites==writesBefore);
    pending.graphicsRecovery={};
    pending.graphicsRecovery.covered=GRAPHICS_SCALAR_RECOVERY_GLOBAL;
    pending.graphicsRecovery.ownedSurface=CLOCK_OFFSET_SURFACE_GLOBAL;
-   CHECK(linux_backend_restore_snapshot(&pending,&before,0,why,sizeof(why)));
+   CHECK(linux_backend_restore_snapshot(&pending,tx,&before,0,why,sizeof(why)));
    CHECK(!pending.graphicsRecovery.covered&&!pending.graphicsRecovery.ownedSurface);
    CHECK(clockOffsetWrites==writesBefore);
  }
@@ -1147,11 +1150,11 @@ static int run(){
    before.graphicsPreimage.validMask=before.graphicsPreimage.covered=GRAPHICS_SCALAR_RECOVERY_P0;
    before.graphicsPreimage.p0MHz=71;char why[160]{};
    curveRestoreClobbersGraphics=true;
-   CHECK(!linux_backend_restore_snapshot(&pending,&before,LINUX_MUTATION_GPU_OFFSET|LINUX_MUTATION_CURVE,why,sizeof(why)));
+   CHECK(!linux_backend_restore_snapshot(&pending,tx,&before,LINUX_MUTATION_GPU_OFFSET|LINUX_MUTATION_CURVE,why,sizeof(why)));
    CHECK(pending.graphicsRecovery.covered==GRAPHICS_SCALAR_RECOVERY_P0);
    CHECK(pending.graphicsRecovery.uncertain==GRAPHICS_SCALAR_RECOVERY_P0);
    curveRestoreClobbersGraphics=false;
-   CHECK(linux_backend_restore_snapshot(&pending,&before,LINUX_MUTATION_GPU_OFFSET|LINUX_MUTATION_CURVE,why,sizeof(why)));
+   CHECK(linux_backend_restore_snapshot(&pending,tx,&before,LINUX_MUTATION_GPU_OFFSET|LINUX_MUTATION_CURVE,why,sizeof(why)));
    CHECK(!pending.graphicsRecovery.uncertain&&lastGraphicsOffsetMHz==71);
  }
  for(const auto range:{vf_offset_range_from_probe(true,0,500000),
@@ -1176,8 +1179,8 @@ static int run(){
      guard.arm();
      CHECK(!guard.must_refuse_transition() && !guard.armed);
    }
-   linux_apply_ceiling_reset_state();
-   CHECK(linux_apply_arm_transition_ceiling(&g, &vfOnly, nullptr) && !g_linuxCeilingArmed);
+   tx = {};
+   CHECK(linux_apply_arm_transition_ceiling(&g,tx,&vfOnly, nullptr) && !tx.armed);
    CHECK(armCalls == callsBefore && cap == 0);
 
    refuseArm = false; armRefusalCode = NVML_ERROR_NOT_SUPPORTED;
@@ -1204,18 +1207,18 @@ static int run(){
      resetCap(0); guard.adopt("clean release");
    }
    CHECK(cap == 0);
-   linux_apply_ceiling_reset_state();
-   linux_apply_ceiling_note_outgoing(&prevLock);
-   g_linuxOutgoingCeilingMHz = 1800;
-   g_linuxScopedCurveCeilingTransition = true;
-   CHECK(linux_apply_arm_transition_ceiling(&g, &rep, &prevLock) && g_linuxCeilingArmed && cap == 1800);
+   tx = {};
+   linux_apply_ceiling_note_outgoing(tx,&prevLock);
+   tx.outgoingCeilingMHz = 1800;
+   tx.scopedCurveTransition = true;
+   CHECK(linux_apply_arm_transition_ceiling(&g,tx,&rep, &prevLock) && tx.armed && cap == 1800);
    char lWhy[160]{};
-   CHECK(linux_apply_arm_modeled_post_reset(&g, &rep, tightened, lWhy, sizeof(lWhy)) && cap == 1400);
+   CHECK(linux_apply_arm_modeled_post_reset(&g,tx,&rep, tightened, lWhy, sizeof(lWhy)) && cap == 1400);
    refuseArm = true;
    ApplyClockCeilingPlan narrower = tightened; narrower.ceilingMHz = 1100;
-   CHECK(!linux_apply_arm_modeled_post_reset(&g, &rep, narrower, lWhy, sizeof(lWhy)));
-   CHECK(g_linuxCeilingArmed && g_linuxCeilingPlan.ceilingMHz == 1400 && cap == 1400);
-   refuseArm = false; resetCap(0); linux_apply_ceiling_reset_state(); g_linuxScopedCurveCeilingTransition = false;
+   CHECK(!linux_apply_arm_modeled_post_reset(&g,tx,&rep, narrower, lWhy, sizeof(lWhy)));
+   CHECK(tx.armed && tx.plan.ceilingMHz == 1400 && cap == 1400);
+   refuseArm = false; resetCap(0); tx = {}; tx.scopedCurveTransition = false;
 
    // Lockless reset with no outgoing cap arms post-reset and clears on clean finish, refuses cleanly on clamp rejection.
    g_app.lockMode = LOCK_MODE_NONE; g_app.lockedFreq = 0; g_app.curve[0].freq_kHz = 0; g_app.freqOffsets[0] = 0;
@@ -1238,6 +1241,7 @@ static int run(){
    refuseArm = false;
  }
  if(int modeled=modeled_transition_backend_cases())return modeled;
+ if(int ceilingTx=linux_ceiling_transaction_cases())return ceilingTx;
  return 0;
 }
 #undef CHECK

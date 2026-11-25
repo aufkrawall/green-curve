@@ -6,6 +6,7 @@
 struct LinuxResetTransactionContext {
     LinuxGpuState* gpu;
     const LinuxHardwareSnapshot* snapshot;
+    LinuxApplyCeilingTransaction* ceiling;
 };
 
 static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
@@ -15,7 +16,7 @@ static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
         case LINUX_MUTATION_LOCK: {
             if (!linux_reset_memory_matches(g, {context->snapshot->resetMemory.validMask, 0, 0}))
                 return false;
-            bool noControl = linux_clock_control_proven_absent(g);
+            bool noControl = linux_clock_control_proven_absent(g, *context->ceiling);
             bool ok = linux_finalize_named_graphics_reset(g, [&] {
                 return noControl || (g->nvml.resetGpuLockedClocks &&
                     g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS);
@@ -68,8 +69,8 @@ static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
 static bool linux_reset_transaction_rollback(void* opaque, unsigned int phases) {
     LinuxResetTransactionContext* context = (LinuxResetTransactionContext*)opaque;
     char rollback[256] = {};
-    return linux_backend_restore_snapshot(context->gpu, context->snapshot, phases,
-                                          rollback, sizeof(rollback));
+    return linux_backend_restore_snapshot(context->gpu, *context->ceiling, context->snapshot,
+                                          phases, rollback, sizeof(rollback));
 }
 
 bool linux_backend_capture_reset_snapshot(LinuxGpuState* g, const DesiredSettings* previous,
@@ -82,9 +83,10 @@ bool linux_backend_capture_reset_snapshot(LinuxGpuState* g, const DesiredSetting
     return false;
 }
 
-LinuxMutationResult linux_backend_reset(LinuxGpuState* g, const DesiredSettings* previous,
+LinuxMutationResult linux_backend_reset(LinuxGpuState* g, LinuxApplyCeilingTransaction& ceiling,
+                                        const DesiredSettings* previous,
                                         char* result, size_t resultSize) {
-    linux_apply_ceiling_reset_state();
+    linux_apply_ceiling_begin(ceiling, nullptr);
     LinuxMutationResult mutation = {};
     LinuxHardwareSnapshot snapshot = {};
     char detail[256] = {};
@@ -116,10 +118,10 @@ LinuxMutationResult linux_backend_reset(LinuxGpuState* g, const DesiredSettings*
     if (!(snapshot.availableMutationDomains & SERVICE_MUTATION_DOMAIN_POWER)) {
         lb_log("reset: skipping power reset — board exposes no power control surface\n");
     }
-    linux_reset_capture_rollback_ceiling(g, previous);
+    linux_reset_capture_rollback_ceiling(g, ceiling, previous);
     lb_log("reset: rollback bound=%u MHz outgoingHardPin=%d fanAbsent=%d\n",
-        g_linuxOutgoingCeilingMHz, g_linuxOutgoingHadHardPin ? 1 : 0, fanKnownAbsent ? 1 : 0);
-    LinuxResetTransactionContext context = {g, &snapshot};
+        ceiling.outgoingCeilingMHz, ceiling.outgoingHadHardPin ? 1 : 0, fanKnownAbsent ? 1 : 0);
+    LinuxResetTransactionContext context = {g, &snapshot, &ceiling};
     unsigned int requested = linux_reset_phases_for_available_domains(
         snapshot.availableMutationDomains);
     // Retain the outgoing power budget and pin until the stock VF curve
