@@ -529,14 +529,12 @@ static int linux_main_impl(int argc, char** argv) {
         // does not modify GPU state.
         LinuxGpuState gpu;
         char initErr[256] = {};
-        if (!linux_backend_init(&gpu, gpuTarget.valid ? &gpuTarget : nullptr, initErr, sizeof(initErr))) {
-            fprintf(stderr, "self-test: cannot initialize GPU backend: %s\n",
-                    initErr[0] ? initErr : "unknown error");
-            return 1;
-        }
-        bool pass = linux_backend_self_test(&gpu, stdout);
-        linux_backend_shutdown(&gpu);
-        return pass ? 0 : 2;
+        const bool ready = linux_backend_init(&gpu, gpuTarget.valid ? &gpuTarget : nullptr, initErr, sizeof(initErr));
+        if (!ready) fprintf(stderr, "self-test: cannot initialize GPU backend: %s\n",
+                            initErr[0] ? initErr : "unknown error");
+        const bool pass = ready && linux_backend_self_test(&gpu, stdout);
+        linux_backend_shutdown(&gpu);  // a failed partial init still owns libraries/NVML
+        return !ready ? 1 : pass ? 0 : 2;
     }
 
     if (opts.serviceInstall || opts.serviceRemove) {

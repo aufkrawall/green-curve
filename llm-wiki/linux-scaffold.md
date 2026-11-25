@@ -1194,6 +1194,25 @@ authority, perform deferred fan handback, or write the ownership marker. It
 replaces the unavailable backend state, bumps the GPU generation when the
 identity changes, publishes the result, and wakes the fan worker.
 
+NVML reference ownership (2026-11-24): `nvmlInit_v2` and `nvmlShutdown` are
+process-wide reference counts, and `linux_backend_init()` can fail after
+opening the library and resolving `nvmlShutdown` (the `nvmlInit_v2 failed`
+arm). `LinuxGpuState::nvmlInitialized` records that this state acquired a
+reference, and `linux_backend_shutdown()` calls `nvmlShutdown` only then.
+Before this, the retry above (and the auto-restore re-init) initialized the
+replacement and then shut down the failed startup state, whose unconditional
+`nvmlShutdown` released the replacement's only reference and left the live
+backend on an uninitialized NVML. A partial init that fails at enumeration
+still owes its one shutdown. Init refuses a library that lacks either
+`nvmlInit_v2` or `nvmlShutdown` before acquiring a reference, and
+`--self-test` tears down a failed partial init. Teardown logs
+`nvmlShutdown status=` on failure and `shutdown skips nvmlShutdown (init not
+acquired) count=N` for an unowned state, at powers of two only because a
+driver that stays down repeats it per targeted request. Covered by
+`tests/linux_nvml_lifetime_tests.cpp` (`14200-14211`), which runs the
+production backend against a reference-counted fake library; `14202` fails
+without the guard.
+
 Design limit (2026-10-28): this discovery runs inside the state-read deadline,
 the same way a targeted read that switches GPU already re-initializes through
 `linux_backend_select_target()`. The read budget does not reserve time for a

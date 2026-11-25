@@ -1119,6 +1119,7 @@ int run_gpu_generation_sim_tests();
 int run_gpu_generation_sim_edge_tests();
 int run_linux_vf_read_tests();
 int run_linux_vf_write_tests();
+int run_linux_nvml_lifetime_tests();
 int run_linux_curve_correction_runtime_tests();
 int run_linux_read_request_tests();
 // A polled ClkDomains reader logs a repeated refusal once
@@ -2803,6 +2804,7 @@ static int run_all_tests(int argc, char** argv) {
     }
     if (int vfFailure = run_linux_vf_read_tests()) return vfFailure;
     if (int vfFailure = run_linux_vf_write_tests()) return vfFailure;
+    if (int lifetimeFailure = run_linux_nvml_lifetime_tests()) return lifetimeFailure;
     if (int failure = run_linux_curve_correction_runtime_tests()) return failure;
     if (int schemaFailure = run_captured_schema_tests()) return schemaFailure;
     if (int preflightFailure = run_linux_scope_preflight_tests()) return preflightFailure;
