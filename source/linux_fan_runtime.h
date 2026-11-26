@@ -45,6 +45,11 @@ static void daemon_fan_runtime_note_commit(LinuxGpuController& ctl, const char* 
     daemon_fan_fault_clear(ctl, why);
 }
 
+// Monotonic per-daemon fault counter (service_fan_fault.h). Guarded by g_lock.
+// Kept process-wide rather than per controller because GcFanFaultObserver
+// deduplicates client announcements on (serial, kind) without GPU identity.
+static gc_u32 g_daemonFanFaultSerial = 0;
+
 // The v39 record clients announce (service_fan_fault.h).  Caller holds g_lock.
 static void daemon_fan_fault_record(LinuxGpuController& ctl, gc_u32 kind, gc_u8 handback, unsigned int fanIndex,
                                     int commandedPercent, unsigned long long stalledForMs,
@@ -60,8 +65,8 @@ static void daemon_fan_fault_record(LinuxGpuController& ctl, gc_u32 kind, gc_u8 
                                                            : (gc_u32)stalledForMs;
     }
     gc_strlcpy(record.detail, sizeof(record.detail), detail ? detail : "");
-    if (ctl.fanFaultSerial == 0xFFFFFFFFu) ctl.fanFaultSerial = 0;
-    record.serial = ++ctl.fanFaultSerial;
+    if (g_daemonFanFaultSerial == 0xFFFFFFFFu) g_daemonFanFaultSerial = 0;
+    record.serial = ++g_daemonFanFaultSerial;
     ctl.fanFault = record;
     dlog("daemon fan fault: recorded for clients kind=%u serial=%u fan=%u pct=%u stalledMs=%u handback=%u\n",
          (unsigned int)record.kind, (unsigned int)record.serial,
@@ -201,6 +206,10 @@ static void daemon_fan_stall_check(LinuxGpuController& ctl, FanStallTracker* tra
 }
 
 static pl_thread_ret fan_reassert_thread(void* arg) {
+    if (!arg) {
+        dlog("daemon: fan worker started without a GPU controller\n");
+        return (pl_thread_ret)0;
+    }
     LinuxGpuController& ctl = *static_cast<LinuxGpuController*>(arg);
     FanRuntimeState runtime = {};
     FanStallTracker stall = {};

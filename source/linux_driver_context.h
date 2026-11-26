@@ -17,6 +17,11 @@
 // sequence as before.  Binding several GPUs from one shared discovery (with
 // proof that cached handles still address their cards) is a later multi-GPU
 // step; until then every binding uses the discovery its own init just took.
+//
+// Serialization: LinuxDriverContext has no internal lock.  Callers sharing one
+// context across threads must serialize open, discover, bind and close (in the
+// daemon, g_lock serializes requests, backend initialization and the fan
+// worker).
 
 #ifndef GREEN_CURVE_LINUX_DRIVER_CONTEXT_H
 #define GREEN_CURVE_LINUX_DRIVER_CONTEXT_H

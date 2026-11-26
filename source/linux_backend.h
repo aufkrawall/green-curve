@@ -272,6 +272,10 @@ bool linux_backend_init(LinuxGpuState* g, LinuxDriverContext* driver,
 // Releases only per-GPU state; the driver context stays open for its owner.
 void linux_backend_shutdown(LinuxGpuState* g);
 
+// Rebind `g` to `target` (fast-pathing when `g` already holds that exact GPU).
+// `g` must already carry a live LinuxDriverContext* from a prior
+// linux_backend_init() call (even a failed one); a freshly zeroed or shut-down
+// state has no driver context and fails closed.
 bool linux_backend_select_target(LinuxGpuState* g, const GpuAdapterInfo* target,
                                  char* err, size_t errSize,
                                  GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED,

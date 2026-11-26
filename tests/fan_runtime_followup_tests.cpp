@@ -34,7 +34,6 @@ struct LinuxGpuController {
     unsigned long long fanWakeGeneration;
     bool fanOwnershipHandbackDeferred;
     ServiceFanFault fanFault;
-    gc_u32 fanFaultSerial;
 };
 static LinuxGpuController fixture;
 // A second GPU's controller: its wakes must not touch the fixture's fan.
@@ -220,7 +219,7 @@ static void initialize(Schedule next) {
     fixture.fanFailureCount = 0;
     fixture.fanOwnershipHandbackDeferred = false;
     fixture.fanFault = {};
-    fixture.fanFaultSerial = 0;
+    g_daemonFanFaultSerial = 0;
     deferredHandbacks = 0;
     injected = afterTimedWait = stateLocked = wakeLocked = false;
     lockOrderValid = true;
@@ -366,6 +365,17 @@ static int run() {
     fixture.fanFailureCount = 2;
     daemon_fan_runtime_note_commit(fixture, "test");
     if (fixture.fanFailureCount || fixture.fanFault.kind != SERVICE_FAN_FAULT_NONE) return 12892;
+    // 14250: process-wide fault serials stay distinct across controllers so a
+    // client observer deduplicating on (serial, kind) announces each card's
+    // fault; null worker arg exits cleanly.
+    g_daemonFanFaultSerial = 0;
+    otherGpu = {};
+    daemon_fan_fault_record(fixture, SERVICE_FAN_FAULT_STALL,
+        SERVICE_FAN_HANDBACK_DRIVER_AUTO, 0, 40, 20000, "gpu0");
+    daemon_fan_fault_record(otherGpu, SERVICE_FAN_FAULT_STALL,
+        SERVICE_FAN_HANDBACK_DRIVER_AUTO, 0, 40, 20000, "gpu1");
+    if (fixture.fanFault.serial != 1 || otherGpu.fanFault.serial != 2) return 14250;
+    fan_reassert_thread(nullptr);
     return run_stall();
 }
 } // namespace fan_runtime_fixture

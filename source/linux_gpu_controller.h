@@ -31,59 +31,65 @@
 
 struct LinuxGpuController {
     // The bound backend; gpuReady once an init succeeded.
-    LinuxGpuState gpu;
-    bool gpuReady;
+    LinuxGpuState gpu = {};
+    bool gpuReady = false;
     // A read-time retry may initialize an unavailable backend once per
     // automatic attempt (linux_daemon_snapshot_runtime.cpp).
-    bool backendReadInitAttempted;
+    bool backendReadInitAttempted = false;
     // Bumped whenever the bound GPU identity changes; clients compare it.
     gc_u64 gpuGeneration = 1;
 
     // The committed intent and the GPU it belongs to.
-    DesiredSettings activeDesired;
-    bool hasActiveDesired;
-    GpuAdapterInfo activeTarget;
-    LinuxGpuUuid activeTargetUuid;
+    DesiredSettings activeDesired = {};
+    bool hasActiveDesired = false;
+    GpuAdapterInfo activeTarget = {};
+    LinuxGpuUuid activeTargetUuid = {};
     GpuLocationRole activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
-    bool stateUncertain;
-    ServiceOperationTracker operationTracker;
+    bool stateUncertain = false;
+    ServiceOperationTracker operationTracker = {};
 
     // The committed startup-apply policy.  Zero-initialized means
     // RESTORE_LAST, which is exactly what every build before protocol v13 did.
-    LinuxDaemonStartupRecord startupPolicy;
+    LinuxDaemonStartupRecord startupPolicy = {};
     // Whether an unattended write is still allowed.  See
     // linux_auto_restore_policy.h; the persisted copy lives in
     // GC_DAEMON_GUARD_FILE.
-    LinuxAutoRestoreGuard autoRestoreGuard;
+    LinuxAutoRestoreGuard autoRestoreGuard = {};
     // The protocol-v29 cause of an AUTOMATIC_APPLY_FAILED latched by THIS
     // daemon process (linux_auto_restore_runtime.h).  In memory only, like
     // Windows: after a restart the persisted lockout is published without a
     // cause.
-    ServiceAutoApplyFailure autoApplyFailure;
+    ServiceAutoApplyFailure autoApplyFailure = {};
 
     // Fan ownership (linux_fan_ownership.h) and the worker's failure count.
-    bool fanOwnershipMarkerCommitted;
-    bool fanOwnershipHandbackPending;
+    bool fanOwnershipMarkerCommitted = false;
+    bool fanOwnershipHandbackPending = false;
     // Startup found inherited ownership but no usable backend.
-    bool fanOwnershipHandbackDeferred;
-    LinuxFanOwnershipMarker fanOwnershipRecord;
-    unsigned int fanFailureCount;
+    bool fanOwnershipHandbackDeferred = false;
+    LinuxFanOwnershipMarker fanOwnershipRecord = {};
+    unsigned int fanFailureCount = 0;
     // This GPU's fan command generation: bumped (under g_fanWakeMutex) by
     // every Apply/Reset/state change that wakes its fan worker. It resets the
     // curve hysteresis and is the stall detector's command identity, so
     // another GPU's wake must not advance it.
-    unsigned long long fanWakeGeneration;
+    unsigned long long fanWakeGeneration = 0;
     // v39: the last fan the worker handed back (linux_fan_runtime.h).  In
     // memory only; guarded by the daemon lock.  An explicit Apply or Reset
-    // clears it, as it clears the uncertainty the lockout entered.
-    ServiceFanFault fanFault;
-    gc_u32 fanFaultSerial;
+    // clears it, as it clears the uncertainty the lockout entered.  Its
+    // monotonic serial counter stays process-wide (g_daemonFanFaultSerial)
+    // because clients deduplicate announcements on (serial, kind).
+    ServiceFanFault fanFault = {};
 };
 
-// The values the daemon starts with; a value-initialized controller already
-// holds them (fail-closed target role, first generation).
+// Boot-only initialization into canonical defaults (fail-closed target role,
+// first generation). Call only on an unbound controller, never over a live
+// GPU state without shutting it down first. In-place reset avoids a large
+// temporary on the stack.
 static inline void linux_gpu_controller_init(LinuxGpuController* ctl) {
-    if (ctl) *ctl = LinuxGpuController{};
+    if (!ctl) return;
+    memset(ctl, 0, sizeof(*ctl));
+    ctl->gpuGeneration = 1;
+    ctl->activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
 }
 
 #endif

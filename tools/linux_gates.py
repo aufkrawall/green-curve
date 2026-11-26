@@ -1459,7 +1459,7 @@ _PER_GPU_TYPES = ("LinuxGpuController", "LinuxGpuState", "DesiredSettings", "Gpu
                   "LinuxGpuUuid", "LinuxDaemonStartupRecord", "LinuxAutoRestoreGuard",
                   "ServiceAutoApplyFailure", "ServiceOperationTracker",
                   "LinuxFanOwnershipMarker", "ServiceFanFault")
-_RETIRED_DAEMON_GLOBALS = ("g_fanWakeGeneration", "g_gpu", "g_gpuReady", "g_backendReadInitAttempted", "g_daemonGpuGeneration", "g_activeDesired", "g_hasActiveDesired", "g_activeTarget", "g_activeTargetUuid", "g_activeTargetRole", "g_stateUncertain", "g_operationTracker", "g_startupPolicy", "g_autoRestoreGuard", "g_autoApplyFailure", "g_fanOwnershipMarkerCommitted", "g_fanOwnershipHandbackPending", "g_fanOwnershipHandbackDeferred", "g_fanOwnershipRecord", "g_fanFailureCount", "g_daemonFanFault", "g_daemonFanFaultSerial")
+_RETIRED_DAEMON_GLOBALS = ("g_fanWakeGeneration", "g_gpu", "g_gpuReady", "g_backendReadInitAttempted", "g_daemonGpuGeneration", "g_activeDesired", "g_hasActiveDesired", "g_activeTarget", "g_activeTargetUuid", "g_activeTargetRole", "g_stateUncertain", "g_operationTracker", "g_startupPolicy", "g_autoRestoreGuard", "g_autoApplyFailure", "g_fanOwnershipMarkerCommitted", "g_fanOwnershipHandbackPending", "g_fanOwnershipHandbackDeferred", "g_fanOwnershipRecord", "g_fanFailureCount", "g_daemonFanFault")
 
 
 # The daemon's process-wide file-scope statics. Anything else at file scope is
@@ -1467,8 +1467,9 @@ _RETIRED_DAEMON_GLOBALS = ("g_fanWakeGeneration", "g_gpu", "g_gpuReady", "g_back
 _DAEMON_PROCESS_STATICS = frozenset((
     "g_driver", "g_lock", "g_crashBreadcrumbInstalled", "g_crashLogFd", "g_running",
     "g_fanWakeMutex", "g_fanWakeCondition", "g_shutdownPipe", "g_daemonServiceInstanceId",
-    "g_daemonStateRevision", "g_notifyAddress", "g_notifyAddressLength", "g_notifyResolved",
-    "g_watchdogIntervalMs", "g_daemonAdmissionTable"))
+    "g_daemonStateRevision", "g_daemonFanFaultSerial", "g_notifyAddress",
+    "g_notifyAddressLength", "g_notifyResolved", "g_watchdogIntervalMs",
+    "g_daemonAdmissionTable"))
 
 
 _NOT_A_VARIABLE = re.compile(

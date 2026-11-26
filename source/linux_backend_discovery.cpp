@@ -424,7 +424,11 @@ static void linux_backend_reset_state(LinuxGpuState* g, LinuxDriverContext* driv
         "NVML backend has not initialized");
     if (driver) {
         // Copies of the resolved entry points, also after a failed init.
+        // Strip lifetime entry points so a per-GPU state can never invoke
+        // nvmlInit_v2 or nvmlShutdown directly or indirectly.
         g->nvml = driver->nvml;
+        g->nvml.init = nullptr;
+        g->nvml.shutdown = nullptr;
         g->getUuid = driver->getUuid;
     }
 }
@@ -603,6 +607,8 @@ bool linux_backend_select_target(LinuxGpuState* g,
         }
         replacement.graphicsRecovery = g->graphicsRecovery;
     }
+    if (linux_gpu_identity_matches(&g->selectedGpu, &replacement.selectedGpu))
+        replacement.clientLocksLog = g->clientLocksLog;
     linux_backend_shutdown(g);
     if (uuidVerdict) *uuidVerdict = replacement.uuidVerdict;
     *g = replacement;

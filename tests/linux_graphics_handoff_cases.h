@@ -125,5 +125,11 @@ static int linux_graphics_handoff_cases() {
     if (!linux_apply_graphics_baseline(&context) || !linux_apply_graphics_submission(&context) ||
         !linux_apply_graphics_finish(&context) || state.p0Value != 17 || state.globalValue ||
         state.p0Writes || state.globalWrites != 2 || handoffUnlocks != 1) return 9151;
+    // Fail closed when a caller omits the ceiling transaction.
+    LinuxApplyTransactionContext noCeiling = context;
+    noCeiling.ceiling = nullptr;
+    if (linux_apply_graphics_baseline(&noCeiling) ||
+        linux_apply_graphics_submission(&noCeiling) ||
+        linux_apply_graphics_finish(&noCeiling)) return 9152;
     return 0;
 }

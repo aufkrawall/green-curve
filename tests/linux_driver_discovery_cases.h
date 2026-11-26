@@ -38,6 +38,7 @@ static int linux_driver_discovery_cases(char* err, size_t errSize) {
     // each bound GPU updates only its own lock-log gate.
     library = {};
     library.provideNvapi = true;
+    library.providePci = true;
     LinuxDriverContext captureCtx = {};
     static LinuxGpuState boundX, boundY, unboundZ;
     static HardwareCaptureObservation observation;
@@ -57,6 +58,17 @@ static int linux_driver_discovery_cases(char* err, size_t errSize) {
             &observation, why, sizeof(why)) ||
         !boundX.clientLocksLog.seen || boundY.clientLocksLog.seen ||
         unboundZ.clientLocksLog.seen) return 14249;
+    // 14251: per-GPU states never hold nvmlInit_v2 or nvmlShutdown pointers,
+    // even indirectly; only the process-wide context owns them.
+    if (!captureCtx.nvml.init || !captureCtx.nvml.shutdown ||
+        boundX.nvml.init || boundX.nvml.shutdown ||
+        boundY.nvml.init || boundY.nvml.shutdown) return 14251;
+    // 14252: a replacement rebind of the same GPU preserves its client-lock
+    // log gate so unchanged lock state does not repeat in the journal.
+    boundX.writeIdentityResolved = false;
+    GpuAdapterInfo sameTarget = boundX.selectedGpu;
+    if (!lifetime_backend_select_target(&boundX, &sameTarget, err, errSize) ||
+        !boundX.clientLocksLog.seen) return 14252;
     lifetime_driver_close(&captureCtx);
     return 0;
 }

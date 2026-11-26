@@ -3,6 +3,10 @@
 #pragma once
 // Included after the transaction context and baseline helpers.
 static bool linux_apply_graphics_baseline(LinuxApplyTransactionContext* context) {
+    if (!context || !context->gpu || !context->desired || !context->ceiling) {
+        lb_log("linux_apply: graphics baseline refused without a ceiling transaction\n");
+        return false;
+    }
     auto* g = context->gpu;
     auto& review = context->scalarReview;
     if (!linux_release_graphics_handoff(g, context->desired, review, context->ceiling->armed)) return false;
@@ -25,6 +29,10 @@ static bool linux_apply_graphics_baseline(LinuxApplyTransactionContext* context)
     return true;
 }
 static bool linux_apply_graphics_submission(LinuxApplyTransactionContext* context) {
+    if (!context || !context->gpu || !context->desired || !context->ceiling) {
+        lb_log("linux_apply: graphics submission refused without a ceiling transaction\n");
+        return false;
+    }
     auto* g = context->gpu;
     const auto* d = context->desired;
     auto& review = context->scalarReview;
@@ -37,6 +45,10 @@ static bool linux_apply_graphics_submission(LinuxApplyTransactionContext* contex
     return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, context->composedGpuOffset ? 0 : d->gpuOffsetMHz);
 }
 static bool linux_apply_graphics_finish(LinuxApplyTransactionContext* context) {
+    if (!context || !context->gpu || !context->desired || !context->ceiling) {
+        lb_log("linux_apply: graphics finish refused without a ceiling transaction\n");
+        return false;
+    }
     if (!linux_verify_graphics_handoff(context->gpu, context->desired, context->scalarReview)) return false;
     // A verification-only phase preserves an unrelated external pin.
     if (!context->desired->hasLock && !context->ceiling->armed) return true;
