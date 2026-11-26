@@ -13,7 +13,7 @@
 namespace {
 struct Lifecycle {
     bool initialized, selected;
-    unsigned int opens, closes, controls, versions, queries;
+    unsigned int opens, closes, openedClosed, controls, versions, queries;
     const GpuAdapterInfo* target;
 };
 static Lifecycle state;
@@ -43,9 +43,11 @@ static bool fixture_init(LinuxGpuState* gpu, LinuxDriverContext* driver,
 static void fixture_shutdown(LinuxGpuState* gpu) {
     std::memset(gpu, 0, sizeof(*gpu));
 }
-// The dump owns a process-scoped driver context and must close it once.
+// The dump owns a process-scoped driver context and must close that opened
+// context exactly once.
 static void fixture_close(LinuxDriverContext* driver) {
     ++state.closes;
+    if (driver && driver->nvmlLib) ++state.openedClosed;
     *driver = LinuxDriverContext{};
 }
 static nvmlReturn_t fixture_driver(char* version, unsigned int size) {
@@ -77,7 +79,7 @@ static std::string read_report(FILE* file) {
 int run_linux_clk_domain_dump_tests() {
     // 7761-7769: production Linux dispatch/lifecycle with fake driver bindings.
     for (unsigned int mode = 0; mode < 3; ++mode) {
-        state = {mode != 2, mode != 1, 0, 0, 0, 0, 0, nullptr};
+        state = {mode != 2, mode != 1, 0, 0, 0, 0, 0, 0, nullptr};
         GpuAdapterInfo target = {};
         target.valid = true;
         FILE* file = std::tmpfile();
@@ -85,8 +87,8 @@ int run_linux_clk_domain_dump_tests() {
         int result = fixture_dump(&target, file);
         std::string report = read_report(file);
         std::fclose(file);
-        if (state.opens != 1 || state.closes != 1 || state.target != &target ||
-            state.versions != 1 || state.queries != 6) return 7762;
+        if (state.opens != 1 || state.closes != 1 || state.openedClosed != 1 ||
+            state.target != &target || state.versions != 1 || state.queries != 6) return 7762;
         if (report.find("nvml-driver: status=0 version=580.00?") == std::string::npos) return 7763;
         if (mode == 0) {
             if (result != 0 || state.controls != 2 ||
@@ -101,7 +103,7 @@ int run_linux_clk_domain_dump_tests() {
         }
     }
     {
-        state = {true, true, 0, 0, 0, 0, 0, nullptr};
+        state = {true, true, 0, 0, 0, 0, 0, 0, nullptr};
 #ifdef _WIN32
         FILE* file = std::fopen("NUL", "rb");
 #else
@@ -110,7 +112,7 @@ int run_linux_clk_domain_dump_tests() {
         if (!file) return 7768;
         int result = fixture_dump(nullptr, file);
         std::fclose(file);
-        if (result != 2 || state.closes != 1) return 7769;
+        if (result != 2 || state.closes != 1 || state.openedClosed != 1) return 7769;
     }
     return 0;
 }

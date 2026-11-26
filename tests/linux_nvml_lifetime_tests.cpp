@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 // Execute the production driver context and backend initialization/teardown
 // against a reference-counted fake NVML library (assertion codes 14200-14215,
-// 14217-14219, 14235-14249, 14251-14257; 14247-14249, 14251-14252, 14255-14257
-// in linux_driver_discovery_cases.h).
+// 14217-14219, 14235-14249, 14251-14259, 14271; 14247-14249, 14251-14252,
+// 14255-14257, 14271 in linux_driver_discovery_cases.h).
 // No real driver library or physical GPU is opened.
 #if !defined(_WIN32)
 #include "platform.h"
@@ -21,6 +21,7 @@ static void lifetime_close_library(PlLib);
 #define linux_driver_open_nvml lifetime_driver_open_nvml
 #define linux_driver_open_nvapi lifetime_driver_open_nvapi
 #define linux_driver_discover lifetime_driver_discover
+#define linux_driver_release_nvml lifetime_driver_release_nvml
 #define linux_driver_close lifetime_driver_close
 #define linux_backend_capture_current lifetime_backend_capture_current
 #define linux_backend_capture_apply_snapshot lifetime_backend_capture_apply_snapshot
@@ -69,6 +70,7 @@ static void lifetime_close_library(PlLib);
 #undef linux_backend_capture_apply_snapshot
 #undef linux_backend_capture_current
 #undef linux_driver_close
+#undef linux_driver_release_nvml
 #undef linux_driver_discover
 #undef linux_driver_open_nvapi
 #undef linux_driver_open_nvml
@@ -87,6 +89,9 @@ struct LibraryLifetime {
     bool provideNvapi, providePci, loseInit, refuseNvapiEnum, refuseNvapiInit;
     // A driver reset invalidated the NvAPI session until it is initialized again.
     bool nvapiSessionLost;
+    // Simulates a broken driver where getCount keeps returning UNINITIALIZED
+    // even after nvmlInit_v2 succeeded and acquired a reference.
+    bool alwaysReportUninitialized;
 };
 static LibraryLifetime library;
 
@@ -106,6 +111,7 @@ static nvmlReturn_t fake_shutdown() {
 
 static nvmlReturn_t fake_count(unsigned int* count) {
     ++library.countCalls;
+    if (library.alwaysReportUninitialized) return NVML_ERROR_UNINITIALIZED;
     if (library.loseInit) {
         library.loseInit = false;
         library.references = 0;
@@ -412,6 +418,72 @@ int run_linux_nvml_lifetime_tests() {
     if (refusedInit.health.reason != SERVICE_GPU_HEALTH_NVAPI_INIT_FAILED ||
         refusedContext.nvapiInitialized) return 14241;
     lifetime_driver_close(&refusedContext);
+
+    // 14258: repeated NVML_ERROR_UNINITIALIZED during live recovery backs off
+    // to power-of-two attempts (1, 2, 4, ...) instead of calling nvmlInit_v2
+    // on every refresh poll, and still heals when the driver comes back.
+    {
+        library = {};
+        library.providePci = true;
+        LinuxDriverContext backoffCtx = {};
+        LinuxGpuState backoffState = {};
+        char recErr[192] = {};
+        bool reinit = false;
+        if (!lifetime_backend_init(&backoffState, &backoffCtx, nullptr, err, sizeof(err)))
+            return 14258;
+        library.loseInit = true;
+        library.refuseInit = true;
+        // Miss 1: tries init (1 -> 2).
+        if (linux_backend_reenumerate_same_nvml_gpu(&backoffState, recErr, sizeof(recErr), &reinit) ||
+            library.initCalls != 2 || reinit) return 14258;
+        // Miss 2: tries init (2 -> 3).
+        if (linux_backend_reenumerate_same_nvml_gpu(&backoffState, recErr, sizeof(recErr), &reinit) ||
+            library.initCalls != 3 || reinit) return 14258;
+        // Miss 3: not a power of two -> skips init (stays 3).
+        if (linux_backend_reenumerate_same_nvml_gpu(&backoffState, recErr, sizeof(recErr), &reinit) ||
+            library.initCalls != 3 || reinit) return 14258;
+        // Miss 4: power of two -> retries and recovers once driver accepts init.
+        library.refuseInit = false;
+        if (!linux_backend_reenumerate_same_nvml_gpu(&backoffState, recErr, sizeof(recErr), &reinit) ||
+            library.initCalls != 4 || !reinit || !backoffCtx.nvmlInitialized ||
+            backoffCtx.nvmlRecoveryMisses != 0 || library.references != 1) return 14258;
+        lifetime_driver_close(&backoffCtx);
+    }
+
+    // 14259: if nvmlInit_v2 succeeds during recovery yet getCount still returns
+    // NVML_ERROR_UNINITIALIZED, the newly acquired reference is released via
+    // nvmlShutdown (no reference leak) and backoff still skips miss 3.
+    {
+        library = {};
+        library.providePci = true;
+        LinuxDriverContext leakCtx = {};
+        LinuxGpuState leakState = {};
+        char recErr[192] = {};
+        bool reinit = false;
+        if (!lifetime_backend_init(&leakState, &leakCtx, nullptr, err, sizeof(err)) ||
+            library.references != 1) return 14259;
+        // Drop the prior session, then keep getCount claiming uninitialized
+        // even after nvmlInit_v2 succeeds.
+        library.references = 0;
+        library.alwaysReportUninitialized = true;
+        // Miss 1: re-init acquires ref (0 -> 1), getCount still UNINITIALIZED,
+        // release drops ref (1 -> 0) and leaves nvmlInitialized == false.
+        if (linux_backend_reenumerate_same_nvml_gpu(&leakState, recErr, sizeof(recErr), &reinit) ||
+            reinit || leakCtx.nvmlInitialized || library.references != 0 ||
+            library.initCalls != 2 || library.shutdownCalls != 1) return 14259;
+        // Miss 2: tries and releases cleanly (ref stays 0).
+        if (linux_backend_reenumerate_same_nvml_gpu(&leakState, recErr, sizeof(recErr), &reinit) ||
+            reinit || leakCtx.nvmlInitialized || library.references != 0 ||
+            library.initCalls != 3 || library.shutdownCalls != 2) return 14259;
+        // Miss 3: skipped by backoff (no extra init or shutdown).
+        if (linux_backend_reenumerate_same_nvml_gpu(&leakState, recErr, sizeof(recErr), &reinit) ||
+            library.initCalls != 3 || library.shutdownCalls != 2 ||
+            library.references != 0) return 14259;
+        lifetime_driver_close(&leakCtx);
+        if (library.references != 0 || library.shutdownCalls != 2 ||
+            library.nvmlCloses != 1) return 14259;
+    }
+
     if (int failure = linux_driver_discovery_cases(err, sizeof(err))) return failure;
     return 0;
 }

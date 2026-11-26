@@ -317,28 +317,46 @@ static bool linux_backend_reenumerate_same_nvml_gpu(
     }
     unsigned int count = 0;
     int countStatus = g->nvml.getCount(&count);
+    if (countStatus == NVML_SUCCESS && g->driver)
+        g->driver->nvmlRecoveryMisses = 0;
     if (countStatus == NVML_ERROR_UNINITIALIZED && g->driver &&
         g->driver->nvmlLib) {
-        // Same rule as discovery: clear any stale init and attempt one
-        // re-initialization through the context so a live bound GPU can
-        // recover in place instead of staying stuck on a dead session.
+        // First observation of a dropped session retries immediately; if NVML
+        // stays uninitialized across refreshes, back off deterministically to
+        // power-of-two recovery calls (1, 2, 4, 8, ...) so a dead driver does
+        // not call nvmlInit_v2 or spam the journal on every 1 Hz poll.
         const bool wasInitialized = g->driver->nvmlInitialized;
-        g->driver->nvmlInitialized = false;
-        char openErr[192] = {};
-        const LinuxDriverResult reopened = linux_driver_open_nvml(
-            g->driver, openErr, sizeof(openErr));
-        lb_log("linux_backend: NVML reports uninitialized during recovery "
-               "(wasInitialized=%d); re-init ok=%d status=%d%s%s\n",
-               wasInitialized ? 1 : 0, reopened.ok ? 1 : 0, reopened.status,
-               (!reopened.ok && openErr[0]) ? " detail=" : "",
-               (!reopened.ok && openErr[0]) ? openErr : "");
-        if (reopened.ok) {
-            if (nvmlReinitializedOut) *nvmlReinitializedOut = true;
-            count = 0;
-            countStatus = g->nvml.getCount(&count);
-            if (countStatus == NVML_ERROR_UNINITIALIZED) {
-                g->driver->nvmlInitialized = false;
-                lb_log("linux_backend: NVML still uninitialized after recovery re-init\n");
+        if (wasInitialized) {
+            g->driver->nvmlInitialized = false;
+            g->driver->nvmlRecoveryMisses = 0;
+        }
+        const unsigned int miss = ++g->driver->nvmlRecoveryMisses;
+        const bool shouldAttempt = wasInitialized || (miss & (miss - 1u)) == 0;
+        if (shouldAttempt) {
+            char openErr[192] = {};
+            const LinuxDriverResult reopened = linux_driver_open_nvml(
+                g->driver, openErr, sizeof(openErr));
+            lb_log("linux_backend: NVML reports uninitialized during recovery "
+                   "(wasInitialized=%d miss=%u); re-init ok=%d status=%d%s%s\n",
+                   wasInitialized ? 1 : 0, miss, reopened.ok ? 1 : 0, reopened.status,
+                   (!reopened.ok && openErr[0]) ? " detail=" : "",
+                   (!reopened.ok && openErr[0]) ? openErr : "");
+            if (reopened.ok) {
+                count = 0;
+                countStatus = g->nvml.getCount(&count);
+                if (countStatus == NVML_ERROR_UNINITIALIZED) {
+                    // Re-init just acquired an NVML reference, yet getCount
+                    // still reports uninitialized: release the reference
+                    // explicitly through the context so it cannot leak, and
+                    // keep the backoff counter advancing.
+                    linux_driver_release_nvml(g->driver);
+                    g->driver->nvmlRecoveryMisses = miss;
+                    lb_log("linux_backend: NVML still uninitialized after recovery "
+                           "re-init (miss=%u); reference released\n", miss);
+                } else {
+                    if (nvmlReinitializedOut) *nvmlReinitializedOut = true;
+                    if (countStatus == NVML_SUCCESS) g->driver->nvmlRecoveryMisses = 0;
+                }
             }
         }
     }
@@ -607,8 +625,7 @@ bool linux_backend_select_target(LinuxGpuState* g,
         }
         replacement.graphicsRecovery = g->graphicsRecovery;
     }
-    if (linux_gpu_identity_matches(&g->selectedGpu, &replacement.selectedGpu))
-        replacement.clientLocksLog = g->clientLocksLog;
+    linux_backend_preserve_same_gpu_log_state(g, &replacement);
     linux_backend_shutdown(g);
     if (uuidVerdict) *uuidVerdict = replacement.uuidVerdict;
     *g = replacement;

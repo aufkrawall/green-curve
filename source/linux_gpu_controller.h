@@ -21,6 +21,8 @@
 #ifndef GREEN_CURVE_LINUX_GPU_CONTROLLER_H
 #define GREEN_CURVE_LINUX_GPU_CONTROLLER_H
 
+#include <new>
+#include <type_traits>
 #include "linux_backend.h"
 #include "linux_daemon_state.h"
 #include "linux_auto_restore_policy.h"
@@ -81,15 +83,17 @@ struct LinuxGpuController {
     ServiceFanFault fanFault = {};
 };
 
+static_assert(std::is_trivially_destructible<LinuxGpuController>::value,
+              "LinuxGpuController must stay trivially destructible");
+
 // Boot-only initialization into canonical defaults (fail-closed target role,
 // first generation). Call only on an unbound controller, never over a live
-// GPU state without shutting it down first. In-place reset avoids a large
-// temporary on the stack.
+// GPU state without shutting it down first. Placement-new constructs directly
+// in place from the struct's member initializers without a large stack
+// temporary or duplicated default assignments.
 static inline void linux_gpu_controller_init(LinuxGpuController* ctl) {
     if (!ctl) return;
-    memset(ctl, 0, sizeof(*ctl));
-    ctl->gpuGeneration = 1;
-    ctl->activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
+    new (ctl) LinuxGpuController{};
 }
 
 #endif

@@ -281,10 +281,18 @@ int run_linux_daemon_commit_rollback_tests() {
     }
 
     // 14268-14270: SERVICE_CMD_RESUME_RESTORE drives daemon_automatic_restore_write().
-    // It is a payload-free command (no caller-supplied target, settings, or
+    // Self-contained setup: start from a fresh controller and commit one Apply
+    // so activeDesired is populated independently of earlier cases. Resume is
+    // a payload-free command (no caller-supplied target, settings, or
     // preconditions). When its ACTIVE record commit fails after the hardware
     // write, the unattended path rolls back once with that same ceiling
     // transaction and locks out further automatic restores.
+    fixture = DaemonFixture{};
+    fixture_controller(ctl);
+    fixture_request(req, ctl, SERVICE_CMD_APPLY, 4, fixture_observe(ctl));
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_OK || !ctl.hasActiveDesired) return 14268;
     fixture = DaemonFixture{};
     fixture.failActiveStore = true;
     req = ServiceRequest{};

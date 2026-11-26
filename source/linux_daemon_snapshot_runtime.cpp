@@ -292,6 +292,7 @@ static bool daemon_retry_backend_for_read(LinuxGpuController& ctl, bool explicit
         return false;
     }
     const GpuAdapterInfo previous = ctl.gpu.selectedGpu;
+    linux_backend_preserve_same_gpu_log_state(&ctl.gpu, &replacement);
     linux_backend_shutdown(&ctl.gpu);
     ctl.gpu = replacement;
     ctl.gpuReady = true;

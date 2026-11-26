@@ -58,6 +58,16 @@ _STATIC_TRANSACTION = re.compile(
     r"\bstatic\s+(?:volatile\s+)?(?:const\s+)?LinuxApplyCeilingTransaction\b")
 _LOCAL_CEILING_DECLARATION = re.compile(
     r"^[ \t]+LinuxApplyCeilingTransaction\s+ceiling\s*=\s*\{\s*\}\s*;", re.M)
+_CPP_COMMENT_OR_STRING = re.compile(
+    r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|/\*.*?\*/|//[^\n]*', re.S)
+
+
+def _strip_cpp_comments(text):
+    """Strip C/C++ comments while preserving string/char literals and newlines."""
+    return _CPP_COMMENT_OR_STRING.sub(
+        lambda m: m.group(0) if m.group(0)[0] in ('"', "'")
+        else ("\n" * m.group(0).count("\n") or " "),
+        text)
 
 
 def _forbid_linux_ceiling_ambient_state(ctx):
@@ -70,7 +80,7 @@ def _forbid_linux_ceiling_ambient_state(ctx):
     for name in _LINUX_CEILING_TRANSACTION_SHARDS:
         with open(_p(ctx, name), "r", encoding="utf-8", errors="replace") as handle:
             text = handle.read()
-        code = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.S)
+        code = _strip_cpp_comments(text)
         match = _FILE_SCOPE_MUTABLE_STATIC.search(code) or _ANY_MUTABLE_STATIC.search(code) \
             or _RETIRED_CEILING_STATICS.search(code) or _FILE_SCOPE_TRANSACTION.search(code) \
             or re.search(r"\bnamespace\b", code) or re.search(r"\bthread_local\b", code)
@@ -83,7 +93,7 @@ def _forbid_linux_ceiling_ambient_state(ctx):
     for name in _LINUX_CEILING_OWNER_FILES:
         with open(_p(ctx, name), "r", encoding="utf-8", errors="replace") as handle:
             text = handle.read()
-        code = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.S)
+        code = _strip_cpp_comments(text)
         match = _STATIC_TRANSACTION.search(code) or _FILE_SCOPE_TRANSACTION.search(code) \
             or _RETIRED_CEILING_STATICS.search(code) or re.search(r"\bthread_local\b", code)
         if match:

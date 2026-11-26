@@ -75,6 +75,9 @@ struct LinuxDriverContext {
     nvmlReturn_t (*getDriverVersion)(char*, unsigned int);
     bool nvmlInitialized;
     unsigned int nvmlInitAttempts;
+    // Consecutive NVML_ERROR_UNINITIALIZED observations during live recovery;
+    // gates retries/logging to powers of two (1, 2, 4, ...) and resets on success.
+    unsigned int nvmlRecoveryMisses;
     // NvAPI: every binding initializes it before enumerating; a recovery
     // rebind reuses the session unless an enumeration failure cleared this.
     PlLib nvapiLib;
@@ -112,6 +115,9 @@ LinuxDriverResult linux_driver_discover(LinuxDriverContext* driver,
 void linux_driver_enumerate_nvapi(LinuxDriverContext* driver,
                                   LinuxNvapiInventory* inventory,
                                   bool initializeSession = false);
+// Releases the context's NVML reference (only if acquired) without closing
+// the library handle, so a failed recovery re-init cannot leak a reference.
+void linux_driver_release_nvml(LinuxDriverContext* driver);
 // Releases the NVML reference (only if this context acquired it) and both
 // library handles, then clears the context. Safe to call repeatedly.
 void linux_driver_close(LinuxDriverContext* driver);

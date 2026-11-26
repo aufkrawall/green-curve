@@ -325,6 +325,7 @@ static bool linux_power_request_is_inert(const DesiredSettings* d,
 
 static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
     LinuxApplyTransactionContext* context = (LinuxApplyTransactionContext*)opaque;
+    if (!context || !context->gpu || !context->desired || !context->ceiling) return false;
     LinuxGpuState* g = context->gpu;
     const DesiredSettings* d = context->desired;
     switch (phase) {
@@ -419,6 +420,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
 
 static bool linux_apply_transaction_rollback(void* opaque, unsigned int phases) {
     LinuxApplyTransactionContext* context = (LinuxApplyTransactionContext*)opaque;
+    if (!context || !context->gpu || !context->ceiling) return false;
     char rollback[256] = {};
     phases = scalar_curve_rollback_phases(context->scalarReview, phases, LINUX_MUTATION_GPU_OFFSET);
     if (context->vfBaselineResetAttempted) phases |= LINUX_MUTATION_CURVE;

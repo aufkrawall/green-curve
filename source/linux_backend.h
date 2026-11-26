@@ -178,6 +178,11 @@ static inline bool linux_backend_recovery_binding_matches(const LinuxGpuState* b
         return strcmp(oldUuid->text, newUuid->text) == 0;
     return linux_gpu_identity_matches(&before->selectedGpu, &after->selectedGpu);
 }
+static inline void linux_backend_preserve_same_gpu_log_state(const LinuxGpuState* before, LinuxGpuState* after) {
+    if (!before || !after || !before->selectedGpu.valid || !after->selectedGpu.valid) return;
+    if (linux_backend_recovery_binding_matches(before, after))
+        after->clientLocksLog = before->clientLocksLog;
+}
 
 bool linux_backend_capture_current(const LinuxGpuState* gpu, gc_u64 generation, gc_u32 domains,
     const DesiredSettings* ownedFan, HardwareCaptureObservation* output, char* why, size_t size);

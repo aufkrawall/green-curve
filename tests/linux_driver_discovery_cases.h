@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 // Session-loss and capture cases (assertion codes 14247-14249, 14251-14252,
-// 14255-14257), included by
+// 14255-14257, 14271), included by
 // tests/linux_nvml_lifetime_tests.cpp after its fake driver: a driver reset
 // must recover in the same init as before the shared context, a cold start
 // keeps its single attempt, and passive capture judges each binding.
@@ -70,6 +70,22 @@ static int linux_driver_discovery_cases(char* err, size_t errSize) {
     GpuAdapterInfo sameTarget = boundX.selectedGpu;
     if (!lifetime_backend_select_target(&boundX, &sameTarget, err, errSize) ||
         !boundX.clientLocksLog.seen) return 14252;
+    // 14271: lock-log carry-over honors GPU UUID when both are valid so a
+    // same-model card swapped into the same PCI slot gets a fresh log gate.
+    static LinuxGpuState uuidA, uuidB;
+    uuidA = boundX;
+    uuidB = boundX;
+    uuidB.clientLocksLog = {};
+    uuidA.adapterUuids[uuidA.selectedAdapterIndex] =
+        linux_gpu_uuid_parse("GPU-11111111-1111-1111-1111-111111111111");
+    uuidB.adapterUuids[uuidB.selectedAdapterIndex] =
+        linux_gpu_uuid_parse("GPU-22222222-2222-2222-2222-222222222222");
+    linux_backend_preserve_same_gpu_log_state(&uuidA, &uuidB);
+    if (uuidB.clientLocksLog.seen) return 14271;
+    uuidB.adapterUuids[uuidB.selectedAdapterIndex] =
+        linux_gpu_uuid_parse("GPU-11111111-1111-1111-1111-111111111111");
+    linux_backend_preserve_same_gpu_log_state(&uuidA, &uuidB);
+    if (!uuidB.clientLocksLog.seen) return 14271;
     lifetime_driver_close(&captureCtx);
     return 0;
 }

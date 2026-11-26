@@ -37,6 +37,7 @@ LinuxDriverResult linux_driver_open_nvml(LinuxDriverContext* driver,
         return {false, SERVICE_GPU_HEALTH_NVML_UNAVAILABLE, initStatus};
     }
     driver->nvmlInitialized = true;
+    driver->nvmlRecoveryMisses = 0;
     lb_log("linux_driver: NVML initialized attempts=%u\n", driver->nvmlInitAttempts);
     return {true, SERVICE_GPU_HEALTH_NONE, NVML_SUCCESS};
 }
@@ -214,6 +215,16 @@ LinuxDriverResult linux_driver_discover(LinuxDriverContext* driver,
     lb_log("linux_driver: discovery %u adapters=%u reported=%u\n",
         driver->discoveries, discovery->adapterCount, count);
     return {true, SERVICE_GPU_HEALTH_NONE, NVML_SUCCESS};
+}
+
+void linux_driver_release_nvml(LinuxDriverContext* driver) {
+    if (!driver || !driver->nvmlInitialized) return;
+    if (driver->nvml.shutdown) {
+        const int status = (int)driver->nvml.shutdown();
+        if (status != NVML_SUCCESS)
+            lb_log("linux_driver: nvmlShutdown during recovery reset status=%d\n", status);
+    }
+    driver->nvmlInitialized = false;
 }
 
 void linux_driver_close(LinuxDriverContext* driver) {

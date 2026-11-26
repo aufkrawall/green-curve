@@ -1495,6 +1495,18 @@ def _file_scope_static_names(text):
     return names
 
 
+_CPP_COMMENT_OR_STRING = re.compile(
+    r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|/\*.*?\*/|//[^\n]*', re.S)
+
+
+def _strip_cpp_comments(text):
+    """Strip C/C++ comments while preserving string/char literals and newlines."""
+    return _CPP_COMMENT_OR_STRING.sub(
+        lambda m: m.group(0) if m.group(0)[0] in ('"', "'")
+        else ("\n" * m.group(0).count("\n") or " "),
+        text)
+
+
 def check_gpu_controller(ctx, require_text, forbid_text, require_order):
     """The daemon has no implicit current GPU: per-GPU state lives in one
     LinuxGpuController owned by daemon_run_owned() and passed explicitly
@@ -1519,7 +1531,7 @@ def check_gpu_controller(ctx, require_text, forbid_text, require_order):
     for name in _linux_amalgamation(ctx, "linux_daemon.cpp"):
         with open(_p(ctx, name), "r", encoding="utf-8", errors="replace") as handle:
             text = handle.read()
-        code = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.S)
+        code = _strip_cpp_comments(text)
         code_without_owner = controller_instance.sub("", code) if name == "linux_daemon.cpp" else code
         found = file_scope.search(code) or local_static.search(code_without_owner) or retired.search(code)
         unlisted = [n for n in _file_scope_static_names(code) if n not in _DAEMON_PROCESS_STATICS]
@@ -1543,12 +1555,15 @@ def check_gpu_controller(ctx, require_text, forbid_text, require_order):
               f"LinuxGpuController instance (found {instances})")
         sys.exit(1)
     daemon_cpp = _p(ctx, "linux_daemon.cpp")
-    require_order(daemon_cpp, "static int daemon_run_owned(const char* configPath)",
-                  "static LinuxGpuController controller;",
-                  "daemon_run_owned() is the only place the controller is named")
-    require_order(daemon_cpp, "static LinuxGpuController controller;",
-                  "LinuxGpuController& ctl = controller;",
-                  "daemon_run_owned() hands its controller on as ctl")
+    with open(daemon_cpp, "r", encoding="utf-8", errors="replace") as handle:
+        daemon_code = _strip_cpp_comments(handle.read())
+    owner_fn = daemon_code.find("static int daemon_run_owned(const char* configPath)")
+    inst_match = controller_instance.search(daemon_code, owner_fn) if owner_fn >= 0 else None
+    ctl_ref = daemon_code.find("LinuxGpuController& ctl = controller;", inst_match.end()) if inst_match else -1
+    if owner_fn < 0 or not inst_match or ctl_ref < 0:
+        print("Regression source check FAILED: daemon_run_owned() must own the single "
+              "static LinuxGpuController controller and bind LinuxGpuController& ctl = controller;")
+        sys.exit(1)
     require_order(daemon_cpp, "LinuxGpuController& ctl = controller;",
                   "pl_thread_start(&fanThread, fan_reassert_thread, &ctl);",
                   "the fan worker receives the controller explicitly")

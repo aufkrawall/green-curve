@@ -695,10 +695,12 @@ once, stamped by `[meta] linux_mem_migrated`:
   deduplication on `(serial, kind)` stays distinct across future multi-GPU
   controllers), the shutdown pipe, socket admission and the service
   identity/revision. `LinuxGpuController` gives every member an explicit default
-  initializer, and `linux_gpu_controller_init()` resets in place at daemon boot
-  only. `check_gpu_controller()` in `tools/linux_gates.py` forbids file-scope
-  per-GPU statics, the 21 retired global names and `thread_local` (outside
-  comments) across the daemon amalgamation and requires exactly one
+  initializer, and `linux_gpu_controller_init()` placement-news directly from
+  those NSDMI defaults at daemon boot only (no stack temporary, no duplicated
+  default assignments). `check_gpu_controller()` in `tools/linux_gates.py`
+  forbids file-scope per-GPU statics, the 21 retired global names and
+  `thread_local` (outside comments, with string-literal-aware comment stripping)
+  across the daemon amalgamation and requires exactly one
   `static LinuxGpuController controller;` (or `= {}`) instance in
   `daemon_run_owned()`. The daemon still binds one GPU and keeps the
   single-owner switch guard; nothing on disk or on the wire changed. The fan
@@ -1249,9 +1251,12 @@ entry points (`nvml` with `init`/`shutdown` nulled so per-GPU states cannot
 invoke NVML lifecycle entry points even indirectly, `getUuid`, `nvapiQi`, the
 latter also after a refused NvAPI init, for diagnostics), its own device
 handles, its own `nvapiReady` (capture usability; another GPU's init does not
-count) and its own passive-capture lock-log gate (preserved across same-GPU
-`linux_backend_select_target()` rebinds so unchanged client-lock state does not
-repeat in the journal); `linux_backend_shutdown()` releases only per-GPU state. The owner closes the context after its last state: the
+count) and its own passive-capture lock-log gate (preserved via
+`linux_backend_preserve_same_gpu_log_state()` across `select_target`, read-retry
+and auto-restore rebinds only when physical identity — UUID when both are valid,
+falling back to PCI+model — matches, so unchanged client-lock state does not
+repeat while a swapped card starts clean); `linux_backend_shutdown()` releases
+only per-GPU state. The owner closes the context after its last state: the
 daemon's `g_driver` at exit; the self-test, diagnostics report and
 clock-domain dump use a local context. A failed startup or replacement init
 can never release the live backend's reference (2026-11-24 rule): the
@@ -1260,13 +1265,17 @@ lacking `nvmlInit_v2` or `nvmlShutdown` before acquiring a reference. NVML repor
 context's init; when that session was a cached one, `linux_backend_init()`
 initializes again within the same call, as a fresh per-state init did before,
 so a one-shot caller (read retry, resume) recovers on its first attempt, while
-a cold start keeps its single attempt. During live same-GPU recovery
-(`linux_backend_reenumerate_same_nvml_gpu()`), `NVML_ERROR_UNINITIALIZED`
-similarly clears any stale init and performs one in-place
-`linux_driver_open_nvml()` re-initialization (retrying once on subsequent
-recoveries if the first re-init fails), and `linux_backend_refresh()` refreshes
-NVML ranges and passes `initializeSession = true` to
-`linux_backend_bind_nvapi()` when NVML had to re-initialize so a modeled
+a cold start keeps its single attempt. During live same-GPU recovery (`linux_backend_reenumerate_same_nvml_gpu()`),
+`NVML_ERROR_UNINITIALIZED` clears any stale init and attempts
+`linux_driver_open_nvml()` immediately on the first observation, then backs off
+deterministically to power-of-two recovery calls (`nvmlRecoveryMisses`: 1, 2,
+4, 8, ...) while NVML remains uninitialized so a dead driver never hot-loops
+`nvmlInit_v2` or floods the journal on every 1 Hz poll. If `nvmlInit_v2`
+succeeds yet the immediate `getCount` retry still reports
+`NVML_ERROR_UNINITIALIZED`, `linux_driver_release_nvml()` releases the newly
+acquired reference explicitly so no reference leaks. When NVML recovers in
+place, `linux_backend_refresh()` re-queries NVML ranges and passes
+`initializeSession = true` to `linux_backend_bind_nvapi()` so a modeled
 driver-reset session loss heals in one refresh instead of stranding a ready
 backend until daemon restart (modeled/fake-driver verified only; real Linux
 NVML returning `NVML_ERROR_UNINITIALIZED` to an already-initialized process
@@ -1283,8 +1292,9 @@ forbids library load/init/release and NvAPI init calls anywhere in the
 backend amalgamation except the context (token patterns over comment-stripped
 code). The separate `--probe` raw-library probe (`linux_gpu.cpp`) is
 deliberately independent. Covered by `tests/linux_nvml_lifetime_tests.cpp`
-(`14200-14215`, `14217-14219`, `14235-14249`, `14251-14257`; `14247-14249`,
-`14251-14252`, `14255-14257` in `tests/linux_driver_discovery_cases.h`).
+(`14200-14215`, `14217-14219`, `14235-14249`, `14251-14259`, `14271`;
+`14247-14249`, `14251-14252`, `14255-14257`, `14271` in
+`tests/linux_driver_discovery_cases.h`).
 Deferred to the multi-GPU step (2026-11-26 decision, after six review rounds
 found edge cases only that step needs): binding several GPUs from one shared
 discovery and NvAPI inventory, and the bind-time proof that cached NVML/NvAPI
