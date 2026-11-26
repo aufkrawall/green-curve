@@ -335,27 +335,50 @@ int run_linux_nvml_lifetime_tests() {
     lifetime_driver_close(&both);
     if (library.closeCalls != closesBefore + 2) return 14239;
 
-    // 14242: the same-GPU recovery re-enumeration also notices a reset and
-    // clears the stale init, so the next init initializes again.
-    // A context with the PCI query recovery needs to prove the same card.
+    // 14242-14246: same-GPU recovery re-enumeration notices a modeled NVML
+    // session loss and recovers in place via linux_driver_open_nvml(); if the
+    // first re-init fails, a later recovery still retries; refresh() renews
+    // NvAPI in the same call when NVML had to re-initialize.
     lifetime_driver_close(&shared);
     library = {};
     library.providePci = true;
+    library.provideNvapi = true;
     LinuxGpuState pciBound = {};
     if (!lifetime_backend_init(&pciBound, &shared, nullptr, err, sizeof(err)) ||
-        !pciBound.selectedGpu.pciInfoValid) return 14242;
+        !pciBound.selectedGpu.pciInfoValid || !pciBound.nvapiReady) return 14242;
     library.loseInit = true;
+    library.refuseInit = true;
     char recoveryErr[192] = {};
-    if (linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr, sizeof(recoveryErr)) ||
-        shared.nvmlInitialized) return 14242;
-    LinuxGpuState afterRecovery = {};
-    if (!lifetime_backend_init(&afterRecovery, &shared, nullptr, err, sizeof(err)) ||
-        library.initCalls != 2 || library.references != 1) return 14242;
+    bool nvmlReinitialized = false;
+    if (linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr, sizeof(recoveryErr),
+            &nvmlReinitialized) || shared.nvmlInitialized || nvmlReinitialized ||
+        library.initCalls != 2 || library.references != 0) return 14243;
+    library.refuseInit = false;
+    if (!linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr, sizeof(recoveryErr),
+            &nvmlReinitialized) || !shared.nvmlInitialized || !nvmlReinitialized ||
+        library.initCalls != 3 || library.references != 1) return 14244;
+    // Full refresh() recovery when both NVML and NvAPI sessions were lost:
+    // re-initializes NVML and renews NvAPI in a single refresh() call.
+    library.loseInit = true;
+    library.nvapiSessionLost = true;
+    pciBound.nvapiReady = false;
+    pciBound.gpuHandle = nullptr;
+    const int nvapiInitsBeforeRefresh = library.nvapiInits;
+    (void)lifetime_backend_refresh(&pciBound);
+    if (!shared.nvmlInitialized || !shared.nvapiInitialized || !pciBound.nvapiReady ||
+        !pciBound.gpuHandle || library.initCalls != 4 || library.references != 1 ||
+        library.nvapiInits != nvapiInitsBeforeRefresh + 1) return 14245;
+    // When NVML stays healthy during refresh() recovery, NvAPI keeps its
+    // current session (no extra NvAPI initialize call).
+    pciBound.gpuHandle = nullptr;
+    (void)lifetime_backend_refresh(&pciBound);
+    if (!pciBound.nvapiReady || !pciBound.gpuHandle ||
+        library.initCalls != 4 || library.nvapiInits != nvapiInitsBeforeRefresh + 1) return 14246;
 
     lifetime_driver_close(&shared);
-    // One NVML reference released once; the library handle closed once.
+    // One NVML reference released once; both library handles closed once.
     if (library.references != 0 || library.shutdownCalls != 1 ||
-        library.closeCalls != 1) return 14219;
+        library.closeCalls != 2) return 14219;
 
     // 14240-14241: a refused NvAPI initialization still leaves this state the
     // resolved query interface (diagnostics keep using it), while NvAPI is not

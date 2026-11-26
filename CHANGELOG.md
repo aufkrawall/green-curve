@@ -61,7 +61,7 @@ Curve editing, profile transfer and capture improve.
 - **Windows non-Western text and logon status:** render `°C` and Unicode UI text via wide Win32 controls so CJK and other non-CP1252 Windows locales do not corrupt fan-curve labels or prompts, and keep the Windows logon status line intact when app-start auto-load is already disabled.
 - **Windows startup and transfer of captured profiles:** allow Windows logon, app-start, CLI logon, and upgrade settings transfer to apply saved explicit-scope profiles that intentionally omit unowned controls (such as global GPU offset or fan settings omitted by Save Current).
 - **Windows cooling:** verify Auto on every fan (including older drivers without policy readback), enforce Reset and shutdown handback for emergency cooling, skip fanless GPUs cleanly, and keep fan faults when post-Apply repair fails.
-- **Linux driver recovery:** a daemon that started before the NVIDIA driver was ready keeps working once the driver comes up.
+- **Linux driver recovery:** a daemon that started before the NVIDIA driver was ready keeps working once the driver comes up, and live recovery now re-initializes the driver session in place if the driver reports it uninitialized.
 - **Linux Reset:** restore stock clocks before stock power and clear both memory controls. Failures recover under the prior clock bound.
 - **Linux fanless GPUs:** Reset restores clocks without requiring fan control.
 - **Linux upgrades:** recover the prior daemon, re-enable restored service units, and keep pre-upgrade checks quiet after a failed upgrade.

@@ -1245,16 +1245,25 @@ daemon's `g_driver` at exit; the self-test, diagnostics report and
 clock-domain dump use a local context. A failed startup or replacement init
 can never release the live backend's reference (2026-11-24 rule): the
 reference is the context's. `linux_driver_open_nvml()` refuses a library
-lacking `nvmlInit_v2` or `nvmlShutdown` before acquiring a reference. NVML
-reporting `NVML_ERROR_UNINITIALIZED` during discovery or a same-GPU recovery
-(driver reset/reload) clears the context's init; when that session was a
-cached one, `linux_backend_init()` initializes again within the same call, as
-a fresh per-state init did before, so a one-shot caller (read retry, resume)
-recovers on its first attempt, while a cold start keeps its single attempt.
+lacking `nvmlInit_v2` or `nvmlShutdown` before acquiring a reference. NVML reporting `NVML_ERROR_UNINITIALIZED` during discovery clears the
+context's init; when that session was a cached one, `linux_backend_init()`
+initializes again within the same call, as a fresh per-state init did before,
+so a one-shot caller (read retry, resume) recovers on its first attempt, while
+a cold start keeps its single attempt. During live same-GPU recovery
+(`linux_backend_reenumerate_same_nvml_gpu()`), `NVML_ERROR_UNINITIALIZED`
+similarly clears any stale init and performs one in-place
+`linux_driver_open_nvml()` re-initialization (retrying once on subsequent
+recoveries if the first re-init fails), and `linux_backend_refresh()` refreshes
+NVML ranges and passes `initializeSession = true` to
+`linux_backend_bind_nvapi()` when NVML had to re-initialize so a modeled
+driver-reset session loss heals in one refresh instead of stranding a ready
+backend until daemon restart (modeled/fake-driver verified only; real Linux
+NVML returning `NVML_ERROR_UNINITIALIZED` to an already-initialized process
+after a reset is hardware-unverified).
 Every binding initializes NvAPI before it enumerates, as each new GPU state
 did before the shared context, so a session a driver reset invalidated (even
-one that still enumerates) is renewed; a recovery rebind keeps the current
-session, as before. Logs:
+one that still enumerates) is renewed; a normal recovery rebind (where NVML
+did not re-initialize) keeps the current session, as before. Logs:
 `linux_driver: NVML initialized attempts=N`, `NvAPI initialized attempts=N`,
 `discovery N adapters=A reported=R`, `NVML reports uninitialized during
 discovery`, and on close

@@ -5,6 +5,23 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-26: In-place Linux live recovery for modeled NVML session loss
+
+- `linux_backend_reenumerate_same_nvml_gpu()` (`source/linux_backend_discovery.cpp`)
+  previously cleared `g->driver->nvmlInitialized` on `NVML_ERROR_UNINITIALIZED`
+  without re-initializing, leaving a bound ready daemon (`ctl.gpuReady == true`)
+  stuck on the dead session until restart because read-retry and resume-reinit
+  skip when `gpuReady` is true.
+- It now attempts one in-place `linux_driver_open_nvml(g->driver, ...)` and
+  retries `getCount` once (and retries again on a later recovery if the first
+  re-init failed). `linux_backend_refresh()` re-queries NVML ranges and passes
+  `initializeSession = true` to `linux_backend_bind_nvapi()` when NVML had to
+  re-initialize, keeping normal recovery rebinds on the existing NvAPI session.
+- Covered by modeled fake-driver cases `14242-14246` in
+  `tests/linux_nvml_lifetime_tests.cpp` (real Linux NVML returning
+  `NVML_ERROR_UNINITIALIZED` to an already-initialized process after a reset is
+  hardware-unverified).
+
 ## 2026-11-25: Explicit Linux daemon per-GPU controller (multi-GPU step 2, part 3)
 
 - The daemon's 21 per-GPU globals (`g_gpu`, `g_activeDesired`,

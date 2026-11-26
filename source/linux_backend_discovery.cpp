@@ -303,8 +303,10 @@ static int linux_backend_vf_failure_status(const LinuxGpuState* g) {
 }
 
 static bool linux_backend_reenumerate_same_nvml_gpu(
-    LinuxGpuState* g, char* err, size_t errSize) {
+    LinuxGpuState* g, char* err, size_t errSize,
+    bool* nvmlReinitializedOut = nullptr) {
     if (err && errSize) err[0] = 0;
+    if (nvmlReinitializedOut) *nvmlReinitializedOut = false;
     if (!g || !g->nvmlReady || !g->nvml.getCount ||
         !g->nvml.getHandleByIndex || !g->nvml.getPciInfo ||
         (!linux_gpu_bdf_valid(&g->selectedGpu) &&
@@ -316,11 +318,29 @@ static bool linux_backend_reenumerate_same_nvml_gpu(
     unsigned int count = 0;
     int countStatus = g->nvml.getCount(&count);
     if (countStatus == NVML_ERROR_UNINITIALIZED && g->driver &&
-        g->driver->nvmlInitialized) {
-        // Same rule as discovery: the next init initializes NVML again.
+        g->driver->nvmlLib) {
+        // Same rule as discovery: clear any stale init and attempt one
+        // re-initialization through the context so a live bound GPU can
+        // recover in place instead of staying stuck on a dead session.
+        const bool wasInitialized = g->driver->nvmlInitialized;
         g->driver->nvmlInitialized = false;
-        lb_log("linux_backend: NVML reports uninitialized during recovery; "
-               "the next init initializes again\n");
+        char openErr[192] = {};
+        const LinuxDriverResult reopened = linux_driver_open_nvml(
+            g->driver, openErr, sizeof(openErr));
+        lb_log("linux_backend: NVML reports uninitialized during recovery "
+               "(wasInitialized=%d); re-init ok=%d status=%d%s%s\n",
+               wasInitialized ? 1 : 0, reopened.ok ? 1 : 0, reopened.status,
+               (!reopened.ok && openErr[0]) ? " detail=" : "",
+               (!reopened.ok && openErr[0]) ? openErr : "");
+        if (reopened.ok) {
+            if (nvmlReinitializedOut) *nvmlReinitializedOut = true;
+            count = 0;
+            countStatus = g->nvml.getCount(&count);
+            if (countStatus == NVML_ERROR_UNINITIALIZED) {
+                g->driver->nvmlInitialized = false;
+                lb_log("linux_backend: NVML still uninitialized after recovery re-init\n");
+            }
+        }
     }
     if (countStatus != NVML_SUCCESS || count == 0) {
         gc_snprintf(err, errSize,
@@ -625,10 +645,12 @@ LinuxBackendRefreshResult linux_backend_refresh(LinuxGpuState* g) {
         recoveryAttempted = true;
         g->health.recoveryAttempted = true;
         char bindError[192] = {};
+        bool nvmlReinitialized = false;
         bool nvmlRebound = linux_backend_reenumerate_same_nvml_gpu(
-            g, bindError, sizeof(bindError));
+            g, bindError, sizeof(bindError), &nvmlReinitialized);
+        if (nvmlRebound && nvmlReinitialized) nvml_query_ranges(g);
         bool rebound = nvmlRebound && linux_backend_bind_nvapi(
-            g, true, bindError, sizeof(bindError));
+            g, true, bindError, sizeof(bindError), nvmlReinitialized);
         detail[0] = 0;
         fresh = rebound && nvapi_read_vf_snapshot(g, detail, sizeof(detail));
         if (!rebound && bindError[0])
