@@ -281,12 +281,18 @@ int run_linux_daemon_commit_rollback_tests() {
     }
 
     // 14268-14270: SERVICE_CMD_RESUME_RESTORE drives daemon_automatic_restore_write().
-    // When its ACTIVE record commit fails after the hardware write, the
-    // unattended path rolls back once with that same ceiling transaction and
-    // locks out further automatic restores.
+    // It is a payload-free command (no caller-supplied target, settings, or
+    // preconditions). When its ACTIVE record commit fails after the hardware
+    // write, the unattended path rolls back once with that same ceiling
+    // transaction and locks out further automatic restores.
     fixture = DaemonFixture{};
     fixture.failActiveStore = true;
-    fixture_request(req, ctl, SERVICE_CMD_RESUME_RESTORE, 0, fixture_observe(ctl));
+    req = ServiceRequest{};
+    req.magic = SERVICE_PROTOCOL_MAGIC;
+    req.version = SERVICE_PROTOCOL_VERSION;
+    req.command = SERVICE_CMD_RESUME_RESTORE;
+    req.flags = service_request_flags_for_command(SERVICE_CMD_RESUME_RESTORE, false);
+    req.callerPid = (gc_u32)getpid();
     resp = ServiceResponse{};
     handle_request(ctl, &req, &resp);
     if (!fixture.mutated) {
