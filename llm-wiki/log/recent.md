@@ -8,18 +8,20 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 ## 2026-11-26: Post-PR #21 hardening (controller, driver context, tests, gates, wiki)
 
 - **Post-review follow-up fixes:** gated repeated live NVML recovery re-init
-  and logging to deterministic power-of-two attempts (`nvmlRecoveryMisses`: 1,
-  2, 4, ..., `14258`); added `linux_driver_release_nvml()` so an acquired NVML
-  reference is released explicitly if `getCount` still returns
-  `NVML_ERROR_UNINITIALIZED` right after re-init (`14259`); switched
-  `linux_gpu_controller_init()` to placement-new from NSDMI defaults; unified
-  UUID-aware `linux_backend_preserve_same_gpu_log_state()` across `select_target`,
-  read-retry and auto-restore (`14271`); added entry null-`ceiling` guards to
-  `linux_apply_transaction_step()` / `linux_apply_transaction_rollback()`;
-  made `apply_ceiling_gates.py` and `linux_gates.py` comment stripping
-  string-literal-aware and `check_gpu_controller()` ordering accept `= {}`
-  consistently; made `14268-14270` self-contained and verified both `closes` and
-  `openedClosed` in `linux_clk_domain_dump_tests.cpp`.
+  and logging to deterministic powers of two up to 64 refreshes and every 64
+  refreshes thereafter (`nvmlRecoveryMisses`: 1, 2, 4, ..., 64, 128, ...,
+  `14258`, `14272-14275`); added `linux_driver_release_nvml()` so an acquired
+  NVML reference is released explicitly if `getCount` still returns
+  `NVML_ERROR_UNINITIALIZED` right after re-init (`14259`, `14276-14279`);
+  switched `linux_gpu_controller_init()` to placement-new from NSDMI defaults;
+  unified UUID-aware `linux_backend_preserve_same_gpu_log_state()` across
+  `select_target`, read-retry and auto-restore (`14271`, `14280`); added entry
+  null-`ceiling` guards to `linux_apply_transaction_step()` /
+  `linux_apply_transaction_rollback()`; made `apply_ceiling_gates.py` and
+  `linux_gates.py` comment stripping string-literal-aware across all shards and
+  `check_gpu_controller()` ordering accept `= {}` consistently; made
+  `14268-14270` self-contained and verified both `closes` and `openedClosed` in
+  `linux_clk_domain_dump_tests.cpp`.
 - **Driver context & controller hardening:** stripped `g->nvml.{init,shutdown}`
   on `LinuxGpuState` copies so per-GPU states cannot call NVML lifecycle entry
   points even indirectly (`14251`); preserved `clientLocksLog` across same-GPU

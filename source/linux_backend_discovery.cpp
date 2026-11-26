@@ -323,15 +323,22 @@ static bool linux_backend_reenumerate_same_nvml_gpu(
         g->driver->nvmlLib) {
         // First observation of a dropped session retries immediately; if NVML
         // stays uninitialized across refreshes, back off deterministically to
-        // power-of-two recovery calls (1, 2, 4, 8, ...) so a dead driver does
-        // not call nvmlInit_v2 or spam the journal on every 1 Hz poll.
+        // powers of two up to 64 refreshes (1, 2, 4, 8, 16, 32, 64) and then
+        // every 64 refreshes (~1 min at 1 Hz) so a dead driver neither spams
+        // nvmlInit_v2/journald nor stalls recovery for hours after an outage.
         const bool wasInitialized = g->driver->nvmlInitialized;
         if (wasInitialized) {
             g->driver->nvmlInitialized = false;
             g->driver->nvmlRecoveryMisses = 0;
         }
-        const unsigned int miss = ++g->driver->nvmlRecoveryMisses;
-        const bool shouldAttempt = wasInitialized || (miss & (miss - 1u)) == 0;
+        constexpr unsigned int kMaxRecoveryBackoff = 64u;
+        const unsigned int miss = g->driver->nvmlRecoveryMisses < ~0u
+            ? ++g->driver->nvmlRecoveryMisses
+            : (g->driver->nvmlRecoveryMisses = kMaxRecoveryBackoff);
+        const bool shouldAttempt = wasInitialized ||
+            (miss <= kMaxRecoveryBackoff
+                ? (miss & (miss - 1u)) == 0
+                : (miss % kMaxRecoveryBackoff) == 0);
         if (shouldAttempt) {
             char openErr[192] = {};
             const LinuxDriverResult reopened = linux_driver_open_nvml(

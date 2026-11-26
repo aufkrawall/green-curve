@@ -76,7 +76,8 @@ struct LinuxDriverContext {
     bool nvmlInitialized;
     unsigned int nvmlInitAttempts;
     // Consecutive NVML_ERROR_UNINITIALIZED observations during live recovery;
-    // gates retries/logging to powers of two (1, 2, 4, ...) and resets on success.
+    // gates retries/logging to powers of two up to 64 (1, 2, 4, ..., 64), then
+    // every 64 refreshes, and resets on success.
     unsigned int nvmlRecoveryMisses;
     // NvAPI: every binding initializes it before enumerating; a recovery
     // rebind reuses the session unless an enumeration failure cleared this.

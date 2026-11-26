@@ -1265,7 +1265,7 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
             continue
         with open(_p(ctx, shard), "r", encoding="utf-8", errors="replace") as handle:
             # Comments must not split a call either: drop them before matching.
-            code = re.sub(r"/\*.*?\*/|//[^\n]*", " ", handle.read(), flags=re.S)
+            code = _strip_cpp_comments(handle.read())
             found = library_calls.search(code)
         if found:
             print("Regression source check FAILED (must be absent): driver libraries are loaded, "

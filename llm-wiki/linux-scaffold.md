@@ -1268,9 +1268,10 @@ so a one-shot caller (read retry, resume) recovers on its first attempt, while
 a cold start keeps its single attempt. During live same-GPU recovery (`linux_backend_reenumerate_same_nvml_gpu()`),
 `NVML_ERROR_UNINITIALIZED` clears any stale init and attempts
 `linux_driver_open_nvml()` immediately on the first observation, then backs off
-deterministically to power-of-two recovery calls (`nvmlRecoveryMisses`: 1, 2,
-4, 8, ...) while NVML remains uninitialized so a dead driver never hot-loops
-`nvmlInit_v2` or floods the journal on every 1 Hz poll. If `nvmlInit_v2`
+deterministically to powers of two up to 64 refreshes (`nvmlRecoveryMisses`: 1,
+2, 4, 8, 16, 32, 64) and every 64 refreshes thereafter while NVML remains
+uninitialized so a dead driver neither hot-loops `nvmlInit_v2`/journald nor
+stalls recovery after a long outage. If `nvmlInit_v2`
 succeeds yet the immediate `getCount` retry still reports
 `NVML_ERROR_UNINITIALIZED`, `linux_driver_release_nvml()` releases the newly
 acquired reference explicitly so no reference leaks. When NVML recovers in
@@ -1292,8 +1293,8 @@ forbids library load/init/release and NvAPI init calls anywhere in the
 backend amalgamation except the context (token patterns over comment-stripped
 code). The separate `--probe` raw-library probe (`linux_gpu.cpp`) is
 deliberately independent. Covered by `tests/linux_nvml_lifetime_tests.cpp`
-(`14200-14215`, `14217-14219`, `14235-14249`, `14251-14259`, `14271`;
-`14247-14249`, `14251-14252`, `14255-14257`, `14271` in
+(`14200-14215`, `14217-14219`, `14235-14249`, `14251-14259`, `14271-14280`;
+`14247-14249`, `14251-14252`, `14255-14257`, `14271`, `14280` in
 `tests/linux_driver_discovery_cases.h`).
 Deferred to the multi-GPU step (2026-11-26 decision, after six review rounds
 found edge cases only that step needs): binding several GPUs from one shared

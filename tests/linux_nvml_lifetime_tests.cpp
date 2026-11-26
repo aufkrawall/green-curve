@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 // Execute the production driver context and backend initialization/teardown
 // against a reference-counted fake NVML library (assertion codes 14200-14215,
-// 14217-14219, 14235-14249, 14251-14259, 14271; 14247-14249, 14251-14252,
-// 14255-14257, 14271 in linux_driver_discovery_cases.h).
+// 14217-14219, 14235-14249, 14251-14259, 14271-14280; 14247-14249, 14251-14252,
+// 14255-14257, 14271, 14280 in linux_driver_discovery_cases.h).
 // No real driver library or physical GPU is opened.
 #if !defined(_WIN32)
 #include "platform.h"
@@ -419,9 +419,10 @@ int run_linux_nvml_lifetime_tests() {
         refusedContext.nvapiInitialized) return 14241;
     lifetime_driver_close(&refusedContext);
 
-    // 14258: repeated NVML_ERROR_UNINITIALIZED during live recovery backs off
-    // to power-of-two attempts (1, 2, 4, ...) instead of calling nvmlInit_v2
-    // on every refresh poll, and still heals when the driver comes back.
+    // 14258, 14272-14275: repeated NVML_ERROR_UNINITIALIZED during live recovery
+    // backs off to powers of two up to 64 (1, 2, 4, ..., 64) and then retries
+    // every 64 refreshes (capped at 64 so recovery lag stays bounded), healing
+    // cleanly when the driver comes back.
     {
         library = {};
         library.providePci = true;
@@ -435,24 +436,29 @@ int run_linux_nvml_lifetime_tests() {
         library.refuseInit = true;
         // Miss 1: tries init (1 -> 2).
         if (linux_backend_reenumerate_same_nvml_gpu(&backoffState, recErr, sizeof(recErr), &reinit) ||
-            library.initCalls != 2 || reinit) return 14258;
-        // Miss 2: tries init (2 -> 3).
+            library.initCalls != 2 || reinit) return 14272;
+        // Miss 2: tries init (2 -> 3). Miss 3: skipped (stays 3).
         if (linux_backend_reenumerate_same_nvml_gpu(&backoffState, recErr, sizeof(recErr), &reinit) ||
-            library.initCalls != 3 || reinit) return 14258;
-        // Miss 3: not a power of two -> skips init (stays 3).
+            library.initCalls != 3 || reinit) return 14273;
         if (linux_backend_reenumerate_same_nvml_gpu(&backoffState, recErr, sizeof(recErr), &reinit) ||
-            library.initCalls != 3 || reinit) return 14258;
-        // Miss 4: power of two -> retries and recovers once driver accepts init.
+            library.initCalls != 3 || reinit) return 14274;
+        // Advance through miss 4..127 (tries at 4, 8, 16, 32, 64 -> +5 = 8 total;
+        // skips 65..127), then miss 128 hits the 64-refresh cap and recovers.
+        for (int m = 4; m <= 127; ++m) {
+            if (linux_backend_reenumerate_same_nvml_gpu(&backoffState, recErr, sizeof(recErr), &reinit))
+                return 14275;
+        }
+        if (library.initCalls != 8 || backoffCtx.nvmlRecoveryMisses != 127) return 14275;
         library.refuseInit = false;
         if (!linux_backend_reenumerate_same_nvml_gpu(&backoffState, recErr, sizeof(recErr), &reinit) ||
-            library.initCalls != 4 || !reinit || !backoffCtx.nvmlInitialized ||
-            backoffCtx.nvmlRecoveryMisses != 0 || library.references != 1) return 14258;
+            library.initCalls != 9 || !reinit || !backoffCtx.nvmlInitialized ||
+            backoffCtx.nvmlRecoveryMisses != 0 || library.references != 1) return 14275;
         lifetime_driver_close(&backoffCtx);
     }
 
-    // 14259: if nvmlInit_v2 succeeds during recovery yet getCount still returns
-    // NVML_ERROR_UNINITIALIZED, the newly acquired reference is released via
-    // nvmlShutdown (no reference leak) and backoff still skips miss 3.
+    // 14259, 14276-14279: if nvmlInit_v2 succeeds during recovery yet getCount
+    // still returns NVML_ERROR_UNINITIALIZED, the newly acquired reference is
+    // released via nvmlShutdown (no reference leak) and backoff still skips miss 3.
     {
         library = {};
         library.providePci = true;
@@ -470,18 +476,18 @@ int run_linux_nvml_lifetime_tests() {
         // release drops ref (1 -> 0) and leaves nvmlInitialized == false.
         if (linux_backend_reenumerate_same_nvml_gpu(&leakState, recErr, sizeof(recErr), &reinit) ||
             reinit || leakCtx.nvmlInitialized || library.references != 0 ||
-            library.initCalls != 2 || library.shutdownCalls != 1) return 14259;
+            library.initCalls != 2 || library.shutdownCalls != 1) return 14276;
         // Miss 2: tries and releases cleanly (ref stays 0).
         if (linux_backend_reenumerate_same_nvml_gpu(&leakState, recErr, sizeof(recErr), &reinit) ||
             reinit || leakCtx.nvmlInitialized || library.references != 0 ||
-            library.initCalls != 3 || library.shutdownCalls != 2) return 14259;
+            library.initCalls != 3 || library.shutdownCalls != 2) return 14277;
         // Miss 3: skipped by backoff (no extra init or shutdown).
         if (linux_backend_reenumerate_same_nvml_gpu(&leakState, recErr, sizeof(recErr), &reinit) ||
             library.initCalls != 3 || library.shutdownCalls != 2 ||
-            library.references != 0) return 14259;
+            library.references != 0) return 14278;
         lifetime_driver_close(&leakCtx);
         if (library.references != 0 || library.shutdownCalls != 2 ||
-            library.nvmlCloses != 1) return 14259;
+            library.nvmlCloses != 1) return 14279;
     }
 
     if (int failure = linux_driver_discovery_cases(err, sizeof(err))) return failure;
