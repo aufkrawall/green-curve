@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-static void daemon_apply_boot_policy() {
+static void daemon_apply_boot_policy(LinuxGpuController& ctl) {
     LinuxDaemonStateRecord saved = {};
     char err[256] = {};
     bool migrated = false;
@@ -16,33 +16,33 @@ static void daemon_apply_boot_policy() {
                 ? (gc_u32)SERVICE_OPERATION_OUTCOME_UNKNOWN : saved.operationState;
             const gc_u32 status = state == SERVICE_OPERATION_SUCCEEDED
                 ? (gc_u32)SERVICE_STATUS_OK : (gc_u32)SERVICE_STATUS_ERROR;
-            service_operation_restore(&g_operationTracker, saved.operationId, state, status,
+            service_operation_restore(&ctl.operationTracker, saved.operationId, state, status,
                 service_response_resolve_outcome_severity(status, SERVICE_OUTCOME_SEVERITY_SUCCESS),
                 state == SERVICE_OPERATION_SUCCEEDED
                     ? "operation restored from committed daemon state"
                     : "operation outcome became uncertain across daemon restart");
         }
     }
-    switch (linux_daemon_boot_action(g_startupPolicy.mode, load, saved)) {
+    switch (linux_daemon_boot_action(ctl.startupPolicy.mode, load, saved)) {
         case LINUX_DAEMON_BOOT_RECOVERY:
-            g_stateUncertain = true;
+            ctl.stateUncertain = true;
             dlog("daemon: startup journal requires explicit recovery (load=%d state=%u named=%u): %s\n",
                  (int)load, saved.state, saved.graphicsControlSurfaces,
                  err[0] ? err : "automatic write withheld");
             break;
         case LINUX_DAEMON_BOOT_PROFILE:
-            if (!apply_startup_profile_policy(load == LINUX_DAEMON_STATE_LOADED ? &saved : nullptr) &&
-                saved.graphicsControlSurfaces && !g_stateUncertain)
-                daemon_enter_uncertain_state("saved named graphics controls were not transitioned");
+            if (!apply_startup_profile_policy(ctl, load == LINUX_DAEMON_STATE_LOADED ? &saved : nullptr) &&
+                saved.graphicsControlSurfaces && !ctl.stateUncertain)
+                daemon_enter_uncertain_state(ctl, "saved named graphics controls were not transitioned");
             break;
         case LINUX_DAEMON_BOOT_RESTORE_LAST: {
-            const LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(
+            const LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(ctl,
                 LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST,
                 &saved.targetGpu, &saved.desired, (GpuLocationRole)saved.targetLocationRole,
                 &saved.targetUuid, &saved);
             if (!outcome.success) {
-                if (saved.graphicsControlSurfaces && !g_stateUncertain)
-                    daemon_enter_uncertain_state("saved named graphics controls were not restored");
+                if (saved.graphicsControlSurfaces && !ctl.stateUncertain)
+                    daemon_enter_uncertain_state(ctl, "saved named graphics controls were not restored");
                 dlog("daemon: startup reapply did not commit -> %s\n",
                      outcome.message[0] ? outcome.message : "unknown reason");
             }

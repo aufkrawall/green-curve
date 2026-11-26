@@ -457,7 +457,7 @@ once, stamped by `[meta] linux_mem_migrated`:
 | `source/vf_backends.{h,cpp}` | The six per-family `VfBackendSpec` tables + `vf_backend_for_architecture()`. Shared with Windows (one copy). |
 | `source/platform.{h}` / `platform_posix.cpp` | OS shim: `pl_lib_open/sym/close`, `pl_open_driver_library` (NvAPI/NVML sonames), `pl_sleep_ms`, atomics, mutex, threads, `gc_*` bounded strings, `pl_run_capture` (POSIX-only since 2026-09-23; Windows has no subprocess capture). |
 | `source/win32_compat.h` | Linux opaque stand-ins for the Win32 types in shared headers (so `app_shared.h`/`AppData` compile on Linux). |
-| `source/linux_backend.{h,cpp}`, `source/linux_backend_nvml_write.cpp`, `source/linux_backend_discovery.cpp`, `source/linux_backend_mutation.cpp`, `source/linux_gpu_binding_policy.h`, `source/linux_architecture_policy.h`, `source/linux_vf_validation.h`, `source/linux_backend_vf_read.h`, `source/linux_vf_layout_summary.h`, `source/linux_curve_targets.h` | Stable NVML/NvAPI PCI discovery and same-PCI recovery, architecture retention/fallback, atomic VF validation/publication with a per-read layout summary, pure curve-target composition, and transactional mutation. |
+| `source/linux_backend.{h,cpp}`, `source/linux_driver_context.{h,cpp}`, `source/linux_backend_nvml_write.cpp`, `source/linux_backend_discovery.cpp`, `source/linux_backend_mutation.cpp`, `source/linux_gpu_binding_policy.h`, `source/linux_architecture_policy.h`, `source/linux_vf_validation.h`, `source/linux_backend_vf_read.h`, `source/linux_vf_layout_summary.h`, `source/linux_curve_targets.h` | Stable NVML/NvAPI PCI discovery and same-PCI recovery, architecture retention/fallback, atomic VF validation/publication with a per-read layout summary, pure curve-target composition, and transactional mutation. |
 | `source/linux_daemon.{h,cpp}`, `source/linux_daemon_transport.cpp`, `source/linux_daemon_identity.cpp`, `source/linux_daemon_snapshot_runtime.cpp`, `source/linux_mutation_authority.h`, `source/linux_operation_runtime.h`, `source/linux_fan_runtime.h`, `source/linux_socket_permissions.h`, `source/linux_socket_path_permissions.h` | Root daemon socket/dispatch/header-first transport, coherent health/state publication, domain-scoped mutation authority, bounded operation deduplication/query, interruptible fan runtime, and fail-closed filesystem-socket permission configuration/verification. |
 | `source/linux_auto_restore_policy.h`, `source/linux_auto_restore_runtime.h` | The pure crash-loop/lockout rule and the single unattended-write path (guard, backend re-preparation, shared reset-to-stock request builder, resume handler). Both boot-apply modes and the resume restore go through the runtime; nothing else may call `linux_backend_apply()` for an automatic write. |
 | `source/linux_daemon_client.h` | The client half's shared machinery — which adapter a response is authoritative about, and how a request is built, sent, and its outcome recovered after a transport failure. Split out of `linux_daemon.cpp` for the source-size ratchet. |
@@ -682,6 +682,38 @@ once, stamped by `[meta] linux_mem_migrated`:
 
 ## Daemon lifecycle and serve loop
 
+- Per-GPU controller (2026-11-25, `source/linux_gpu_controller.h`): everything
+  the daemon knows or owns about its GPU (bound backend, committed intent and
+  target, uncertainty, operation tracker, startup policy, auto-restore guard
+  and failure, fan ownership/fault/failure count, GPU generation) is one
+  `LinuxGpuController`. `daemon_run_owned()` owns the single instance and
+  passes it as `LinuxGpuController& ctl` to the serve loop, request handlers,
+  boot/resume and restore paths; the fan worker receives it as its thread
+  argument; `LinuxOperationRequestGuard` takes the controller's tracker.
+  Process-wide state stays outside: `g_driver`, `g_lock`, the fan wake signal,
+  the shutdown pipe, socket admission and the service identity/revision.
+  `check_gpu_controller()` in `tools/linux_gates.py` forbids file-scope
+  per-GPU statics, the 22 retired global names (the 21 moved members plus the
+  old fan wake generation) and `thread_local` across the
+  daemon amalgamation and requires exactly one instance. The daemon still
+  binds one GPU and keeps the single-owner switch guard; nothing on disk or on
+  the wire changed. The fan worker's command generation (`fanWakeGeneration`)
+  is per controller: it resets curve hysteresis and is the stall detector's
+  command identity, so another GPU's wake must not restart a stall window; the
+  wake mutex/condition and shutdown broadcast stay process-wide. The gate
+  allowlists the daemon's 15 process-wide file-scope variables and rejects any
+  other (static or not), any global or function-local static of a per-GPU
+  type (value or pointer) other than the one controller instance, and the
+  retired names.
+  Namespaces (named or anonymous, outside comments) are rejected too: they
+  would hide state from the column-0 checks, and the daemon files use none. Two-controller isolation: `tests/linux_fan_ownership_tests.cpp`
+  `14230-14233` (distinct adapters) and `tests/fan_runtime_followup_tests.cpp`
+  `14234`. `tests/linux_daemon_commit_rollback_tests.cpp` (`14260-14267`)
+  compiles the production `linux_daemon.cpp` over fake backend, persistence
+  and log functions and drives `handle_request()`: a failed durable commit
+  after a successful Apply or Reset rolls back once with the very transaction
+  the mutation recorded its clamp in (every field the rollback reads arrives
+  intact); a successful commit never rolls back.
 - `linux_daemon_lock_instance()` locks the protected persistent state directory
   before GPU initialization, replay or socket setup. The descriptor stays open
   through fan and socket teardown, independently of systemd's runtime directory.
@@ -1194,24 +1226,53 @@ authority, perform deferred fan handback, or write the ownership marker. It
 replaces the unavailable backend state, bumps the GPU generation when the
 identity changes, publishes the result, and wakes the fan worker.
 
-NVML reference ownership (2026-11-24): `nvmlInit_v2` and `nvmlShutdown` are
-process-wide reference counts, and `linux_backend_init()` can fail after
-opening the library and resolving `nvmlShutdown` (the `nvmlInit_v2 failed`
-arm). `LinuxGpuState::nvmlInitialized` records that this state acquired a
-reference, and `linux_backend_shutdown()` calls `nvmlShutdown` only then.
-Before this, the retry above (and the auto-restore re-init) initialized the
-replacement and then shut down the failed startup state, whose unconditional
-`nvmlShutdown` released the replacement's only reference and left the live
-backend on an uninitialized NVML. A partial init that fails at enumeration
-still owes its one shutdown. Init refuses a library that lacks either
-`nvmlInit_v2` or `nvmlShutdown` before acquiring a reference, and
-`--self-test` tears down a failed partial init. Teardown logs
-`nvmlShutdown status=` on failure and `shutdown skips nvmlShutdown (init not
-acquired) count=N` for an unowned state, at powers of two only because a
-driver that stays down repeats it per targeted request. Covered by
-`tests/linux_nvml_lifetime_tests.cpp` (`14200-14211`), which runs the
-production backend against a reference-counted fake library; `14202` fails
-without the guard.
+Process-wide driver context (2026-11-25, `source/linux_driver_context.{h,cpp}`):
+one `LinuxDriverContext` per process owns the NVML/NvAPI library handles, the
+process's single `nvmlInit_v2` reference, the NvAPI initialization and the
+optional name/driver-version queries. `linux_backend_init(g, driver, ...)` is
+open + `linux_driver_discover()` (one NVML enumeration into
+`driver->discovery`) + bind, and the bind enumerates and matches NvAPI itself
+(`linux_driver_enumerate_nvapi()` then `linux_backend_match_nvapi()`), exactly
+the sequence a fresh per-state init ran before; a recovery rebind
+(`linux_backend_refresh()`) enumerates NvAPI afresh for its own GPU as before.
+`LinuxGpuState` keeps a non-owning `driver` pointer, copies of the resolved
+entry points (`nvml`, `getUuid`, `nvapiQi`, the latter also after a refused
+NvAPI init, for diagnostics), its own device handles, its own `nvapiReady`
+(capture usability; another GPU's init does not count) and its own
+passive-capture lock-log gate; `linux_backend_shutdown()` releases only
+per-GPU state. The owner closes the context after its last state: the
+daemon's `g_driver` at exit; the self-test, diagnostics report and
+clock-domain dump use a local context. A failed startup or replacement init
+can never release the live backend's reference (2026-11-24 rule): the
+reference is the context's. `linux_driver_open_nvml()` refuses a library
+lacking `nvmlInit_v2` or `nvmlShutdown` before acquiring a reference. NVML
+reporting `NVML_ERROR_UNINITIALIZED` during discovery or a same-GPU recovery
+(driver reset/reload) clears the context's init; when that session was a
+cached one, `linux_backend_init()` initializes again within the same call, as
+a fresh per-state init did before, so a one-shot caller (read retry, resume)
+recovers on its first attempt, while a cold start keeps its single attempt.
+Every binding initializes NvAPI before it enumerates, as each new GPU state
+did before the shared context, so a session a driver reset invalidated (even
+one that still enumerates) is renewed; a recovery rebind keeps the current
+session, as before. Logs:
+`linux_driver: NVML initialized attempts=N`, `NvAPI initialized attempts=N`,
+`discovery N adapters=A reported=R`, `NVML reports uninitialized during
+discovery`, and on close
+`nvmlShutdown status=` or `close skips nvmlShutdown`. `tools/linux_gates.py`
+forbids library load/init/release and NvAPI init calls anywhere in the
+backend amalgamation except the context (token patterns over comment-stripped
+code). The separate `--probe` raw-library probe (`linux_gpu.cpp`) is
+deliberately independent. Covered by `tests/linux_nvml_lifetime_tests.cpp`
+(`14200-14215`, `14217-14219`, `14235-14242`, `14247-14249`; the last three in
+`tests/linux_driver_discovery_cases.h`).
+Deferred to the multi-GPU step (2026-11-26 decision, after six review rounds
+found edge cases only that step needs): binding several GPUs from one shared
+discovery and NvAPI inventory, and the bind-time proof that cached NVML/NvAPI
+handles still address their cards (uniqueness of live evidence across both
+drivers' possibly partial lists, absent evidence never a mismatch, lone-card
+fallback only for one NVML adapter and at most one NvAPI handle, retiring a
+discovery a recovery proved stale). Design that with the multi-GPU daemon and
+real multi-GPU tests, not as an unused API.
 
 Design limit (2026-10-28): this discovery runs inside the state-read deadline,
 the same way a targeted read that switches GPU already re-initializes through
@@ -1240,13 +1301,13 @@ cross-linked and source-gated rather than executed on Linux hardware.
 ### The published lockout (fixed 2026-07-31, v0.22.1)
 
 `ServiceSnapshot::autoRestoreLockoutReason` is what the TUI, `--status` and the
-JSON export read. The daemon derived it from `g_stateUncertain` alone, which is
+JSON export read. The daemon derived it from `ctl.stateUncertain` alone, which is
 a proxy for only **one** of the two latching arms:
 
 - a failed hardware write sets both the flag and the guard, so that case looked
   right;
 - the crash-loop arm (`DENY_ATTEMPTS_EXHAUSTED`) latches the guard **without
-  ever issuing a write**, so nothing set `g_stateUncertain`.
+  ever issuing a write**, so nothing set `ctl.stateUncertain`.
 
 A machine that tripped the crash-loop guard therefore published `LOCKOUT_NONE`,
 reported a healthy GPU everywhere, and silently never restored settings at boot
@@ -1256,11 +1317,11 @@ evidence. Windows has always fed the same field from its real lockout state
 
 - `linux_auto_restore_published_lockout_reason()` is the pure decision; the
   snapshot calls it and nothing else. `tools/linux_gates.py` forbids the old
-  `s->autoRestoreLockoutReason = g_stateUncertain` spelling outright.
+  `s->autoRestoreLockoutReason = ctl.stateUncertain` spelling outright.
 - An **uncertain state with a clear guard still reports a lockout**: the
   rollback or the record did not settle, so no unattended write may run until a
   user resolves it, which is exactly what the field means. Since 2026-08-01 the
-  runtime enforces it: `linux_auto_restore_decide()` takes `g_stateUncertain`
+  runtime enforces it: `linux_auto_restore_decide()` takes `ctl.stateUncertain`
   and returns the new `LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN` verdict, so
   every automatic trigger — including the otherwise unrationed resume — is
   refused while the daemon state is unsettled (a latched guard outranks it,
@@ -1334,7 +1395,7 @@ once, with no proof gate.
   daemon is not running **skips** the unit rather than failing it once per wake.
 - No active intent is reported as success, not failure: a machine with no Green
   Curve settings has nothing to lose across a suspend.
-- A resume restore while `g_stateUncertain` is set is refused with the new
+- A resume restore while `ctl.stateUncertain` is set is refused with the new
   `DENY_STATE_UNCERTAIN` verdict until an explicit Apply/Reset resolves the
   state — the flag is a gate, not just a published label (2026-08-01).
 
@@ -1398,7 +1459,7 @@ behaves exactly as every pre-v13 build did.
       (`service_response_startup_profile_is_coherent`): the flag is a boolean,
       an unset flag means byte-zero settings, and a set flag is only accepted
       while the published policy really is `profile N` with a nonzero slot.
-    - `daemon_publish_startup_snapshot()` fills it from `g_startupPolicy` — the
+    - `daemon_publish_startup_snapshot()` fills it from `ctl.startupPolicy` — the
       *committed* record — for all three startup commands, so a set or refresh
       that failed to reach disk still answers with what will actually boot.
   - Client half: `source/linux_startup_sync.{h,cpp}`, shared by the TUI and the

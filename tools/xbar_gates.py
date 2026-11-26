@@ -305,7 +305,7 @@ def check_video_domain(ctx, require_text, forbid_text):
     desired_policy = _p(ctx, "service_desired_mutation_policy.h")
     require_text(linux_backend, "xbar_write_entry_freq(",
                  "F-XBAR-LINUX: Linux reuses the audited exact-readback transaction")
-    require_text(linux_snapshot, "s->videoClkSupported = g_gpu.videoClkProbeValid;",
+    require_text(linux_snapshot, "s->videoClkSupported = ctl.gpu.videoClkProbeValid;",
                  "F-XBAR-LINUX: Linux publishes truthful VIDEO support")
     require_text(linux_tui, "TUI_FIELD_VIDEO_CLK_OFFSET",
                  "F-XBAR-LINUX: the Linux TUI exposes VIDEO editing")

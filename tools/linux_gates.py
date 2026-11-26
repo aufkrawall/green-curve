@@ -19,6 +19,23 @@ def _p(ctx, name):
     return os.path.join(ctx.SOURCE_DIR, name)
 
 
+def _linux_amalgamation(ctx, root):
+    """`root` plus every linux_* file it includes, transitively."""
+    order, seen = [], set()
+
+    def walk(name):
+        path = _p(ctx, name)
+        if name in seen or not os.path.exists(path):
+            return
+        seen.add(name)
+        order.append(name)
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for include in re.findall(r'^#include "(linux_[^"]+)"', handle.read(), re.M):
+                walk(include)
+    walk(root)
+    return order
+
+
 def check_tui_layout(ctx, require_text, forbid_text, require_order):
     """F-LNX-TUI: root-cause fix for the reported mouse-offset bug plus the
     keyboard/daemon parity that came with it.  One cell grid owns both painting
@@ -560,7 +577,7 @@ def check_startup_policy(ctx, require_text, forbid_text):
                  "the boot-apply snapshot has its own response field")
     require_text(policy_h, "daemon_publish_startup_snapshot",
                  "the daemon publishes the committed boot-apply snapshot")
-    forbid_text(policy_h, "resp->desired = g_startupPolicy.desired",
+    forbid_text(policy_h, "resp->desired = ctl.startupPolicy.desired",
                 "the boot-apply snapshot no longer borrows the active-intent field")
     require_text(_p(ctx, "linux_startup_sync.cpp"), "policy.startupProfile",
                  "the staleness report reads the snapshot, not the active intent")
@@ -576,14 +593,14 @@ def check_startup_policy(ctx, require_text, forbid_text):
                  "a boot-apply profile must name an exact GPU identity")
     require_text(state_cpp, "store_record_atomic(path, record, sizeof(*record), \"startup policy\"",
                  "the startup policy uses the shared atomic root-owned store")
-    require_text(policy_h, "g_startupPolicy.mode = SERVICE_STARTUP_POLICY_NONE;",
+    require_text(policy_h, "ctl.startupPolicy.mode = SERVICE_STARTUP_POLICY_NONE;",
                  "an unreadable startup policy stops the boot write instead of guessing")
     require_text(_p(ctx, "linux_graphics_recovery_policy.h"), "mode == SERVICE_STARTUP_POLICY_RESTORE_LAST && load == LINUX_DAEMON_STATE_LOADED",
                  "a non-default policy suppresses the committed-intent replay")
     # The in-memory copy is assigned only on the success arm, after the store.
     ctx.require_order_in_operation(
         policy_h, "static void daemon_handle_set_startup_policy(",
-        "linux_daemon_startup_store(", "g_startupPolicy = record;",
+        "linux_daemon_startup_store(", "ctl.startupPolicy = record;",
         "an unpersisted startup policy is never advertised as committed")
     require_text(policy_h, "// per daemon start, only for the exact GPU identity recorded with the policy,",
                  "the boot write is a configured event, not drift correction")
@@ -601,9 +618,9 @@ def check_startup_policy(ctx, require_text, forbid_text):
                  "a bound boot-apply snapshot can be refreshed without re-binding it")
     require_text(snapshot_h, "startup_snapshot_refresh_allowed",
                  "the daemon-side refresh guard is a pure, testable decision")
-    require_text(policy_h, "startup_snapshot_refresh_allowed(g_startupPolicy.mode,",
+    require_text(policy_h, "startup_snapshot_refresh_allowed(ctl.startupPolicy.mode,",
                  "a refresh only ever updates a policy that already names the slot")
-    require_text(policy_h, "&g_startupPolicy.targetGpu, &requested,",
+    require_text(policy_h, "&ctl.startupPolicy.targetGpu, &requested,",
                  "a refresh reuses the stored GPU binding instead of trusting the caller")
     require_text(sync_cpp, "linux_daemon_refresh_startup_profile(",
                  "the shared client path pushes the reloaded profile to the daemon")
@@ -619,7 +636,7 @@ def check_startup_policy(ctx, require_text, forbid_text):
     # a policy that never reached disk would be advertised as committed.
     ctx.require_order_in_operation(
         policy_h, "static void daemon_handle_refresh_startup_profile(",
-        "linux_daemon_startup_store(", "g_startupPolicy = record;",
+        "linux_daemon_startup_store(", "ctl.startupPolicy = record;",
         "an unpersisted startup refresh is never advertised as committed")
 
 
@@ -894,15 +911,18 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
                  "the resume restore is a typed automatic-restore trigger")
 
     boot_h = _p(ctx, "linux_daemon_boot.h")
-    ctx.require_order_in_operation(boot_h, "static void daemon_apply_boot_policy()",
+    ctx.require_order_in_operation(boot_h, "static void daemon_apply_boot_policy(LinuxGpuController& ctl)",
         "linux_daemon_state_load(", "linux_daemon_boot_action(",
         "the daemon classifies its incoming journal before dispatching a startup write")
     ctx.require_order_in_operation(daemon_cpp, "int linux_daemon_run(const char* configPath)",
         "linux_daemon_lock_instance(", "daemon_run_owned(configPath)",
         "the daemon acquires its lifetime lock before startup writes or socket replacement")
     ctx.require_order_in_operation(daemon_cpp, "static int daemon_run_owned(const char* configPath)",
-        "daemon_release_fan_to_driver();", "linux_backend_shutdown(&g_gpu);",
+        "daemon_release_fan_to_driver(ctl);", "linux_backend_shutdown(&ctl.gpu);",
         "the common teardown hands fans back before unloading the backend")
+    ctx.require_order_in_operation(daemon_cpp, "static int daemon_run_owned(const char* configPath)",
+        "linux_backend_shutdown(&ctl.gpu);", "linux_driver_close(&g_driver);",
+        "the process-wide driver context closes after its last GPU state")
 
     # --- the crash-loop guard ----------------------------------------------
     require_text(policy_h, "LINUX_AUTO_RESTORE_MAX_START_ATTEMPTS = 3",
@@ -921,16 +941,16 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
     ctx.require_order_in_operation(
         runtime_h, "static void load_auto_restore_guard_at_boot(",
         "if (corrupt) {",
-        "linux_auto_restore_note_lockout(&g_autoRestoreGuard,",
+        "linux_auto_restore_note_lockout(&ctl.autoRestoreGuard,",
         "an unreadable guard fails closed to locked out, with a reason")
     ctx.forbid_text_in_operation(
         runtime_h, "static void load_auto_restore_guard_at_boot(",
-        "g_autoRestoreGuard.lockedOut = 1;",
+        "ctl.autoRestoreGuard.lockedOut = 1;",
         "the fail-closed lockout is latched through the policy, so it names a reason")
 
     # --- the published lockout ---------------------------------------------
     # The snapshot's autoRestoreLockoutReason used to be derived from
-    # g_stateUncertain alone.  That flag is set by a failed WRITE; the crash-loop
+    # ctl.stateUncertain alone.  That flag is set by a failed WRITE; the crash-loop
     # arm latches the guard without issuing one, so a daemon that had
     # permanently stopped restoring settings at boot published LOCKOUT_NONE and
     # read as healthy everywhere.  The guard is the authority.
@@ -939,7 +959,7 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
                  "s->autoRestoreLockoutReason = linux_auto_restore_published_lockout_reason(",
                  "the published lockout comes from the guard, not from a proxy flag")
     forbid_text(snapshot_cpp,
-                "s->autoRestoreLockoutReason = g_stateUncertain",
+                "s->autoRestoreLockoutReason = ctl.stateUncertain",
                 "the published lockout is never derived from the uncertain flag alone")
     # A locked-out guard that names no reason would publish LOCKOUT_NONE, which
     # is the regression itself; both halves are pinned together.
@@ -953,28 +973,28 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
     # The attempt is persisted BEFORE the write, or a crash mid-write counts
     # nothing at all -- which is the exact case the guard exists for.
     require_order(runtime_h,
-                  "linux_auto_restore_note_start_attempt(&g_autoRestoreGuard);",
-                  "persist_auto_restore_guard(\"start attempt\")",
+                  "linux_auto_restore_note_start_attempt(&ctl.autoRestoreGuard);",
+                  "persist_auto_restore_guard(ctl, \"start attempt\")",
                   "the attempt is recorded before it is persisted")
     ctx.require_order_in_operation(
         runtime_h, "static bool auto_restore_authorize(",
-        "persist_auto_restore_guard(\"start attempt\")", "return true;",
+        "persist_auto_restore_guard(ctl, \"start attempt\")", "return true;",
         "an attempt that could not be persisted refuses the write")
     require_text(daemon_cpp,
-                 "if (!auto_restore_note_explicit_success(\"apply\", guardErr,",
+                 "if (!auto_restore_note_explicit_success(ctl, \"apply\", guardErr,",
                  "an explicit Apply checks whether re-arming committed")
     require_text(daemon_cpp,
-                 "if (!auto_restore_note_explicit_success(\"reset\", guardErr,",
+                 "if (!auto_restore_note_explicit_success(ctl, \"reset\", guardErr,",
                  "an explicit Reset checks whether re-arming committed")
     require_text(daemon_cpp, "SERVICE_OUTCOME_SEVERITY_WARNING",
                  "a committed explicit mutation warns when guard re-arm persistence fails")
     require_text(runtime_h,
-                 "LinuxAutoRestoreGuard previous = g_autoRestoreGuard;",
+                 "LinuxAutoRestoreGuard previous = ctl.autoRestoreGuard;",
                  "explicit re-arm retains the prior guard until persistence commits")
     ctx.require_order_in_operation(
         runtime_h, "static bool auto_restore_note_explicit_success(",
-        "persist_auto_restore_guard(\"explicit success\", errorOut, errorSize)",
-        "g_autoRestoreGuard = previous;",
+        "persist_auto_restore_guard(ctl, \"explicit success\", errorOut, errorSize)",
+        "ctl.autoRestoreGuard = previous;",
         "a failed explicit re-arm persistence restores the truthful prior guard")
     require_text(runtime_h, "auto_restore_note_automatic_failure",
                  "a failed unattended write latches automatic restoration off")
@@ -983,24 +1003,24 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
     # while the daemon immediately marked itself uncertain.
     ctx.require_order_in_operation(
         runtime_h, "static LinuxAutoRestoreOutcome daemon_automatic_restore_write(",
-        "if (!store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE",
+        "if (!store_daemon_record(ctl, LINUX_DAEMON_RECORD_ACTIVE",
         "outcome.success = true;",
         "an unattended write reports success only after its ACTIVE record commits")
     require_text(runtime_h, "linux_backend_restore_snapshot(\n"
-                 "            &g_gpu, &before, mutation.attemptedPhases,",
+                 "            &ctl.gpu, ceiling, &before, mutation.attemptedPhases,",
                  "an ACTIVE persistence failure rolls the hardware transaction back")
     require_text(runtime_h, "uncertain record persisted=%d",
                  "automatic persistence failure logs whether its fail-closed record committed")
     # An unsettled rollback/record is a gate, not just a published label: the
     # resume path used to run even while the snapshot reported a lockout, and
-    # a pre-write "GPU not available" failure set g_stateUncertain even though
+    # a pre-write "GPU not available" failure set ctl.stateUncertain even though
     # it wrote nothing -- which disabled fan reassertion and published a
     # lockout until an explicit Apply/Reset.
     require_text(policy_h, "LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN",
                  "an uncertain daemon has its own refusal verdict")
     require_text(runtime_h,
-                 "linux_auto_restore_decide(&g_autoRestoreGuard, trigger,\n"
-                 "                                  g_stateUncertain, nowMs);",
+                 "linux_auto_restore_decide(&ctl.autoRestoreGuard, trigger,\n"
+                 "                                  ctl.stateUncertain, nowMs);",
                  "the unattended-write gate consults the uncertain flag, not only the guard")
     # F-LNX-RESUME-BUDGET: the resume trigger is exempt from the per-boot
     # counter but spends a short-window budget, so the socket command cannot be
@@ -1010,7 +1030,7 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
                  "resume restores are bounded inside a short window")
     require_text(policy_h, "LINUX_AUTO_RESTORE_DENY_RESUME_RATE_LIMITED",
                  "the resume rate limit has its own refusal verdict")
-    require_text(runtime_h, "linux_auto_restore_note_resume_attempt(&g_autoRestoreGuard, nowMs)",
+    require_text(runtime_h, "linux_auto_restore_note_resume_attempt(&ctl.autoRestoreGuard, nowMs)",
                  "the resume attempt is counted before the decision, not after")
 
     # F-LNX-ADMISSION: the serve loop meters its peers with the SAME pure policy
@@ -1044,12 +1064,12 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
     forbid_text(serve_h, "daemon_admission_fault(",
                 "no hold is decided from the failing phase alone")
     # Handler time must never count as a stall: the read's clock stops before
-    # handle_request() and the write's starts after it, or a long legitimate
+    # handle_request(ctl) and the write's starts after it, or a long legitimate
     # APPLY would hold an honest client.
     require_order(serve_h, "const unsigned long long readMs = monotonic_ms() - readStartMs;",
-                  "handle_request(&req, &resp);",
+                  "handle_request(ctl, &req, &resp);",
                   "the request-read time is closed before the handler runs")
-    require_order(serve_h, "handle_request(&req, &resp);",
+    require_order(serve_h, "handle_request(ctl, &req, &resp);",
                   "const unsigned long long writeStartMs = monotonic_ms();",
                   "the response-write stall is measured after the handler ran")
     # The identity is the peer uid, not the pid: a client that forks would
@@ -1134,7 +1154,7 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
     ctx.require_order_in_operation(daemon_cpp, "static int daemon_run_owned(const char* configPath)",
         "if (workerStarted) {", "daemon_open_listener(&listener)",
         "a daemon that cannot start its fan worker refuses to serve")
-    require_text(daemon_cpp, "clear_auto_restore_attempts_on_clean_stop();",
+    require_text(daemon_cpp, "clear_auto_restore_attempts_on_clean_stop(ctl);",
                  "an orderly stop clears the per-boot attempt counter")
 
 
@@ -1212,7 +1232,7 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
     startup_h = _p(ctx, "linux_startup_policy.h")
     require_order(snapshot_cpp,
                   "int live = linux_resolve_stored_gpu_target(&req->targetGpu,",
-                  "g_hasActiveDesired, &g_activeTarget, &requested)",
+                  "ctl.hasActiveDesired, &ctl.activeTarget, &requested)",
                   "a stale request target is resolved before the active-intent "
                   "check, so the active GPU is not refused as another GPU")
     require_text(discovery_cpp, "linux_gpu_restore_selection(target, role, g->adapters",
@@ -1221,38 +1241,58 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
     forbid_text(discovery_cpp, "g->writeIdentityResolved = g->adapterCount == 1 ||",
                 "a lone adapter must not resolve writes for any stored target")
     restore_h = _p(ctx, "linux_auto_restore_runtime.h")
-    require_text(restore_h, "linux_backend_select_target(&g_gpu, target, err, errSize, role, uuid, uuidVerdict)",
+    require_text(restore_h, "linux_backend_select_target(&ctl.gpu, target, err, errSize, role, uuid, uuidVerdict)",
                  "automatic restore passes its persisted location role to selection")
     require_text(restore_h, "linux_auto_restore_rebind_hint(trigger, targetUnresolved)",
                  "an aborted automatic restore logs its stored role and remedy")
-    require_text(discovery_cpp, "linux_backend_init(&replacement, target, err, errSize, role, uuid)",
+    require_text(discovery_cpp, "linux_backend_init(&replacement, g->driver, target, err, errSize, role, uuid)",
                  "backend replacement retains the restore location role")
     require_text(discovery_cpp, "linux_gpu_uuid_compatible(uuid, &observed)",
                  "the selection fast path checks fresh optional physical identity evidence")
-    require_text(discovery_cpp, "linux_gpu_read_uuid(g->getUuid, devices[i])",
+    driver_cpp = _p(ctx, "linux_driver_context.cpp")
+    require_text(driver_cpp, "linux_gpu_read_uuid(driver->getUuid, discovery->devices[i])",
                  "enumerated adapters acquire optional UUIDs without a new prerequisite")
-    forbid_text(discovery_cpp, "auto query = sym<LinuxGetGpuUuid>",
-                "the per-request UUID check reuses the symbol resolved at init")
+    forbid_text(discovery_cpp, "sym<LinuxGetGpuUuid>",
+                "the per-request UUID check reuses the symbol resolved once per process")
+    # One process-wide context owns library handles and the NVML reference;
+    # a GPU state never loads, initializes or releases a driver library.
+    # Token patterns, not spellings: whitespace before "(" must not hide a call.
+    library_calls = re.compile(r"\bpl_open_driver_library\s*\(|\bnvml\s*\.\s*init\s*\(|"
+                               r"\bnvml\s*\.\s*shutdown\s*\(|\bpl_lib_close\s*\(|"
+                               r"\"nvapi_QueryInterface\"|\bNVAPI_INIT_ID\b")
+    for shard in _linux_amalgamation(ctx, "linux_backend.cpp"):
+        if shard == "linux_driver_context.cpp":
+            continue
+        with open(_p(ctx, shard), "r", encoding="utf-8", errors="replace") as handle:
+            # Comments must not split a call either: drop them before matching.
+            code = re.sub(r"/\*.*?\*/|//[^\n]*", " ", handle.read(), flags=re.S)
+            found = library_calls.search(code)
+        if found:
+            print("Regression source check FAILED (must be absent): driver libraries are loaded, "
+                  f"initialized and released only by linux_driver_context.cpp ({shard}: {found.group(0)})")
+            sys.exit(1)
+    require_text(driver_cpp, "if (driver->nvmlInitialized && driver->nvml.shutdown)",
+                 "the context releases only the NVML reference it acquired")
     require_text(discovery_cpp, "linux_gpu_read_uuid(g->getUuid, g->nvmlDevice)",
                  "the selection fast path reads the UUID through the cached query")
-    require_text(restore_h, "g_activeTargetRole, &g_activeTargetUuid)",
+    require_text(restore_h, "ctl.activeTargetRole, &ctl.activeTargetUuid)",
                  "resume forwards the committed physical identity")
-    require_text(restore_h, "linux_gpu_uuid_retain(linux_backend_selected_uuid(&g_gpu), uuid)",
+    require_text(restore_h, "linux_gpu_uuid_retain(linux_backend_selected_uuid(&ctl.gpu), uuid)",
                  "an unavailable optional query does not erase a learned identity")
     require_text(startup_h,
-                 "(GpuLocationRole)g_startupPolicy.targetLocationRole, &g_startupPolicy.targetUuid)",
+                 "(GpuLocationRole)ctl.startupPolicy.targetLocationRole, &ctl.startupPolicy.targetUuid)",
                  "startup restore and content refresh retain the optional identity")
-    require_text(startup_h, "linux_gpu_uuid_for_target(&req->targetGpu, g_gpu.adapters",
+    require_text(startup_h, "linux_gpu_uuid_for_target(&req->targetGpu, ctl.gpu.adapters",
                  "startup binding captures the requested adapter rather than the telemetry adapter")
-    require_text(startup_h, "(GpuLocationRole)g_startupPolicy.targetLocationRole",
+    require_text(startup_h, "(GpuLocationRole)ctl.startupPolicy.targetLocationRole",
                  "startup restore and content refresh retain the stored role")
     require_text(_p(ctx, "linux_daemon_boot.h"), "(GpuLocationRole)saved.targetLocationRole",
                  "restore-last passes the committed location role")
     require_text(_p(ctx, "linux_daemon.cpp"),
-                 "memset(&g_activeTarget, 0, sizeof(g_activeTarget));\n"
+                 "memset(&ctl.activeTarget, 0, sizeof(ctl.activeTarget));\n"
                  "                // The role belongs to the cleared target: back to the\n"
                  "                // fail-closed default, like a daemon that never had one.\n"
-                 "                g_activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;",
+                 "                ctl.activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;",
                  "a committed Reset clears the active target's role with it")
     selection_h = _p(ctx, "linux_gpu_selection.h")
     require_text(selection_h,
@@ -1310,7 +1350,7 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
         "state-read backend retry uses the existing interactive request flag")
     require_text(
         _p(ctx, "linux_daemon.cpp"),
-        "daemon_retry_backend_for_read(\n"
+        "daemon_retry_backend_for_read(ctl,\n"
         "                    (req->flags & SERVICE_REQUEST_FLAG_INTERACTIVE) != 0);",
         "an untargeted state read initializes or retries backend discovery")
     # A hold must stay recoverable from the TUI: the selector steps from the
@@ -1363,7 +1403,7 @@ def check_profile_interchange_and_curve_correction(ctx, require_text, forbid_tex
                  "Linux curve apply runs bounded post-write correction on verification miss")
     require_text(mutation_cpp, "linux_apply_needs_vf_baseline_reset(",
                  "Linux scoped VF replacement over a shaped curve resets the VF baseline first")
-    require_text(mutation_cpp, "if (vfBaselineReset) g_linuxScopedCurveCeilingTransition = true;",
+    require_text(mutation_cpp, "if (vfBaselineReset) ceiling.scopedCurveTransition = true;",
                  "Linux VF baseline reset arms the transition clock ceiling before zeroing VF")
     require_text(mutation_cpp, "linux_apply_reset_baseline_vf_curve(g, context->plannedBuild.pointMask)",
                  "Linux scoped VF preparation uses the transaction write set")
@@ -1376,7 +1416,7 @@ def check_profile_interchange_and_curve_correction(ctx, require_text, forbid_tex
     reset_h = _p(ctx, "linux_backend_reset.h")
     ctx.require_order_in_operation(
         reset_h, "LinuxMutationResult linux_backend_reset(",
-        "linux_reset_capture_rollback_ceiling(g, previous);",
+        "linux_reset_capture_rollback_ceiling(g, ceiling, previous);",
         "mutation = linux_execute_transaction(",
         "Linux Reset captures its pre-write rollback ceiling")
     require_text(_p(ctx, "linux_backend_rollback.h"),
@@ -1413,6 +1453,101 @@ def check_profile_interchange_and_curve_correction(ctx, require_text, forbid_tex
                  "Profile transfer probe auto-detects legacy Linux vs Windows config.ini")
 
 
+# Per-GPU daemon state (linux_gpu_controller.h). Process-wide statics such as
+# the driver context, g_lock or the fan wake signal stay legitimate.
+_PER_GPU_TYPES = ("LinuxGpuController", "LinuxGpuState", "DesiredSettings", "GpuAdapterInfo",
+                  "LinuxGpuUuid", "LinuxDaemonStartupRecord", "LinuxAutoRestoreGuard",
+                  "ServiceAutoApplyFailure", "ServiceOperationTracker",
+                  "LinuxFanOwnershipMarker", "ServiceFanFault")
+_RETIRED_DAEMON_GLOBALS = ("g_fanWakeGeneration", "g_gpu", "g_gpuReady", "g_backendReadInitAttempted", "g_daemonGpuGeneration", "g_activeDesired", "g_hasActiveDesired", "g_activeTarget", "g_activeTargetUuid", "g_activeTargetRole", "g_stateUncertain", "g_operationTracker", "g_startupPolicy", "g_autoRestoreGuard", "g_autoApplyFailure", "g_fanOwnershipMarkerCommitted", "g_fanOwnershipHandbackPending", "g_fanOwnershipHandbackDeferred", "g_fanOwnershipRecord", "g_fanFailureCount", "g_daemonFanFault", "g_daemonFanFaultSerial")
+
+
+# The daemon's process-wide file-scope statics. Anything else at file scope is
+# a candidate implicit current GPU and must live in LinuxGpuController.
+_DAEMON_PROCESS_STATICS = frozenset((
+    "g_driver", "g_lock", "g_crashBreadcrumbInstalled", "g_crashLogFd", "g_running",
+    "g_fanWakeMutex", "g_fanWakeCondition", "g_shutdownPipe", "g_daemonServiceInstanceId",
+    "g_daemonStateRevision", "g_notifyAddress", "g_notifyAddressLength", "g_notifyResolved",
+    "g_watchdogIntervalMs", "g_daemonAdmissionTable"))
+
+
+_NOT_A_VARIABLE = re.compile(
+    r"(?:return|typedef|using|struct|class|enum|union|namespace|template|friend|"
+    r"static_assert|extern|case|default|public|private|protected|goto|delete|else)\b")
+
+
+def _file_scope_static_names(text):
+    """Names of file-scope (column 0) mutable variables, static or not."""
+    names = []
+    for line in text.splitlines():
+        # Immutable constants (static or not) are not daemon state.
+        if re.match(r"(?:static\s+)?(?:inline|constexpr|const)\b", line) or not re.match(r"[A-Za-z_]", line):
+            continue
+        if not line.startswith("static") and (_NOT_A_VARIABLE.match(line) or not line.rstrip().endswith(";")):
+            continue
+        head = re.split(r"[=;{]", line, maxsplit=1)[0]
+        if "(" in head:
+            continue  # a function
+        found = re.findall(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*$", head)
+        if found:
+            names.append(found[-1])
+    return names
+
+
+def check_gpu_controller(ctx, require_text, forbid_text, require_order):
+    """The daemon has no implicit current GPU: per-GPU state lives in one
+    LinuxGpuController owned by daemon_run_owned() and passed explicitly
+    (`LinuxGpuController& ctl`) to everything that reads or changes it.
+    A file-scope copy, a retired global name or thread_local indirection
+    would compile and silently act on whichever GPU it last described."""
+    # Values, pointers and references alike: a cached `LinuxGpuState*` is the
+    # same implicit current GPU as a copy.
+    # Function-local statics of a per-GPU type are the same implicit GPU; the
+    # one controller instance in daemon_run_owned() is counted separately.
+    local_static = re.compile(r"^[ \t]+static\s+(?:volatile\s+)?(?:const\s+)?(%s)\b[\s*&]*(?:const\s+)?(?!controller\s*;)[A-Za-z_]\w*\s*[=;\[{]" % "|".join(_PER_GPU_TYPES), re.M)
+    file_scope = re.compile(r"^(?:static\s+)?(?:volatile\s+)?(?:const\s+)?(%s)\b[\s*&]*(?:const\s+)?[A-Za-z_]\w*\s*[=;\[{]" % "|".join(_PER_GPU_TYPES), re.M)
+    retired = re.compile(r"\b(%s)\b" % "|".join(_RETIRED_DAEMON_GLOBALS))
+    instances = 0
+    for name in _linux_amalgamation(ctx, "linux_daemon.cpp"):
+        with open(_p(ctx, name), "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        found = file_scope.search(text) or local_static.search(text) or retired.search(text)
+        unlisted = [n for n in _file_scope_static_names(text) if n not in _DAEMON_PROCESS_STATICS]
+        if unlisted:
+            print("Regression source check FAILED (must be absent): "
+                  f"{name} adds file-scope daemon state {unlisted[0]}; per-GPU state "
+                  "belongs in LinuxGpuController, process-wide state in _DAEMON_PROCESS_STATICS")
+            sys.exit(1)
+        # A namespace (named or anonymous) would hide state from the column-0
+        # checks; these files use none. Comments may mention the word.
+        code = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.S)
+        if not found and re.search(r"\bnamespace\b", code):
+            found = re.search(r"\bnamespace\b", code)
+        if found or "thread_local" in text:
+            print("Regression source check FAILED (must be absent): "
+                  f"{name} keeps per-GPU daemon state outside the explicit "
+                  f"LinuxGpuController ({found.group(0) if found else 'thread_local'})")
+            sys.exit(1)
+        instances += len(re.findall(r"\bstatic\s+LinuxGpuController\b", text))
+    if instances != 1:
+        print("Regression source check FAILED: the daemon must own exactly one "
+              f"LinuxGpuController instance (found {instances})")
+        sys.exit(1)
+    daemon_cpp = _p(ctx, "linux_daemon.cpp")
+    require_order(daemon_cpp, "static int daemon_run_owned(const char* configPath)",
+                  "static LinuxGpuController controller;",
+                  "daemon_run_owned() is the only place the controller is named")
+    require_order(daemon_cpp, "static LinuxGpuController controller;",
+                  "LinuxGpuController& ctl = controller;",
+                  "daemon_run_owned() hands its controller on as ctl")
+    require_order(daemon_cpp, "LinuxGpuController& ctl = controller;",
+                  "pl_thread_start(&fanThread, fan_reassert_thread, &ctl);",
+                  "the fan worker receives the controller explicitly")
+    require_text(_p(ctx, "linux_fan_runtime.h"),
+                 "LinuxGpuController& ctl = *static_cast<LinuxGpuController*>(arg);",
+                 "the fan worker uses only the controller it was started with")
+
+
 def check_all(ctx, require_text, forbid_text, require_order):
     check_tui_layout(ctx, require_text, forbid_text, require_order)
     check_tui_graph_axes(ctx, require_text, forbid_text)
@@ -1430,4 +1565,5 @@ def check_all(ctx, require_text, forbid_text, require_order):
     check_auto_restore(ctx, require_text, forbid_text, require_order)
     check_release_packaging(ctx, require_text, forbid_text)
     check_gpu_location(ctx, require_text, forbid_text, require_order)
+    check_gpu_controller(ctx, require_text, forbid_text, require_order)
     check_profile_interchange_and_curve_correction(ctx, require_text, forbid_text)

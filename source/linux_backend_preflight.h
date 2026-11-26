@@ -9,7 +9,8 @@
 #include "linux_memory_curve_policy.h"
 #include "linux_graphics_offset_control.h"
 
-static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
+static bool linux_backend_preflight(LinuxGpuState* g, const LinuxApplyCeilingTransaction& t,
+                                    const DesiredSettings* d,
                                     const LinuxHardwareSnapshot* snapshot,
                                     char* err, size_t errSize, int graphicsRouteOverride = 0) {
     if (!g || !d || !g->nvmlReady || !g->writeIdentityResolved) {
@@ -67,7 +68,7 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
     }
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
     if (d->resetOcBeforeApply && !g->nvml.resetGpuLockedClocks &&
-        !linux_clock_control_proven_absent(g)) {
+        !linux_clock_control_proven_absent(g, t)) {
         gc_strlcpy(err, errSize, "OC baseline reset cannot release locked clocks safely"); return false;
     }
     const bool gpuUsesCurve = graphicsRouteOverride == 0 ? desired_gpu_offset_uses_curve(d) : graphicsRouteOverride == 2;

@@ -101,7 +101,7 @@ The GUI (status line plus an audible tray balloon), the TUI and the Linux
 status/JSON output announce each fault once (`gc_fan_fault_observe()`); a
 record that returns to NONE re-arms the observer. Both the Windows service and
 the Linux daemon clear it on a committed Apply that owns the fan domain or a
-Reset (non-fan Applies preserve `g_daemonFanFault` on Linux).
+Reset (non-fan Applies preserve `ctl.fanFault` on Linux).
 
 **Honest state after a handback (Windows and Linux).** Both escalations used to
 leave the curve in the owned intent, so clients kept showing it and later
@@ -114,10 +114,10 @@ remain) or owns Fixed 100% with canonical defaults (`lockCi = -1`,
 or re-persists the restart-reapply snapshot outside `g_appLock` so a controlled
 restart cannot replay the handed-back fan. On Linux,
 `daemon_fan_runtime_lockout()` applies the same owned-intent update to
-`g_activeDesired` / `g_hasActiveDesired` / `g_activeTarget` before writing
+`ctl.activeDesired` / `ctl.hasActiveDesired` / `ctl.activeTarget` before writing
 `LINUX_DAEMON_RECORD_UNCERTAIN`; `populate_snapshot()` gates `activeFanMode`,
 `fanCurveRuntimeActive`, `fanFixedRuntimeActive`, and `control->fanMode` on
-`intentMatchesSelected`, `!g_stateUncertain`, and shared
+`intentMatchesSelected`, `!ctl.stateUncertain`, and shared
 `linux_daemon_fan_runtime_active()` (`fan_intent_policy.h`).
 
 **Not done: a periodic runtime-vs-intent check.** Every deliberate runtime stop
@@ -202,7 +202,7 @@ Auto or unclaimed fan has none (`fan_runtime_intent_verdict()`). A violation is
 logged, repaired through the same `apply_fan_settings()` step, and raises the
 outcome to WARNING (repaired) or ERROR (not repaired) with a message, so it is
 never silent. Linux needs no separate check: its worker derives its state from
-`g_activeDesired` on every cycle. Its snapshot now reports Auto for an
+`ctl.activeDesired` on every cycle. Its snapshot now reports Auto for an
 unclaimed fan instead of a stale `fanMode` field.
 
 Diagnostics: `apply-scope: legacy request upgraded to scope=N replacement=R kept

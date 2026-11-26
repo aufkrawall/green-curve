@@ -106,9 +106,7 @@ static bool nvapi_read_curve(LinuxGpuState* g) {
 
 typedef nvmlReturn_t (*nvmlDeviceGetName_t)(nvmlDevice_t, char*, unsigned int);
 
-static void nvml_resolve(LinuxGpuState* g) {
-    PlLib h = g->nvmlLib;
-    NvmlApi* a = &g->nvml;
+static void nvml_resolve(NvmlApi* a, PlLib h) {
     a->init = sym<nvmlInit_v2_t>(h, "nvmlInit_v2");
     a->shutdown = sym<nvmlShutdown_t>(h, "nvmlShutdown");
     a->getCount = sym<nvmlDeviceGetCount_v2_t>(h, "nvmlDeviceGetCount_v2");
@@ -158,6 +156,7 @@ static void nvml_resolve(LinuxGpuState* g) {
 #include "linux_backend_xbar.cpp"
 #include "linux_backend_capture.h"
 
+#include "linux_driver_context.cpp"
 #include "linux_backend_discovery.cpp"
 #include "linux_backend_clk_domain_dump.cpp"
 

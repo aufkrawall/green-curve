@@ -25,6 +25,8 @@
 #include "linux_gpu_binding_policy.h"
 #include "linux_gpu_uuid.h"
 #include "linux_transaction.h"
+#include "linux_driver_context.h"
+#include "linux_apply_ceiling_transaction.h"
 #include "linux_vf_layout_summary.h"
 #include "vf_writable_point_policy.h"
 #include "fan_fixed_maintenance_policy.h"
@@ -32,23 +34,25 @@
 #include "fan_request_policy.h"
 #include "service_inert_request_domains.h"
 #include "debug_log_steady_state_policy.h"
+#include "nvapi_client_lock_table.h"
 #include "platform.h"
 
 struct LinuxGpuState {
     GraphicsScalarRecoveryState graphicsRecovery;
+    // The process-wide libraries this state is bound against (not owned).
+    // nvml, getUuid and nvapiQi are copies of its resolved entry points.
+    LinuxDriverContext* driver;
     // NvAPI
-    PlLib nvapiLib;
     void* (*nvapiQi)(unsigned int);
     GPU_HANDLE gpuHandle;
-    bool nvapiInitialized;
+    // NvAPI was initialized for this binding (not merely for another GPU on
+    // the same context); capture treats it as this GPU's usability.
+    bool nvapiReady;
 
     // NVML
-    PlLib nvmlLib;
-    // This state owns one successful nvmlInit_v2 reference to release.
-    bool nvmlInitialized;
     NvmlApi nvml;
-    // Optional physical-identity query, resolved once at init: targeted
-    // requests re-check the selected GPU's UUID on every call.
+    // Optional physical-identity query: targeted requests re-check the
+    // selected GPU's UUID on every call.
     LinuxGetGpuUuid getUuid;
     nvmlDevice_t nvmlDevice;
     bool nvmlReady;
@@ -114,6 +118,9 @@ struct LinuxGpuState {
     unsigned int xbarSchemaStatus;
     // Repeat suppression for the per-refresh ClkDomains read; reset on rebind.
     gc_log_steady::Tracker xbarReadLog;
+    // Repeat gate for passive-capture client-lock lines; per GPU, and
+    // mutable because capture reads a const state.
+    mutable NvapiClientLocksLogGate clientLocksLog;
     bool xbarFreqReadbackValid;
     bool xbarMsvddReadbackValid;
     int xbarFreqOffsetKhz;
@@ -253,13 +260,16 @@ bool linux_backend_capture_apply_snapshot(LinuxGpuState* g, const DesiredSetting
 bool linux_backend_capture_reset_snapshot(LinuxGpuState* g, const DesiredSettings* previous,
     LinuxHardwareSnapshot* snapshot, char* err, size_t errSize);
 
-// Load the driver libraries and initialise the selected GPU (ordinal `index`).
-// On success the curve, masks and ranges are read.  Returns false + message on
-// failure (no driver, no GPU, etc.).
-bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
+// Open the process-wide driver libraries in `driver` if needed, enumerate,
+// and bind `g` to the selected GPU.  On success the curve, masks and ranges
+// are read.  Returns false + message on failure (no driver, no GPU, etc.).
+// `driver` must outlive `g`; `g` never releases it.
+bool linux_backend_init(LinuxGpuState* g, LinuxDriverContext* driver,
+                        const GpuAdapterInfo* target,
                         char* err, size_t errSize,
                         GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED,
                         const LinuxGpuUuid* uuid = nullptr);
+// Releases only per-GPU state; the driver context stays open for its owner.
 void linux_backend_shutdown(LinuxGpuState* g);
 
 bool linux_backend_select_target(LinuxGpuState* g, const GpuAdapterInfo* target,
@@ -269,7 +279,10 @@ bool linux_backend_select_target(LinuxGpuState* g, const GpuAdapterInfo* target,
                                  LinuxGpuUuidVerdict* uuidVerdict = nullptr);
 bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* snapshot,
                                     char* err, size_t errSize);
-bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapshot* snapshot,
+// `ceiling` is the transaction whose phases are being undone; a rollback after
+// a failed commit passes the same value the apply/reset just used.
+bool linux_backend_restore_snapshot(LinuxGpuState* g, LinuxApplyCeilingTransaction& ceiling,
+                                    const LinuxHardwareSnapshot* snapshot,
                                     unsigned int phaseMask, char* err, size_t errSize);
 
 // Refresh the live curve + offsets + ranges from the driver.
@@ -297,14 +310,18 @@ int linux_backend_clk_domain_dump(const GpuAdapterInfo* target, FILE* out);
 // fan.  For a VF-domain replacement, previousIntent and committedIntent let
 // the transaction release points that are no longer owned.  Startup replay
 // passes no previous intent.  Writes a human-readable summary to `result`.
-LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings* d,
+// `ceiling` is reset on entry and left describing this transaction, for a
+// later linux_backend_restore_snapshot() of the same operation.
+LinuxMutationResult linux_backend_apply(LinuxGpuState* g, LinuxApplyCeilingTransaction& ceiling,
+                                        const DesiredSettings* d,
                                         const DesiredSettings* previousIntent,
                                         const DesiredSettings* committedIntent,
                                         char* result, size_t resultSize);
 
 // Reset OC/UV to driver defaults (curve offsets 0, clock offsets 0, power
 // default, locked clocks released, fan auto).
-LinuxMutationResult linux_backend_reset(LinuxGpuState* g, const DesiredSettings* previous,
+LinuxMutationResult linux_backend_reset(LinuxGpuState* g, LinuxApplyCeilingTransaction& ceiling,
+                                        const DesiredSettings* previous,
                                         char* result, size_t resultSize);
 bool linux_backend_set_curve_fan_percent(LinuxGpuState* g, unsigned int percent);
 bool linux_backend_set_fan_auto(LinuxGpuState* g);

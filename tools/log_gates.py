@@ -260,10 +260,10 @@ def check_auto_apply_failure_notice(ctx, require_text):
                  "notice observation is independent of pre-window snapshot adoption")
     # The Linux daemon publishes the same record and both Linux clients show it.
     require_text(_p(ctx, "linux_daemon_snapshot_runtime.cpp"),
-                 "s->autoApplyFailure = g_autoApplyFailure;",
+                 "s->autoApplyFailure = ctl.autoApplyFailure;",
                  "the Linux snapshot publishes the failure record with its lockout")
     runtime = _read(_p(ctx, "linux_auto_restore_runtime.h"))
-    if runtime.count("auto_restore_note_automatic_failure(trigger, outcome.message") != 2:
+    if runtime.count("auto_restore_note_automatic_failure(ctl, trigger, outcome.message") != 2:
         _fail("linux_auto_restore_runtime.h: each failed unattended write records its cause")
     require_text(_p(ctx, "linux_live_output.cpp"), "Automatic restore notice: %s",
                  "the Linux CLI status shows the automatic-apply failure notice")

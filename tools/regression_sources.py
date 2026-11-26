@@ -83,6 +83,7 @@ REGRESSION_SOURCES = (
     'linux_vf_read_tests.cpp',
     'linux_vf_write_tests.cpp',
     'linux_nvml_lifetime_tests.cpp',
+    'linux_daemon_commit_rollback_tests.cpp',
     'linux_curve_correction_runtime_tests.cpp',
     'windows_vf_exact_tests.cpp',
     'windows_vf_verified_write_tests.cpp',

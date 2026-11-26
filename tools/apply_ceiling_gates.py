@@ -20,10 +20,79 @@ kept the previous pin armed across the identical curve batch and survived.
 `ctx` is any object exposing SOURCE_DIR.
 """
 import os
+import re
+import sys
 
 
 def _p(ctx, name):
     return os.path.join(ctx.SOURCE_DIR, name)
+
+
+# Every Linux shard that reads or writes F-APPLY-CEILING transaction state.
+_LINUX_CEILING_TRANSACTION_SHARDS = (
+    "linux_apply_ceiling.h", "linux_apply_ceiling_transaction.h",
+    "linux_backend_rollback.h", "linux_backend_reset.h",
+    "linux_backend_apply_context.h", "linux_backend_preflight.h",
+    "linux_apply_baseline.h", "linux_apply_graphics_submission.h",
+    "linux_apply_modeled_review.h", "linux_backend_mutation.cpp",
+)
+# A function-local `static` variable is the same ambient state as a file-scope one.
+_ANY_MUTABLE_STATIC = re.compile(
+    r"^[ \t]+static\s+(?!inline\b|constexpr\b|const\b)[^(;]*[;=]", re.M)
+# A namespace-scope transaction (static or not, value or pointer) is shared
+# ambient state too; transactions are only locals and parameters.
+_FILE_SCOPE_TRANSACTION = re.compile(
+    r"^(?:static\s+)?(?:const\s+)?LinuxApplyCeilingTransaction\b[\s*&]*[A-Za-z_]\w*\s*[=;{\[]", re.M)
+_RETIRED_CEILING_STATICS = re.compile(
+    r"\bg_linux(?:ScopedCurveCeilingTransition|CeilingArmResult|CeilingArmed|"
+    r"CeilingWriteAttempted|CeilingPlan|OutgoingHadHardPin|OutgoingCeilingMHz)\b")
+# A file-scope `static T name ...;` (not a function, inline helper or constant).
+_FILE_SCOPE_MUTABLE_STATIC = re.compile(
+    r"^static\s+(?!inline\b|constexpr\b|const\b)[^(;]*;", re.M)
+
+
+def _forbid_linux_ceiling_ambient_state(ctx):
+    """Transaction state lives only in the caller-owned value.
+
+    A file-scope or thread_local copy compiles and silently leaks one
+    transaction's clamp into the next -- and, with several GPUs, into another
+    card's apply. Each reader is handed its LinuxApplyCeilingTransaction.
+    """
+    for name in _LINUX_CEILING_TRANSACTION_SHARDS:
+        with open(_p(ctx, name), "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        match = _FILE_SCOPE_MUTABLE_STATIC.search(text) or _ANY_MUTABLE_STATIC.search(text) \
+            or _RETIRED_CEILING_STATICS.search(text) or _FILE_SCOPE_TRANSACTION.search(text) \
+            or re.search(r"\bnamespace\b", re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.S))
+        if match or "thread_local" in text:
+            found = match.group(0).splitlines()[0] if match else "thread_local"
+            print("Regression source check FAILED (must be absent): "
+                  f"{name} keeps apply-ceiling state outside the explicit "
+                  f"LinuxApplyCeilingTransaction ({found})")
+            sys.exit(1)
+
+
+def _require_transaction_spans_rollback(ctx, name, start, end, operation, rollback, label):
+    """In one code path, the transaction the operation ran with is the one its
+    post-commit rollback reads: exactly one declaration, the operation and the
+    rollback both after it, and no second transaction in between."""
+    with open(_p(ctx, name), "r", encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+    begin = text.find(start)
+    finish = text.find(end, begin + len(start)) if begin >= 0 else -1
+    block = text[begin:finish] if begin >= 0 and finish > begin else ""
+    declaration = "LinuxApplyCeilingTransaction ceiling = {};"
+    at_declaration = block.find(declaration)
+    at_operation = block.find(operation, at_declaration + 1)
+    at_rollback = block.find(rollback, at_operation + 1)
+    # Between the operation and its rollback the transaction must not be reset
+    # or replaced: the rollback reads the clamp the operation recorded.
+    between = block[at_operation:at_rollback] if 0 <= at_operation < at_rollback else ""
+    reset = re.search(r"\bceiling\s*=(?!=)|\bceiling\s*\{|linux_apply_ceiling_begin\(\s*ceiling", between)
+    if (block.count("LinuxApplyCeilingTransaction") != 1 or at_declaration < 0 or
+            at_operation < 0 or at_rollback < 0 or reset):
+        print(f"Regression source check FAILED: {label} ({name})")
+        sys.exit(1)
 
 
 def check_all(ctx, require_text, forbid_text, require_order_in_operation):
@@ -196,7 +265,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # transaction can run any phase.
     require_order_in_operation(
         linux_mutation_cpp,
-        "LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings* d,",
+        "LinuxMutationResult linux_backend_apply(LinuxGpuState* g, LinuxApplyCeilingTransaction& ceiling,",
         "const CurvePlanResult plan = linux_backend_curve_plan(g, planned,",
         "LinuxMutationResult mutation = linux_execute_transaction(",
         "the Linux curve plan runs before the transaction's first phase")
@@ -296,7 +365,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "the Linux reset baseline does not release a clamp it is "
                  "supposed to be running under")
     require_text(_p(ctx, "linux_apply_baseline.h"),
-                 "if (!linux_apply_reset_baseline_locked_clocks(g, d)) return false;",
+                 "if (!linux_apply_reset_baseline_locked_clocks(g, t, d)) return false;",
                  "the Linux reset baseline routes locked clocks through the "
                  "ceiling-aware rule")
     forbid_text(_p(ctx, "linux_apply_baseline.h"), "NVML_CLOCK_MEM",
@@ -306,9 +375,9 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "the real Apply baseline uses the tested named-control handoff")
     require_text(linux_mutation_cpp, "linux_apply_post_reset_modeled_review(context)",
                  "the real Apply baseline reviews modeled transition protection right after reset")
-    require_text(submission_h, "linux_apply_reset_baseline(g, &baseline)",
+    require_text(submission_h, "linux_apply_reset_baseline(g, *context->ceiling, &baseline)",
                  "named handoff still executes the graphics-only baseline")
-    require_text(submission_h, "linux_release_graphics_handoff(g, d, review, g_linuxCeilingArmed)",
+    require_text(submission_h, "linux_release_graphics_handoff(g, d, review, context->ceiling->armed)",
                  "outgoing named controls require the actual installed protection")
     require_text(linux_mutation_cpp, "return linux_apply_graphics_finish(context);",
                  "final clock handover verifies both named controls")
@@ -330,7 +399,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "the Linux ceiling phase is scheduled for required protection and named handoffs")
     # CT-07: the witness used to pass the PLAN's arm flag as evidence that the
     # clamp was installed, so a refused clamp still printed HELD.
-    require_text(linux_ceiling_h, "g_linuxCeilingArmed",
+    require_text(linux_ceiling_h, "bool armed = t.armed;",
                  "the Linux witness reads the flag the arming call actually set")
     forbid_text(linux_ceiling_h,
                 "apply_clock_witness_verdict(ceiling.arm, ceiling.arm,",
@@ -342,20 +411,52 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # CT-07.  It must not release that clamp over a curve it just restored and
     # cannot vouch for -- in particular an outgoing HARD profile, whose raw VF
     # tail is safe only because of its pin.
-    require_text(linux_rollback_h, "linux_snapshot_curve_needs_a_pin(snapshot)",
+    require_text(linux_rollback_h, "linux_snapshot_curve_needs_a_pin(t, snapshot)",
                  "Linux rollback keeps the restriction when the restored curve "
                  "needs a pin to be safe")
     require_text(linux_ceiling_h, "static void linux_apply_ceiling_note_outgoing(",
                  "what the Linux transaction is leaving is recorded at entry, "
                  "not inferred from a snapshot full of positive offsets")
+    # One explicit transaction value per apply/reset, owned by the caller and
+    # also handed to the rollback of a failed commit.
+    _forbid_linux_ceiling_ambient_state(ctx)
+    require_text(_p(ctx, "linux_apply_ceiling_transaction.h"),
+                 "struct LinuxApplyCeilingTransaction {",
+                 "Linux apply-ceiling state is one explicit per-transaction value")
+    require_text(linux_ceiling_h, "t = LinuxApplyCeilingTransaction{};",
+                 "a Linux transaction starts from a clean ceiling value")
+    require_order_in_operation(
+        linux_mutation_cpp, "LinuxMutationResult linux_backend_apply(",
+        "linux_apply_ceiling_begin(ceiling, previousIntent);",
+        "linux_backend_capture_snapshot(g, &snapshot",
+        "a Linux apply resets its ceiling transaction before any read or phase")
+    require_order_in_operation(
+        _p(ctx, "linux_backend_reset.h"), "LinuxMutationResult linux_backend_reset(",
+        "linux_apply_ceiling_begin(ceiling, nullptr);",
+        "linux_reset_capture_rollback_ceiling(g, ceiling, previous);",
+        "a Linux Reset resets its ceiling transaction before capturing the rollback bound")
+    restore = "linux_backend_restore_snapshot(&ctl.gpu, ceiling, &before,"
+    _require_transaction_spans_rollback(
+        ctx, "linux_daemon.cpp", "case SERVICE_CMD_APPLY: {", "case SERVICE_CMD_RESET: {",
+        "linux_backend_apply(&ctl.gpu, ceiling,", restore,
+        "a failed Linux Apply commit rolls back with the transaction it is undoing")
+    _require_transaction_spans_rollback(
+        ctx, "linux_daemon.cpp", "case SERVICE_CMD_RESET: {", "        default:",
+        "linux_backend_reset(&ctl.gpu, ceiling,", restore,
+        "a failed Linux Reset commit rolls back with the transaction it is undoing")
+    _require_transaction_spans_rollback(
+        ctx, "linux_auto_restore_runtime.h", "static LinuxAutoRestoreOutcome daemon_automatic_restore_write(",
+        "\n}\n", "linux_backend_apply(&ctl.gpu, ceiling,",
+        "&ctl.gpu, ceiling, &before, mutation.attemptedPhases,",
+        "a failed unattended commit rolls back with its own transaction")
 
     forbid_text(guard_h, "bool ok = nvml_reset_gpu_locked_clocks(detail, sizeof(detail));",
                 "scope destruction cannot release unverified protection")
     require_text(apply_cpp, "return apply_recover_clock_failure(clockCeiling, result, result, resultSize);",
                  "baseline failure reaches guarded recovery")
-    require_text(linux_mutation_cpp, "linux_apply_clock_ceiling_plan(g, d, previousIntent)",
+    require_text(linux_mutation_cpp, "linux_apply_clock_ceiling_plan(g, ceiling, d, previousIntent)",
                  "Linux plans protection from the actual previous intent")
-    require_text(linux_mutation_cpp, "linux_apply_arm_transition_ceiling(g, d, context->previousIntent, context->scalarReview.installedGuardRequired, &context->scalarReview.modeledCeiling)",
+    require_text(linux_mutation_cpp, "linux_apply_arm_transition_ceiling(g, *context->ceiling, d, context->previousIntent, context->scalarReview.installedGuardRequired, &context->scalarReview.modeledCeiling)",
                  "Linux arming receives the previous intent too")
     require_text(linux_mutation_cpp,
                  "if (d->hasLock || (requested & LINUX_MUTATION_LOCK_CEILING) || scalarReview.outgoingSurface || scalarReview.deferredModeledCheck)",
@@ -697,8 +798,8 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(submission_h, "if (desired_named_graphics_surface(*d)) return linux_apply_named_graphics_offset(g, d,",
                  "named Linux graphics scalars bypass legacy surface fallback")
     require_order_in_operation(linux_mutation_cpp,
-                               "LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings* d,",
-                               "linux_bind_graphics_snapshot(g, d, &snapshot,", "linux_backend_preflight(g, d, &snapshot,",
+                               "LinuxMutationResult linux_backend_apply(LinuxGpuState* g, LinuxApplyCeilingTransaction& ceiling,",
+                               "linux_bind_graphics_snapshot(g, d, &snapshot,", "linux_backend_preflight(g, ceiling, d, &snapshot,",
                                "the named graphics rollback preimage is bound before transaction preflight")
     require_text(_p(ctx, "linux_apply_baseline.h"),
                  "namedSurface ? linux_write_named_graphics(g, namedSurface, 0)",
@@ -715,7 +816,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "Linux exact offset metadata is refreshed with rebuilt targets")
     require_text(linux_mutation_cpp, "if (context->plannedBuild.failed || context->plannedBuild.deferred)",
                  "unresolved exact targets cannot reach the Linux VF writer")
-    require_text(linux_mutation_cpp, "authoringReplay && !g_linuxCeilingArmed",
+    require_text(linux_mutation_cpp, "authoringReplay && !context->ceiling->armed",
                  "Linux authoring without an installed ceiling chooses a single batch")
     require_text(_p(ctx, "linux_backend_vf_write.h"), "if (policy == VF_WRITE_SINGLE_BATCH) maxBatchPasses = 1;",
                  "the Linux writer enforces the selected batch limit")
@@ -867,11 +968,11 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(_p(ctx, "main_service_apply_runtime.cpp"),
                  "apply_clock_control_proven_absent(",
                  "explicit Windows Reset recognizes an absent Pascal lock domain")
-    require_text(linux_ceiling_h, "linux_clock_control_proven_absent(g)",
+    require_text(linux_ceiling_h, "linux_clock_control_proven_absent(g, t)",
                  "Linux baseline and final lock use the absent-control rule")
-    require_text(linux_rollback_h, "const bool noClockControl = linux_clock_control_proven_absent(g);",
+    require_text(linux_rollback_h, "const bool noClockControl = linux_clock_control_proven_absent(g, t);",
                  "Pascal rollback restores prior settings when no cap can exist")
-    require_text(_p(ctx, "linux_backend_reset.h"), "bool noControl = linux_clock_control_proven_absent(g);",
+    require_text(_p(ctx, "linux_backend_reset.h"), "bool noControl = linux_clock_control_proven_absent(g, *context->ceiling);",
                  "explicit Linux Reset skips an absent locked-clock domain")
     require_text(ceiling_policy_h,
                  "static inline bool apply_clock_ceiling_proceeds_unprotected(",
@@ -998,14 +1099,14 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         _p(ctx, "linux_graphics_offset_control.h"), "static inline bool linux_write_named_graphics(",
         "!(state.prepared & bit)", "nvml_exact_clock_write(",
         "Linux named graphics writes require durable preparation before a setter")
-    require_text(_p(ctx, "linux_daemon.cpp"), "graphics_scalar_operation_prepare(g_gpu.graphicsRecovery, record.graphicsControlSurfaces,",
+    require_text(_p(ctx, "linux_daemon.cpp"), "graphics_scalar_operation_prepare(ctl.gpu.graphicsRecovery, record.graphicsControlSurfaces,",
                  "the Linux journal publishes named write permission only after a durable store")
     require_order_in_operation(
         _p(ctx, "linux_auto_restore_runtime.h"), "static LinuxAutoRestoreOutcome daemon_automatic_restore_write(",
-        "!store_daemon_record(LINUX_DAEMON_RECORD_PREPARED", "linux_backend_apply(&g_gpu, &request,",
+        "!store_daemon_record(ctl, LINUX_DAEMON_RECORD_PREPARED", "linux_backend_apply(&ctl.gpu, ceiling, &request,",
         "automatic Linux replay prepares a durable recovery journal before hardware writes")
     require_text(_p(ctx, "linux_daemon_boot.h"),
-                 'daemon_enter_uncertain_state("saved named graphics controls were not restored")',
+                 'daemon_enter_uncertain_state(ctl, "saved named graphics controls were not restored")',
                  "an aborted startup replay retains pending named-control recovery")
     require_order_in_operation(
         _p(ctx, "linux_graphics_offset_control.h"), "static inline bool linux_finalize_named_graphics_reset(",
@@ -1087,39 +1188,39 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     linux_daemon_cpp = _p(ctx, "linux_daemon.cpp")
     require_order_in_operation(
         linux_daemon_cpp, "static int daemon_run_owned(const char* configPath)",
-        "daemon_fan_ownership_handback_at_start();",
-        "load_startup_policy_at_boot();",
+        "daemon_fan_ownership_handback_at_start(ctl);",
+        "load_startup_policy_at_boot(ctl);",
         "the Linux fan handback runs before any startup write")
     require_order_in_operation(
         linux_daemon_cpp, "static int daemon_run_owned(const char* configPath)",
-        "load_auto_restore_guard_at_boot();",
-        "daemon_fan_ownership_handback_at_start();",
+        "load_auto_restore_guard_at_boot(ctl);",
+        "daemon_fan_ownership_handback_at_start(ctl);",
         "the guard is loaded before a handback give-up latches it")
     require_order_in_operation(
         linux_daemon_cpp, "static int daemon_run_owned(const char* configPath)",
-        "daemon_fan_ownership_handback_at_start();",
+        "daemon_fan_ownership_handback_at_start(ctl);",
         "pl_thread_start(&fanThread, fan_reassert_thread",
         "the Linux fan handback runs before the fan worker exists")
     require_text(linux_daemon_cpp,
-                 "!daemon_fan_ownership_ensure_before_write(&committedDesired,",
+                 "!daemon_fan_ownership_ensure_before_write(ctl, &committedDesired,",
                  "an explicit Linux apply records fan ownership before writing")
     require_order_in_operation(
         _p(ctx, "linux_auto_restore_runtime.h"),
         "static LinuxAutoRestoreOutcome daemon_automatic_restore_write(",
-        "daemon_fan_ownership_ensure_before_write(&committed,",
+        "daemon_fan_ownership_ensure_before_write(ctl, &committed,",
         "LinuxMutationResult mutation = linux_backend_apply(",
         "an unattended Linux write records fan ownership before writing")
     require_order_in_operation(
         _p(ctx, "linux_fan_ownership.h"),
         "// Return an inherited manual fan on its recorded adapter.",
         "inFlight.handbackAttempts = marker.handbackAttempts + 1u;",
-        "bool autoOk = linux_backend_set_fan_auto(&g_gpu);",
+        "bool autoOk = linux_backend_set_fan_auto(&ctl.gpu);",
         "the Linux handback records itself in flight before writing (loop guard)")
     require_order_in_operation(
         _p(ctx, "linux_fan_ownership.h"),
-        "static void daemon_fan_ownership_handback_at_start()",
-        "g_fanOwnershipHandbackDeferred = true;",
-        "daemon_fan_ownership_run_handback(marker);",
+        "static void daemon_fan_ownership_handback_at_start(LinuxGpuController& ctl)",
+        "ctl.fanOwnershipHandbackDeferred = true;",
+        "daemon_fan_ownership_run_handback(ctl, marker);",
         "startup defers or runs the counted handback, never an uncounted write")
     # A clean Windows stop returns every write this process made whose return
     # was never proven, so the next start never runs a crash handback for it.

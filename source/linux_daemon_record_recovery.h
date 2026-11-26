@@ -5,7 +5,7 @@
 
 // Capture before PREPARED replaces the durable record. An I/O failure does
 // not justify discarding evidence; abort the operation before a hardware write.
-static bool capture_uncertain_record(bool uncertain, LinuxDaemonStateRecord* record,
+static bool capture_uncertain_record(LinuxGpuController& ctl, bool uncertain, LinuxDaemonStateRecord* record,
                                      bool* captured, char* err, size_t errSize, bool forReset = false) {
     *captured = false;
     if (!uncertain) return true;
@@ -19,7 +19,7 @@ static bool capture_uncertain_record(bool uncertain, LinuxDaemonStateRecord* rec
     }
     *captured = result == LINUX_DAEMON_STATE_LOADED;
     if (*captured && record->graphicsControlSurfaces) {
-        if (!linux_graphics_adopt_pending_record(&g_gpu, record, forReset)) {
+        if (!linux_graphics_adopt_pending_record(&ctl.gpu, record, forReset)) {
             gc_strlcpy(err, errSize, "Pending named graphics recovery requires Reset on its bound GPU");
             dlog("graphics-offset: recovery adoption refused reset=%d mask=%u\n",
                 forReset ? 1 : 0, record->graphicsControlSurfaces);

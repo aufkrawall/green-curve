@@ -11,6 +11,7 @@
 #include "linux_daemon.h"
 #include "log_redaction_policy.h"
 #include "linux_backend.h"
+#include "linux_gpu_controller.h"
 #include "linux_crash_breadcrumb.h"
 #include "linux_daemon_state.h"
 #include "linux_graphics_recovery_policy.h"
@@ -97,26 +98,13 @@ static void dlog(const char* fmt, ...) {
 // ===========================================================================
 // Daemon side
 // ===========================================================================
-static LinuxGpuState g_gpu;
-static bool g_gpuReady = false;
+// Process-wide: the driver libraries every GPU state binds against
+// (linux_driver_context.h) and the one lock serializing requests, the fan
+// worker and backend (re)initialization.
+static LinuxDriverContext g_driver = {};
 static pl_mutex g_lock;
-static DesiredSettings g_activeDesired;
-static bool g_hasActiveDesired = false;
-static GpuAdapterInfo g_activeTarget;
-static LinuxGpuUuid g_activeTargetUuid;
-static GpuLocationRole g_activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
-static bool g_stateUncertain = false;
-static ServiceOperationTracker g_operationTracker = {};
-// The committed startup-apply policy.  Zero-initialized means RESTORE_LAST,
-// which is exactly what every build before protocol v13 did.
-static LinuxDaemonStartupRecord g_startupPolicy = {};
-// Whether an unattended write is still allowed.  See
-// linux_auto_restore_policy.h; the persisted copy lives in GC_DAEMON_GUARD_FILE.
-static LinuxAutoRestoreGuard g_autoRestoreGuard = {};
-// The protocol-v29 cause of an AUTOMATIC_APPLY_FAILED latched by THIS daemon
-// process (linux_auto_restore_runtime.h).  In memory only, like Windows: after
-// a restart the persisted lockout is published without a cause.
-static ServiceAutoApplyFailure g_autoApplyFailure = {};
+// The GPU this daemon binds is a LinuxGpuController owned by
+// daemon_run_owned(); every other function receives it as `ctl`.
 
 static bool persist_daemon_operation(gc_u64 operationId, gc_u32 state,
     gc_u32 responseStatus, gc_u32 outcomeSeverity, const char* message) {
@@ -134,14 +122,14 @@ static bool persist_daemon_operation(gc_u64 operationId, gc_u32 state,
 #include "linux_operation_runtime.h"
 #include "linux_daemon_lifecycle.h"
 
-static GpuLocationRole daemon_target_location_role(const GpuAdapterInfo* target) {
-    if (g_hasActiveDesired && linux_gpu_identity_matches(target, &g_activeTarget) &&
-        g_activeTargetRole == GPU_LOCATION_ROLE_REQUIRED)
+static GpuLocationRole daemon_target_location_role(LinuxGpuController& ctl, const GpuAdapterInfo* target) {
+    if (ctl.hasActiveDesired && linux_gpu_identity_matches(target, &ctl.activeTarget) &&
+        ctl.activeTargetRole == GPU_LOCATION_ROLE_REQUIRED)
         return GPU_LOCATION_ROLE_REQUIRED;
-    return linux_gpu_location_role_for_selection(target, g_gpu.adapters, g_gpu.adapterCount);
+    return linux_gpu_location_role_for_selection(target, ctl.gpu.adapters, ctl.gpu.adapterCount);
 }
 
-static bool store_daemon_record(LinuxDaemonRecordState state,
+static bool store_daemon_record(LinuxGpuController& ctl, LinuxDaemonRecordState state,
                                 const GpuAdapterInfo* target,
                                 const DesiredSettings* desired,
                                 char* err, size_t errSize,
@@ -150,22 +138,22 @@ static bool store_daemon_record(LinuxDaemonRecordState state,
                                 GpuLocationRole role = GPU_LOCATION_ROLE_UNRECORDED,
                                 const LinuxGpuUuid* uuid = nullptr) {
     if (role == GPU_LOCATION_ROLE_UNRECORDED)
-        role = daemon_target_location_role(target);
+        role = daemon_target_location_role(ctl, target);
     LinuxDaemonStateRecord record = {};
-    const LinuxGpuUuid* observed = linux_gpu_identity_matches(target, &g_gpu.selectedGpu)
-        ? linux_backend_selected_uuid(&g_gpu) : nullptr;
+    const LinuxGpuUuid* observed = linux_gpu_identity_matches(target, &ctl.gpu.selectedGpu)
+        ? linux_backend_selected_uuid(&ctl.gpu) : nullptr;
     const LinuxGpuUuid binding = linux_gpu_uuid_retain(observed, uuid);
     linux_daemon_record_initialize(&record, state, target, desired,
         operationId, operationState, role, &binding,
-        g_gpu.graphicsRecovery.covered | (state == LINUX_DAEMON_RECORD_PREPARED && desired
+        ctl.gpu.graphicsRecovery.covered | (state == LINUX_DAEMON_RECORD_PREPARED && desired
             ? graphics_scalar_recovery_bit(desired_named_graphics_surface(*desired)) : 0u));
     if (state == LINUX_DAEMON_RECORD_PREPARED)
-        return graphics_scalar_operation_prepare(g_gpu.graphicsRecovery, record.graphicsControlSurfaces,
+        return graphics_scalar_operation_prepare(ctl.gpu.graphicsRecovery, record.graphicsControlSurfaces,
             [&] { return linux_daemon_state_store(GC_DAEMON_STATE_FILE, &record, err, errSize); });
     return linux_daemon_state_store(GC_DAEMON_STATE_FILE, &record, err, errSize);
 }
 
-static bool restore_committed_record(bool wasUncertain, bool hadPrevious,
+static bool restore_committed_record(LinuxGpuController& ctl, bool wasUncertain, bool hadPrevious,
                                      const GpuAdapterInfo* previousTarget,
                                      const DesiredSettings* previousDesired,
                                      const LinuxDaemonStateRecord* uncertainRecord) {
@@ -181,18 +169,18 @@ static bool restore_committed_record(bool wasUncertain, bool hadPrevious,
                      ok ? 1 : 0, err[0] ? ": " : "", err);
                 return ok;
             }
-            const bool ok = store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN,
-                hadPrevious ? previousTarget : &g_gpu.selectedGpu, previousDesired,
+            const bool ok = store_daemon_record(ctl, LINUX_DAEMON_RECORD_UNCERTAIN,
+                hadPrevious ? previousTarget : &ctl.gpu.selectedGpu, previousDesired,
                 err, sizeof(err), 0, SERVICE_OPERATION_NONE,
-                g_activeTargetRole, &g_activeTargetUuid);
+                ctl.activeTargetRole, &ctl.activeTargetUuid);
             dlog("daemon state: failed operation kept the uncertain record ok=%d%s%s\n",
                  ok ? 1 : 0, err[0] ? ": " : "", err);
             return ok;
         }
         case LINUX_FAILED_OPERATION_RESTORE_ACTIVE:
-            return store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE, previousTarget,
+            return store_daemon_record(ctl, LINUX_DAEMON_RECORD_ACTIVE, previousTarget,
                                        previousDesired, err, sizeof(err), 0, SERVICE_OPERATION_NONE,
-                                       g_activeTargetRole, &g_activeTargetUuid);
+                                       ctl.activeTargetRole, &ctl.activeTargetUuid);
         case LINUX_FAILED_OPERATION_REMOVE_RECORD:
             break;
     }
@@ -216,7 +204,7 @@ static bool restore_committed_record(bool wasUncertain, bool hadPrevious,
 #include "linux_startup_policy.h"
 #include "linux_daemon_capture.h"
 
-static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp) {
+static void handle_request(LinuxGpuController& ctl, const ServiceRequest* wireReq, ServiceResponse* resp) {
     memset(resp, 0, sizeof(*resp));
     resp->magic = SERVICE_PROTOCOL_MAGIC;
     resp->version = SERVICE_PROTOCOL_VERSION;
@@ -260,8 +248,8 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
              (unsigned long long)req->expectedTopologySignature, reason);
     } else if ((req->command == SERVICE_CMD_APPLY ||
                 req->command == SERVICE_CMD_RESET) &&
-               (!daemon_control_preconditions_match(req, resp) ||
-                !mutation_preconditions_match(req, resp))) {
+               (!daemon_control_preconditions_match(ctl, req, resp) ||
+                !mutation_preconditions_match(ctl, req, resp))) {
         // State and message were filled by the fail-closed precondition gate.
     } else switch (req->command) {
         case SERVICE_CMD_PING:
@@ -270,35 +258,35 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             break;
         case SERVICE_CMD_GET_SNAPSHOT:
         case SERVICE_CMD_GET_TELEMETRY:
-            if (!g_gpuReady && !req->targetGpu.valid)
-                daemon_retry_backend_for_read(
+            if (!ctl.gpuReady && !req->targetGpu.valid)
+                daemon_retry_backend_for_read(ctl,
                     (req->flags & SERVICE_REQUEST_FLAG_INTERACTIVE) != 0);
             if (req->targetGpu.valid) {
                 char targetErr[256] = {};
-                if (!select_request_gpu(req, targetErr, sizeof(targetErr))) {
+                if (!select_request_gpu(ctl, req, targetErr, sizeof(targetErr))) {
                     resp->status = SERVICE_STATUS_ERROR;
                     gc_strlcpy(resp->message, sizeof(resp->message), targetErr);
                     break;
                 }
             }
-            if (g_gpuReady) linux_backend_refresh(&g_gpu);
-            populate_snapshot(&resp->snapshot, &resp->controlState);
-            if (g_hasActiveDesired) resp->desired = g_activeDesired;
+            if (ctl.gpuReady) linux_backend_refresh(&ctl.gpu);
+            populate_snapshot(ctl, &resp->snapshot, &resp->controlState);
+            if (ctl.hasActiveDesired) resp->desired = ctl.activeDesired;
             resp->status = SERVICE_STATUS_OK;
             break;
 #include "linux_daemon_read_switch.h"
         case SERVICE_CMD_RESUME_RESTORE:
-            daemon_handle_resume_restore(resp);
+            daemon_handle_resume_restore(ctl, resp);
             break;
         case SERVICE_CMD_GET_STARTUP_POLICY:
         case SERVICE_CMD_SET_STARTUP_POLICY:
         case SERVICE_CMD_REFRESH_STARTUP_PROFILE:
-            daemon_handle_startup_policy_command(req, resp);
+            daemon_handle_startup_policy_command(ctl, req, resp);
             break;
         case SERVICE_CMD_GET_OPERATION_RESULT: {
             resp->operationId = req->operationId;
             const ServiceOperationRecord* record = service_operation_find(
-                &g_operationTracker, req->operationId);
+                &ctl.operationTracker, req->operationId);
             if (!record) {
                 resp->status = SERVICE_STATUS_ERROR;
                 resp->operationState = SERVICE_OPERATION_OUTCOME_UNKNOWN;
@@ -312,24 +300,24 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                     record->message[0] ? record->message :
                     "operation result available");
             }
-            if (g_hasActiveDesired) resp->desired = g_activeDesired;
-            populate_snapshot(&resp->snapshot, &resp->controlState);
+            if (ctl.hasActiveDesired) resp->desired = ctl.activeDesired;
+            populate_snapshot(ctl, &resp->snapshot, &resp->controlState);
             break;
         }
         case SERVICE_CMD_APPLY: {
-            LinuxOperationRequestGuard operation(req, resp, "apply");
+            LinuxOperationRequestGuard operation(ctl.operationTracker, req, resp, "apply");
             if (!operation.execute()) {
-                if (g_hasActiveDesired) resp->desired = g_activeDesired;
-                populate_snapshot(&resp->snapshot, &resp->controlState);
+                if (ctl.hasActiveDesired) resp->desired = ctl.activeDesired;
+                populate_snapshot(ctl, &resp->snapshot, &resp->controlState);
                 break;
             }
-            if (!g_gpuReady) {
+            if (!ctl.gpuReady) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_strlcpy(resp->message, sizeof(resp->message), "GPU backend not initialized");
                 break;
             }
             char targetErr[256] = {};
-            if (!select_request_gpu(req, targetErr, sizeof(targetErr))) {
+            if (!select_request_gpu(ctl, req, targetErr, sizeof(targetErr))) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_strlcpy(resp->message, sizeof(resp->message), targetErr);
                 break;
@@ -355,14 +343,14 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                     break;
                 }
             }
-            bool hadPrevious = g_hasActiveDesired;
-            const bool wasUncertain = g_stateUncertain;
-            DesiredSettings previousDesired = g_activeDesired;
-            GpuAdapterInfo previousTarget = g_activeTarget;
+            bool hadPrevious = ctl.hasActiveDesired;
+            const bool wasUncertain = ctl.stateUncertain;
+            DesiredSettings previousDesired = ctl.activeDesired;
+            GpuAdapterInfo previousTarget = ctl.activeTarget;
             const GpuLocationRole committedRole = linux_gpu_location_role_for_selection(
-                &g_gpu.selectedGpu, g_gpu.adapters, g_gpu.adapterCount);
+                &ctl.gpu.selectedGpu, ctl.gpu.adapters, ctl.gpu.adapterCount);
             DesiredSettings committedDesired{};
-            if (!daemon_prepare_apply_ownership(hadPrevious ? &previousDesired : nullptr,
+            if (!daemon_prepare_apply_ownership(ctl, hadPrevious ? &previousDesired : nullptr,
                     &d, &committedDesired, targetErr, sizeof(targetErr))) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_strlcpy(resp->message, sizeof(resp->message), targetErr);
@@ -370,17 +358,17 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             }
             LinuxHardwareSnapshot before = {};
             char stateErr[256] = {};
-            GraphicsScalarOperation graphicsOperation(g_gpu.graphicsRecovery);
+            GraphicsScalarOperation graphicsOperation(ctl.gpu.graphicsRecovery);
             LinuxDaemonStateRecord uncertainRecord = {};
             bool capturedUncertain = false;
-            if (!capture_uncertain_record(wasUncertain, &uncertainRecord,
+            if (!capture_uncertain_record(ctl, wasUncertain, &uncertainRecord,
                                           &capturedUncertain, stateErr, sizeof(stateErr)) ||
-                !daemon_fan_ownership_allows_selected_write(stateErr, sizeof(stateErr)) ||
-                !linux_backend_capture_apply_snapshot(&g_gpu, &d, &before, stateErr, sizeof(stateErr),
+                !daemon_fan_ownership_allows_selected_write(ctl, stateErr, sizeof(stateErr)) ||
+                !linux_backend_capture_apply_snapshot(&ctl.gpu, &d, &before, stateErr, sizeof(stateErr),
                                                       hadPrevious ? &previousDesired : nullptr, &committedDesired) ||
-                !daemon_fan_ownership_ensure_before_write(&committedDesired,
+                !daemon_fan_ownership_ensure_before_write(ctl, &committedDesired,
                                                           stateErr, sizeof(stateErr)) ||
-                !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu,
+                !store_daemon_record(ctl, LINUX_DAEMON_RECORD_PREPARED, &ctl.gpu.selectedGpu,
                                      &committedDesired, stateErr, sizeof(stateErr),
                                      req->operationId, SERVICE_OPERATION_IN_PROGRESS, committedRole)) {
                 resp->status = SERVICE_STATUS_ERROR;
@@ -388,65 +376,67 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                             "Apply aborted before hardware write: %s", stateErr);
                 break;
             }
-            LinuxMutationResult mutation = linux_backend_apply(&g_gpu, &d,
+            // One ceiling transaction for the apply and any rollback of it.
+            LinuxApplyCeilingTransaction ceiling = {};
+            LinuxMutationResult mutation = linux_backend_apply(&ctl.gpu, ceiling, &d,
                 hadPrevious ? &previousDesired : nullptr, &committedDesired,
                 resp->message, sizeof(resp->message));
             bool committed = false;
             if (mutation.success) {
                 committed = service_scoped_has_owned_intent(committedDesired)
-                    ? store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE,
-                    &g_gpu.selectedGpu, &committedDesired,
+                    ? store_daemon_record(ctl, LINUX_DAEMON_RECORD_ACTIVE,
+                    &ctl.gpu.selectedGpu, &committedDesired,
                     stateErr, sizeof(stateErr),
                     req->operationId, SERVICE_OPERATION_SUCCEEDED, committedRole)
                     : linux_daemon_state_remove(GC_DAEMON_STATE_FILE, stateErr, sizeof(stateErr));
                 if (!committed) {
                     char rollbackErr[256] = {};
-                    bool rollbackOk = linux_backend_restore_snapshot(&g_gpu, &before,
+                    bool rollbackOk = linux_backend_restore_snapshot(&ctl.gpu, ceiling, &before,
                         mutation.attemptedPhases, rollbackErr, sizeof(rollbackErr));
-                    bool recordOk = restore_committed_record(wasUncertain, hadPrevious,
+                    bool recordOk = restore_committed_record(ctl, wasUncertain, hadPrevious,
                                                               &previousTarget, &previousDesired,
                                                          capturedUncertain ? &uncertainRecord : nullptr);
                     if (!rollbackOk || !recordOk)
-                        store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
+                        store_daemon_record(ctl, LINUX_DAEMON_RECORD_UNCERTAIN, &ctl.gpu.selectedGpu,
                                             &committedDesired, stateErr, sizeof(stateErr));
                     if (linux_failed_operation_leaves_uncertain(wasUncertain, rollbackOk, recordOk))
-                        daemon_enter_uncertain_state("apply persistence failed");
+                        daemon_enter_uncertain_state(ctl, "apply persistence failed");
                     gc_snprintf(resp->message, sizeof(resp->message),
                         "Apply persistence failed; hardware rollback %s",
                         rollbackOk ? "succeeded" : "is uncertain");
                 }
             } else if (mutation.rollbackSucceeded || !mutation.anyWrite) {
-                bool recordOk = restore_committed_record(wasUncertain, hadPrevious,
+                bool recordOk = restore_committed_record(ctl, wasUncertain, hadPrevious,
                                                          &previousTarget, &previousDesired,
                                                          capturedUncertain ? &uncertainRecord : nullptr);
                 if (!recordOk) {
-                    store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
+                    store_daemon_record(ctl, LINUX_DAEMON_RECORD_UNCERTAIN, &ctl.gpu.selectedGpu,
                                         &committedDesired, stateErr, sizeof(stateErr));
-                    daemon_enter_uncertain_state("apply record restore failed");
+                    daemon_enter_uncertain_state(ctl, "apply record restore failed");
                 }
             } else {
-                store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
+                store_daemon_record(ctl, LINUX_DAEMON_RECORD_UNCERTAIN, &ctl.gpu.selectedGpu,
                                     &committedDesired, stateErr, sizeof(stateErr));
-                daemon_enter_uncertain_state("apply rollback failed");
+                daemon_enter_uncertain_state(ctl, "apply rollback failed");
             }
             if (committed) {
-                g_activeDesired = committedDesired;
-                g_activeTargetRole = committedRole;
-                g_activeTarget = g_gpu.selectedGpu;
-                g_activeTargetUuid = linux_gpu_uuid_retain(linux_backend_selected_uuid(&g_gpu), nullptr);
-                g_hasActiveDesired = service_scoped_has_owned_intent(committedDesired);
-                if (!g_hasActiveDesired) {
-                    g_activeTarget = {}; g_activeTargetUuid = {};
-                    g_activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
+                ctl.activeDesired = committedDesired;
+                ctl.activeTargetRole = committedRole;
+                ctl.activeTarget = ctl.gpu.selectedGpu;
+                ctl.activeTargetUuid = linux_gpu_uuid_retain(linux_backend_selected_uuid(&ctl.gpu), nullptr);
+                ctl.hasActiveDesired = service_scoped_has_owned_intent(committedDesired);
+                if (!ctl.hasActiveDesired) {
+                    ctl.activeTarget = {}; ctl.activeTargetUuid = {};
+                    ctl.activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
                 }
-                g_stateUncertain = false;
-                if (req->desired.hasFan) daemon_fan_runtime_note_commit("a committed Apply"); else g_fanFailureCount = 0;
-                if (g_fanOwnershipMarkerCommitted &&
+                ctl.stateUncertain = false;
+                if (req->desired.hasFan) daemon_fan_runtime_note_commit(ctl, "a committed Apply"); else ctl.fanFailureCount = 0;
+                if (ctl.fanOwnershipMarkerCommitted &&
                     ((d.hasFan && d.fanMode == FAN_MODE_AUTO) ||
                      (d.applicationScope != DESIRED_SCOPE_LEGACY && !committedDesired.hasFan)))
-                    daemon_fan_ownership_retire("committed intent leaves the fan to the driver");
+                    daemon_fan_ownership_retire(ctl, "committed intent leaves the fan to the driver");
                 char guardErr[256] = {};
-                if (!auto_restore_note_explicit_success("apply", guardErr,
+                if (!auto_restore_note_explicit_success(ctl, "apply", guardErr,
                                                         sizeof(guardErr))) {
                     resp->outcomeSeverity = SERVICE_OUTCOME_SEVERITY_WARNING;
                     gc_snprintf(resp->message, sizeof(resp->message),
@@ -454,49 +444,49 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                         "could not be cleared durably: %s",
                         guardErr[0] ? guardErr : "unknown error");
                 }
-                wake_fan_runtime();
+                wake_fan_runtime(ctl);
             }
-            populate_snapshot(&resp->snapshot, &resp->controlState);
-            if (g_hasActiveDesired) resp->desired = g_activeDesired;
+            populate_snapshot(ctl, &resp->snapshot, &resp->controlState);
+            if (ctl.hasActiveDesired) resp->desired = ctl.activeDesired;
             resp->status = committed ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
-            if (g_stateUncertain) wake_fan_runtime();
+            if (ctl.stateUncertain) wake_fan_runtime(ctl);
             break;
         }
         case SERVICE_CMD_RESET: {
-            LinuxOperationRequestGuard operation(req, resp, "reset");
+            LinuxOperationRequestGuard operation(ctl.operationTracker, req, resp, "reset");
             if (!operation.execute()) {
-                if (g_hasActiveDesired) resp->desired = g_activeDesired;
-                populate_snapshot(&resp->snapshot, &resp->controlState);
+                if (ctl.hasActiveDesired) resp->desired = ctl.activeDesired;
+                populate_snapshot(ctl, &resp->snapshot, &resp->controlState);
                 break;
             }
-            if (!g_gpuReady) {
+            if (!ctl.gpuReady) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_strlcpy(resp->message, sizeof(resp->message), "GPU backend not initialized");
                 break;
             }
             char targetErr[256] = {};
-            if (!select_request_gpu(req, targetErr, sizeof(targetErr))) {
+            if (!select_request_gpu(ctl, req, targetErr, sizeof(targetErr))) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_strlcpy(resp->message, sizeof(resp->message), targetErr);
                 break;
             }
-            bool hadPrevious = g_hasActiveDesired;
-            const bool wasUncertain = g_stateUncertain;
-            DesiredSettings previousDesired = g_activeDesired;
-            GpuAdapterInfo previousTarget = g_activeTarget;
-            const bool ownsSelected = hadPrevious && linux_gpu_identity_matches(&previousTarget, &g_gpu.selectedGpu);
+            bool hadPrevious = ctl.hasActiveDesired;
+            const bool wasUncertain = ctl.stateUncertain;
+            DesiredSettings previousDesired = ctl.activeDesired;
+            GpuAdapterInfo previousTarget = ctl.activeTarget;
+            const bool ownsSelected = hadPrevious && linux_gpu_identity_matches(&previousTarget, &ctl.gpu.selectedGpu);
             const DesiredSettings* previous = ownsSelected ? &previousDesired : nullptr;
             LinuxHardwareSnapshot before = {};
             char stateErr[256] = {};
             DesiredSettings empty = {};
-            GraphicsScalarOperation graphicsOperation(g_gpu.graphicsRecovery);
+            GraphicsScalarOperation graphicsOperation(ctl.gpu.graphicsRecovery);
             LinuxDaemonStateRecord uncertainRecord = {};
             bool capturedUncertain = false;
-            if (!capture_uncertain_record(wasUncertain, &uncertainRecord,
+            if (!capture_uncertain_record(ctl, wasUncertain, &uncertainRecord,
                                           &capturedUncertain, stateErr, sizeof(stateErr), true) ||
-                !daemon_fan_ownership_allows_selected_write(stateErr, sizeof(stateErr), true) ||
-                !linux_backend_capture_reset_snapshot(&g_gpu, previous, &before, stateErr, sizeof(stateErr)) ||
-                !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu,
+                !daemon_fan_ownership_allows_selected_write(ctl, stateErr, sizeof(stateErr), true) ||
+                !linux_backend_capture_reset_snapshot(&ctl.gpu, previous, &before, stateErr, sizeof(stateErr)) ||
+                !store_daemon_record(ctl, LINUX_DAEMON_RECORD_PREPARED, &ctl.gpu.selectedGpu,
                                      &empty, stateErr, sizeof(stateErr),
                                      req->operationId, SERVICE_OPERATION_IN_PROGRESS)) {
                 resp->status = SERVICE_STATUS_ERROR;
@@ -504,51 +494,52 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                             "Reset aborted before hardware write: %s", stateErr);
                 break;
             }
-            LinuxMutationResult mutation = linux_backend_reset(&g_gpu, previous,
+            LinuxApplyCeilingTransaction ceiling = {};
+            LinuxMutationResult mutation = linux_backend_reset(&ctl.gpu, ceiling, previous,
                 resp->message, sizeof(resp->message));
             bool committed = mutation.success &&
                 linux_daemon_state_remove(GC_DAEMON_STATE_FILE, stateErr, sizeof(stateErr));
             if (mutation.success && !committed) {
                 char rollbackErr[256] = {};
-                bool rollbackOk = linux_backend_restore_snapshot(&g_gpu, &before,
+                bool rollbackOk = linux_backend_restore_snapshot(&ctl.gpu, ceiling, &before,
                     mutation.attemptedPhases, rollbackErr, sizeof(rollbackErr));
-                bool recordOk = restore_committed_record(wasUncertain, hadPrevious,
+                bool recordOk = restore_committed_record(ctl, wasUncertain, hadPrevious,
                                                          &previousTarget, &previousDesired,
                                                          capturedUncertain ? &uncertainRecord : nullptr);
                 // The rollback put back the pre-Reset fan, possibly a manual duty.
                 if (linux_failed_operation_leaves_uncertain(wasUncertain, rollbackOk, recordOk))
-                    daemon_enter_uncertain_state("reset persistence failed");
+                    daemon_enter_uncertain_state(ctl, "reset persistence failed");
                 gc_snprintf(resp->message, sizeof(resp->message),
                     "Reset persistence failed; hardware rollback %s",
                     rollbackOk ? "succeeded" : "is uncertain");
             } else if (!mutation.success && !(mutation.rollbackSucceeded || !mutation.anyWrite)) {
-                store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
+                store_daemon_record(ctl, LINUX_DAEMON_RECORD_UNCERTAIN, &ctl.gpu.selectedGpu,
                                     &empty, stateErr, sizeof(stateErr));
-                daemon_enter_uncertain_state("reset rollback failed");
+                daemon_enter_uncertain_state(ctl, "reset rollback failed");
             } else if (!mutation.success) {
-                bool recordOk = restore_committed_record(wasUncertain, hadPrevious,
+                bool recordOk = restore_committed_record(ctl, wasUncertain, hadPrevious,
                                                          &previousTarget, &previousDesired,
                                                          capturedUncertain ? &uncertainRecord : nullptr);
                 if (!recordOk) {
-                    store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
+                    store_daemon_record(ctl, LINUX_DAEMON_RECORD_UNCERTAIN, &ctl.gpu.selectedGpu,
                                         &empty, stateErr, sizeof(stateErr));
-                    daemon_enter_uncertain_state("reset record restore failed");
+                    daemon_enter_uncertain_state(ctl, "reset record restore failed");
                 }
             }
             if (committed) {
-                g_hasActiveDesired = false;
-                memset(&g_activeDesired, 0, sizeof(g_activeDesired));
-                memset(&g_activeTarget, 0, sizeof(g_activeTarget));
+                ctl.hasActiveDesired = false;
+                memset(&ctl.activeDesired, 0, sizeof(ctl.activeDesired));
+                memset(&ctl.activeTarget, 0, sizeof(ctl.activeTarget));
                 // The role belongs to the cleared target: back to the
                 // fail-closed default, like a daemon that never had one.
-                g_activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
-                g_activeTargetUuid = {};
-                g_stateUncertain = false;
-                daemon_fan_runtime_note_commit("a committed Reset");
+                ctl.activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
+                ctl.activeTargetUuid = {};
+                ctl.stateUncertain = false;
+                daemon_fan_runtime_note_commit(ctl, "a committed Reset");
                 // Reset returned the fan to the driver: nothing to hand back.
-                daemon_fan_ownership_retire("reset committed", true);
+                daemon_fan_ownership_retire(ctl, "reset committed", true);
                 char guardErr[256] = {};
-                if (!auto_restore_note_explicit_success("reset", guardErr,
+                if (!auto_restore_note_explicit_success(ctl, "reset", guardErr,
                                                         sizeof(guardErr))) {
                     resp->outcomeSeverity = SERVICE_OUTCOME_SEVERITY_WARNING;
                     gc_snprintf(resp->message, sizeof(resp->message),
@@ -556,11 +547,11 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                         "could not be cleared durably: %s",
                         guardErr[0] ? guardErr : "unknown error");
                 }
-                wake_fan_runtime();
+                wake_fan_runtime(ctl);
             }
-            populate_snapshot(&resp->snapshot, &resp->controlState);
+            populate_snapshot(ctl, &resp->snapshot, &resp->controlState);
             resp->status = committed ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
-            if (g_stateUncertain) wake_fan_runtime();
+            if (ctl.stateUncertain) wake_fan_runtime(ctl);
             break;
         }
         default:
@@ -571,7 +562,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
     // Stamp every response as one daemon/GPU generation. The envelope derives
     // READY versus DEGRADED from the complete atomic snapshot and advertises
     // only independently rollback-safe mutation domains.
-    daemon_stamp_state_envelope(resp, req->command == SERVICE_CMD_CAPTURE_CURRENT);
+    daemon_stamp_state_envelope(ctl, resp, req->command == SERVICE_CMD_CAPTURE_CURRENT);
     // The daemon's counterpart of the Windows write-out stamp, and for the same
     // reason: every branch above sets `status` and breaks, so severity is
     // derived once here instead of in each of them.  The Linux hardware
@@ -598,6 +589,11 @@ static void log_peer(int connFd) {
 #include "linux_daemon_boot.h"
 
 static int daemon_run_owned(const char* configPath) {
+    // The only place the controller is named. Static storage: it is large and
+    // outlives the fan worker, which is joined before this returns.
+    static LinuxGpuController controller;
+    LinuxGpuController& ctl = controller;
+    linux_gpu_controller_init(&ctl);
     pl_mutex_init(&g_lock);
     if (!init_fan_wake_condition()) {
         dlog("daemon: cannot initialize monotonic fan wake condition\n");
@@ -627,18 +623,18 @@ static int daemon_run_owned(const char* configPath) {
          daemonLogToken);
 
     char err[256] = {};
-    if (linux_backend_init(&g_gpu, nullptr, err, sizeof(err))) {
-        g_gpuReady = true;
+    if (linux_backend_init(&ctl.gpu, &g_driver, nullptr, err, sizeof(err))) {
+        ctl.gpuReady = true;
         dlog("daemon: GPU backend online (%s family=%d match=%s architectureSource=%s "
              "vfFresh=%d infoStatus=%d statusStatus=%d controlStatus=%d "
              "health=%s)\n",
-             g_gpu.gpuName, (int)g_gpu.family,
-             linux_gpu_match_method_name(g_gpu.nvapiMatchMethod),
-             linux_gpu_architecture_source_name(g_gpu.architectureSource),
-             g_gpu.vfSnapshotFresh ? 1 : 0,
-             g_gpu.vfInfoStatus, g_gpu.vfStatusStatus,
-             g_gpu.vfControlStatus,
-             service_gpu_health_reason_name(g_gpu.health.reason));
+             ctl.gpu.gpuName, (int)ctl.gpu.family,
+             linux_gpu_match_method_name(ctl.gpu.nvapiMatchMethod),
+             linux_gpu_architecture_source_name(ctl.gpu.architectureSource),
+             ctl.gpu.vfSnapshotFresh ? 1 : 0,
+             ctl.gpu.vfInfoStatus, ctl.gpu.vfStatusStatus,
+             ctl.gpu.vfControlStatus,
+             service_gpu_health_reason_name(ctl.gpu.health.reason));
     } else {
         dlog("daemon: GPU backend init failed: %s (serving telemetry-less)\n", err);
     }
@@ -648,25 +644,25 @@ static int daemon_run_owned(const char* configPath) {
             err, sizeof(err))) {
         gc_u32 restoredState = operation.state == SERVICE_OPERATION_IN_PROGRESS
             ? SERVICE_OPERATION_OUTCOME_UNKNOWN : operation.state;
-        service_operation_restore(&g_operationTracker, operation.operationId,
+        service_operation_restore(&ctl.operationTracker, operation.operationId,
             restoredState, operation.responseStatus, operation.outcomeSeverity,
             restoredState == SERVICE_OPERATION_OUTCOME_UNKNOWN
                 ? "operation outcome became uncertain across daemon restart"
                 : operation.message);
     }
 
-    load_auto_restore_guard_at_boot();
+    load_auto_restore_guard_at_boot(ctl);
     // After the guard load (a give-up latches it), before any startup write
     // and before the fan worker exists: a previous daemon in this boot that
     // died with the fan under manual control gets it handed back to the
     // driver, at most twice (linux_fan_ownership.h).
-    daemon_fan_ownership_handback_at_start();
-    load_startup_policy_at_boot();
+    daemon_fan_ownership_handback_at_start(ctl);
+    load_startup_policy_at_boot(ctl);
 
-    daemon_apply_boot_policy();
+    daemon_apply_boot_policy(ctl);
 
     pl_thread fanThread;
-    const bool workerStarted = pl_thread_start(&fanThread, fan_reassert_thread, nullptr);
+    const bool workerStarted = pl_thread_start(&fanThread, fan_reassert_thread, &ctl);
     if (!workerStarted) {
         // Fatal, not "degraded".  Without this worker a curve or fixed duty is
         // written once and never re-asserted, and the driver silently takes the
@@ -688,12 +684,12 @@ static int daemon_run_owned(const char* configPath) {
             ServiceSnapshot readinessSnapshot = {};
             ControlState readinessControls = {};
             pl_mutex_lock(&g_lock);
-            populate_snapshot(&readinessSnapshot, &readinessControls);
+            populate_snapshot(ctl, &readinessSnapshot, &readinessControls);
             pl_mutex_unlock(&g_lock);
             if (linux_systemd_notify_ready(&readinessSnapshot.health,
                     readinessError, sizeof(readinessError))) {
                 linux_set_crash_phase("daemon-serving");
-                exitStatus = daemon_serve_until_stopped(listener.socketFd);
+                exitStatus = daemon_serve_until_stopped(ctl, listener.socketFd);
             } else {
                 dlog("daemon: startup readiness failed: %s\n", readinessError);
             }
@@ -702,15 +698,16 @@ static int daemon_run_owned(const char* configPath) {
 
     linux_set_crash_phase("daemon-shutdown");
     g_running = 0;
-    if (exitStatus == 0) clear_auto_restore_attempts_on_clean_stop();
+    if (exitStatus == 0) clear_auto_restore_attempts_on_clean_stop(ctl);
     if (workerStarted) {
-        wake_fan_runtime();
+        wake_fan_runtime(ctl);
         pl_thread_join(fanThread);
     }
-    daemon_release_fan_to_driver();
+    daemon_release_fan_to_driver(ctl);
     if (listenerOpened) daemon_close_listener(&listener);
     close_daemon_shutdown_pipe();
-    if (g_gpu.nvmlLib || g_gpu.nvapiLib) linux_backend_shutdown(&g_gpu);
+    linux_backend_shutdown(&ctl.gpu);
+    linux_driver_close(&g_driver);
     dlog("daemon: exiting with status %d\n", exitStatus);
     return exitStatus;
 }

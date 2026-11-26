@@ -13,7 +13,8 @@
 
 #include "linux_vf_rollback_mask_policy.h"
 
-bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapshot* snapshot,
+bool linux_backend_restore_snapshot(LinuxGpuState* g, LinuxApplyCeilingTransaction& t,
+                                    const LinuxHardwareSnapshot* snapshot,
                                     unsigned int phaseMask, char* err, size_t errSize) {
     if (err && errSize) err[0] = 0;
     if (!g || !snapshot || !snapshot->valid) {
@@ -25,20 +26,20 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
         LINUX_MUTATION_LOCK | LINUX_MUTATION_LOCK_CEILING;
     // A first guard that was unavailable or unsupported did not install a
     // restriction. There is no other phase to recover for this refusal.
-    if (phaseMask == LINUX_MUTATION_LOCK_CEILING && !g_linuxCeilingArmed &&
-        (g_linuxCeilingArmResult == APPLY_CEILING_ARM_UNSUPPORTED ||
-         g_linuxCeilingArmResult == APPLY_CEILING_ARM_UNAVAILABLE))
+    if (phaseMask == LINUX_MUTATION_LOCK_CEILING && !t.armed &&
+        (t.armResult == APPLY_CEILING_ARM_UNSUPPORTED ||
+         t.armResult == APPLY_CEILING_ARM_UNAVAILABLE))
         return true;
-    const bool noClockControl = linux_clock_control_proven_absent(g);
+    const bool noClockControl = linux_clock_control_proven_absent(g, t);
     if (phaseMask & (LINUX_MUTATION_RESET_BASELINE | LINUX_MUTATION_GPU_OFFSET)) {
         g->graphicsRecovery.covered |= g->graphicsRecovery.attempted;
         g->graphicsRecovery.uncertain |= g->graphicsRecovery.attempted;
     }
     if (phaseMask & clockPhases) {
-        unsigned int bound = g_linuxOutgoingCeilingMHz;
-        if (g_linuxCeilingPlan.ceilingMHz > 0 &&
-            (bound == 0 || g_linuxCeilingPlan.ceilingMHz < bound))
-            bound = g_linuxCeilingPlan.ceilingMHz;
+        unsigned int bound = t.outgoingCeilingMHz;
+        if (t.plan.ceilingMHz > 0 &&
+            (bound == 0 || t.plan.ceilingMHz < bound))
+            bound = t.plan.ceilingMHz;
         // A rejected first arm must leave the old restriction alone. Failed
         // writes may have side effects, so require protection before restoring
         // whenever this GPU has a locked-clock control. Pascal cannot install
@@ -46,7 +47,7 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
         bool protectedRestore = !noClockControl && bound > 0 &&
             g->nvml.setGpuLockedClocks &&
             g->nvml.setGpuLockedClocks(g->nvmlDevice, 0, bound) == NVML_SUCCESS;
-        if (!protectedRestore && bound > 0 && g_linuxOutgoingHadHardPin &&
+        if (!protectedRestore && bound > 0 && t.outgoingHadHardPin &&
             g->nvml.setGpuLockedClocks)
             protectedRestore = g->nvml.setGpuLockedClocks(
                 g->nvmlDevice, bound, bound) == NVML_SUCCESS;
@@ -56,7 +57,7 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
             return false;
         }
         if (protectedRestore) {
-            g_linuxCeilingArmed = true;
+            t.armed = true;
             g->retainedTransitionCeilingMHz = bound;
             lb_log("rollback: clock protection established at %u MHz before restore\n", bound);
         } else {
@@ -191,7 +192,7 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
         // before the CURVE phase. Keep protection on all uncertain rollbacks;
         // the caller already reports rollback uncertainty to the user.
         lb_log("rollback: retaining clock protection (outgoing hard=%d, restore ok=%d)\n",
-            linux_snapshot_curve_needs_a_pin(snapshot), ok);
+            linux_snapshot_curve_needs_a_pin(t, snapshot), ok);
         ok = false;
     }
     if (!ok) gc_strlcpy(err, errSize, "one or more GPU rollback phases failed");

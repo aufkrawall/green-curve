@@ -329,7 +329,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
     const DesiredSettings* d = context->desired;
     switch (phase) {
         case LINUX_MUTATION_LOCK_CEILING:
-            return linux_apply_arm_transition_ceiling(g, d, context->previousIntent, context->scalarReview.installedGuardRequired, &context->scalarReview.modeledCeiling);
+            return linux_apply_arm_transition_ceiling(g, *context->ceiling, d, context->previousIntent, context->scalarReview.installedGuardRequired, &context->scalarReview.modeledCeiling);
         case LINUX_MUTATION_RESET_BASELINE:
             return linux_apply_graphics_baseline(context) && linux_apply_post_reset_modeled_review(context);
         case LINUX_MUTATION_GPU_OFFSET:
@@ -379,7 +379,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
                 authoringReplay |= built.pointExactOffset[i] || built.pointCapturedIntent[i];
                 targetsHz[i] = built.pointExactOffset[i] ? built.pointExactOffsetHz[i] : built.pointCapturedOffsetHz[i];
             }
-            const auto policy = authoringReplay && !g_linuxCeilingArmed
+            const auto policy = authoringReplay && !context->ceiling->armed
                 ? VF_WRITE_SINGLE_BATCH : VF_WRITE_EXISTING_STRATEGY;
             const unsigned long long curveStartMs = pl_monotonic_ms();
             bool curveOk = apply_curve_offsets_verified(g, context->curveTargets,
@@ -390,7 +390,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             // The curve is now at its new (raised) shape and LINUX_MUTATION_LOCK
             // has not run: this is the instant that was uncapped before
             // F-APPLY-CEILING.
-            linux_apply_log_clock_witness(g, d, "post-curve (pre-lock)");
+            linux_apply_log_clock_witness(g, *context->ceiling, d, "post-curve (pre-lock)");
             return curveOk;
         }
         case LINUX_MUTATION_LOCK:
@@ -423,8 +423,8 @@ static bool linux_apply_transaction_rollback(void* opaque, unsigned int phases) 
     phases = scalar_curve_rollback_phases(context->scalarReview, phases, LINUX_MUTATION_GPU_OFFSET);
     if (context->vfBaselineResetAttempted) phases |= LINUX_MUTATION_CURVE;
     if (!phases) return true;
-    return linux_backend_restore_snapshot(context->gpu, context->snapshot, phases,
-                                          rollback, sizeof(rollback));
+    return linux_backend_restore_snapshot(context->gpu, *context->ceiling, context->snapshot,
+                                          phases, rollback, sizeof(rollback));
 }
 
 static int phase_count(unsigned int phases) {
@@ -433,7 +433,8 @@ static int phase_count(unsigned int phases) {
     return count;
 }
 
-LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings* d,
+LinuxMutationResult linux_backend_apply(LinuxGpuState* g, LinuxApplyCeilingTransaction& ceiling,
+                                        const DesiredSettings* d,
                                         const DesiredSettings* previousIntent,
                                         const DesiredSettings* committedIntent,
                                         char* result, size_t resultSize) {
@@ -453,8 +454,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     // Record what this transaction is LEAVING before any phase runs, so
     // rollback can tell "restoring an ordinary overclock" from "restoring a
     // curve whose safety came entirely from a pin" (CT-07).
-    linux_apply_ceiling_reset_state();
-    linux_apply_ceiling_note_outgoing(previousIntent);
+    linux_apply_ceiling_begin(ceiling, previousIntent);
     linux_backend_refresh(g);
     if (!linux_backend_capture_snapshot(g, &snapshot, preflight, sizeof(preflight))) {
         LinuxMutationResult mutation = {};
@@ -475,7 +475,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         }
         d = &scopedPlan.hardware;
         committedIntent = &scopedPlan.owned;
-        g_linuxScopedCurveCeilingTransition = scopedPlan.releasesCurveCeiling;
+        ceiling.scopedCurveTransition = scopedPlan.releasesCurveCeiling;
     }
     const int graphicsRouteOverride = d && d->applicationScope != DESIRED_SCOPE_LEGACY
         ? (scopedPlan.graphicsOffsetViaVf ? 2 : 1) : 0;
@@ -493,10 +493,10 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         (committedIntent && desired_has_curve_write(committedIntent));
     const bool vfBaselineReset = linux_apply_needs_vf_baseline_reset(
         d, hasCurveWorkPre, liveCurveShaped);
-    if (vfBaselineReset) g_linuxScopedCurveCeilingTransition = true;
-    g_linuxOutgoingCeilingMHz = linux_outgoing_ceiling_mhz(g, previousIntent);
+    if (vfBaselineReset) ceiling.scopedCurveTransition = true;
+    ceiling.outgoingCeilingMHz = linux_outgoing_ceiling_mhz(g, previousIntent);
     AuthoringModeledPrecheckContext modeledCtx = linux_apply_build_modeled_context(
-        g, d, snapshot, g_linuxOutgoingCeilingMHz, g_linuxScopedCurveCeilingTransition);
+        g, d, snapshot, ceiling.outgoingCeilingMHz, ceiling.scopedCurveTransition);
     ScalarCurveSubmissionReview scalarReview{};
     const gc_u32 graphicsDomains = SERVICE_MUTATION_DOMAIN_GPU_OFFSET | SERVICE_MUTATION_DOMAIN_VF_CURVE |
         SERVICE_MUTATION_DOMAIN_LOCK | SERVICE_MUTATION_DOMAIN_RESET_BASELINE;
@@ -507,13 +507,13 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         if (result) gc_strlcpy(result, resultSize, preflight);
         return mutation;
     }
-    if (!linux_backend_preflight(g, d, &snapshot, preflight, sizeof(preflight), graphicsRouteOverride)) {
+    if (!linux_backend_preflight(g, ceiling, d, &snapshot, preflight, sizeof(preflight), graphicsRouteOverride)) {
         LinuxMutationResult mutation = {};
         if (result) gc_strlcpy(result, resultSize, preflight[0] ? preflight : "Apply preflight failed");
         return mutation;
     }
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
-    LinuxApplyTransactionContext context = {g, d, &snapshot, committedIntent,
+    LinuxApplyTransactionContext context = {g, &ceiling, d, &snapshot, committedIntent,
         previousIntent, {}, {}, d->fanPercent, false, false, false, vfBaselineReset, false, false, false, graphicsRouteOverride, {}, {}, {}};
     context.scalarReview = scalarReview;
     context.modeledContext = modeledCtx;
@@ -630,7 +630,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     // because the phase was never scheduled.
     {
         ApplyClockCeilingPlan ceilingPlan =
-            linux_apply_clock_ceiling_plan(g, d, previousIntent);
+            linux_apply_clock_ceiling_plan(g, ceiling, d, previousIntent);
         if (ceilingPlan.arm || ceilingPlan.required || scalarReview.installedGuardRequired || scalarReview.modeledCeiling.required)
             requested |= LINUX_MUTATION_LOCK_CEILING;
     }

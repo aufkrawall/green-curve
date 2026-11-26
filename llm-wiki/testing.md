@@ -1,8 +1,20 @@
 # Testing
 
-## Linux NVML reference ownership (2026-11-24)
+## Linux daemon per-GPU controller (2026-11-25)
 
-- **`tests/linux_nvml_lifetime_tests.cpp` (`14200-14211`):** compiles the production `linux_backend.cpp` with every external `linux_backend_*` symbol renamed (no strong symbol shared with the real backend object) and replaces `pl_open_driver_library` / `pl_lib_sym` / `pl_lib_close` with a reference-counted fake NVML. `14200-14202` replay the daemon's driver-not-ready retry order (failed startup init, successful replacement, then teardown of the stale state) and fail at `14202` without the `nvmlInitialized` guard; `14203-14204` cover another failing init beside a live backend (the shape of `linux_backend_select_target()`'s failed replacement; the selector itself is not invoked); `14205-14207` cover enumeration failure after a successful init; `14208-14210` cover independent states and exact library-handle close counts; `14211` refuses a library without `nvmlShutdown` before `nvmlInit_v2`.
+- **`tests/linux_daemon_commit_rollback_tests.cpp` (`14260-14267`):** request-level fixture. Compiles the production `linux_daemon.cpp` (two symbols renamed to coexist with `linux_tui_gpu_target_tests.cpp`) over fake backend, persistence and debug-log functions, reads state like a client to obtain the freshness envelope, then drives `handle_request()`. When the active record cannot be stored after a successful Apply (`14260-14263`) or the state file cannot be removed after a successful Reset (`14264-14266`), the daemon rolls back exactly once with the same `LinuxApplyCeilingTransaction` object, and every field the rollback reads (`armed`, `armResult`, `plan.ceilingMHz`, `outgoingCeilingMHz`, `outgoingHadHardPin`) arrives as the mutation recorded it; a successful commit never rolls back (`14267`). Clearing either bound (including Reset's `outgoingCeilingMHz` alone) or the HARD-pin fact (Reset leaves a HARD pin), skipping the rollback or passing a fresh transaction fails `14261`, `14262` or `14265`.
+- **`tests/linux_fan_ownership_tests.cpp` (`14230-14233`):** two `LinuxGpuController` values over one fake driver, selecting different adapters (0 and 1) so a fan write reaching the wrong card is visible. Uncertainty entered on one sets only its own flag, hands back only the fan it owns on its own adapter (`14231`, `14233`), and leaves the other controller untouched (`14232`).
+- **`tests/fan_runtime_followup_tests.cpp` (`14234`):** another GPU's wake mid-stall does not restart this fan's stall window (handback at 30 s; a shared command generation delays it to 40 s). The fan-runtime, fan-ownership and capture-service fixtures now pass a fixture controller (`fan_runtime_followup_tests.cpp` mirrors the members `linux_fan_runtime.h` reads over its reduced `LinuxGpuState`).
+- **Source gate (`check_gpu_controller()`, `tools/linux_gates.py`):** across the daemon amalgamation, file-scope variables (static or not) only from the `_DAEMON_PROCESS_STATICS` allowlist, no global or function-local static of a per-GPU type (value or pointer) other than the controller instance, no retired daemon global name, no `thread_local`, exactly one `static LinuxGpuController` (in `daemon_run_owned()`), and the fan worker starts with `&ctl`. Each hole a reviewer probed (a `static bool`, a non-static `bool`, a non-static controller pointer, a cached state pointer, a function-local state pointer) fails the gate.
+
+## Linux apply-ceiling transaction isolation (2026-11-25)
+
+- **`tests/linux_ceiling_transaction_cases.h` (`14220-14227`, run by `tests/clock_transition_tests.cpp`):** two GPUs with two independent `LinuxApplyCeilingTransaction` values on one fake driver. `14220-14221` arm A and start B clean; `14222` B's reset baseline releases its own locked clocks instead of keeping A's clamp; `14223` A keeps its own; `14224` B's rollback refuses rather than arming A's bound; `14225` A's rollback re-arms its own bound; `14226-14227` a reused value starts clean on `linux_apply_ceiling_begin()`. With the armed flag mirrored into a file-scope static (the pre-refactor shape) the cases fail at `14222`. The existing clock-transition, modeled-transition, graphics-handoff and scope-preflight fixtures now pass explicit transactions.
+
+## Linux process-wide driver context (2026-11-25)
+
+- **`tests/linux_nvml_lifetime_tests.cpp` (`14200-14215`, `14217-14219`, `14235-14242`; `14247-14249` in `tests/linux_driver_discovery_cases.h`):** compiles the production `linux_backend.cpp` (including `linux_driver_context.cpp`) with every external `linux_backend_*` / `linux_driver_*` symbol renamed and replaces `pl_open_driver_library` / `pl_lib_sym` / `pl_lib_close` with a reference-counted fake NVML (plus a one-handle fake NvAPI) that counts opens, inits and enumerations. `14200-14203` replay the driver-not-ready retry; `14204-14205` require one load and one init for several states (fails at `14205` if a binding re-initializes NVML); `14206-14213` cover enumeration failure, idempotent close, missing `nvmlShutdown`, a missing context and an unopened close; `14214-14215` assert today's per-init sequence exactly (one NVML discovery, one NvAPI initialization and one enumeration per init, both libraries loaded and NVML initialized once; an extra enumeration or a reused NvAPI session fails them); `14217-14219` recover within the same init after NVML reports itself uninitialized (fails at `14217` without the same-call re-initialization); `14235-14236` per-binding NvAPI readiness and per-GPU lock-log gate; `14237-14239` one NvAPI initialization per binding including after a failed enumeration, and both libraries a context opened closed exactly once; `14240-14241` a refused NvAPI init keeps the query pointer; `14242` the same-GPU recovery re-enumeration clears a stale NVML init; `14247` a lost NvAPI session is renewed by the next binding; `14248` a cold start keeps one NVML init attempt; `14249` real `linux_backend_capture_current()` refuses a failed binding although the shared session is initialized and updates only the captured GPU's lock-log gate.
+- **Source gate (`tools/linux_gates.py`):** no file of the backend amalgamation except `linux_driver_context.cpp` calls `pl_open_driver_library(`, `nvml.init()`, `nvml.shutdown()`, `pl_lib_close(`, `"nvapi_QueryInterface"` or `NVAPI_INIT_ID` (token patterns over comment-stripped code); the daemon closes `g_driver` after `linux_backend_shutdown(&ctl.gpu)`.
 
 ## Multi-generation GPU simulation suite and Pascal/probe/capture fixes (2026-11-23)
 
@@ -24,7 +36,7 @@
 
 ## Post-review follow-up hardening (2026-11-20)
 
-- **Linux fan lockout & Windows fan handback (`tests/fan_runtime_followup_tests.cpp` `12898-12899`, `tests/fan_handback_runtime_tests.cpp` `12857/12859/12860/12869`, `tools/fan_gates.py`):** pins Linux lockout dropping/updating `g_activeDesired`, `populate_snapshot()` gating on `intentMatchesSelected` + `!g_stateUncertain` + `linux_daemon_fan_runtime_active()`, non-fan Apply preserving `g_daemonFanFault`, and Windows `service_fan_runtime_handback_publish()` syncing `g_serviceActiveDesiredGpu`, profile metadata (`NONE/0` vs `AD_HOC/0`), canonical emergency defaults, and restart-reapply snapshot persistence.
+- **Linux fan lockout & Windows fan handback (`tests/fan_runtime_followup_tests.cpp` `12898-12899`, `tests/fan_handback_runtime_tests.cpp` `12857/12859/12860/12869`, `tools/fan_gates.py`):** pins Linux lockout dropping/updating `ctl.activeDesired`, `populate_snapshot()` gating on `intentMatchesSelected` + `!ctl.stateUncertain` + `linux_daemon_fan_runtime_active()`, non-fan Apply preserving `ctl.fanFault`, and Windows `service_fan_runtime_handback_publish()` syncing `g_serviceActiveDesiredGpu`, profile metadata (`NONE/0` vs `AD_HOC/0`), canonical emergency defaults, and restart-reapply snapshot persistence.
 - **Linux VF `vfMask` intersection & scoped `vfBaselineReset` modeled review (`tests/linux_vf_write_tests.cpp` `12689-12691`, `tests/linux_clock_offset_tests.cpp` `9006-9008`, `tools/linux_gates.py`):** covers uneditable populated VF entries skipped on baseline reset/full Reset/rollback via `linux_vf_rollback_mask_policy.h` while preserving sub-450 MHz rollback placeholders, and pre-scalar scoped VF reset + deferred modeled review (`linux_apply_prepare_scoped_vf_before_scalar()`, `vfBaselineResetAttempted` rollback coverage).
 - **Windows GPU selection degraded recovery, transient deferral & single-sync switch (`tests/gpu_selection_sync_tests.cpp` `7100-7101`, `tools/gpu_support_gates.py`):** covers `gpu_selector_combo_enabled()` in `DEGRADED`/`DEVICE_MISSING`, `gpu_selection_refusal_is_transient()`, `service_prepare_requested_gpu()` rollback on init failure, and single full-sync advancement.
 - **Linux lazy CLI GPU target & INI flat-tail repair parity (`tests/linux_gpu_selection_store_regression.cpp`, `tools/linux_gates.py`, `tools/ui_gates.py`):** covers offline ordinary profile loading without GPU target resolution, malformed write-target refusal when `needsLive`, uniform `pointN_offset_khz` flat-tail repair, and `base_plus_gpu_offset` skip guard. Cross-linked for `x86_64-linux-gnu` on Windows (`python build.py --test`).
@@ -2541,7 +2553,7 @@ so the disconnect race cannot quietly return.
       still recognized as payload-free now that the member exists.
     - Source-gated in `tools/linux_gates.py`: `startupProfile` exists,
       `daemon_publish_startup_snapshot()` is called, and neither
-      `resp->desired = g_startupPolicy.desired` nor
+      `resp->desired = ctl.startupPolicy.desired` nor
       `report.snapshot = policy.desired` may come back.
 
 - **Linux mem stored-unit migration (F-MEM-MIGRATION, returns 5000–5017):**
@@ -2733,7 +2745,7 @@ so the disconnect race cannot quietly return.
     fork/raise/waitpid, so there are no sleeps or timing assumptions.
   - **The published automatic-restore lockout** (`3180`–`3194`, added 0.22.1)
     pins the field the snapshot exports. The regression it locks down: the
-    daemon derived `autoRestoreLockoutReason` from `g_stateUncertain`, which the
+    daemon derived `autoRestoreLockoutReason` from `ctl.stateUncertain`, which the
     crash-loop arm never sets, so a permanently locked-out daemon published
     `LOCKOUT_NONE`. Cases cover a clean guard, an uncertain state with a clean
     guard still reporting a lockout, attempts-exhausted reporting
@@ -2746,9 +2758,9 @@ so the disconnect race cannot quietly return.
     reason is refused, and that a guard latched by assigning the flag alone
   still serializes into a record the validator accepts. Source guards require
   the pure decision, the record field and `LINUX_DAEMON_GUARD_VERSION = 2`,
-  and forbid the old `g_stateUncertain` spelling in the snapshot.
+  and forbid the old `ctl.stateUncertain` spelling in the snapshot.
   **3228-3235 (added 2026-08-01)** pin the uncertain flag as a real gate:
-  `linux_auto_restore_decide()` now takes `g_stateUncertain` and refuses every
+  `linux_auto_restore_decide()` now takes `ctl.stateUncertain` and refuses every
   automatic trigger — including the unrationed resume — with the new
   `LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN` verdict, a latched guard outranks
   it, and an exhausted boot is reported only after it. Source guards require

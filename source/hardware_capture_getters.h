@@ -167,7 +167,10 @@ struct HardwareCaptureContext {
     // reading; operating clocks and active intent never substitute for it.
     NvapiClientLocks (*lockReader)(void* gpuHandle) = nullptr;
     // Optional diagnostics sink for each reading (the platform logger).
-    void (*lockObserved)(const NvapiClientLocks& locks) = nullptr;
+    // `lockObservedUser` is passed back: the Linux backend keeps the repeat
+    // gate per GPU so one card's reading never suppresses another's.
+    void (*lockObserved)(void* user, const NvapiClientLocks& locks) = nullptr;
+    void* lockObservedUser = nullptr;
     // Running-clock memory evidence beside the NVML getter
     // (memory_clock_evidence.h). Null keeps the getter alone; Windows sets
     // hardware_capture_memory_clock so capture reports what its live state
@@ -316,7 +319,7 @@ static inline bool hardware_capture_collect(const HardwareCaptureContext& contex
         locks.status = -100001; locks.rejectedIndex = -1;
         if (context.lockReader) locks = context.lockReader(context.gpuHandle);
         else if (context.query) locks = nvapi_client_locks_read(context.query, context.gpuHandle);
-        if (context.lockObserved) context.lockObserved(locks);
+        if (context.lockObserved) context.lockObserved(context.lockObservedUser, locks);
         hardware_capture_apply_client_locks(locks, out);
         hardware_capture_domain(out, PROFILE_DOMAIN_LOCK, hardware_capture_client_lock_status(locks), locks.status);
     }

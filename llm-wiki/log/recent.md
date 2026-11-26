@@ -5,6 +5,53 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-25: Explicit Linux daemon per-GPU controller (multi-GPU step 2, part 3)
+
+- The daemon's 21 per-GPU globals (`g_gpu`, `g_activeDesired`,
+  `g_startupPolicy`, the fan ownership/fault statics, ...) are now members of
+  one `LinuxGpuController` (`source/linux_gpu_controller.h`) owned by
+  `daemon_run_owned()` and passed as `LinuxGpuController& ctl` to the 52
+  functions that read or change them, plus the fan worker's thread argument
+  and the operation guard's tracker. No `#define`/`thread_local` indirection.
+- Process-wide state is unchanged. Single-GPU behavior, logs, files and the
+  protocol are unchanged; the single-owner switch guard stays.
+- The fan command generation is per controller (review finding: a
+  process-wide one let another GPU's wake restart a stall window).
+- New gate `check_gpu_controller()` (allowlist of 15 process-wide statics, no
+  anonymous namespaces); isolation fixtures `14230-14234`; request-level
+  commit/rollback fixture `14260-14267` driving the real `handle_request()`. Source gates that pinned the old names now
+  pin the `ctl` forms (1:1).
+
+## 2026-11-25: Explicit Linux apply-ceiling transaction
+
+- Replaced the seven file-scope F-APPLY-CEILING statics in
+  `source/linux_apply_ceiling.h` with a caller-owned
+  `LinuxApplyCeilingTransaction` passed to apply, Reset and the post-commit
+  rollback; no behaviour, log or file-format change (multi-GPU brief step 2).
+- New gate rejects file-scope/`thread_local` ceiling state in the Linux
+  transaction shards; fixture `tests/linux_ceiling_transaction_cases.h`
+  `14220-14227` (fails at `14222` with ambient state). See
+  clock-transition-audit.md, "Linux per-transaction ceiling state".
+
+## 2026-11-25: Process-wide Linux driver context (multi-GPU step 2, part 1)
+
+- `LinuxDriverContext` (`source/linux_driver_context.{h,cpp}`) now owns the
+  NVML/NvAPI library handles, the one `nvmlInit_v2` reference and the NvAPI
+  init. `LinuxGpuState` keeps a non-owning `driver` pointer and copies of the
+  resolved entry points; its shutdown releases no library.
+- Binding keeps today's sequence: each init discovers NVML and binds in the
+  same call, enumerating and matching NvAPI at bind time. After a driver reset
+  a cached NVML session is re-initialized in the same init call (cold starts
+  keep one attempt), and every binding initializes NvAPI before enumerating,
+  as each new GPU state did. NvAPI
+  readiness and the passive-capture lock-log gate are per binding.
+- 2026-11-26: six review rounds kept finding edge cases in binding several
+  GPUs from one shared discovery and proving cached handles; that API and its
+  proofs were removed from step 2 and deferred to the multi-GPU step (see
+  linux-scaffold.md, "Process-wide driver context").
+- Fixture `14200-14249` (with gaps); gate: no load/init/release or NvAPI init
+  anywhere in the backend amalgamation outside the context.
+
 ## 2026-11-24: Balanced Linux NVML initialization references
 
 - `linux_backend_shutdown()` calls `nvmlShutdown` only when the state's own

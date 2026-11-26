@@ -23,6 +23,11 @@ static inline AuthoringModeledPrecheckContext linux_apply_build_modeled_context(
 
 static inline bool linux_apply_post_reset_modeled_review(LinuxApplyTransactionContext* context) {
     if (!context || !context->gpu || !context->desired) return true;
+    if (!context->ceiling) {
+        // Fail closed: the review arms and reads the transaction's clamp.
+        lb_log("linux_apply: modeled review refused without a ceiling transaction\n");
+        return false;
+    }
     const DesiredSettings* intended = context->transitionBuild ? context->committedIntent : context->desired;
     if (!intended || !curve_authoring_needs_exact_targets(intended)) return true;
     const gc_u32 incomingSurface = desired_named_graphics_surface(*intended);
@@ -77,7 +82,7 @@ static inline bool linux_apply_post_reset_modeled_review(LinuxApplyTransactionCo
     mIn.multiStepCurve = multiStep;
     mIn.scalarBeforeHz = 0;
     mIn.scalarAfterHz = afterHz;
-    mIn.outgoingCeilingHz = (gc_i64)g_linuxOutgoingCeilingMHz * 1000000LL;
+    mIn.outgoingCeilingHz = (gc_i64)context->ceiling->outgoingCeilingMHz * 1000000LL;
     mIn.resetsToStock = true;
     AuthoringModeledTransitionOutcome outcome{};
     char mWhy[256]{};
@@ -87,7 +92,7 @@ static inline bool linux_apply_post_reset_modeled_review(LinuxApplyTransactionCo
     }
     if (outcome.adopted) {
         char armWhy[256]{};
-        if (!linux_apply_arm_modeled_post_reset(g, intended, context->scalarReview.modeledCeiling,
+        if (!linux_apply_arm_modeled_post_reset(g, *context->ceiling, intended, context->scalarReview.modeledCeiling,
                 armWhy, sizeof(armWhy))) {
             lb_log("curve-authoring: %s\n", armWhy);
             return false;
@@ -102,11 +107,16 @@ static inline bool linux_apply_post_reset_modeled_review(LinuxApplyTransactionCo
 // before raising the scalar (so the modeled ceiling is armed first).
 static inline bool linux_apply_prepare_scoped_vf_before_scalar(LinuxApplyTransactionContext* context) {
     if (!context || !context->gpu || !context->desired) return true;
+    if (!context->ceiling) {
+        // Fail closed: the review arms and reads the transaction's clamp.
+        lb_log("linux_apply: modeled review refused without a ceiling transaction\n");
+        return false;
+    }
     const DesiredSettings* d = context->desired;
     if (!desired_named_graphics_surface(*d) || !context->resetVfBaselineBeforeCurve ||
         d->resetOcBeforeApply || context->vfBaselineResetDone)
         return true;
-    if (!linux_release_graphics_handoff(context->gpu, d, context->scalarReview, g_linuxCeilingArmed))
+    if (!linux_release_graphics_handoff(context->gpu, d, context->scalarReview, context->ceiling->armed))
         return false;
     lb_log("apply: running scoped VF baseline reset and modeled review before named graphics scalar\n");
     context->vfBaselineResetAttempted = true;

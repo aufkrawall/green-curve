@@ -6,15 +6,16 @@
 
 // Baseline preparation affects graphics/VF and explicitly included auxiliary
 // controls. Memory moves directly to its requested value in its own phase.
-static bool linux_apply_reset_baseline(LinuxGpuState* g, const DesiredSettings* d) {
+static bool linux_apply_reset_baseline(LinuxGpuState* g, const LinuxApplyCeilingTransaction& t,
+                                       const DesiredSettings* d) {
     const gc_u32 namedSurface = desired_named_graphics_surface(*d);
     const bool scalarOk = namedSurface ? linux_write_named_graphics(g, namedSurface, 0) :
         nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0);
     if (!scalarOk ||
         (!g->nvml.resetGpuLockedClocks &&
-         !linux_clock_control_proven_absent(g)))
+         !linux_clock_control_proven_absent(g, t)))
         return false;
-    if (!linux_apply_reset_baseline_locked_clocks(g, d)) return false;
+    if (!linux_apply_reset_baseline_locked_clocks(g, t, d)) return false;
     if ((d->hasXbarOffsetKhz || d->hasXbarMsvddOffsetUv) &&
         !linux_xbar_write_owned(g, 0, 0, d->hasXbarOffsetKhz,
                                d->hasXbarMsvddOffsetUv)) return false;

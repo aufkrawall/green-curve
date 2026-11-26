@@ -3439,7 +3439,8 @@ def run_source_regression_checks():
     _linux_backend_surface = os.path.join(BUILD_WORK_DIR, "_linux_backend_surface.cpp")
     with open(_linux_backend_surface, "w", encoding="utf-8", errors="ignore") as _lf:
         for _cpp in ("linux_backend.cpp", "linux_backend_vf_read.h", "linux_backend_vf_write.h",
-                     "linux_backend_nvml_write.cpp", "linux_backend_clock_offsets.h", "linux_backend_discovery.cpp",
+                     "linux_backend_nvml_write.cpp", "linux_backend_clock_offsets.h", "linux_driver_context.cpp",
+                     "linux_backend_discovery.cpp",
                      "linux_backend_preflight.h", "linux_backend_mutation.cpp",
                      "linux_backend_fan_control.h"):
             with open(os.path.join(SOURCE_DIR, _cpp), "r", encoding="utf-8", errors="ignore") as _source:
@@ -3521,13 +3522,13 @@ def run_source_regression_checks():
                  "linux_gpu_switch_preserves_active_intent",
                  "Linux daemon cannot move one active intent onto another selected GPU")
     require_text(os.path.join(SOURCE_DIR, "linux_daemon_identity.cpp"),
-                 "g_gpu.writeIdentityResolved",
+                 "ctl.gpu.writeIdentityResolved",
                  "Linux daemon cannot publish a telemetry fallback as a selected multi-GPU write target")
     require_text(os.path.join(SOURCE_DIR, "linux_tui_refresh.cpp"),
                  "linux_next_gpu_selection_index",
                  "Linux TUI requires an explicit first multi-GPU selection")
     require_text(linux_fan_runtime_h,
-                 "&g_activeTarget, &g_gpu.selectedGpu",
+                 "&ctl.activeTarget, &ctl.gpu.selectedGpu",
                  "Linux fan worker verifies active intent ownership before hardware writes")
     require_text(linux_backend_cpp, "nvapiAssigned",
                  "Linux NvAPI handles map at most once to an NVML adapter")
@@ -3537,7 +3538,7 @@ def run_source_regression_checks():
                  "Linux VF capability requires a matched NvAPI handle")
     require_text(os.path.join(SOURCE_DIR, "linux_gpu_target_config.cpp"), "Cannot validate GPU selection: exact BDF/PCI identity",
                  "Linux CLI persists only a daemon-enriched stable GPU identity")
-    require_text(linux_daemon_cpp, "daemon_apply_boot_policy();", "Linux daemon evaluates its startup policy on (re)start")
+    require_text(linux_daemon_cpp, "daemon_apply_boot_policy(ctl);", "Linux daemon evaluates its startup policy on (re)start")
     require_text(linux_daemon_transport_cpp, "wait_fd_ready", "Linux daemon socket reads/writes poll with a deadline")
     require_text_in_surface(linux_daemon_surface, "set_nonblocking(conn)",
                             "Linux daemon accepted clients are nonblocking")
@@ -3626,7 +3627,7 @@ def run_source_regression_checks():
     require_text(linux_daemon_transport_cpp, "response header read", "Linux transport diagnoses header-first response failures")
     require_text(linux_daemon_transport_cpp, "protocol mismatch", "Linux transport diagnoses old daemon protocols before reading their body")
     require_text(linux_systemd_notify_policy_h, "READY=1", "Linux daemon sends systemd readiness only after startup")
-    require_order(linux_daemon_cpp, "daemon_apply_boot_policy();", "daemon_open_listener(&listener)",
+    require_order(linux_daemon_cpp, "daemon_apply_boot_policy(ctl);", "daemon_open_listener(&listener)",
                   "Linux socket listening follows startup replay")
     require_text(linux_daemon_serve_h, "listen(srv, GC_DAEMON_LISTEN_BACKLOG)",
                  "Linux listener uses the named backlog constant")

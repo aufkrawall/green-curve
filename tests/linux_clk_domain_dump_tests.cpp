@@ -26,10 +26,14 @@ static void* fixture_query(unsigned int id) {
     ++state.queries;
     return id == XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL ? (void*)fixture_control : nullptr;
 }
-static bool fixture_init(LinuxGpuState* gpu, const GpuAdapterInfo* target, char*, size_t) {
+static nvmlReturn_t fixture_driver(char* version, unsigned int size);
+static bool fixture_init(LinuxGpuState* gpu, LinuxDriverContext* driver,
+                         const GpuAdapterInfo* target, char*, size_t) {
     ++state.opens;
     state.target = target;
-    gpu->nvmlLib = (PlLib)1;
+    gpu->driver = driver;
+    driver->nvmlLib = (PlLib)1;
+    driver->getDriverVersion = fixture_driver;
     gpu->nvapiQi = fixture_query;
     gpu->gpuHandle = &state;
     gpu->writeIdentityResolved = state.selected;
@@ -37,8 +41,12 @@ static bool fixture_init(LinuxGpuState* gpu, const GpuAdapterInfo* target, char*
     return state.initialized;
 }
 static void fixture_shutdown(LinuxGpuState* gpu) {
-    if (gpu->nvmlLib) ++state.closes;
     std::memset(gpu, 0, sizeof(*gpu));
+}
+// The dump owns a process-scoped driver context and must close it once.
+static void fixture_close(LinuxDriverContext* driver) {
+    if (driver->nvmlLib) ++state.closes;
+    *driver = LinuxDriverContext{};
 }
 static nvmlReturn_t fixture_driver(char* version, unsigned int size) {
     ++state.versions;
@@ -52,6 +60,7 @@ static T fixture_symbol(PlLib, const char* name) {
 static void fixture_log(const char*, ...) {}
 #define linux_backend_init fixture_init
 #define linux_backend_shutdown fixture_shutdown
+#define linux_driver_close fixture_close
 #define linux_backend_clk_domain_dump fixture_dump
 #define sym fixture_symbol
 #define lb_log fixture_log
@@ -59,6 +68,7 @@ static void fixture_log(const char*, ...) {}
 #undef lb_log
 #undef sym
 #undef linux_backend_clk_domain_dump
+#undef linux_driver_close
 #undef linux_backend_shutdown
 #undef linux_backend_init
 
