@@ -5,6 +5,33 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-26: Post-PR #21 hardening (controller, driver context, tests, gates, wiki)
+
+- **Driver context & controller hardening:** stripped `g->nvml.{init,shutdown}`
+  on `LinuxGpuState` copies so per-GPU states cannot call NVML lifecycle entry
+  points even indirectly (`14251`); preserved `clientLocksLog` across same-GPU
+  `linux_backend_select_target()` rebinds (`14252`); restored process-wide
+  `g_daemonFanFaultSerial` for `GcFanFaultObserver` `(serial, kind)` dedup
+  across future multi-GPU controllers (`14250`); added explicit default member
+  initializers and in-place boot-only reset on `LinuxGpuController`; added
+  fail-closed null `ceiling` guards in `linux_apply_graphics_submission.h`
+  (`9152`) and null `arg` guard in `fan_reassert_thread()` (`14250`).
+- **Test, gate & wiki hardening:** keyed `tests/linux_nvml_lifetime_tests.cpp`
+  fakes on `PlLib` with separate `nvmlCloses`/`nvapiCloses` counts and unique
+  assertion codes (`14253-14257`); added `SERVICE_CMD_RESUME_RESTORE`
+  failed-commit rollback cases (`14268-14270`) in
+  `tests/linux_daemon_commit_rollback_tests.cpp`; removed dead `fixture_symbol`
+  and made `fixture_close` count unconditionally in
+  `tests/linux_clk_domain_dump_tests.cpp`; moved `STALL_OTHER_GPU_WAKE` (`14234`)
+  into `fixture_cond_timedwait()` so a real `waitResult == 0` wakeup is
+  delivered; tightened `tools/apply_ceiling_gates.py` (owner-file ambient checks,
+  comment-stripped `thread_local`, local-only ceiling declaration) and
+  `tools/linux_gates.py` (exact `static LinuxGpuController controller;`
+  exemption, comment-stripped `thread_local`); fixed stale wiki lines and
+  recorded splitting `tools/linux_gates.py` / `tools/apply_ceiling_gates.py`
+  (above `AGENTS.md`'s 600-800 line guideline) as a deferred post-multi-GPU
+  follow-up.
+
 ## 2026-11-26: In-place Linux live recovery for modeled NVML session loss
 
 - `linux_backend_reenumerate_same_nvml_gpu()` (`source/linux_backend_discovery.cpp`)

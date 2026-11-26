@@ -1503,17 +1503,26 @@ def check_gpu_controller(ctx, require_text, forbid_text, require_order):
     would compile and silently act on whichever GPU it last described."""
     # Values, pointers and references alike: a cached `LinuxGpuState*` is the
     # same implicit current GPU as a copy.
-    # Function-local statics of a per-GPU type are the same implicit GPU; the
-    # one controller instance in daemon_run_owned() is counted separately.
-    local_static = re.compile(r"^[ \t]+static\s+(?:volatile\s+)?(?:const\s+)?(%s)\b[\s*&]*(?:const\s+)?(?!controller\s*;)[A-Za-z_]\w*\s*[=;\[{]" % "|".join(_PER_GPU_TYPES), re.M)
-    file_scope = re.compile(r"^(?:static\s+)?(?:volatile\s+)?(?:const\s+)?(%s)\b[\s*&]*(?:const\s+)?[A-Za-z_]\w*\s*[=;\[{]" % "|".join(_PER_GPU_TYPES), re.M)
+    # Function-local statics of a per-GPU type are the same implicit GPU; ONLY
+    # the one `static LinuxGpuController controller;` (or `= {}`) instance in
+    # daemon_run_owned() is allowed and counted separately.
+    controller_instance = re.compile(
+        r"^[ \t]+static\s+LinuxGpuController\s+controller(?:\s*=\s*\{\s*\})?\s*;", re.M)
+    local_static = re.compile(
+        r"^[ \t]+static\s+(?:volatile\s+)?(?:const\s+)?(%s)\b[\s*&]*(?:const\s+)?[A-Za-z_]\w*\s*[=;\[{]" % "|".join(_PER_GPU_TYPES),
+        re.M)
+    file_scope = re.compile(
+        r"^(?:static\s+)?(?:volatile\s+)?(?:const\s+)?(%s)\b[\s*&]*(?:const\s+)?[A-Za-z_]\w*\s*[=;\[{]" % "|".join(_PER_GPU_TYPES),
+        re.M)
     retired = re.compile(r"\b(%s)\b" % "|".join(_RETIRED_DAEMON_GLOBALS))
     instances = 0
     for name in _linux_amalgamation(ctx, "linux_daemon.cpp"):
         with open(_p(ctx, name), "r", encoding="utf-8", errors="replace") as handle:
             text = handle.read()
-        found = file_scope.search(text) or local_static.search(text) or retired.search(text)
-        unlisted = [n for n in _file_scope_static_names(text) if n not in _DAEMON_PROCESS_STATICS]
+        code = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.S)
+        code_without_owner = controller_instance.sub("", code) if name == "linux_daemon.cpp" else code
+        found = file_scope.search(code) or local_static.search(code_without_owner) or retired.search(code)
+        unlisted = [n for n in _file_scope_static_names(code) if n not in _DAEMON_PROCESS_STATICS]
         if unlisted:
             print("Regression source check FAILED (must be absent): "
                   f"{name} adds file-scope daemon state {unlisted[0]}; per-GPU state "
@@ -1521,15 +1530,14 @@ def check_gpu_controller(ctx, require_text, forbid_text, require_order):
             sys.exit(1)
         # A namespace (named or anonymous) would hide state from the column-0
         # checks; these files use none. Comments may mention the word.
-        code = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.S)
-        if not found and re.search(r"\bnamespace\b", code):
-            found = re.search(r"\bnamespace\b", code)
-        if found or "thread_local" in text:
+        if not found:
+            found = re.search(r"\bnamespace\b", code) or re.search(r"\bthread_local\b", code)
+        if found:
             print("Regression source check FAILED (must be absent): "
                   f"{name} keeps per-GPU daemon state outside the explicit "
-                  f"LinuxGpuController ({found.group(0) if found else 'thread_local'})")
+                  f"LinuxGpuController ({found.group(0)})")
             sys.exit(1)
-        instances += len(re.findall(r"\bstatic\s+LinuxGpuController\b", text))
+        instances += len(controller_instance.findall(code))
     if instances != 1:
         print("Regression source check FAILED: the daemon must own exactly one "
               f"LinuxGpuController instance (found {instances})")

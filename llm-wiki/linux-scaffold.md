@@ -691,29 +691,38 @@ once, stamped by `[meta] linux_mem_migrated`:
   boot/resume and restore paths; the fan worker receives it as its thread
   argument; `LinuxOperationRequestGuard` takes the controller's tracker.
   Process-wide state stays outside: `g_driver`, `g_lock`, the fan wake signal,
-  the shutdown pipe, socket admission and the service identity/revision.
-  `check_gpu_controller()` in `tools/linux_gates.py` forbids file-scope
-  per-GPU statics, the 22 retired global names (the 21 moved members plus the
-  old fan wake generation) and `thread_local` across the
-  daemon amalgamation and requires exactly one instance. The daemon still
-  binds one GPU and keeps the single-owner switch guard; nothing on disk or on
-  the wire changed. The fan worker's command generation (`fanWakeGeneration`)
-  is per controller: it resets curve hysteresis and is the stall detector's
-  command identity, so another GPU's wake must not restart a stall window; the
-  wake mutex/condition and shutdown broadcast stay process-wide. The gate
-  allowlists the daemon's 15 process-wide file-scope variables and rejects any
-  other (static or not), any global or function-local static of a per-GPU
-  type (value or pointer) other than the one controller instance, and the
-  retired names.
-  Namespaces (named or anonymous, outside comments) are rejected too: they
-  would hide state from the column-0 checks, and the daemon files use none. Two-controller isolation: `tests/linux_fan_ownership_tests.cpp`
-  `14230-14233` (distinct adapters) and `tests/fan_runtime_followup_tests.cpp`
-  `14234`. `tests/linux_daemon_commit_rollback_tests.cpp` (`14260-14267`)
+  `g_daemonFanFaultSerial` (kept process-wide so client `GcFanFaultObserver`
+  deduplication on `(serial, kind)` stays distinct across future multi-GPU
+  controllers), the shutdown pipe, socket admission and the service
+  identity/revision. `LinuxGpuController` gives every member an explicit default
+  initializer, and `linux_gpu_controller_init()` resets in place at daemon boot
+  only. `check_gpu_controller()` in `tools/linux_gates.py` forbids file-scope
+  per-GPU statics, the 21 retired global names and `thread_local` (outside
+  comments) across the daemon amalgamation and requires exactly one
+  `static LinuxGpuController controller;` (or `= {}`) instance in
+  `daemon_run_owned()`. The daemon still binds one GPU and keeps the
+  single-owner switch guard; nothing on disk or on the wire changed. The fan
+  worker's command generation (`fanWakeGeneration`) is per controller: it resets
+  curve hysteresis and is the stall detector's command identity, so another
+  GPU's wake must not restart a stall window; the wake mutex/condition and
+  shutdown broadcast stay process-wide. The gate allowlists the daemon's 16
+  process-wide file-scope variables and rejects any other (static or not), any
+  global or function-local static of a per-GPU type (value or pointer) other
+  than that one controller instance in `linux_daemon.cpp`, and the retired
+  names. Namespaces (named or anonymous, outside comments) are rejected too:
+  they would hide state from the column-0 checks, and the daemon files use none.
+  Two-controller isolation: `tests/linux_fan_ownership_tests.cpp` `14230-14233`
+  (distinct adapters) and `tests/fan_runtime_followup_tests.cpp` `14234`,
+  `14250`. `tests/linux_daemon_commit_rollback_tests.cpp` (`14260-14270`)
   compiles the production `linux_daemon.cpp` over fake backend, persistence
   and log functions and drives `handle_request()`: a failed durable commit
-  after a successful Apply or Reset rolls back once with the very transaction
-  the mutation recorded its clamp in (every field the rollback reads arrives
-  intact); a successful commit never rolls back.
+  after a successful Apply, Reset or `SERVICE_CMD_RESUME_RESTORE` rolls back
+  once with the very transaction the mutation recorded its clamp in (every field
+  the rollback reads arrives intact); a successful commit never rolls back.
+  Deferred follow-up: `tools/linux_gates.py` and `tools/apply_ceiling_gates.py`
+  exceed the `AGENTS.md` 600-800 line file-size guideline; splitting them is
+  deferred until after the multi-GPU step 3-4 series lands to avoid rebase
+  churn.
 - `linux_daemon_lock_instance()` locks the protected persistent state directory
   before GPU initialization, replay or socket setup. The descriptor stays open
   through fan and socket teardown, independently of systemd's runtime directory.
@@ -1236,11 +1245,13 @@ open + `linux_driver_discover()` (one NVML enumeration into
 the sequence a fresh per-state init ran before; a recovery rebind
 (`linux_backend_refresh()`) enumerates NvAPI afresh for its own GPU as before.
 `LinuxGpuState` keeps a non-owning `driver` pointer, copies of the resolved
-entry points (`nvml`, `getUuid`, `nvapiQi`, the latter also after a refused
-NvAPI init, for diagnostics), its own device handles, its own `nvapiReady`
-(capture usability; another GPU's init does not count) and its own
-passive-capture lock-log gate; `linux_backend_shutdown()` releases only
-per-GPU state. The owner closes the context after its last state: the
+entry points (`nvml` with `init`/`shutdown` nulled so per-GPU states cannot
+invoke NVML lifecycle entry points even indirectly, `getUuid`, `nvapiQi`, the
+latter also after a refused NvAPI init, for diagnostics), its own device
+handles, its own `nvapiReady` (capture usability; another GPU's init does not
+count) and its own passive-capture lock-log gate (preserved across same-GPU
+`linux_backend_select_target()` rebinds so unchanged client-lock state does not
+repeat in the journal); `linux_backend_shutdown()` releases only per-GPU state. The owner closes the context after its last state: the
 daemon's `g_driver` at exit; the self-test, diagnostics report and
 clock-domain dump use a local context. A failed startup or replacement init
 can never release the live backend's reference (2026-11-24 rule): the
@@ -1272,8 +1283,8 @@ forbids library load/init/release and NvAPI init calls anywhere in the
 backend amalgamation except the context (token patterns over comment-stripped
 code). The separate `--probe` raw-library probe (`linux_gpu.cpp`) is
 deliberately independent. Covered by `tests/linux_nvml_lifetime_tests.cpp`
-(`14200-14215`, `14217-14219`, `14235-14242`, `14247-14249`; the last three in
-`tests/linux_driver_discovery_cases.h`).
+(`14200-14215`, `14217-14219`, `14235-14249`, `14251-14257`; `14247-14249`,
+`14251-14252`, `14255-14257` in `tests/linux_driver_discovery_cases.h`).
 Deferred to the multi-GPU step (2026-11-26 decision, after six review rounds
 found edge cases only that step needs): binding several GPUs from one shared
 discovery and NvAPI inventory, and the bind-time proof that cached NVML/NvAPI

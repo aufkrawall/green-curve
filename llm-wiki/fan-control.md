@@ -496,10 +496,13 @@ The Linux daemon computes the initial percentage during Apply, waits
 interruptibly for the normalized `pollIntervalMs`, and wakes immediately on new
 desired state, reset, shutdown, or repeated NVML failure. After repeated
 failures it restores driver automatic control and records an uncertain outcome.
-The worker keys its hysteresis memory to `g_fanWakeGeneration`: a newly applied
+The worker keys its hysteresis memory to `ctl.fanWakeGeneration`: a newly applied
 curve discards the prior curve's percentage/auto state and observes the policy
 that the transaction just established. Without that reset, the next poll could
-reassert an old target over a successful new Apply.
+reassert an old target over a successful new Apply. Daemon fan-fault serials
+stay process-wide (`g_daemonFanFaultSerial` in `linux_fan_runtime.h`) so client
+`GcFanFaultObserver` deduplication on `(serial, kind)` keeps faults from
+separate future GPU controllers distinct.
 
 ### Linux fixed-duty maintenance (2026-09-24)
 

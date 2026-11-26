@@ -85,12 +85,6 @@ static void pl_mutex_unlock(int*) {
         injected = true;
         commit_fixed(40);
     }
-    // Another GPU's Apply wakes the shared signal but advances only its own
-    // command generation.
-    if (schedule == STALL_OTHER_GPU_WAKE && stallSamples == 3 && !injected) {
-        injected = true;
-        ++otherGpu.fanWakeGeneration;
-    }
 }
 static int fixture_mutex_lock(int*) { wakeLocked = true; return 0; }
 static int fixture_mutex_unlock(int*) {
@@ -110,6 +104,15 @@ static int fixture_cond_wait(int*, int*) {
 // Waiting until the deadline is what moves the simulated monotonic clock.
 static int fixture_cond_timedwait(int*, int*, const timespec* deadline) {
     afterTimedWait = true;
+    // Another GPU's Apply broadcasts the shared condvar mid-wait without
+    // advancing this controller's fanWakeGeneration: return 0 once so the
+    // worker actually wakes and re-waits on the same deadline without
+    // restarting its stall window.
+    if (schedule == STALL_OTHER_GPU_WAKE && stallSamples == 3 && !injected) {
+        injected = true;
+        ++otherGpu.fanWakeGeneration;
+        return 0;
+    }
     const unsigned long long at = (unsigned long long)deadline->tv_sec * 1000ull +
         (unsigned long long)(deadline->tv_nsec / 1000000L);
     if (at > nowMs) nowMs = at;

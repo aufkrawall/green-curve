@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
-// Request-level fixture (assertion codes 14260-14267): the production Linux
+// Request-level fixture (assertion codes 14260-14270): the production Linux
 // daemon request handler (linux_daemon.cpp, compiled whole) over fake backend,
 // persistence and log functions. When the durable commit fails after a
-// successful Apply or Reset, the daemon must roll the hardware back with the
-// very ceiling transaction that mutation used, so the rollback is bounded by
-// the clamp and outgoing facts it recorded. No driver, socket or GPU is used.
+// successful Apply, Reset or automatic resume restore, the daemon must roll
+// the hardware back with the very ceiling transaction that mutation used, so
+// the rollback is bounded by the clamp and outgoing facts it recorded. No
+// driver, socket or GPU is used.
 #if !defined(_WIN32)
 // Rename the two symbols another fixture (linux_tui_gpu_target_tests.cpp)
 // also defines, so both can link into the one regression binary.
@@ -278,6 +279,25 @@ int run_linux_daemon_commit_rollback_tests() {
                      (unsigned int)resp.status, resp.message);
         return 14267;
     }
+
+    // 14268-14270: SERVICE_CMD_RESUME_RESTORE drives daemon_automatic_restore_write().
+    // When its ACTIVE record commit fails after the hardware write, the
+    // unattended path rolls back once with that same ceiling transaction and
+    // locks out further automatic restores.
+    fixture = DaemonFixture{};
+    fixture.failActiveStore = true;
+    fixture_request(req, ctl, SERVICE_CMD_RESUME_RESTORE, 0, fixture_observe(ctl));
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (!fixture.mutated) {
+        std::fprintf(stderr, "daemon fixture resume: %s\n", resp.message);
+        return 14268;
+    }
+    if (fixture.restoreCalls != 1 || fixture.restored != fixture.mutated ||
+        !fixture_restored_matches(1777, 1888, true)) return 14269;
+    if (resp.status != SERVICE_STATUS_ERROR ||
+        !std::strstr(resp.message, "automatic restore persistence failed after hardware write; hardware rollback succeeded") ||
+        !ctl.stateUncertain || !ctl.autoRestoreGuard.lockedOut) return 14270;
     return 0;
 }
 #else

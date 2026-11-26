@@ -49,6 +49,15 @@ _RETIRED_CEILING_STATICS = re.compile(
 # A file-scope `static T name ...;` (not a function, inline helper or constant).
 _FILE_SCOPE_MUTABLE_STATIC = re.compile(
     r"^static\s+(?!inline\b|constexpr\b|const\b)[^(;]*;", re.M)
+# Daemon callers that own a local LinuxApplyCeilingTransaction must never store
+# it in static, file-scope, or thread_local storage either.
+_LINUX_CEILING_OWNER_FILES = (
+    "linux_daemon.cpp", "linux_auto_restore_runtime.h",
+)
+_STATIC_TRANSACTION = re.compile(
+    r"\bstatic\s+(?:volatile\s+)?(?:const\s+)?LinuxApplyCeilingTransaction\b")
+_LOCAL_CEILING_DECLARATION = re.compile(
+    r"^[ \t]+LinuxApplyCeilingTransaction\s+ceiling\s*=\s*\{\s*\}\s*;", re.M)
 
 
 def _forbid_linux_ceiling_ambient_state(ctx):
@@ -61,14 +70,26 @@ def _forbid_linux_ceiling_ambient_state(ctx):
     for name in _LINUX_CEILING_TRANSACTION_SHARDS:
         with open(_p(ctx, name), "r", encoding="utf-8", errors="replace") as handle:
             text = handle.read()
-        match = _FILE_SCOPE_MUTABLE_STATIC.search(text) or _ANY_MUTABLE_STATIC.search(text) \
-            or _RETIRED_CEILING_STATICS.search(text) or _FILE_SCOPE_TRANSACTION.search(text) \
-            or re.search(r"\bnamespace\b", re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.S))
-        if match or "thread_local" in text:
-            found = match.group(0).splitlines()[0] if match else "thread_local"
+        code = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.S)
+        match = _FILE_SCOPE_MUTABLE_STATIC.search(code) or _ANY_MUTABLE_STATIC.search(code) \
+            or _RETIRED_CEILING_STATICS.search(code) or _FILE_SCOPE_TRANSACTION.search(code) \
+            or re.search(r"\bnamespace\b", code) or re.search(r"\bthread_local\b", code)
+        if match:
+            found = match.group(0).splitlines()[0]
             print("Regression source check FAILED (must be absent): "
                   f"{name} keeps apply-ceiling state outside the explicit "
                   f"LinuxApplyCeilingTransaction ({found})")
+            sys.exit(1)
+    for name in _LINUX_CEILING_OWNER_FILES:
+        with open(_p(ctx, name), "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        code = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.S)
+        match = _STATIC_TRANSACTION.search(code) or _FILE_SCOPE_TRANSACTION.search(code) \
+            or _RETIRED_CEILING_STATICS.search(code) or re.search(r"\bthread_local\b", code)
+        if match:
+            found = match.group(0).splitlines()[0]
+            print("Regression source check FAILED (must be absent): "
+                  f"{name} keeps LinuxApplyCeilingTransaction in ambient storage ({found})")
             sys.exit(1)
 
 
@@ -81,10 +102,10 @@ def _require_transaction_spans_rollback(ctx, name, start, end, operation, rollba
     begin = text.find(start)
     finish = text.find(end, begin + len(start)) if begin >= 0 else -1
     block = text[begin:finish] if begin >= 0 and finish > begin else ""
-    declaration = "LinuxApplyCeilingTransaction ceiling = {};"
-    at_declaration = block.find(declaration)
-    at_operation = block.find(operation, at_declaration + 1)
-    at_rollback = block.find(rollback, at_operation + 1)
+    decl_match = _LOCAL_CEILING_DECLARATION.search(block)
+    at_declaration = decl_match.start() if decl_match else -1
+    at_operation = block.find(operation, at_declaration + 1) if at_declaration >= 0 else -1
+    at_rollback = block.find(rollback, at_operation + 1) if at_operation >= 0 else -1
     # Between the operation and its rollback the transaction must not be reset
     # or replaced: the rollback reads the clamp the operation recorded.
     between = block[at_operation:at_rollback] if 0 <= at_operation < at_rollback else ""

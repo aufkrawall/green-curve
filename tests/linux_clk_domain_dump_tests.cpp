@@ -45,7 +45,7 @@ static void fixture_shutdown(LinuxGpuState* gpu) {
 }
 // The dump owns a process-scoped driver context and must close it once.
 static void fixture_close(LinuxDriverContext* driver) {
-    if (driver->nvmlLib) ++state.closes;
+    ++state.closes;
     *driver = LinuxDriverContext{};
 }
 static nvmlReturn_t fixture_driver(char* version, unsigned int size) {
@@ -53,20 +53,14 @@ static nvmlReturn_t fixture_driver(char* version, unsigned int size) {
     std::snprintf(version, size, "580.00\n");
     return NVML_SUCCESS;
 }
-template<typename T>
-static T fixture_symbol(PlLib, const char* name) {
-    return std::strcmp(name, "nvmlSystemGetDriverVersion") == 0 ? (T)fixture_driver : nullptr;
-}
 static void fixture_log(const char*, ...) {}
 #define linux_backend_init fixture_init
 #define linux_backend_shutdown fixture_shutdown
 #define linux_driver_close fixture_close
 #define linux_backend_clk_domain_dump fixture_dump
-#define sym fixture_symbol
 #define lb_log fixture_log
 #include "linux_backend_clk_domain_dump.cpp"
 #undef lb_log
-#undef sym
 #undef linux_backend_clk_domain_dump
 #undef linux_driver_close
 #undef linux_backend_shutdown

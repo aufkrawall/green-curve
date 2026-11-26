@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 // Execute the production driver context and backend initialization/teardown
-// against a reference-counted fake NVML library (assertion codes 14200-14215, 14217-14219, 14235-14242, 14247-14249; 14247-14249 in
-// linux_driver_discovery_cases.h).
+// against a reference-counted fake NVML library (assertion codes 14200-14215,
+// 14217-14219, 14235-14249, 14251-14257; 14247-14249, 14251-14252, 14255-14257
+// in linux_driver_discovery_cases.h).
 // No real driver library or physical GPU is opened.
 #if !defined(_WIN32)
 #include "platform.h"
@@ -77,6 +78,7 @@ static void lifetime_close_library(PlLib);
 namespace {
 struct LibraryLifetime {
     int references, initCalls, shutdownCalls, openCalls, closeCalls;
+    int nvmlCloses, nvapiCloses;
     int countCalls, nvapiEnumerations, nvapiInits;
     bool refuseInit, refuseCount, hideShutdown;
     // provideNvapi: a minimal NvAPI with one handle. providePci: NVML exposes
@@ -162,19 +164,26 @@ static void* fake_nvapi_query(unsigned int id) {
     return nullptr;
 }
 
+static PlLib fake_nvml_lib() { return reinterpret_cast<PlLib>(1); }
+static PlLib fake_nvapi_lib() { return reinterpret_cast<PlLib>(2); }
+
 static PlLib lifetime_open_library(int kind) {
     if (kind == PL_DRIVER_NVAPI && library.provideNvapi) {
         ++library.openCalls;
-        return reinterpret_cast<PlLib>(2);
+        return fake_nvapi_lib();
     }
     if (kind != PL_DRIVER_NVML) return nullptr;
     ++library.openCalls;
-    return reinterpret_cast<PlLib>(1);
+    return fake_nvml_lib();
 }
 
-static void* lifetime_library_symbol(PlLib, const char* name) {
-    if (strcmp(name, "nvapi_QueryInterface") == 0)
-        return library.provideNvapi ? reinterpret_cast<void*>(fake_nvapi_query) : nullptr;
+static void* lifetime_library_symbol(PlLib lib, const char* name) {
+    if (lib == fake_nvapi_lib()) {
+        if (strcmp(name, "nvapi_QueryInterface") == 0)
+            return library.provideNvapi ? reinterpret_cast<void*>(fake_nvapi_query) : nullptr;
+        return nullptr;
+    }
+    if (lib != fake_nvml_lib()) return nullptr;
     if (strcmp(name, "nvmlInit_v2") == 0) return reinterpret_cast<void*>(fake_init);
     if (strcmp(name, "nvmlShutdown") == 0)
         return library.hideShutdown ? nullptr : reinterpret_cast<void*>(fake_shutdown);
@@ -185,7 +194,11 @@ static void* lifetime_library_symbol(PlLib, const char* name) {
     return nullptr;
 }
 
-static void lifetime_close_library(PlLib) { ++library.closeCalls; }
+static void lifetime_close_library(PlLib lib) {
+    ++library.closeCalls;
+    if (lib == fake_nvml_lib()) ++library.nvmlCloses;
+    else if (lib == fake_nvapi_lib()) ++library.nvapiCloses;
+}
 bool lifetime_platform_is_integrated_soc() { return false; }
 
 #include "linux_driver_discovery_cases.h"
@@ -326,14 +339,19 @@ int run_linux_nvml_lifetime_tests() {
     if (!lifetime_backend_init(&reinitialized, &shared, nullptr, err, sizeof(err)) ||
         library.nvapiInits != nvapiInitsBefore + 2 || !shared.nvapiInitialized ||
         !reinitialized.nvapiReady) return 14239;
-    // Both libraries this context opened are closed exactly once.
+    // 14253-14254: both libraries this context opened are closed exactly once
+    // (NVML and NvAPI counted separately by handle).
     const int closesBefore = library.closeCalls;
+    const int nvmlClosesBefore = library.nvmlCloses;
+    const int nvapiClosesBefore = library.nvapiCloses;
     LinuxDriverContext both = {};
     LinuxGpuState bothState = {};
-    if (!lifetime_backend_init(&bothState, &both, nullptr, err, sizeof(err))) return 14239;
+    if (!lifetime_backend_init(&bothState, &both, nullptr, err, sizeof(err))) return 14253;
     lifetime_driver_close(&both);
     lifetime_driver_close(&both);
-    if (library.closeCalls != closesBefore + 2) return 14239;
+    if (library.closeCalls != closesBefore + 2 ||
+        library.nvmlCloses != nvmlClosesBefore + 1 ||
+        library.nvapiCloses != nvapiClosesBefore + 1) return 14254;
 
     // 14242-14246: same-GPU recovery re-enumeration notices a modeled NVML
     // session loss and recovers in place via linux_driver_open_nvml(); if the
@@ -378,7 +396,8 @@ int run_linux_nvml_lifetime_tests() {
     lifetime_driver_close(&shared);
     // One NVML reference released once; both library handles closed once.
     if (library.references != 0 || library.shutdownCalls != 1 ||
-        library.closeCalls != 2) return 14219;
+        library.closeCalls != 2 || library.nvmlCloses != 1 ||
+        library.nvapiCloses != 1) return 14219;
 
     // 14240-14241: a refused NvAPI initialization still leaves this state the
     // resolved query interface (diagnostics keep using it), while NvAPI is not
