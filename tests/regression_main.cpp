@@ -3377,6 +3377,16 @@ static int run_all_tests(int argc, char** argv) {
             GC_UPDATE_RESTORE_DISCARD) return 5945;
         if (gc_update_restore_decide("0.31.0", "0.30", 30) !=
             GC_UPDATE_RESTORE_DISCARD) return 5946;
+
+        // 0.32.0 release verification: a capture bound to 0.32.0 is replayed by
+        // 0.32.0, and discarded while either 0.31 spelling still runs (the
+        // install did not complete).
+        if (gc_update_restore_decide("0.32.0", "0.32.0", 30) !=
+            GC_UPDATE_RESTORE_APPLY) return 14287;
+        if (gc_update_restore_decide("0.32.0", "0.31.0", 30) !=
+            GC_UPDATE_RESTORE_DISCARD) return 14288;
+        if (gc_update_restore_decide("0.32.0", "0.31", 30) !=
+            GC_UPDATE_RESTORE_DISCARD) return 14289;
     }
 
     // F-08-001: IPC object size and field layout sanity

@@ -27,6 +27,7 @@ REGRESSION_SOURCES = (
     'gpu_support_warning_tests.cpp',
     'update_release_030_tests.cpp',
     'update_release_031_tests.cpp',
+    'update_release_032_tests.cpp',
     'offset_intent_tests.cpp',
     'gui_auto_restore_notice_tests.cpp',
     'scalar_shift_retention_tests.cpp',

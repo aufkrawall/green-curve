@@ -584,6 +584,7 @@ int run_gpu_cmp_policy_tests();
 int run_gpu_support_warning_tests();
 int run_update_release_030_tests();
 int run_update_release_031_tests();
+int run_update_release_032_tests();
 
 int run_diagnostics_followup_tests() {
     if (int r = run_gpu_family_wire_tests()) return r;
@@ -591,6 +592,7 @@ int run_diagnostics_followup_tests() {
     if (int r = run_gpu_support_warning_tests()) return r;
     if (int r = run_update_release_030_tests()) return r;
     if (int r = run_update_release_031_tests()) return r;
+    if (int r = run_update_release_032_tests()) return r;
     if (int r = run_log_path_redaction_tests()) return r;
     if (int r = run_steady_state_tests()) return r;
     if (int r = run_cli_log_append_tests()) return r;

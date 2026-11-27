@@ -27,94 +27,59 @@
 
 # Changelog
 
-## Unreleased
+## 0.32.0
 
-Curve editing, profile transfer and capture improve.
+Profiles can be captured, checked and moved between platforms; curves, cooling and Linux recovery are safer.
 
 ### New
 
-- **Dialog copying:** Ctrl+C copies messages.
-- **Low-voltage points:** edit below 700 mV.
-- **Compatible curves:** preview adjustments before Apply.
-- **Profile files:** transfer slots without a GPU.
-- **Older settings:** import Windows/Linux configurations.
-- **Capture:** import external curves, locks and memory.
-- **CLI checks:** preview profiles without writes.
-- **CMP cards:** experimental modified-driver startup guidance.
-- **Fan stall protection:** custom cooling warns and hands back control when a proven RPM reading drops to zero.
+- **Profile capture:** save the GPU's current curve, locks and memory as a profile.
+- **Profile transfer:** move slots between Windows and Linux or import older configurations, without a GPU.
+- **Profile checks:** preview profiles and curve adjustments without touching the GPU.
+- **Low-voltage points:** edit curve points below 700 mV.
+- **Fan stall protection:** custom cooling hands the fan back when a confirmed RPM reading drops to zero.
+- **CMP cards:** experimental modified-driver support.
+- **Dialog copying:** Ctrl+C copies message text.
 
 ### Improved
 
-- **Curve checks:** clearer conflicts and transition protection.
-- **External curves:** retain and save flattening.
-- **Profile storage:** retain precision and ownership.
-- **Linux switching:** verify flattened and locked curves.
-- **Linux memory:** curve-only edits preserve memory.
-- **Window activation:** refresh external GPU changes.
-- **Profile matching:** stable despite preview drift.
+- **Curve safety:** clearer conflicts and stronger clock-transition protection.
+- **External changes:** curves flattened elsewhere are kept; the window refreshes on activation.
+- **Profile matching:** exact values are stored and the active profile is recognized reliably.
+- **Linux switching:** flattened and locked curves are verified; curve-only edits keep memory.
+- **Laptop GPUs:** system-managed fans and power limits are accepted.
 
 ### Fixed
 
-- **Deep undervolting and Pascal curves:** allow per-point curve undervolting beyond narrow scalar GPU offset minimums (such as Pascal's -200 MHz global limit) while keeping global GPU offset limits unchanged.
-- **Windows probe command:** write default `--probe` reports into the user data directory and resolve relative output paths on the client so the background service accepts them.
-- **Captured curve display and replay:** show preserved lower-voltage point offsets alongside flattened curves in Save Current summaries and Windows load previews, and allow applying exact-copied captured curves without false non-decreasing warnings or stock-curve preview resets.
-- **Windows non-Western text and logon status:** render `°C` and Unicode UI text via wide Win32 controls so CJK and other non-CP1252 Windows locales do not corrupt fan-curve labels or prompts, and keep the Windows logon status line intact when app-start auto-load is already disabled.
-- **Windows startup and transfer of captured profiles:** allow Windows logon, app-start, CLI logon, and upgrade settings transfer to apply saved explicit-scope profiles that intentionally omit unowned controls (such as global GPU offset or fan settings omitted by Save Current).
-- **Windows cooling:** verify Auto on every fan (including older drivers without policy readback), enforce Reset and shutdown handback for emergency cooling, skip fanless GPUs cleanly, and keep fan faults when post-Apply repair fails.
-- **Linux driver recovery:** a daemon that started before the NVIDIA driver was ready keeps working once the driver comes up, and live recovery now re-initializes the driver session in place if the driver reports it uninitialized.
-- **Linux Reset:** restore stock clocks before stock power and clear both memory controls. Failures recover under the prior clock bound.
-- **Linux fanless GPUs:** Reset restores clocks without requiring fan control.
-- **Linux upgrades:** recover the prior daemon, re-enable restored service units, and keep pre-upgrade checks quiet after a failed upgrade.
-- **Linux installs:** verify the installed files are root-owned and refresh service enablement on upgrade.
-- **Scoped Linux curves:** preserve unrelated offsets, hard-lock tails and read-only points across reset and rollback; check transitions before named offsets.
-- **Profile transfer:** retain scope, graphics controls and repeated-voltage point bindings.
-- **Windows advanced edits:** preserve omitted external settings.
-- **Windows power reset:** restore defaults even when displaying 100%.
-- **Linux startup:** check each slot's GPU, honor recovery, preserve clock limits during switches, and prevent duplicate daemons.
-- **Linux startup cooling:** return fans to the driver when the daemon cannot start.
-- **Clock transitions:** protect flattened curves during standalone VRAM edits without forcing a fixed clock, while preserving Pascal flatten switches and hard-pin fallbacks.
-- **TUI numeric edits:** replace precise values.
-- **Unicode banks:** preserve text and encoding.
-- **Unsaved drafts:** confirm replacement, including invalid input.
-- **Graphics recovery:** verify restored controls.
-- **Installer recovery:** tolerate shared temporary-file readers.
-- **Fixed curve points:** refuse unavailable edits/locks.
-- **Linux power:** refuse out-of-range requests.
-- **Partial profiles:** preserve omitted curves and load explicit curve and lock releases.
-- **Clock recovery:** restore and verify fractional offsets.
-- **Memory changes:** preserve exact curves.
-- **Flatten editing:** retain typing and caret.
-- **Flatten detection:** find hidden plateau anchors.
-- **Tray minimize:** avoid crashes after profile actions.
-- **Notebook GPUs:** accept system-managed fans/power.
-- **Fan curves on profile switch:** keep running after a GUI Apply; profiles no longer show active while the fan is in driver control.
-- **Fan control errors:** handing a fan back to the driver clears active profile and restart state and stays cleared across non-fan applies.
-- **GPU warnings:** report limited support.
-- **Reset:** restore external memory/power changes, including half-MHz memory offsets.
-- **Already-reset GPUs:** Reset completes promptly.
-- **Modified drivers:** accept shorter curve tables.
-- **Tray checkmark:** match after save/restore/upgrade.
-- **External flatten:** avoid false negative core offsets.
-- **Curve errors:** identify out-of-range targets.
-- **Profile files:** import the reviewed contents and confirm before replacing any Linux export destination.
-- **Linux exports:** create-only saves preserve concurrent files and report when the filesystem cannot guarantee that.
-- **Multi-GPU ownership:** reject ambiguous or mismatched GPU bindings before tuning.
-- **GPU selector:** switch views and writes together, stay usable when a card fails to initialize, and retry after temporary busy refusals.
-- **Curve previews:** avoid spikes; retain drafts.
-- **Older flatten profiles:** load erroneous negative-offset records consistently across Windows and Linux.
-- **Linux cross-platform profiles:** converge, resolve voltage-bound curves, and load ordinary profiles offline without needing a GPU.
-- **Linux inspection:** show locks, captures and actual offsets.
-- **Cross-platform transfer:** export unlocked profiles; recognize Linux settings.
+- **Deep undervolting:** per-point undervolts may exceed narrow global limits, such as Pascal's -200 MHz.
+- **Partial profiles:** omitted controls stay untouched, including at logon and after upgrade.
+- **Cooling handback:** Reset, shutdown and failed Linux starts reliably return every fan to Auto.
+- **Fan curves:** keep running after profile switches and no longer show a stale active profile.
+- **Reset:** restores memory and power changed elsewhere and works on fanless GPUs.
+- **Linux recovery:** the daemon survives an NVIDIA driver that starts late or loses its session.
+- **Linux startup and upgrades:** duplicate daemons are prevented and failed upgrades roll back.
+- **Scoped curves:** unrelated offsets, locked tails and read-only points survive Reset and rollback.
+- **Profile files:** transfers keep scope and bindings and never overwrite without confirmation.
+- **Curve editing:** no preview spikes; typed values and drafts are kept.
+- **Memory changes:** keep the curve, and fractional offsets restore exactly.
+- **Invalid requests:** unavailable points, locks and out-of-range targets are refused clearly.
+- **Multi-GPU:** views and writes switch together; ambiguous GPU bindings are refused.
+- **Windows text:** °C and Unicode display correctly in non-Western locales.
+- **Probe reports:** `--probe` writes to the user data folder by default.
+- **Tray:** no crash when minimizing after profile actions.
+- **Installer:** recovers when another program holds a temporary file open.
 
 ### Compatibility notes
 
-Profiles remain compatible. Update clients and services together.
+Profiles remain compatible. Update the app and service together, as the installer and setup script do. After returning to 0.31.0, apply your profile once.
 
 ### Downloads and verification
 
-In development. Downloads remain in the latest release below.
+- **Windows:** use the setup installer to install or upgrade, or `.7z` for a portable copy.
+- **Linux:** install the Arch package, or extract `.tar.xz` and run `greencurve-setup.sh`.
+- **Verification:** packages include SHA-256 files and [GitHub build attestations](https://github.com/aufkrawall/green-curve/attestations); verify with `gh attestation verify <artifact> --repo aufkrawall/green-curve`.
 
-**Full changelog:** [0.31.0...HEAD](https://github.com/aufkrawall/green-curve/compare/0.31.0...HEAD)
+**Full changelog:** [0.31.0...0.32.0](https://github.com/aufkrawall/green-curve/compare/0.31.0...0.32.0)
 
 ## 0.31.0
 
