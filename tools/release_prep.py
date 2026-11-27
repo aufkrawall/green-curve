@@ -12,6 +12,31 @@ _RELEASE_HEADING = re.compile(r"^## (\d+\.\d+(?:\.\d+)?)$", re.MULTILINE)
 ALLOWED_CATEGORIES = frozenset(
     {"New", "Improved", "Fixed", "Changed", "Deprecated", "Removed", "Security"}
 )
+# The style target is ~400 words (llm-wiki/changelog-style.md); the hard limit
+# leaves headroom for a large release while still stopping a section that has
+# turned into an engineering record.  One bullet may span two rendered lines.
+MAX_RELEASE_NOTE_WORDS = 500
+MAX_BULLET_CHARS = 240
+_NESTED_BULLET = re.compile(r"^[ \t]+[-*+] ", re.MULTILINE)
+_INTERNAL_DEFECT_CODE = re.compile(r"\bF-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*\b")
+
+
+def validate_release_note_size(current):
+    """Enforce the scannable shape: bounded length, flat one-or-two-line bullets
+    and no internal defect codes."""
+    words = len(current.split())
+    if words > MAX_RELEASE_NOTE_WORDS:
+        raise ValueError(f"current release notes have {words} words; the target is ~400 "
+                         f"and the limit {MAX_RELEASE_NOTE_WORDS} (llm-wiki/changelog-style.md)")
+    if _NESTED_BULLET.search(current):
+        raise ValueError("current release notes must not contain nested bullets")
+    for line in current.splitlines():
+        if line.startswith("- ") and len(line) > MAX_BULLET_CHARS:
+            raise ValueError(f"release note bullet has {len(line)} characters (limit "
+                             f"{MAX_BULLET_CHARS}): {line[:60]}...")
+    code = _INTERNAL_DEFECT_CODE.search(current)
+    if code:
+        raise ValueError(f"release notes must not cite internal defect code {code.group(0)}")
 
 
 def validate_release_notes(version, changelog):
@@ -35,6 +60,7 @@ def validate_release_notes(version, changelog):
                f"(https://github.com/aufkrawall/green-curve/compare/{previous}...{version})")
     if compare not in current:
         raise ValueError("current release notes need the previous-to-current compare link")
+    validate_release_note_size(current)
 
 
 def check_ssh_key_passphrase(key_path):
@@ -153,6 +179,39 @@ def self_test():
         except ValueError:
             continue
         raise AssertionError("release note mismatch was accepted")
+
+    # Size and shape: each mutation must be refused with its own reason, and the
+    # exact limits must still pass so the boundary is pinned on both sides.
+    def section_words(notes):
+        return len(notes.split("## 0.27.0", 1)[1].split("## 0.26.0", 1)[0].split())
+
+    def padded(extra_words):
+        return good.replace("### Fixed\n", "### Fixed\n" + "word " * extra_words + "\n", 1)
+
+    def long_bullet(chars):
+        lead = "- **Bugfix.** "
+        return good.replace("- **Bugfix.** Detail.", lead + "x" * (chars - len(lead)))
+
+    pad = MAX_RELEASE_NOTE_WORDS - section_words(good)
+    assert section_words(padded(pad)) == MAX_RELEASE_NOTE_WORDS
+    validate_release_notes("0.27.0", padded(pad))
+    validate_release_notes("0.27.0", long_bullet(MAX_BULLET_CHARS))
+    # A blank line before a top-level bullet is ordinary Markdown, not nesting.
+    validate_release_notes("0.27.0", good.replace("### Fixed\n", "### Fixed\n\n"))
+    for notes, reason in ((padded(pad + 1), "words"),
+                          (long_bullet(MAX_BULLET_CHARS + 1), "characters"),
+                          (good.replace("- **Bugfix.** Detail.\n",
+                                        "- **Bugfix.** Detail.\n  - Nested.\n"), "nested"),
+                          (good.replace("- **Bugfix.** Detail.\n",
+                                        "- **Bugfix.** Detail.\n\t* Nested.\n"), "nested"),
+                          (good.replace("Detail.", "Closes F-APPLY-CEILING.", 1), "defect code")):
+        try:
+            validate_release_notes("0.27.0", notes)
+        except ValueError as exc:
+            if reason not in str(exc):
+                raise AssertionError(f"release note shape refused for the wrong reason: {exc}")
+            continue
+        raise AssertionError(f"release note shape violation ({reason}) was accepted")
     print("release_prep self-tests passed")
 
 

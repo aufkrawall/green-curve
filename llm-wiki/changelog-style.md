@@ -13,8 +13,9 @@ and the §8 checklist.
 
 ## Where the rule lives, and what each copy is for
 
-Nothing enforces this automatically, so the rule has to be *found*. Four
-placements, deliberately redundant because they fail in different ways:
+Only a coarse backstop is automated (`tools/release_prep.py`, see "Invariants"),
+so the rule itself still has to be *found*. Four placements, deliberately
+redundant because they fail in different ways:
 
 | Where | Found when | Survives a fresh clone |
 |---|---|---|
@@ -88,6 +89,11 @@ with the details readable in regular font.
 | 0.25.2 | 506 | house |
 | 0.26.0 as first written | 2824 | the defect |
 | 0.26.0 as shipped | 368 | the target |
+| 0.29.0 | 563 | over budget, shipped |
+| 0.30.0 | 397 | house |
+| 0.31.0 | 456 | house |
+| 0.32.0 accumulated draft | 905 | 66 bullets, terse and long mixed |
+| 0.32.0 as prepared | 462 | merged by area |
 
 A bigger release earns more bullets, not longer ones. 0.26.0 is a large release
 and still fits in 368 words, because the bullets are one line each.
@@ -124,6 +130,11 @@ wrong audience**. Each of these was in the 0.26.0 draft:
   greps for it and fails the release if it is missing or empty.
 - The section stops at the next `^## `, so nothing may rely on content below it.
 - It must be non-empty and describe real changes since the last release.
+- `validate_release_note_size()` in `tools/release_prep.py` refuses the latest
+  versioned section (never `## Unreleased`) above 500 words, with a nested
+  bullet, with a bullet line over 240 characters, or citing an `F-XXX` code.
+  It runs from `python build.py --test` (via `tools/release_manifest.py`) and
+  in `release.yml`. 500 is a ceiling, not the target: write to ~400.
 - Detail that is genuinely worth keeping goes to the commit message and to the
   `llm-wiki/` topic pages, both of which have no size limit and the right
   audience (both are public, so both follow the masking rules in
@@ -134,17 +145,22 @@ wrong audience**. Each of these was in the 0.26.0 draft:
 - Adherence rests entirely on the rule being read; see the placement table
   above. The `CHANGELOG.md` header is the load-bearing copy. If the other three
   ever contradict it, the header is the one a stranger will follow.
-- No automated gate gets applied to this. A word-count check in `build.py` was
-  considered and rejected: a chatty changelog fails *visibly* to the first human
-  who reads it, unlike the invisible regressions the other gates exist for, and
-  a hard limit would be gamed by writing denser jargon. Revisit only if the rule
-  is broken again after being written down.
+- A word-count gate was first rejected (a chatty changelog fails *visibly*, and
+  a hard limit invites denser jargon) "unless the rule is broken again". It was:
+  0.29.0 shipped at 563 words and the 0.32.0 draft reached 905. The 2026-11-27
+  backstop is deliberately loose (500 words, 240-character bullets) so it stops
+  an engineering record without forcing cryptic three-word bullets; the
+  accumulated 0.32.0 draft showed that failure too ("Memory changes: preserve
+  exact curves."). Scannability is still reviewed by a human.
 - The house sections of 0.24.0-0.25.2 are the reference shape but are themselves
   somewhat jargon-heavy ("role-derived transport deadlines", `F-APPLY-CEILING`).
   Copy their structure and length, not their vocabulary.
 
 ## Last verified
 
+- 2026-11-27: condensed the 0.32.0 notes from 905 words / 66 bullets to 462
+  words by merging entries per user-visible area; added the size backstop and
+  its boundary self-tests (exact limits pass, one over fails with its reason).
 - 2026-09-26: adopted topic-lead bolding (`**Topic:** description`) across release notes to eliminate uniform all-bold lists and ensure clear visual contrast between the bold anchor and regular body text.
 - 2026-09-24: adopted categorized change subheadings (`### New`, `### Improved`,
   `### Fixed`, `### Removed`, `### Changed`, `### Security`) aligned with
