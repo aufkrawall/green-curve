@@ -5,6 +5,36 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-27: 0.32.0 release preparation (not yet published)
+
+- Pre-release audit of `0.31.0..HEAD` (203 commits; protocol 29 -> 39; Linux
+  `active.bin` v7 -> v11, `startup.bin` v6 -> v9, Windows restart snapshot
+  v6 -> v9, Windows ownership marker v1 -> v2): CI and update freshness green
+  on the audited head, full `python build.py --test` passed, gitleaks clean
+  over the range. Every 0.31.0-era record and marker has a frozen decoder; a
+  0.31.0 service clears the newer restart snapshot (hence the compatibility
+  note: apply the profile once after going back).
+- `VERSION`, both Arch `pkgver`s, README examples and the index row now say
+  0.32.0. The accumulated `## Unreleased` notes (905 words, 66 bullets) became
+  `## 0.32.0` at 462 words; later user-visible changes go into that section
+  until it is published. Arch remote digests still name 0.30.0 and must follow
+  the published 0.32.0 assets.
+- New `validate_release_note_size()` backstop in `tools/release_prep.py`
+  (500 words, 240-character bullets, no nesting, no `F-XXX`), with boundary
+  self-tests; see changelog-style.md. A first regex draft (`^\s+[-*+] `)
+  matched a blank line before an ordinary bullet and refused the shipped
+  0.31.0 section; the self-test now pins that case.
+- Updater fixtures: `tests/update_release_032_tests.cpp` (`14281-14286`,
+  floorless eligibility from every public release including both 0.31
+  spellings) and restore-decide `14287-14289`.
+- README documents `--convert-domain`, `--restore-captured-tail`,
+  `--prepare-curve`, `--observe-pin` and `--confirm-pin-mhz`; overview.md's
+  protocol line said 23 (index: 29) and now names 39 and the source authority.
+- Release risk, hardware-unverified: in-place Linux NVML session re-init,
+  notebook system-managed fans/power, Pascal on physical hardware, multi-GPU,
+  native ARM64, fan-stall handback on a real stall, and an updater-driven
+  upgrade from installed 0.31.0 on both platforms.
+
 ## 2026-11-26: Post-PR #21 hardening (controller, driver context, tests, gates, wiki)
 
 - **Post-review follow-up fixes:** gated repeated live NVML recovery re-init

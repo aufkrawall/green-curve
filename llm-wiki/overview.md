@@ -17,7 +17,10 @@ Two processes communicating over a local named pipe:
 
 The service runs as `LocalSystem` and owns all live GPU control. The GUI sends
 `ServiceRequest` structs over the pipe and receives `ServiceResponse` structs
-back. Protocol version is 23 (magic `0x47535643u`); every response contains one
+back. Protocol version is 39 as of 2026-11-27 (magic `0x47535643u`;
+`SERVICE_PROTOCOL_VERSION` in `source/service_protocol.h` is the authority, and
+the version history below stops at v24: later bumps are described on the
+topic pages that own them); every response contains one
 complete generation-stamped `ServiceStateEnvelope`, while mutating requests
 also carry a client-generated operation ID and domain-scoped authority
 preconditions. The fixed magic/version prefix permits header-first mismatch
@@ -181,4 +184,4 @@ The Windows title bar and Linux TUI show the version from the mandatory injected
 - No network, no telemetry, no cloud sync
 - MIT license, copyright (c) 2026 aufkrawall
 
-Last verified: 2026-07-27
+Last verified: 2026-07-27 (protocol version line rechecked 2026-11-27)

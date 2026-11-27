@@ -275,6 +275,16 @@ saved source; a second nonzero control requires relationship review.
 Ownership, transition and recovery checks still require service review;
 the command returns exit code 3 even when controls are representable.
 
+When a profile needs values converted to this GPU's steps, the check exits with
+code 4 and names each domain. `--convert-domain all` (or the reported domain
+names, comma-separated) converts them. `--restore-captured-tail` turns a
+flattened or locked captured tail back into the exact offsets it was captured
+with. `--prepare-curve prefix|closest-target|combined` proposes a compatible
+curve: `prefix` lowers conflicting lower-voltage points, `closest-target` finds
+the nearest reachable target clock, and `combined` does both. Add
+`--output <file>` to save the result as a new profile file; the source file,
+saved slots and GPU are never changed.
+
 Capture offers `--representation exact|flatten|pin` as an explicit choice.
 Flatten proposals report their anchor and shared feasibility checks; pin
 proposals label getter evidence or retained applied intent. Unknown pins stay
@@ -282,7 +292,9 @@ unknown. Converted tails retain original offsets as observations, while exact
 controls remain a separate choice. Windows and the Linux TUI offer the same
 choices, with omission and unfinished-draft decisions kept separate. A changed
 GPU session or ownership expires the snapshot. Acceptance saves source intent
-and does not Apply it.
+and does not Apply it. When the driver cannot report a clock lock, run a game
+or benchmark and add `--observe-pin` to sample the clock under load; it
+proposes a pin frequency, which `--confirm-pin-mhz N` confirms or corrects.
 
 To import an older Green Curve INI, select `--legacy-format windows-ini` or
 `--legacy-format linux-ini`. Select source slots with `--source-profiles 2,4`
