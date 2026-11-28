@@ -167,10 +167,7 @@ class PackageBuildTests(unittest.TestCase):
                                            linux_payload.payload_dirs(), VERSION, "arm64", 1)
 
     def test_maintainer_scripts_parse_as_posix_sh(self):
-        sh = shutil.which("sh")
-        git_sh = os.path.join(os.environ.get("ProgramFiles", ""), "Git", "usr", "bin", "sh.exe")
-        if os.name == "nt" and os.path.isfile(git_sh):
-            sh = git_sh
+        sh = _posix_sh()
         if not sh:
             self.skipTest("no POSIX sh on this host; native Linux CI runs this")
         functions = linux_payload.read_install_scriptlet(SCRIPT_DIR)
@@ -181,6 +178,81 @@ class PackageBuildTests(unittest.TestCase):
         for script in scripts:
             result = subprocess.run([sh, "-n"], input=script, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+
+
+def _posix_sh():
+    git_sh = os.path.join(os.environ.get("ProgramFiles", ""), "Git", "usr", "bin", "sh.exe")
+    if os.name == "nt" and os.path.isfile(git_sh):
+        return git_sh
+    return shutil.which("sh")
+
+
+class GroupEnrollmentTests(unittest.TestCase):
+    """The shared install scriptlet must create the greencurve group even when
+    systemd-sysusers exits 0 without creating it (dpkg/rpm have no sysusers
+    hook; a container or chroot may not apply the file).  The earlier
+    `systemd-sysusers || groupadd` skipped groupadd on that exit status, which
+    a real dpkg install in a chroot showed."""
+
+    STUBS = {
+        # getent succeeds only once a group "exists" (marker file).
+        "getent": '[ -f "$STATE/group" ]',
+        "groupadd": 'echo groupadd >> "$STATE/log"; [ -f "$STATE/groupadd_fails" ] || : > "$STATE/group"',
+        "systemd-sysusers": 'echo "sysusers $*" >> "$STATE/log"; '
+                            '[ -f "$STATE/sysusers_creates" ] && : > "$STATE/group"; exit 0',
+        "logname": "exit 1",
+    }
+
+    def setUp(self):
+        self.sh = _posix_sh()
+        if not self.sh:
+            self.skipTest("no POSIX sh on this host; native Linux CI runs this")
+        self.temp = tempfile.mkdtemp(prefix="gc-enroll-")
+        self.addCleanup(shutil.rmtree, self.temp, True)
+        self.state = os.path.join(self.temp, "state")
+        self.stubs = os.path.join(self.temp, "stubs")
+        os.makedirs(self.state)
+        os.makedirs(self.stubs)
+        for name, body in self.STUBS.items():
+            path = os.path.join(self.stubs, name)
+            with open(path, "w", newline="\n") as handle:
+                handle.write(f"#!/bin/sh\n{body}\n")
+            os.chmod(path, 0o755)
+
+    def _run(self):
+        functions = linux_payload.read_install_scriptlet(SCRIPT_DIR).decode("utf-8")
+        script = functions + '\nPATH="$STUBS:$PATH"\nunset SUDO_USER GREENCURVE_USER\n_setup_group_enrollment\n'
+        stubs = self.stubs.replace("\\", "/")
+        if os.name == "nt" and stubs[1:3] == ":/":
+            # PATH is colon-separated: Git's sh needs /c/... rather than C:/...
+            stubs = "/" + stubs[0].lower() + stubs[2:]
+        env = dict(os.environ, STATE=self.state.replace("\\", "/"), STUBS=stubs)
+        result = subprocess.run([self.sh, "-s"], input=script.encode(), capture_output=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+        log_path = os.path.join(self.state, "log")
+        log = open(log_path).read().split("\n") if os.path.exists(log_path) else []
+        return [line for line in log if line], result.stdout.decode(errors="replace")
+
+    def test_groupadd_runs_when_sysusers_exits_zero_without_creating(self):
+        log, _ = self._run()
+        self.assertEqual(log, ["sysusers greencurve.conf", "groupadd"])
+        self.assertTrue(os.path.exists(os.path.join(self.state, "group")))
+
+    def test_no_groupadd_when_sysusers_creates_the_group(self):
+        open(os.path.join(self.state, "sysusers_creates"), "w").close()
+        log, _ = self._run()
+        self.assertEqual(log, ["sysusers greencurve.conf"])
+
+    def test_nothing_runs_when_group_exists(self):
+        open(os.path.join(self.state, "group"), "w").close()
+        log, _ = self._run()
+        self.assertEqual(log, [])
+
+    def test_warns_when_group_cannot_be_created(self):
+        open(os.path.join(self.state, "groupadd_fails"), "w").close()
+        log, out = self._run()
+        self.assertEqual(log, ["sysusers greencurve.conf", "groupadd"])
+        self.assertIn("could not create the 'greencurve' group", out)
 
 
 class RpmHeaderTests(unittest.TestCase):
@@ -237,7 +309,7 @@ class RpmHeaderTests(unittest.TestCase):
 def run_tests():
     loader = unittest.defaultTestLoader
     suite = unittest.TestSuite()
-    for case in (FileNameTests, PackageBuildTests, RpmHeaderTests):
+    for case in (FileNameTests, PackageBuildTests, GroupEnrollmentTests, RpmHeaderTests):
         suite.addTests(loader.loadTestsFromTestCase(case))
     result = unittest.TextTestRunner().run(suite)
     if not result.wasSuccessful():

@@ -1,8 +1,18 @@
 _setup_group_enrollment() {
-    # Ensure the greencurve group exists (systemd-sysusers pacman hook creates it,
-    # but run defensively in case post_install executes beforehand)
+    # Ensure the greencurve group exists.  pacman's sysusers hook normally
+    # creates it; dpkg and rpm have no such hook, so apply our own sysusers
+    # file, then re-check: systemd-sysusers can exit 0 without creating the
+    # group (no systemd, a container, or the file not visible), so its exit
+    # status alone must not skip the groupadd fallback.
     if ! getent group greencurve >/dev/null 2>&1; then
-        systemd-sysusers 2>/dev/null || groupadd -r greencurve 2>/dev/null || true
+        systemd-sysusers greencurve.conf 2>/dev/null || true
+    fi
+    if ! getent group greencurve >/dev/null 2>&1; then
+        groupadd -r greencurve 2>/dev/null || true
+    fi
+    if ! getent group greencurve >/dev/null 2>&1; then
+        echo "==> WARNING: could not create the 'greencurve' group; create it with:"
+        echo "==>   sudo groupadd -r greencurve"
     fi
 
     local candidate=""
