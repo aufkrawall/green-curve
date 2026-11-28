@@ -119,8 +119,42 @@ jobs:
       # 7-Zip is no longer installed from apt: it writes the Windows .7z
       # archives, so it is pinned and vendored with the compilers instead of
       # floating with whatever version the runner image happens to carry.
-      - name: Build all targets (Windows + Linux, x64 + arm64)
-        run: python build.py
+      # The Fedora/openSUSE rpms are OpenPGP-signed during this build.  The
+      # private key exists only for this one step, in a throwaway GNUPGHOME,
+      # and must be the key whose public half the repository publishes
+      # (packaging/greencurve-packages.asc); a missing or different key fails
+      # the release instead of publishing unsigned or unverifiable rpms.  The
+      # same step installs, upgrades and removes the x64 packages on native
+      # distros with signature checks enforced (no overrides) before anything
+      # is attested or published.
+      - name: Build all targets (Windows + Linux, x64 + arm64), sign and install-test
+        env:
+          RPM_SIGNING_KEY: ${{ secrets.RPM_SIGNING_KEY }}
+        run: |
+          set -eu
+          if [ -z "${RPM_SIGNING_KEY:-}" ]; then
+            echo "::error::the RPM_SIGNING_KEY secret is not configured; refusing to publish unsigned rpms"
+            exit 1
+          fi
+          export GNUPGHOME="$RUNNER_TEMP/rpm-gnupg"
+          cleanup_signing_key() {
+            gpgconf --kill all 2>/dev/null || true
+            rm -rf "$GNUPGHOME"
+          }
+          trap cleanup_signing_key EXIT
+          mkdir -m 700 "$GNUPGHOME"
+          printf '%s\n' "$RPM_SIGNING_KEY" | gpg --batch --quiet --import
+          fpr="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
+          published="$(gpg --batch --with-colons --show-keys packaging/greencurve-packages.asc \
+            | awk -F: '$1 == "fpr" { print $10; exit }')"
+          if [ -z "$fpr" ] || [ "$fpr" != "$published" ]; then
+            echo "::error::RPM_SIGNING_KEY is not the key published in packaging/greencurve-packages.asc"
+            exit 1
+          fi
+          export GREENCURVE_RPM_SIGNING_KEY="$fpr" GREENCURVE_REQUIRE_RPM_SIGNATURE=1
+          python build.py
+          python tools/linux_package_container_check.py --engine docker --signed \
+            --packages dist/linux-x64 --binary dist/linux-x64/greencurve/greencurve
 
       - name: Verify clean tree and all expected release artifacts
         run: |
@@ -178,6 +212,7 @@ jobs:
             dist/**/greencurve-${{ steps.version.outputs.version }}-1-debian-*.deb
             dist/**/greencurve-${{ steps.version.outputs.version }}-1-fedora-*.rpm
             dist/**/greencurve-${{ steps.version.outputs.version }}-1-suse-*.rpm
+            packaging/greencurve-packages.asc
             greencurve-${{ steps.version.outputs.version }}-toolchain.json
 
       - name: Write release notes
@@ -251,6 +286,7 @@ jobs:
             dist/windows-arm64/greencurve-${VERSION}-* \
             dist/linux-x64/greencurve-${VERSION}-* \
             dist/linux-arm64/greencurve-${VERSION}-* \
+            packaging/greencurve-packages.asc \
             greencurve-${VERSION}-toolchain.json
 
       - name: Verify attestations on released artifacts
@@ -274,6 +310,7 @@ jobs:
             dist/linux-arm64/greencurve-${VERSION}-1-fedora-aarch64.rpm \
             dist/linux-x64/greencurve-${VERSION}-1-suse-x86_64.rpm \
             dist/linux-arm64/greencurve-${VERSION}-1-suse-aarch64.rpm \
+            packaging/greencurve-packages.asc \
             greencurve-${VERSION}-toolchain.json; do
             gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" \
               --source-digest "$GITHUB_SHA" \

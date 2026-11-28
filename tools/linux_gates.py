@@ -13,6 +13,7 @@ import shlex
 import subprocess
 import sys
 import arch_recipe_checks
+from distro_package_gates import check_distro_package_release_gates
 
 
 def _p(ctx, name):
@@ -562,7 +563,6 @@ def check_startup_policy(ctx, require_text, forbid_text):
     protocol_h = _p(ctx, "service_protocol.h")
     state_h = _p(ctx, "linux_daemon_state.h")
     state_cpp = _p(ctx, "linux_daemon_state.cpp")
-    daemon_cpp = _p(ctx, "linux_daemon.cpp")
     policy_h = _p(ctx, "linux_startup_policy.h")
     cli_cpp = _p(ctx, "linux_cli_options.cpp")
     require_text(protocol_h, "SERVICE_PROTOCOL_VERSION = 39",
@@ -806,6 +806,7 @@ def check_release_packaging(ctx, require_text, forbid_text):
         for name in ("-1-arch-x86_64.pkg.tar.zst", "-1-debian-amd64.deb",
                      "-1-fedora-x86_64.rpm", "-1-suse-x86_64.rpm"):
             require_text(wf, name, f"{label} workflow checks the {name} package")
+    check_distro_package_release_gates(ctx, require_text)
     check_packaging_line_endings(arch_dir)
     arch_recipe_checks.check_all(arch_dir)
 

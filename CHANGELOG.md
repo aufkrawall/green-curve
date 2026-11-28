@@ -40,7 +40,7 @@ Profiles can be captured, checked and moved between platforms; curves, cooling a
 - **Fan stall protection:** custom cooling hands the fan back when a confirmed RPM reading drops to zero.
 - **CMP cards:** experimental modified-driver support.
 - **Dialog copying:** Ctrl+C copies message text.
-- **Linux packages:** Debian/Ubuntu, Fedora and openSUSE packages; every package names its distribution, including Arch.
+- **Linux packages:** Debian/Ubuntu, Fedora and openSUSE packages (rpms signed); every package names its distribution, including Arch.
 
 ### Improved
 

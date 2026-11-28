@@ -23,6 +23,13 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   without creating the group (dpkg/rpm have no sysusers hook); fixed and pinned
   by `GroupEnrollmentTests`. rpm 6's default policy refuses the unsigned rpms
   for plain `rpm -i`; dnf/zypper local installs work as documented.
+- Follow-up the same day: rpms are now OpenPGP-signed in the release
+  (`tools/rpm_sign.py`, fail-closed workflow step, key checked against the
+  published `packaging/greencurve-packages.asc`), and a native-distro container
+  check (`tools/linux_package_container_check.py`) runs in CI (x64 plus native
+  arm64) and as a release gate with signature overrides refused. 11/11 distros
+  pass locally with podman, signed and unsigned; unsigned rpms fail the signed
+  gate on dnf and zypper. The release key still has to be provisioned.
 - Harness lesson: bind mounts into a test root must be `rslave` before
   teardown; a shared rbind propagated a lazy unmount to the WSL instance's own
   `/dev`/`/sys` submounts until the distro was restarted.

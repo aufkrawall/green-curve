@@ -358,13 +358,43 @@ Source anchors: `tools/linux_payload.py` (shared payload, names, glibc floor),
   visible). The earlier `sysusers || groupadd` skipped the fallback on that exit
   status; the real dpkg chroot install exposed it. Pinned by
   `GroupEnrollmentTests` (stubbed `getent`/`systemd-sysusers`/`groupadd`).
-- **Open questions / stale-risk:** the rpms are unsigned. rpm 6.0's default
-  `%_pkgverify_level all` refuses them for plain `rpm -i` (needs
-  `--nosignature`); `dnf install ./file` skips the signature for local files by
-  default, and zypper needs `--allow-unsigned-rpm`. Digests are always
-  enforced. Signing needs a release key decision. Not yet run on a native
-  Debian/Ubuntu/Fedora/openSUSE system (the overlay check uses the real package
-  managers on an Arch userland) or on ARM64.
+- **Native distro container check** (`tools/linux_package_container_check.py`
+  driving `tools/linux_package_container_inner.sh`): installs, upgrades and
+  removes the packages with each distro's own front end (apt on Debian 12/13 and
+  Ubuntu 22.04/24.04/26.04, dnf on Fedora 44/45, zypper on openSUSE Leap
+  15.6/16.0 and Tumbleweed, pacman on Arch) in containers pinned by multi-arch
+  index digest. The upgrade set is built on the fly as `<VERSION>.1`. CI runs it
+  on every push (x64 in the `linux` job; arm64 natively in
+  `linux-packages-arm64`, fed by an artifact because the pinned toolchains are
+  x86_64-only; Arch has no arm64 image and is skipped there). The Arch image's
+  `NoExtract` doc stripping is disabled inside the test so `pacman -Qkk` sees a
+  stock install. Passed 11/11 locally with podman (unsigned and signed), and a
+  signed-mode run fed unsigned rpms fails on dnf and zypper as intended.
+- **rpm signing** (`tools/rpm_sign.py`): an OpenPGP v4 signature over the main
+  header bytes in RPMSIGTAG_RSA (268; RPMSIGTAG_DSA 267 for non-RSA keys),
+  SHA-256 or stronger only. The header already carries the payload digest, so
+  this covers the payload. Each signature is checked with `gpgv` against
+  `packaging/greencurve-packages.asc` before the package is accepted. rpm 6.0
+  verified it (`Header OpenPGP V4 RSA/SHA256 signature ... OK`) and installed
+  under its strict default policy. Local builds without
+  `GREENCURVE_RPM_SIGNING_KEY` stay unsigned; `GREENCURVE_REQUIRE_RPM_SIGNATURE=1`
+  turns a missing key into a build failure. On Windows, GnuPG for Windows is
+  preferred over Git's MSYS gpg, which cannot use a native GNUPGHOME.
+- **Release path:** one release step imports the signing key from a workflow
+  secret into a throwaway GNUPGHOME, requires its fingerprint to equal the
+  published key's, builds with signing required, runs the container check with
+  `--signed` (rpm -K must pass, dnf forced to check local-file signatures,
+  zypper without `--allow-unsigned-rpm`), and removes the key on exit. A
+  missing secret fails the release. The public key is attested and attached to
+  each release. `tools/distro_package_gates.py` pins all of this and refuses a
+  committed key file containing private material.
+- **Open questions / stale-risk:** the release key must be provisioned (public
+  key committed at `packaging/greencurve-packages.asc`, private key as the
+  release secret) before the next release can publish. The release gate
+  install-tests x64 only; arm64 release bytes rely on the per-push arm64 CI
+  job, which runs the same builder code. The CI jobs have not yet run on
+  GitHub (no push since they were added). Image digests are deliberate pins:
+  bump them when a distro release goes out of support.
 
 ### Arch package details
 

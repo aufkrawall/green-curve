@@ -11,6 +11,13 @@ set (e.g. `release_manifest.build_linux_distro_packages(".", "<v>", "x64",
 WSL distro that has rpm, dpkg and pacman. It works inside an overlay root and
 leaves the host unchanged; see linux-scaffold.md, "Distribution packages".
 
+`tools/linux_package_container_check.py --engine docker|podman --packages
+dist/linux-x64 --binary dist/linux-x64/greencurve/greencurve [--signed]` is the
+native-distro version (CI and the release run it with docker). Under podman in a
+WSL distro without systemd as PID 1, point `CONTAINERS_CONF` at a file setting
+`cgroup_manager = "cgroupfs"` and `events_logger = "file"`; the default systemd
+cgroup manager fails with "cannot open sd-bus".
+
 ## Linux daemon per-GPU controller (2026-11-26)
 
 - **`tests/linux_daemon_commit_rollback_tests.cpp` (`14260-14270`):** request-level fixture. Compiles the production `linux_daemon.cpp` (two symbols renamed to coexist with `linux_tui_gpu_target_tests.cpp`) over fake backend, persistence and debug-log functions, reads state like a client to obtain the freshness envelope, then drives `handle_request()`. When the active record cannot be stored after a successful Apply (`14260-14263`), the state file cannot be removed after a successful Reset (`14264-14266`), or the active record cannot be stored during `SERVICE_CMD_RESUME_RESTORE` (`daemon_automatic_restore_write()`, `14268-14270`), the daemon rolls back exactly once with the same `LinuxApplyCeilingTransaction` object, and every field the rollback reads (`armed`, `armResult`, `plan.ceilingMHz`, `outgoingCeilingMHz`, `outgoingHadHardPin`) arrives as the mutation recorded it; a successful commit never rolls back (`14267`). Clearing either bound (including Reset's `outgoingCeilingMHz` alone) or the HARD-pin fact (Reset leaves a HARD pin), skipping the rollback or passing a fresh transaction fails `14261`, `14262`, `14265` or `14269`.
