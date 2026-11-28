@@ -372,7 +372,7 @@ Source anchors: `source/service_standby_fan_stash_policy.h`,
 (`service_lifecycle_attempt_standby_restore`),
 `source/main_service_lifecycle_events.cpp`
 (`service_lifecycle_standby_fan_handback_window`), `source/service_lifecycle_policy.h`
-(`standbyStashEpoch`), tests 14340-14366
+(`standbyStashEpoch`), tests 14340-14366, 14416-14423
 (`tests/standby_fan_stash_tests.cpp`, `tests/fan_handback_runtime_tests.cpp`),
 gate `check_standby_fan_stash` in `tools/fan_gates.py`.
 
@@ -387,13 +387,18 @@ off after the wake.
   and not yet issued, and no lockout, driver recovery or stop. The restore's
   own write is outside it: a fan that fails while the restore starts it is a
   real failure and stays handed back.
-- **Stash:** a handback inside the window that took a manual fan (curve or
-  fixed) from an owned intent keeps the replaced intent, its GPU and profile
-  attribution plus the intent it left, tagged with the reducer's
-  `standbyStashEpoch`. A later handback under the same epoch keeps the first
-  copy and only follows the intent it left. The handback itself is unchanged:
-  driver auto (else 100%), fault record, owned intent rewritten, marker and
-  restart snapshot as before.
+- **Stash:** a repeated-failure handback (`SERVICE_FAN_FAULT_REPEATED_FAILURES`)
+  inside the window that took a manual fan (curve or fixed) from an owned intent
+  keeps the replaced intent, its GPU and profile attribution plus the intent it
+  left, tagged with the reducer's `standbyStashEpoch`. Confirmed fan stalls
+  (`SERVICE_FAN_FAULT_STALL`) are never captured and explicitly drop any prior
+  stash (bypassing `keptForEpoch`). A later repeated-failure handback under the
+  same epoch keeps the first copy only while the pre-handback intent still
+  matches what that stash left (`service_standby_fan_stash_use()` ==
+  `REPLAY`), so an automatic non-fan pipe Apply in the same epoch cannot leave
+  stale OC/power in the stash. The handback itself is unchanged: driver auto
+  (else 100%), fault record, owned intent rewritten, marker and restart snapshot
+  as before.
 - **Epoch:** bumped by an explicit supersede (every explicit Apply or Reset,
   successful or not), a lockout, and every attempted logon, standby or driver
   write. A further suspend before the restore writes does not bump it, so a
@@ -402,12 +407,18 @@ off after the wake.
   intent (`service_standby_restore_select`) only while the epoch is unchanged
   and the owned intent still equals what the handback left. A refusal before
   any hardware write keeps the stash for the next readiness cue; a restore that
-  reached the hardware uses it up either way
-  (`service_standby_fan_stash_used_up`). Success restores the profile
-  attribution and clears the fault record (an Apply that set the fan). A curve
-  that fails again is handed back again, now outside the window.
-- **Dropped by:** a moved epoch, a changed intent, a successful Reset or fan
-  Apply (`service_fan_fault_clear`), or a handback outside a window.
+  reached the hardware uses it up either way (`service_standby_fan_stash_used_up`,
+  with `service_fan_fault_clear(..., false)` preserving the stash until
+  `service_standby_fan_stash_consume()` logs and clears it). Success restores
+  the profile attribution only when post-apply outcome severity is not
+  `SERVICE_OUTCOME_SEVERITY_ERROR`
+  (`service_standby_fan_stash_should_restore_profile()`, keeping attribution
+  demoted if post-apply fan invariant repair failed) and clears the fault
+  record. A curve that fails again is handed back again, now outside the
+  window.
+- **Dropped by:** a moved epoch, a changed intent, a confirmed fan stall, a
+  successful Reset or fan Apply (`service_fan_fault_clear`), or a handback
+  outside a window.
 - **Resume under lockout (2026-11-28):** the reducer now disarms the suspend
   (`suspendArmed` off, resumed generation recorded) without arming a restore.
   Before, the armed suspend survived the lockout, so after an explicit Apply

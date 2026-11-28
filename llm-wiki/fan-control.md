@@ -48,10 +48,11 @@ Source anchors: `source/fan_stall_policy.h`, `source/main_fan_stall.cpp`,
 `tests/fan_runtime_followup_tests.cpp`, `tests/gui_auto_restore_notice_tests.cpp`,
 `tools/fan_gates.py` (`check_fan_fault_reporting()`, `check_fan_stall_detection()`).
 
-Windows standby (2026-11-28): a service handback between suspend and the
-standby restore's write keeps the intent it replaced, and that restore replays
-it once; the handback itself is unchanged. See "A fan handback inside the
-standby window" in [auto-restore-policy](auto-restore-policy.md).
+Windows standby (2026-11-28): a repeated-failure service handback between
+suspend and the standby restore's write keeps the intent it replaced, and that
+restore replays it once; confirmed fan stalls (`SERVICE_FAN_FAULT_STALL`) are
+excluded and drop any prior stash. See "A fan handback inside the standby
+window" in [auto-restore-policy](auto-restore-policy.md).
 
 The failure ladder below reacts to a refused write or temperature read. It
 cannot see a fan that accepts every write and does not turn (seized bearing,
@@ -330,12 +331,13 @@ was restored; a failed handback retains it. Diagnostics:
 `daemon state: entering uncertain state` and `uncertain state (...) returned
 the fan`. Fake-driver cases cover these paths; hardware is unverified.
 
-The worker's own lockout between a suspend and the resume restore is the one
-uncertainty the resume restore may pass, once, to replay the curve it replaced
-(2026-11-28; [linux-scaffold](linux-scaffold.md), "A fan lockout between
-suspend and the resume restore").
+The worker's own repeated-failure lockout between a suspend and the resume
+restore is the one uncertainty the resume restore may pass, once, to replay the
+curve it replaced (2026-11-28; confirmed stalls remain excluded;
+[linux-scaffold](linux-scaffold.md), "A fan lockout between suspend and the
+resume restore").
 
-Last verified: 2026-10-27.
+Last verified: 2026-11-28 (Linux resume waiver; earlier paths 2026-10-27).
 
 ## State reads never run deferred fan recovery (2026-10-27)
 

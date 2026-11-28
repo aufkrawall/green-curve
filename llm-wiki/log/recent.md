@@ -5,6 +5,34 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: Standby fan stash review follow-ups (Windows & Linux)
+
+- Closed the Linux suspend window (`daemon_standby_window_close()`) on explicit
+  Apply and Reset alongside `daemon_standby_fan_stash_clear()` so a wake
+  without `--resume-restore` (disabled `greencurve-resume.service`, failed
+  `nvidia-resume.service`, or explicit Apply before the resume unit) never
+  leaves `linux_suspend_since()` open while awake; documented the disabled-unit
+  limit in [linux-scaffold](../linux-scaffold.md).
+- Restricted standby fan stash capture on both platforms to
+  `SERVICE_FAN_FAULT_REPEATED_FAILURES`: confirmed fan stalls
+  (`SERVICE_FAN_FAULT_STALL`) never capture a stash and explicitly drop any
+  prior stash (including bypassing `keptForEpoch` on Windows).
+- Fixed Windows `service_apply_desired_settings()` clearing
+  `g_serviceStandbyFanStash` inside `service_fan_fault_clear()` before
+  `service_standby_fan_stash_consume()` could log and consume it on replay, and
+  gated restored saved-profile attribution in
+  `service_lifecycle_attempt_standby_restore()` on
+  `service_standby_fan_stash_should_restore_profile()` (`outcomeSeverity !=
+  SERVICE_OUTCOME_SEVERITY_ERROR`).
+- Fixed Windows `keptForEpoch` in `main_service_fan_fault.cpp` to require
+  `service_standby_fan_stash_use(..., standbyEpoch, hadIntent, &previousDesired)
+  == SERVICE_STANDBY_FAN_STASH_REPLAY`, preventing an automatic non-fan Apply
+  in the same epoch from leaving stale OC/power in the stash.
+- Added end-to-end `SERVICE_CMD_RESUME_RESTORE` stash-replay cases
+  (`14400-14415`) in `tests/linux_daemon_commit_rollback_tests.cpp` plus
+  stall/epoch/attribution tests (`14416-14426`) and tightened
+  `tools/fan_gates.py`.
+
 ## 2026-11-28: Linux resume restore survives a fan lockout during the wake
 
 - Follow-up to the Windows standby stash below. Linux differs: no suspend edge,
@@ -26,8 +54,10 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 ## 2026-11-28: Windows standby restore keeps a fan the runtime handed back during the wake
 
 - Review of standby auto-restore: design sound (one coalesced full-intent
-  restore per wake, readiness-driven, fan curve reasserts and drift-checks, the
-  stall window restarts across the sleep gap). Gap: the service fan worker is
+  restore per wake, readiness-driven, fan curve reasserts and drift-checks; the
+  stall window restarts across the sleep gap on Windows via `GetTickCount64`,
+  whereas on Linux `CLOCK_MONOTONIC` pauses across sleep and confirmed stalls
+  are excluded from standby stash on both platforms). Gap: the service fan worker is
   not paused across suspend, so a handback between suspend and the restore's
   write rewrote the owned intent to driver auto and the restore skipped the fan.
 - Fix: `source/service_standby_fan_stash_policy.h` (window from the real
