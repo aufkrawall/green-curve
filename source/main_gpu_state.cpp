@@ -100,8 +100,10 @@ static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* re
         return false;
     }
 
+    const int ownedLockCi = vf_live_offset_owned_lock_ci(
+        g_app.lockedCi, (int)g_app.lockMode, g_app.lockedFreq);
     const VfSelectiveGpuOffsetDetection det = vf_detect_live_selective_gpu_offset(
-        g_app.curve, g_app.freqOffsets, &g_app.vfFloorBinding.floor, g_app.lockedCi);
+        g_app.curve, g_app.freqOffsets, &g_app.vfFloorBinding.floor, ownedLockCi);
     const char* tailSource = det.tail.fromOwnedLock ? "owned"
         : (det.tail.fromObservedTail ? "observed" : "none");
 

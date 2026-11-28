@@ -58,6 +58,15 @@ static inline long long vf_live_offset_abs64(long long v) {
     return v < 0 ? -v : v;
 }
 
+// Active owned lock index for live offset tail exclusion; returns -1 unless an
+// active lock mode and nonzero target frequency are held.
+static inline int vf_live_offset_owned_lock_ci(
+    int lockedCi, int lockMode, unsigned int lockedFreq) {
+    return (lockedCi >= 0 && lockedCi < VF_NUM_POINTS && lockMode != 0 && lockedFreq > 0)
+        ? lockedCi
+        : -1;
+}
+
 static inline VfOffsetTailBoundary vf_offset_detection_tail_start(
     const VFCurvePoint* curve, const int* freqOffsetsKHz,
     const VfFloorTopology* floorOpt, int ownedLockCi) {

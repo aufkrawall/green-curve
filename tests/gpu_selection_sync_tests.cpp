@@ -205,6 +205,13 @@ int nvml_binding_tests() {
 }  // namespace
 
 int run_gpu_selection_sync_tests() {
+    {
+        const AppData fresh{};
+        if (fresh.lockedVi != -1 || fresh.lockedCi != -1 ||
+            fresh.appliedLockVi != -1 || fresh.appliedLockCi != -1 ||
+            fresh.observedLockCi != -1 || !fresh.guiLockTracksAnchor)
+            return 7107;
+    }
 #if defined(_WIN32)
     if (int r = nvml_binding_tests()) return r;
 #endif

@@ -1,5 +1,28 @@
 # GPU Backend
 
+## Live VF GPU-offset startup lock-sentinel invariant (2026-11-28)
+
+Source anchors: `source/app_shared.h`, `source/vf_live_offset_policy.h`,
+`source/gpu_backend.cpp`, `source/main_gpu_state.cpp`,
+`tests/vf_live_offset_tests.cpp` (`12475`), `tests/gpu_selection_sync_tests.cpp` (`7107`),
+`tools/ui_gates.py`.
+
+Previously `AppData g_app = {}` zero-initialized `lockedVi`, `lockedCi`,
+`appliedLockVi`, `appliedLockCi`, and `observedLockCi` to `0` instead of `-1`.
+On a fresh service startup before any Apply or Reset, `detect_locked_tail_from_curve()`
+returned early for external curves without touching `lockedCi`, so
+`vf_offset_detection_tail_start(..., g_app.lockedCi)` saw `ownedLockCi == 0`,
+treated the entire VF curve (`ci >= 0`) as an owned lock tail (`tail=ci0(owned)`),
+and forced live uniform/selective GPU offset detection on Blackwell to return `0 MHz`.
+
+- **Invariant:** `AppData` default-initializes `lockedVi`, `lockedCi`,
+  `observedLockCi`, `appliedLockVi`, and `appliedLockCi` to `-1` (and
+  `guiLockTracksAnchor = true`), `reset_gpu_runtime_selection()` clears lock
+  markers via `service_clear_lock_markers(&g_app)`, and live offset detectors
+  resolve the owned lock index through `vf_live_offset_owned_lock_ci()` so an
+  inactive lock (`lockMode == LOCK_MODE_NONE` or `lockedFreq == 0`) always
+  yields `-1`.
+
 ## Per-point VF negative offset floor decoupling (2026-11-23)
 
 Source anchors: `source/vf_offset_range_policy.h`, `source/vf_offset_range_runtime.h`,

@@ -53,16 +53,17 @@ Profiles can be captured, checked and moved between platforms; curves, cooling a
 
 ### Fixed
 
-- **Deep undervolting:** per-point undervolts may exceed narrow global limits, such as Pascal's -200 MHz.
+- **Deep undervolting:** per-point undervolts may exceed narrow global limits.
 - **Partial profiles:** omitted controls stay untouched, including at logon and after upgrade.
 - **Cooling handback:** Reset, shutdown and failed Linux starts reliably return every fan to Auto.
 - **Fan curves:** survive profile switches, standby and wake errors without stale active attribution.
-- **Reset:** restores memory and power changed elsewhere and works on fanless GPUs.
+- **Reset:** restores memory/power changed elsewhere and works on fanless GPUs.
 - **Linux recovery:** the daemon survives an NVIDIA driver that starts late or loses its session.
 - **Linux startup and upgrades:** duplicate daemons are prevented and failed upgrades roll back.
 - **Scoped curves:** unrelated offsets, locked tails and read-only points survive Reset and rollback.
-- **Profile capture:** level stock tops and uniform core offsets are no longer classified as flattened curves.
-- **Profile files:** transfers keep scope and bindings and never overwrite without confirmation.
+- **External offsets:** live core offsets are detected immediately on startup before any Apply.
+- **Profile capture:** level stock tops and uniform core offsets stay exact curves.
+- **Profile files:** keep scope and bindings and never overwrite without confirmation.
 - **Curve editing:** no preview spikes; typed values and drafts are kept.
 - **Memory changes:** keep the curve, and fractional offsets restore exactly.
 - **Invalid requests:** unavailable points, locks and out-of-range targets are refused clearly.

@@ -1833,10 +1833,18 @@ def check_live_offset_excludes_programmed_flat_tail(ctx, require_text, forbid_te
                  "live VF offset tail boundary recognizes programmed flat tails")
     require_text(policy, "vf_offset_detection_tail_start(",
                  "live VF offset detectors share one tail-boundary helper")
+    require_text(policy, "vf_live_offset_owned_lock_ci(",
+                 "live VF offset detectors require an active lock mode and frequency")
+    require_text(_p(ctx, "app_shared.h"), "int lockedCi = -1;",
+                 "fresh AppData must initialize lockedCi to -1 rather than 0")
+    require_text(_p(ctx, "main_gpu_state.cpp"), "vf_live_offset_owned_lock_ci(",
+                 "Windows selective GPU-offset detection gates inactive lock markers")
     require_text(_p(ctx, "main_gpu_state.cpp"), "vf_detect_live_selective_gpu_offset(",
                  "Windows selective GPU-offset detection delegates to the pure flat-tail-aware policy")
     require_text(_p(ctx, "main_gpu_state.cpp"), "vf_live_selective_gpu_offset_matches_shape(",
                  "Windows selective GPU-offset shape matching delegates to the pure flat-tail-aware policy")
+    require_text(_p(ctx, "gpu_backend.cpp"), "vf_live_offset_owned_lock_ci(",
+                 "Windows uniform GPU-offset detection gates inactive lock markers")
     require_text(_p(ctx, "gpu_backend.cpp"), "vf_uniform_curve_offset_khz(",
                  "Windows uniform GPU-offset detection delegates to the pure flat-tail-aware policy")
     forbid_text(_p(ctx, "main_gpu_state.cpp"), "is_locked_tail_detection_point(",

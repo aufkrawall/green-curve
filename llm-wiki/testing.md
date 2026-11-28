@@ -3,7 +3,8 @@
 ## Capture flatten recognition over stock level tops and uniform offsets (2026-11-28)
 
 - **`tests/profile_capture_proposals_tests.cpp` (`9716-9719`):** covers a 127-point Blackwell-shaped curve whose top two voltage points share the same stock frequency: stock (`0` offset) reports `"Stock curve (no changes)"` with no flatten proposal (`9716`), `+100 MHz` uniform VF offset reports `"+100 MHz on 127 points"` with `Core clock` unresolved (`"No offset (stock)"`, disabled) and `PROFILE_CAPTURE_EXACT` saving all writable points at `+100 MHz` (`9717`), selective `+100 MHz` reports `"+100 MHz on 82 points"` (`9718`), and a real programmed flatten at `ci=124` with differing tail offsets remains recognized (`9719`). `9712` was updated to carry negative tail offsets so its 128-point flatten models an actual programmed tail.
-- **Source gate (`tools/ui_gates.py`):** `check_observed_editor_lock()` requires `vf_recognize_programmed_flat_tail(` and forbids `vf_recognize_flat_tail(` in `source/profile_capture_proposals.h` and `source/gpu_backend.cpp`.
+- **`tests/vf_live_offset_tests.cpp` (`12475`) & `tests/gpu_selection_sync_tests.cpp` (`7107`):** pin `vf_live_offset_owned_lock_ci(0, 0, 0) == -1` over a `+100 MHz` uniform offset and verify fresh `AppData{}` initializes `lockedVi`/`lockedCi`/`appliedLockVi`/`appliedLockCi`/`observedLockCi` to `-1` (`guiLockTracksAnchor == true`).
+- **Source gate (`tools/ui_gates.py`):** `check_observed_editor_lock()` requires `vf_recognize_programmed_flat_tail(` and forbids `vf_recognize_flat_tail(` in `source/profile_capture_proposals.h` and `source/gpu_backend.cpp`; `check_live_offset_excludes_programmed_flat_tail()` requires `int lockedCi = -1;` in `source/app_shared.h` and `vf_live_offset_owned_lock_ci(` in `source/vf_live_offset_policy.h`, `source/gpu_backend.cpp`, and `source/main_gpu_state.cpp`.
 
 ## Linux distro package install check (2026-11-28)
 

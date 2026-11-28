@@ -332,6 +332,30 @@ int run_legitimate_offset_and_owned_lock_cases() {
             return 12474;
     }
 
+    // 12475: zero-initialized / inactive lock markers (lockedCi == 0 with
+    // LOCK_MODE_NONE or lockedFreq == 0) must resolve to -1 so startup live
+    // offset detection never treats ci >= 0 as an owned lock tail.
+    {
+        if (vf_live_offset_owned_lock_ci(0, 0, 0) != -1 ||
+            vf_live_offset_owned_lock_ci(0, 1, 0) != -1 ||
+            vf_live_offset_owned_lock_ci(76, 0, 2962) != -1 ||
+            vf_live_offset_owned_lock_ci(76, 1, 2962) != 76)
+            return 12475;
+
+        Table uniform;
+        rtx_stock(&uniform, 45);
+        for (int i = 0; i < 127; ++i) {
+            uniform.offsets[i] = 100000;
+            uniform.curve[i].freq_kHz += 100000u;
+        }
+        const VfFloorTopology uFloor = floor_for(uniform);
+        const int inactiveOwned = vf_live_offset_owned_lock_ci(0, 0, 0);
+        if (vf_uniform_curve_offset_khz(uniform.curve, uniform.offsets, &uFloor, inactiveOwned) != 100000)
+            return 12475;
+        if (vf_uniform_curve_offset_khz(uniform.curve, uniform.offsets, &uFloor, 0) != 0)
+            return 12475;
+    }
+
     return 0;
 }
 

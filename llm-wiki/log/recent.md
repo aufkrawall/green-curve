@@ -5,6 +5,13 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: Fix AppData lock-index zero-initialization breaking live GPU offset detection at startup
+
+- Reported after updating on RTX 5070 with an external `+100 MHz` global offset: `Import current GPU settings` now showed `+100 MHz on 127 points`, but the freshly restarted service reported `0 MHz` in the main GUI (`detect_live_selective` logged `tail=ci0(owned,plateau=0)` and `uniform offset=0 kHz`).
+- Root cause: `AppData g_app = {}` (`source/app_shared.h`, `source/app_shared.cpp`) zero-initialized `lockedVi`, `lockedCi`, `observedLockCi`, `appliedLockVi`, and `appliedLockCi` to `0` instead of `-1`. Before any Apply or Reset ran, `vf_offset_detection_tail_start(..., g_app.lockedCi)` treated `ci >= 0` as an owned lock tail and skipped every VF point.
+- Fix: added `-1` default member initializers (`guiLockTracksAnchor = true`) to `AppData`, cleared lock markers in `reset_gpu_runtime_selection()`, added `vf_live_offset_owned_lock_ci()` in `source/vf_live_offset_policy.h` for `uniform_curve_offset_khz()` (`source/gpu_backend.cpp`) and `detect_live_selective_gpu_offset_state()` (`source/main_gpu_state.cpp`), added tests `12475` (`tests/vf_live_offset_tests.cpp`) and `7107` (`tests/gpu_selection_sync_tests.cpp`), and pinned the invariant in `tools/ui_gates.py`.
+- Verified via `python build.py --test` (all unit, cross-link, and wiki/security/UI gates passed).
+
 ## 2026-11-28: Exclude stock level tops and uniform offsets from capture flatten recognition
 
 - Reported on RTX 5070 with an external `+100 MHz` global offset: `Import current GPU settings` classified the curve as `Flat at 3292 MHz from 1235 mV (+100 MHz on 125 lower points)` and recommended `Flat curve` while `Core clock` stayed disabled (`No offset (stock)`).

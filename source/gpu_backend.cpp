@@ -148,6 +148,10 @@ static void reset_gpu_runtime_selection() {
     g_app.adapterCount = 0;
     memset(g_app.adapters, 0, sizeof(g_app.adapters));
     memset(&g_app.selectedGpu, 0, sizeof(g_app.selectedGpu));
+    service_clear_lock_markers(&g_app);
+    g_app.observedLockValid = false;
+    g_app.observedLockCi = -1;
+    g_app.observedLockMHz = 0;
     reset_selected_gpu_write_evidence(&g_app);
 }
 
@@ -368,12 +372,14 @@ static void read_nvml_max_mem_clock() {
 static int uniform_curve_offset_khz() {
     if (!vf_curve_global_gpu_offset_supported()) return 0;
     VfOffsetTailBoundary tail = {};
+    const int ownedLockCi = vf_live_offset_owned_lock_ci(
+        g_app.lockedCi, (int)g_app.lockMode, g_app.lockedFreq);
     const int offsetKHz = vf_uniform_curve_offset_khz(
-        g_app.curve, g_app.freqOffsets, &g_app.vfFloorBinding.floor, g_app.lockedCi, &tail);
+        g_app.curve, g_app.freqOffsets, &g_app.vfFloorBinding.floor, ownedLockCi, &tail);
     if (tail.fromObservedTail) {
         debug_log_on_change(
             "uniform_curve_offset: excluded observed flat tail anchor=ci%d plateau=%u MHz (ownedLock=ci%d) -> %d kHz\n",
-            tail.tailStartCi, tail.observedPlateauMHz, g_app.lockedCi, offsetKHz);
+            tail.tailStartCi, tail.observedPlateauMHz, ownedLockCi, offsetKHz);
     }
     return offsetKHz;
 }

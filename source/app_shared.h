@@ -569,16 +569,16 @@ struct AppData {
     VfStockCurveCache stockCurveCache;
     VfStockBaseEstimate stockBaseEstimate;
 
-    int lockedVi;
-    int lockedCi;
-    unsigned int lockedFreq;
-    LockMode lockMode;
-    bool guiLockTracksAnchor;
+    int lockedVi = -1;
+    int lockedCi = -1;
+    unsigned int lockedFreq = 0;
+    LockMode lockMode = LOCK_MODE_NONE;
+    bool guiLockTracksAnchor = true;
     // The editor lock last projected from a flatten another tool set
     // (gui_observed_lock_policy.h); only meaningful while observedLockValid.
-    bool observedLockValid;
-    int observedLockCi;
-    unsigned int observedLockMHz;
+    bool observedLockValid = false;
+    int observedLockCi = -1;
+    unsigned int observedLockMHz = 0;
 
     int gpuClockOffsetkHz;
     int memClockOffsetkHz;
@@ -674,10 +674,10 @@ struct AppData {
     int appliedGpuOffsetMHz;
     int appliedGpuOffsetExcludeLowCount;
     bool lastApplyUsedGpuOffset;
-    int appliedLockVi;
-    int appliedLockCi;
-    unsigned int appliedLockFreq;
-    LockMode appliedLockMode;
+    int appliedLockVi = -1;
+    int appliedLockCi = -1;
+    unsigned int appliedLockFreq = 0;
+    LockMode appliedLockMode = LOCK_MODE_NONE;
     // Whether GREEN CURVE is the owner of each advanced-clock domain's current
     // value, i.e. whether an apply of ours put it there.
     //
