@@ -437,6 +437,7 @@ struct AppData {
     UiCheckboxState shareAllUsersPainted;
     UiCheckboxState serviceEnablePainted;
     UiCheckboxState startOnLogonPainted;
+    bool startOnLogonPaintedKnown;
     int machineLogonSlotCache;
     // Profile-slot "is saved" state, cached for every slot.  update_profile_
     // action_buttons() is called from the service-state projection now, which
@@ -445,10 +446,11 @@ struct AppData {
     // storage lock.  Invalidated on any config write, next to the tray cache.
     bool profileSlotSavedCache[CONFIG_NUM_SLOTS];
     bool profileSlotCacheValid;
-    // Monotonic counter bumped by invalidate_tray_profile_cache() whenever
-    // this process writes config.ini (or changes configPath), so steady-state
-    // telemetry can validate AppliedProfileSyncCache in memory without statting
-    // config.ini on every 1-3 s tick.
+    // Monotonic counter bumped by invalidate_tray_profile_cache() on GUI
+    // profile/preference config writes, configPath changes, and profile-
+    // metadata invalidations, so steady-state telemetry can validate
+    // AppliedProfileSyncCache in memory without statting config.ini every
+    // 1-3 s.
     gc_u64 localConfigWriteGeneration;
     // Whether each service-dependent assignment currently holds a non-default
     // value. Such a control stays enabled even with no service so the assignment

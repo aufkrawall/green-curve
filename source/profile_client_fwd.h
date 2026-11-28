@@ -39,7 +39,10 @@ static void update_profile_action_buttons();
 static void update_background_service_controls();
 static bool maybe_confirm_profile_load_replace(int slot);
 static void sync_applied_profile_from_service_metadata();
-#ifndef GREEN_CURVE_SERVICE_BINARY
+#ifdef GREEN_CURVE_SERVICE_BINARY
+static inline void sync_start_on_logon_checkbox_presentation_from_cache() {}
+#else
+static void sync_start_on_logon_checkbox_presentation_from_cache();
 static bool g_appliedProfileSyncVerifyDiskStamp = true;
 struct AppliedProfileSyncStampScope {
     bool previous;

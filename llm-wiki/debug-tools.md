@@ -399,12 +399,14 @@ Verbose mode restores the old per-tick detail: `GREEN_CURVE_DEBUG=verbose` (or
 `2`), or `[debug] verbose=1` in the config. Both processes log
 `debug log: per-tick verbose detail ON|OFF` once when the mode is decided.
 The service re-evaluates `[debug] enabled` and `[debug] verbose` on startup,
-session/user switches, and non-telemetry authorized pipe requests
-(`gc_service_pipe_should_refresh_debug_config()`), skipping steady-state
-`SERVICE_CMD_GET_TELEMETRY` once user paths are resolved. Both flags share one
-path+stamp cache (`debug_log_config_read_cached()` in `main_data_paths.cpp`),
-short-circuiting when environment overrides already settle both flags and
-caching absent files without taking the cross-session config mutex.
+session/user switches, pending lock-timeout retries, and non-telemetry
+authorized pipe requests (`gc_service_pipe_should_refresh_debug_config()`),
+skipping steady-state `SERVICE_CMD_GET_TELEMETRY` once user paths are resolved.
+Both flags share one path+stamp cache (`debug_log_config_read_cached()` in
+`main_data_paths.cpp`), short-circuiting when environment overrides already
+settle both flags, caching absent files without taking the cross-session config
+mutex, and preserving current live flags (never falling back to defaults) if a
+config lock timeout occurs until the telemetry retry succeeds.
 Replaying the 0.28 field log (44 h) through the new rules gives about 19 KB/h
 instead of 549 KB/h (29x), so the cap holds about ten weeks of steady state.
 Stale-risk: the fan-write numbers are a replay of the field log, not a

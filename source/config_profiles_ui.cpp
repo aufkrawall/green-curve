@@ -339,13 +339,10 @@ static void refresh_profile_controls_from_config() {
         InvalidateRect(g_app.hLogonCombo, nullptr, TRUE);
     }
     if (g_app.hStartOnLogonCheck) {
-        // Owner-draw: the tick comes from is_start_on_logon_enabled() at paint
-        // time, so the only thing to do here is request a repaint when the
-        // config no longer matches what is on screen.
-        if (ui_checkbox_state_needs_repaint(&g_app.startOnLogonPainted,
-                is_start_on_logon_enabled(g_app.configPath))) {
-            InvalidateRect(g_app.hStartOnLogonCheck, nullptr, FALSE);
-        }
+        // Owner-draw: the tick comes from start_on_logon_enabled_cached() at
+        // paint time (invalidated at the top of this refresh), so request a
+        // repaint whenever the refreshed cache differs from what is on screen.
+        sync_start_on_logon_checkbox_presentation_from_cache();
     }
 
     update_profile_state_label();
@@ -603,12 +600,25 @@ static void sync_applied_profile_from_service_metadata() {
         return;
     }
 
+    const bool configStampChanged = !g_appliedProfileSyncCache.valid ||
+        g_appliedProfileSyncCache.configPresent != inputs.configPresent ||
+        g_appliedProfileSyncCache.configSizeHigh != inputs.configSizeHigh ||
+        g_appliedProfileSyncCache.configSizeLow != inputs.configSizeLow ||
+        CompareFileTime(&g_appliedProfileSyncCache.configLastWrite,
+            &inputs.configLastWrite) != 0;
+
     // The tray tooltip names the active profile from applied_slot plus the
     // service's own view of it. A config write invalidates the tray cache on its
     // own, but the service view can move without one -- switching between two
     // shared slots leaves applied_slot at 0 -- so drop the cached label here,
     // where a genuine identity change has just been established.
     invalidate_tray_profile_cache();
+    if (configStampChanged) {
+        // An external edit to config.ini (noticed on window activation, manual
+        // Refresh, or tray menu open) may have changed start_program_on_logon;
+        // refresh the cached checkbox state and repaint if it moved.
+        sync_start_on_logon_checkbox_presentation_from_cache();
+    }
 
     AppliedProfileIndicatorInputs decision = {};
     decision.serviceAuthoritative = g_app.serviceSnapshotAuthoritative;

@@ -284,6 +284,15 @@ static bool start_on_logon_enabled_cached() {
     return g_app.startOnLogonPresentCache;
 }
 
+static void sync_start_on_logon_checkbox_presentation_from_cache() {
+    if (!g_app.hStartOnLogonCheck) return;
+    const bool cachedEnabled = start_on_logon_enabled_cached();
+    if (ui_checkbox_state_needs_repaint(&g_app.startOnLogonPainted,
+            cachedEnabled)) {
+        InvalidateRect(g_app.hStartOnLogonCheck, nullptr, FALSE);
+    }
+}
+
 static int selected_profile_slot_from_combo() {
     int selected = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
     if (selected < 0) selected = CONFIG_DEFAULT_SLOT - 1;

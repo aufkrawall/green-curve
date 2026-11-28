@@ -88,8 +88,16 @@ static GC_NOINLINE void handle_main_window_paint(HWND hwnd) {
 }
 
 static GC_NOINLINE bool handle_main_window_start_on_logon_click() {
-    bool enabled = !is_start_on_logon_enabled(g_app.configPath);
     bool previous = is_start_on_logon_enabled(g_app.configPath);
+    bool enabled = gc_start_on_logon_click_target(
+        g_app.startOnLogonPaintedKnown, g_app.startOnLogonPainted.checked,
+        previous);
+    if (g_app.startOnLogonPaintedKnown &&
+        g_app.startOnLogonPainted.checked != previous) {
+        debug_log("start-on-logon: click reconciled stale painted state (painted=%d disk=%d target=%d)\n",
+            g_app.startOnLogonPainted.checked ? 1 : 0,
+            previous ? 1 : 0, enabled ? 1 : 0);
+    }
     int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
     if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
     char err[256] = {};

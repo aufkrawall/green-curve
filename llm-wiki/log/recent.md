@@ -32,6 +32,18 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 - Covered by `tests/config_steady_state_tests.cpp` (`14300-14315`) and source
   gates in `tools/log_gates.py`. See `windows-architecture.md` and
   `debug-tools.md`.
+- **Review follow-ups (3 commits):** preserved live `[debug]` flags on config
+  lock timeout and armed `g_serviceDebugConfigRefreshPending` so telemetry
+  retries until a clean read succeeds (`89c0e68`); added tri-state
+  `config_section_presence()` and `lockFailedOut` on
+  `load_configured_gpu_selection()` so transient lock timeouts never settle GUI
+  `[gpu]` maintenance (`e8cc0b7`); reconciled external edits to
+  `START_ON_LOGON_CHECK_ID` via `sync_start_on_logon_checkbox_presentation_from_cache()`
+  and `gc_start_on_logon_click_target()`, gated menu-open applied-profile sync
+  on READY authority (`gc_menu_open_should_sync_applied_profile()`), tightened
+  the `localConfigWriteGeneration` comment, expanded native + pure tests to
+  `14300-14329`, and added failure-mode/stale-risk notes to
+  `windows-architecture.md`.
 
 ## 2026-11-28: CI fixes for Windows MSYS gpg and openSUSE container hermeticity
 

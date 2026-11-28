@@ -217,6 +217,15 @@ def check_steady_state_lines(ctx, require_text):
     require_text(_p(ctx, "ui_theme_button.cpp"),
                  "start_on_logon_enabled_cached()",
                  "painting the start-on-logon checkbox reads the in-memory cache")
+    require_text(_p(ctx, "ui_main_window.cpp"),
+                 "gc_start_on_logon_click_target(",
+                 "start-on-logon clicks toggle against painted state so external edits cannot invert intent")
+    require_text(_p(ctx, "config_profiles_ui.cpp"),
+                 "sync_start_on_logon_checkbox_presentation_from_cache();",
+                 "external config stamp changes reconcile and repaint the start-on-logon checkbox")
+    require_text(_p(ctx, "main_fan_runtime.cpp"),
+                 "gc_menu_open_should_sync_applied_profile(",
+                 "opening the tray/Profiles menu never overwrites applied_slot before READY authority")
 
 
 def check_cli_log_appends(ctx, require_text):

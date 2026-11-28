@@ -4,11 +4,12 @@
 
 Source anchors: `source/config_steady_state_policy.h`,
 `source/main_service_pipe.cpp`, `source/main_data_paths.cpp`,
-`source/gpu_selection_config.cpp`, `source/config_profile_sync_cache.cpp`,
-`source/config_profiles_ui.cpp`, `source/config_profiles_gui_state.cpp`,
-`source/main_state_sync.cpp`, `source/main_fan_runtime.cpp`,
+`source/config_utils.cpp`, `source/gpu_selection_config.cpp`,
+`source/config_profile_sync_cache.cpp`, `source/config_profiles_ui.cpp`,
+`source/config_profiles_gui_state.cpp`, `source/main_state_sync.cpp`,
+`source/main_fan_runtime.cpp`, `source/ui_main_window.cpp`,
 `source/ui_theme_button.cpp`, `tools/log_gates.py`,
-`tests/config_steady_state_tests.cpp` (`14300-14315`).
+`tests/config_steady_state_tests.cpp` (`14300-14329`).
 
 Routine 1-3 s GPU telemetry (`SERVICE_CMD_GET_TELEMETRY` and its GUI snapshot
 adoption) must perform zero `config.ini` reads, zero `GetFileAttributesExW`
@@ -16,21 +17,24 @@ metadata queries, and zero acquisitions of `Global\GreenCurveConfigMutex-v2`:
 
 - **Service pipe `[debug]` refresh:** `main_service_pipe.cpp` gates
   `refresh_service_debug_logging_from_config()` on
-  `gc_service_pipe_should_refresh_debug_config(command, userPathsChanged)`,
+  `gc_service_pipe_should_refresh_debug_config(command, userPathsChanged, refreshPending)`,
   skipping steady-state `SERVICE_CMD_GET_TELEMETRY` when user paths did not
-  change while still refreshing on startup, session/user switches, and every
-  non-telemetry command (`GET_SNAPSHOT` on window activation / Refresh / CLI,
-  `APPLY`, `RESET`, etc.). Both `[debug] enabled` and `[debug] verbose` share
-  one `SRWLOCK`-protected `GcDebugConfigCache` (`debug_log_config_read_cached()`),
-  short-circuiting when environment overrides already settle both flags and
-  caching absent files without touching the cross-session mutex.
+  change and no lock-timeout retry is pending, while still refreshing on
+  startup, session/user switches, and every non-telemetry command
+  (`GET_SNAPSHOT` on window activation / Refresh / CLI, `APPLY`, `RESET`, etc.).
+  Both `[debug] enabled` and `[debug] verbose` share one `SRWLOCK`-protected
+  `GcDebugConfigCache` (`debug_log_config_read_cached()`), short-circuiting
+  when environment overrides already settle both flags and caching absent files
+  without touching the cross-session mutex.
 - **GUI `[gpu]` maintenance:** `maintain_configured_gpu_selection_record(fromFullSync)`
-  evaluates `gc_gui_gpu_selection_maintenance_should_check()` BEFORE calling
-  `config_section_has_keys(g_app.configPath, "gpu")`. Once settled for the
-  current `(configPath, adapter list)`, telemetry ticks return immediately;
-  full syncs re-check only if `config.ini`'s stamp moved externally; failed
-  single-adapter auto-saves or location refreshes remain unsettled so the next
-  snapshot retries.
+  evaluates `gc_gui_gpu_selection_maintenance_should_check()` BEFORE probing
+  disk with tri-state `config_section_presence(g_app.configPath, "gpu")` and
+  `gc_gui_gpu_selection_section_action()`. Once settled for the current
+  `(configPath, adapter list)`, telemetry ticks return immediately; full syncs
+  re-check only if `config.ini`'s stamp moved externally; transient config-lock
+  timeouts (`CONFIG_SECTION_PRESENCE_LOCK_FAILED` or `loadLockFailed`) and
+  failed auto-save/location-refresh writes leave the adapter set unsettled so
+  the next snapshot retries.
 - **GUI applied-profile ownership sync:** `invalidate_tray_profile_cache()`
   increments `g_app.localConfigWriteGeneration`, and `apply_service_snapshot_to_app()`
   wraps `sync_applied_profile_from_service_metadata()` in
@@ -39,12 +43,37 @@ metadata queries, and zero acquisitions of `Global\GreenCurveConfigMutex-v2`:
   short-circuits in memory whenever service metadata, active intent, VF
   topology, config path, and `localConfigWriteGeneration` are unchanged. Full
   syncs (`WM_ACTIVATEAPP`, manual Refresh, reconnect), profile actions, and
-  opening the tray/Profiles menu (`build_auto_profile_menu()`) still verify
-  the on-disk stamp so external edits stay visible.
-- **Owner-draw checkbox paint:** `START_ON_LOGON_CHECK_ID` reads
-  `start_on_logon_enabled_cached()` (`g_app.startOnLogonPresentCache`,
-  invalidated on every config write and `refresh_profile_controls_from_config()`)
-  instead of calling `is_start_on_logon_enabled()` on `WM_DRAWITEM`.
+  opening the tray/Profiles menu once READY authority exists
+  (`gc_menu_open_should_sync_applied_profile()`) still verify the on-disk stamp
+  so external edits stay visible without clobbering `applied_slot=0` pre-READY.
+- **Owner-draw checkbox paint and click reconciliation:** `START_ON_LOGON_CHECK_ID`
+  paints from `start_on_logon_enabled_cached()` (`g_app.startOnLogonPresentCache`),
+  external config stamp changes trigger `sync_start_on_logon_checkbox_presentation_from_cache()`
+  to repaint the box, and clicks compute their target via
+  `gc_start_on_logon_click_target()` against the painted state (preserving disk
+  truth for rollback) so an external edit cannot invert user intent.
+
+**Diagnostics / failure modes:**
+- Config lock timeout on service `[debug]` refresh: `debug_log_config_read_cached()`
+  returns `false`, `gc_debug_config_resolve_after_read()` preserves current live
+  `g_debug_logging` / `g_debug_log_verbose` (never overriding a user's
+  `enabled=0` opt-out or `verbose=1` with defaults), sets
+  `g_serviceDebugConfigRefreshPending` so subsequent telemetry retries until a
+  clean read succeeds, and logs `debug log: config lock unavailable ...` once on
+  change; successful stamp reloads log `debug log: config stamp changed; loaded [debug] ...`.
+- Config lock timeout on GUI `[gpu]` maintenance: logs
+  `gpu selection: config lock unavailable while checking/loading [gpu]; retried on the next snapshot`
+  and leaves `settledValid` unset for automatic retry.
+- Stale painted `START_ON_LOGON_CHECK_ID` click: logs
+  `start-on-logon: click reconciled stale painted state (painted=%d disk=%d target=%d)`.
+
+**Open questions / stale-risk:**
+- Verified via unit/native temp-INI tests (`14300-14329`), source gates,
+  `clang-tidy`, and full deliverable builds; live Process Monitor tracing on an
+  installed Windows service + GUI session has not yet been re-run after these
+  commits. An external edit to `[debug]` in `config.ini` while the GUI remains
+  hidden in the tray without any focus/menu/CLI activity takes effect on the
+  next non-telemetry command or window activation (matching the GUI/Linux model).
 
 ## NVML binding identity (2026-11-21)
 

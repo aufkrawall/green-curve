@@ -196,4 +196,20 @@ static inline bool gc_applied_profile_sync_should_probe_disk(
     return verifyDiskStamp || !inMemoryUnchanged;
 }
 
+// Start-on-logon click toggle target: always flip the state the user actually
+// saw painted on screen when known, so an external config.ini edit cannot make
+// a click silently do the opposite of what the user intended.
+static inline bool gc_start_on_logon_click_target(
+    bool paintedKnown, bool paintedChecked, bool diskEnabled) {
+    return paintedKnown ? !paintedChecked : !diskEnabled;
+}
+
+// Opening the tray or Profiles menu may re-verify config.ini on disk only once
+// the service has established authoritative READY state; calling the sync
+// before the first READY snapshot would overwrite applied_slot=0.
+static inline bool gc_menu_open_should_sync_applied_profile(
+    bool serviceAuthoritative, bool serviceModelReady) {
+    return serviceAuthoritative && serviceModelReady;
+}
+
 #endif

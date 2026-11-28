@@ -180,50 +180,74 @@ int run_config_steady_state_tests() {
         return 14322;
     }
 
-#if defined(_WIN32)
-    // 14323-14326: Native Windows execution of config_section_presence() and
-    // load_configured_gpu_selection() lock-failure distinction on a real INI.
-    {
-        char tempDir[MAX_PATH] = {};
-        DWORD dirLen = GetTempPathA(MAX_PATH, tempDir);
-        if (dirLen == 0 || dirLen >= MAX_PATH - 48) return 14323;
-        char iniPath[MAX_PATH] = {};
-        snprintf(iniPath, sizeof(iniPath), "%sgc_steady_cfg_%lu.ini",
-            tempDir, (unsigned long)GetCurrentProcessId());
-        DeleteFileA(iniPath);
-
-        if (config_section_presence(iniPath, "gpu") != CONFIG_SECTION_PRESENCE_ABSENT) {
-            return 14323;
-        }
-        if (!set_config_int(iniPath, "debug", "enabled", 0) ||
-            config_section_presence(iniPath, "gpu") != CONFIG_SECTION_PRESENCE_ABSENT ||
-            config_section_presence(iniPath, "debug") != CONFIG_SECTION_PRESENCE_PRESENT) {
-            DeleteFileA(iniPath);
-            return 14324;
-        }
-        if (!set_config_int(iniPath, "gpu", "selected_index", 0) ||
-            !set_config_int(iniPath, "gpu", "selected_identity_version", 99) ||
-            config_section_presence(iniPath, "gpu") != CONFIG_SECTION_PRESENCE_PRESENT) {
-            DeleteFileA(iniPath);
-            return 14325;
-        }
-        ConfiguredGpuSelection loaded = {};
-        char loadErr[160] = {};
-        bool lockFailed = true;
-        if (load_configured_gpu_selection(iniPath, &loaded, loadErr, sizeof(loadErr), &lockFailed) ||
-            lockFailed) {
-            DeleteFileA(iniPath);
-            return 14325;
-        }
-        if (!set_config_int(iniPath, "gpu", "selected_identity_version", 0) ||
-            !load_configured_gpu_selection(iniPath, &loaded, loadErr, sizeof(loadErr), &lockFailed) ||
-            lockFailed || loaded.legacyIndex != 0) {
-            DeleteFileA(iniPath);
-            return 14326;
-        }
-        DeleteFileA(iniPath);
+    // 14327-14328: Start-on-logon click target flips what the user saw painted
+    // on screen when known (avoiding opposite toggles after external edits),
+    // and falls back to !diskEnabled when not yet painted.
+    if (gc_start_on_logon_click_target(true, false, false) != true ||
+        gc_start_on_logon_click_target(true, true, true) != false) {
+        return 14327;
     }
-#endif
+    if (gc_start_on_logon_click_target(true, false, true) != true ||
+        gc_start_on_logon_click_target(true, true, false) != false ||
+        gc_start_on_logon_click_target(false, false, true) != false ||
+        gc_start_on_logon_click_target(false, true, false) != true) {
+        return 14328;
+    }
+
+    // 14329: Opening the tray/Profiles menu syncs applied_slot only once the
+    // service has authoritative READY state (never clobbering applied_slot=0
+    // before the first READY snapshot).
+    if (gc_menu_open_should_sync_applied_profile(false, false) ||
+        gc_menu_open_should_sync_applied_profile(true, false) ||
+        gc_menu_open_should_sync_applied_profile(false, true) ||
+        !gc_menu_open_should_sync_applied_profile(true, true)) {
+        return 14329;
+    }
 
     return 0;
 }
+
+#if defined(_WIN32)
+int run_config_steady_state_native_tests(const char* scratchConfigPath) {
+    // 14323-14326: Native Windows execution of config_section_presence() and
+    // load_configured_gpu_selection() lock-failure distinction on a real INI.
+    if (!scratchConfigPath || !scratchConfigPath[0]) return 14323;
+    char iniPath[MAX_PATH] = {};
+    snprintf(iniPath, sizeof(iniPath), "%s.steady_state.ini", scratchConfigPath);
+    DeleteFileA(iniPath);
+
+    if (config_section_presence(iniPath, "gpu") != CONFIG_SECTION_PRESENCE_ABSENT) {
+        return 14323;
+    }
+    if (!set_config_int(iniPath, "debug", "enabled", 0) ||
+        config_section_presence(iniPath, "gpu") != CONFIG_SECTION_PRESENCE_ABSENT ||
+        config_section_presence(iniPath, "debug") != CONFIG_SECTION_PRESENCE_PRESENT) {
+        DeleteFileA(iniPath);
+        return 14324;
+    }
+    if (!set_config_int(iniPath, "gpu", "selected_index", 0) ||
+        !set_config_int(iniPath, "gpu", "selected_identity_version", 99) ||
+        config_section_presence(iniPath, "gpu") != CONFIG_SECTION_PRESENCE_PRESENT) {
+        DeleteFileA(iniPath);
+        return 14325;
+    }
+    ConfiguredGpuSelection loaded = {};
+    char loadErr[160] = {};
+    bool lockFailed = true;
+    if (load_configured_gpu_selection(iniPath, &loaded, loadErr, sizeof(loadErr), &lockFailed) ||
+        lockFailed) {
+        DeleteFileA(iniPath);
+        return 14325;
+    }
+    if (!set_config_int(iniPath, "gpu", "selected_identity_version", 0) ||
+        !load_configured_gpu_selection(iniPath, &loaded, loadErr, sizeof(loadErr), &lockFailed) ||
+        lockFailed || loaded.legacyIndex != 0) {
+        DeleteFileA(iniPath);
+        return 14326;
+    }
+    DeleteFileA(iniPath);
+    return 0;
+}
+#else
+int run_config_steady_state_native_tests(const char*) { return 0; }
+#endif

@@ -141,6 +141,9 @@ static void draw_themed_button(const DRAWITEMSTRUCT* dis) {
         // here (rather than where the projection runs) keeps the mirror honest
         // even when a full-window RDW_ALLCHILDREN redraw repaints us.
         ui_checkbox_state_set(themed_checkbox_painted_state(dis->CtlID), checked);
+        if (dis->CtlID == START_ON_LOGON_CHECK_ID) {
+            g_app.startOnLogonPaintedKnown = true;
+        }
         // Owning its caption is what makes a checkbox labeled -- there is no
         // per-id list to keep in sync (F-CHECKBOX-HIT).  The VF lock checkboxes
         // carry no text and are drawn by draw_lock_checkbox() anyway.
