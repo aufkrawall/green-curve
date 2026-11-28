@@ -5,6 +5,24 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: Linux resume restore survives a fan lockout during the wake
+
+- Follow-up to the Windows standby stash below. Linux differs: no suspend edge,
+  and the worker's lockout enters the uncertain state, whose gate refused the
+  whole resume restore (clocks included) until an explicit Apply/Reset.
+- Fix: the window is the kernel's suspended-time offset
+  (`CLOCK_BOOTTIME - CLOCK_MONOTONIC`) grown since daemon start or the last
+  resume restore; a lockout inside it keeps the replaced intent, and the resume
+  restore replays it once with only that lockout's uncertainty waived (tagged
+  by a new uncertainty serial, re-checked after preparation). Capture requires
+  driver auto handback and a durable UNCERTAIN record. Tests 14370-14399; gate
+  `check_linux_standby_fan_stash`. Details in
+  [linux-scaffold](../linux-scaffold.md).
+- Rejected: exempting every fan-lockout uncertainty from the gate (would let an
+  unattended restore re-take a fan that failed while awake).
+- Open: a lockout that completes before the freeze is outside the window; not
+  verified on a Linux machine or a real wake.
+
 ## 2026-11-28: Windows standby restore keeps a fan the runtime handed back during the wake
 
 - Review of standby auto-restore: design sound (one coalesced full-intent
@@ -24,8 +42,7 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   while awake and let a late duplicate resume run an old restore). The restore
   wiring's intent choice and use-up rule are pure helpers with executed tests.
 - Not verified on hardware; whether NVML fan calls fail after a real wake is
-  open. Linux follow-up: its fan lockout enters the uncertain state, which
-  refuses the whole resume restore until an explicit Apply/Reset.
+  open. Linux follow-up: done in the entry above.
 
 ## 2026-11-28: Zero steady-state `config.ini` I/O on Windows telemetry
 

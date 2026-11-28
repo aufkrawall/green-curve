@@ -563,6 +563,7 @@ once, stamped by `[meta] linux_mem_migrated`:
 | `source/linux_backend.{h,cpp}`, `source/linux_driver_context.{h,cpp}`, `source/linux_backend_nvml_write.cpp`, `source/linux_backend_discovery.cpp`, `source/linux_backend_mutation.cpp`, `source/linux_gpu_binding_policy.h`, `source/linux_architecture_policy.h`, `source/linux_vf_validation.h`, `source/linux_backend_vf_read.h`, `source/linux_vf_layout_summary.h`, `source/linux_curve_targets.h` | Stable NVML/NvAPI PCI discovery and same-PCI recovery, architecture retention/fallback, atomic VF validation/publication with a per-read layout summary, pure curve-target composition, and transactional mutation. |
 | `source/linux_daemon.{h,cpp}`, `source/linux_daemon_transport.cpp`, `source/linux_daemon_identity.cpp`, `source/linux_daemon_snapshot_runtime.cpp`, `source/linux_mutation_authority.h`, `source/linux_operation_runtime.h`, `source/linux_fan_runtime.h`, `source/linux_socket_permissions.h`, `source/linux_socket_path_permissions.h` | Root daemon socket/dispatch/header-first transport, coherent health/state publication, domain-scoped mutation authority, bounded operation deduplication/query, interruptible fan runtime, and fail-closed filesystem-socket permission configuration/verification. |
 | `source/linux_auto_restore_policy.h`, `source/linux_auto_restore_runtime.h` | The pure crash-loop/lockout rule and the single unattended-write path (guard, backend re-preparation, shared reset-to-stock request builder, resume handler). Both boot-apply modes and the resume restore go through the runtime; nothing else may call `linux_backend_apply()` for an automatic write. |
+| `source/linux_standby_fan_stash_policy.h`, `source/linux_standby_fan_stash.h` | The suspend window (kernel suspended-time offset since the last resume restore) and the intent a fan runtime lockout inside it keeps for one resume replay, with only that lockout's uncertainty waived. See "A fan lockout between suspend and the resume restore". |
 | `source/linux_daemon_client.h` | The client half's shared machinery — which adapter a response is authoritative about, and how a request is built, sent, and its outcome recovered after a transport failure. Split out of `linux_daemon.cpp` for the source-size ratchet. |
 | `source/linux_daemon_client_verbs.cpp` | The individual client request verbs (`linux_daemon_apply/reset/resume_restore/..._checked`, `get_state`, `get_state_ex`, `resolve_write_target`), each deciding what its request must be attached to before it is sent. Split out of `linux_daemon.cpp` along the seam the file already had: unprivileged client code before the include site, root GPU ownership after it. An included `.cpp` rather than a header because the definitions are externally linked, the same rule `linux_startup_policy.h` follows. |
 | `source/linux_daemon_deadline_policy.h` | **The ONE place Linux client deadlines and daemon bounds are written down** (F-DAEMON-DEADLINE). Per-role budgets, the four command classes, the derived response deadlines with `static_assert`s, the recovery-retry and connect-reachability rules. The Linux counterpart of `service_request_deadline_policy.h`, and it reuses that header's `service_phase_remaining_ms()` rather than reimplementing the phase/total arithmetic. |
@@ -1531,7 +1532,68 @@ once, with no proof gate.
   Curve settings has nothing to lose across a suspend.
 - A resume restore while `ctl.stateUncertain` is set is refused with the new
   `DENY_STATE_UNCERTAIN` verdict until an explicit Apply/Reset resolves the
-  state — the flag is a gate, not just a published label (2026-08-01).
+  state — the flag is a gate, not just a published label (2026-08-01). The one
+  exception is the fan lockout below.
+
+#### A fan lockout between suspend and the resume restore (2026-11-28)
+
+Source anchors: `source/linux_standby_fan_stash_policy.h` (pure rules),
+`source/linux_standby_fan_stash.h` (daemon side),
+`daemon_fan_runtime_lockout()` in `source/linux_fan_runtime.h`,
+`daemon_handle_resume_restore()` and `auto_restore_state_uncertain()` in
+`source/linux_auto_restore_runtime.h`, tests 14370-14399
+(`tests/linux_standby_fan_stash_tests.cpp`,
+`tests/fan_runtime_followup_tests.cpp`), gate
+`check_linux_standby_fan_stash` in `tools/fan_gates.py`. Windows counterpart:
+[auto-restore-policy](auto-restore-policy.md), "A fan handback inside the
+standby window".
+
+The fan worker keeps its place across a suspend (its waits use
+`CLOCK_MONOTONIC`, which stops during sleep), so its first polls after the wake
+can reach a driver that `nvidia-resume.service` has not finished restoring;
+the resume unit is ordered after that service, the worker is not. Three failed
+polls lock the worker out: driver auto fan, the curve leaves the owned intent,
+UNCERTAIN record, uncertain state. The uncertain gate then refused the resume
+restore, so clocks stayed at stock too until an explicit Apply/Reset.
+
+- **Window without a suspend edge:** the kernel's suspended-time offset
+  (`CLOCK_BOOTTIME - CLOCK_MONOTONIC`) grows only while the system sleeps and
+  is unaffected by clock steps or NTP slewing. The daemon records it (as a
+  bracket of two monotonic reads around one boot-time read) at start and at
+  every resume restore command; a lockout whose offset provably grew since is
+  inside the window. Not a timer: no duration, sleep or poll decides anything.
+- **Stash:** a lockout inside the window keeps the replaced intent, its target,
+  location role and UUID, and the intent it left, tagged with
+  `ctl.uncertainSerial` (bumped by every entry into uncertainty). Captured only
+  when the replaced intent owned a manual fan (curve or fixed), the daemon was
+  settled before, the driver took the fan back (no emergency-duty case) and the
+  UNCERTAIN record landed. The lockout itself is unchanged.
+- **Replay and the gate:** the next resume restore replays the stash once. Only
+  that restore treats the daemon as settled, and only while the serial is
+  unchanged, the daemon is still uncertain and the owned intent equals what the
+  lockout left; it is re-evaluated after backend preparation. The guard
+  lockout, resume rate limit, pending ownership recovery and target ownership
+  still apply. Success clears the uncertainty (as any committed restore) and the
+  fan fault record. A restore that reached the hardware uses the stash up; a
+  refusal before any write keeps it for the next wake. A failing curve is
+  handed back again, now outside the window.
+- **Dropped by:** any explicit Apply or Reset (whatever the outcome), a later
+  uncertainty cause, a changed intent, or a lockout outside the window.
+- **Why not simply exempt fan-lockout uncertainty:** a lockout outside a wake
+  is evidence about the fan or driver, and the gate exists so nothing
+  unattended re-takes a fan that just failed. The window limits the waiver to
+  the case the resume unit exists for.
+- Diagnostics: `daemon standby fan stash:` (window closed by, lockout
+  window/captured/inputs, not replayed and why, dropped by, used up),
+  `daemon resume: replaying the intent a fan lockout replaced`,
+  `daemon auto-restore: resume replays a standby fan stash ... waived=` and the
+  `daemon resume: result ... fanStashReplay=` line.
+- Limits: a lockout that completes before the freeze (after
+  `nvidia-suspend.service`, before the kernel suspends) is outside the window,
+  because the daemon only sees the resume; a pre-freeze failure that completes
+  after the wake is inside. The stash is in memory only: a daemon restart
+  before the restore keeps the old refusal. Not observed on hardware; whether
+  NVML fan calls fail after a real wake is unverified.
 
 ## Startup-apply policy (introduced in protocol v13; current protocol v29)
 
@@ -2364,6 +2426,12 @@ escaped" was true only of the shell layer; read it that way.
 
 ## Last verified
 
+- 2026-11-28: Resume restore after a fan lockout during the wake (suspended-time
+  window, one-shot stash, waiver of only that lockout's uncertainty). Cases
+  14370-14399, gates `check_linux_standby_fan_stash` and the updated
+  unattended-write/identity checks, full native Windows regressions, Linux
+  cross-links and the full build passed. Not run on a Linux machine or across a
+  real suspend.
 - 2026-10-27: Untargeted state reads may initialize or explicitly retry an
   unavailable backend without performing deferred fan work. The worker owns
   that handback, and automatic restore revalidates recovery authority after

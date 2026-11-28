@@ -330,6 +330,11 @@ was restored; a failed handback retains it. Diagnostics:
 `daemon state: entering uncertain state` and `uncertain state (...) returned
 the fan`. Fake-driver cases cover these paths; hardware is unverified.
 
+The worker's own lockout between a suspend and the resume restore is the one
+uncertainty the resume restore may pass, once, to replay the curve it replaced
+(2026-11-28; [linux-scaffold](linux-scaffold.md), "A fan lockout between
+suspend and the resume restore").
+
 Last verified: 2026-10-27.
 
 ## State reads never run deferred fan recovery (2026-10-27)

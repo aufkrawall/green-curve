@@ -417,9 +417,11 @@ off after the wake.
   used up), `lifecycle standby: replaying the intent a fan handback replaced`
   and `fanStashReplay=` on the restore's result line.
 - Open: not observed on hardware; whether NVML fan calls actually fail after a
-  real wake is unverified. Windows only: the Linux daemon has no suspend edge
-  and its fan lockout enters the uncertain state, which refuses the resume
-  restore outright (see [linux-scaffold](linux-scaffold.md)).
+  real wake is unverified. The Linux daemon has no suspend edge; its
+  counterpart derives the window from the kernel's suspended-time offset and
+  waives only that lockout's uncertainty for the resume restore (see
+  [linux-scaffold](linux-scaffold.md), "A fan lockout between suspend and the
+  resume restore").
 
 A confirmed driver recovery is stricter. Its proof age is measured with
 `QueryUnbiasedInterruptTime`, so suspend/hibernate time does not advance the
