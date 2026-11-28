@@ -341,12 +341,30 @@ Source anchors: `tools/linux_payload.py` (shared payload, names, glibc floor),
   starts needing a newer one). Fedora and openSUSE rpms currently differ only in
   the `Distribution` tag; the profile table (`RPM_DISTROS`) is where a real
   divergence goes.
-- **Open questions / stale-risk:** the deb and rpm packages have been validated
-  by the in-repo read-back parsers, libarchive (`bsdtar` lists both payloads)
-  and `sh -n` on every script, but NOT yet installed with real dpkg/apt,
-  rpm/dnf or zypper. The rpms are unsigned: zypper needs
-  `--allow-unsigned-rpm`, and an rpm configured to require signatures
-  (`%_pkgverify_level signature`) refuses them.
+- **Real package-manager check** (`tools/linux_package_install_check.sh
+  <old-dir> <new-dir>`, as root on Linux/WSL with rpm, dpkg and pacman): installs,
+  upgrades and removes every x86_64 package inside a throwaway overlay of the
+  host root, so maintainer scripts run for real (chrooted) and nothing persists.
+  It checks registration, installed files, group creation, user enrollment
+  (`GREENCURVE_USER`), `rpm -V`/`dpkg -V`, single-instance upgrade and clean
+  removal. Bind mounts into the overlay are `rslave`: a shared rbind lets an
+  unmount propagate to the host's `/dev`/`/sys` submounts (observed 2026-11-28;
+  it broke the WSL instance until restarted). Passed 2026-11-28 with rpm 6.0.1,
+  dpkg 1.23.11 and pacman 7.1.
+- **Group creation invariant:** dpkg and rpm have no sysusers hook, so the
+  shared scriptlet runs `systemd-sysusers greencurve.conf` and then re-checks
+  `getent`; `groupadd -r` runs whenever the group is still missing, because
+  sysusers can exit 0 without creating it (chroot, container, file not
+  visible). The earlier `sysusers || groupadd` skipped the fallback on that exit
+  status; the real dpkg chroot install exposed it. Pinned by
+  `GroupEnrollmentTests` (stubbed `getent`/`systemd-sysusers`/`groupadd`).
+- **Open questions / stale-risk:** the rpms are unsigned. rpm 6.0's default
+  `%_pkgverify_level all` refuses them for plain `rpm -i` (needs
+  `--nosignature`); `dnf install ./file` skips the signature for local files by
+  default, and zypper needs `--allow-unsigned-rpm`. Digests are always
+  enforced. Signing needs a release key decision. Not yet run on a native
+  Debian/Ubuntu/Fedora/openSUSE system (the overlay check uses the real package
+  managers on an Arch userland) or on ARM64.
 
 ### Arch package details
 

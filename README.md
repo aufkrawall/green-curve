@@ -190,7 +190,8 @@ sudo pacman -U greencurve-0.32.0-1-arch-x86_64.pkg.tar.zst
 sudo apt install ./greencurve-0.32.0-1-debian-amd64.deb
 # Fedora
 sudo dnf install ./greencurve-0.32.0-1-fedora-x86_64.rpm
-# openSUSE (the packages are not OpenPGP-signed; verify the .sha256 first)
+# openSUSE (the packages are not OpenPGP-signed; verify the .sha256 first;
+# plain `rpm -i` on rpm 6 also needs --nosignature)
 sudo zypper install --allow-unsigned-rpm ./greencurve-0.32.0-1-suse-x86_64.rpm
 ```
 

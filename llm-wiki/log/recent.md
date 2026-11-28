@@ -15,8 +15,17 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   (29 workflow assets, 33 with the updater assets).
 - Validated by read-back parsers, 20 fixtures in
   `tools/linux_packages_tests.py`, libarchive listing and `sh -n`; pacman
-  reads the renamed Arch package. Not yet installed with real dpkg/rpm/zypper
-  (follow-up: install test on each distro); rpms are unsigned.
+  reads the renamed Arch package.
+- Real package managers (rpm 6.0.1, dpkg 1.23.11, pacman 7.1 in WSL Arch):
+  new `tools/linux_package_install_check.sh` runs install -> upgrade -> remove
+  for all four formats in an overlay root; all checks pass. It exposed that
+  the shared scriptlet skipped `groupadd` when `systemd-sysusers` exited 0
+  without creating the group (dpkg/rpm have no sysusers hook); fixed and pinned
+  by `GroupEnrollmentTests`. rpm 6's default policy refuses the unsigned rpms
+  for plain `rpm -i`; dnf/zypper local installs work as documented.
+- Harness lesson: bind mounts into a test root must be `rslave` before
+  teardown; a shared rbind propagated a lazy unmount to the WSL instance's own
+  `/dev`/`/sys` submounts until the distro was restarted.
 
 ## 2026-11-27: 0.32.0 release preparation (not yet published)
 
