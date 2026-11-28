@@ -692,7 +692,7 @@ static void detect_locked_tail_from_curve() {
         // Never adopt an unowned live flat tail as appliedLock* or locked* (§5.3 / §8.5).
         // Log read-only recognition for diagnostics; external curves enter intent only via Capture.
         const VfFlatTailRecognition rec = (g_app.numVisible >= 2)
-            ? vf_recognize_flat_tail(g_app.curve, g_app.vfFloorBinding.floor, 1, 3)
+            ? vf_recognize_programmed_flat_tail(g_app.curve, g_app.freqOffsets, g_app.vfFloorBinding.floor, 1, 3)
             : VfFlatTailRecognition{};
         debug_log_on_change("lock detect: ownership=external found=%d anchor=ci%d mv=%u plateau=%u MHz (ignored for applied lock state)\n",
             rec.found ? 1 : 0, rec.found ? rec.anchorCi : -1,

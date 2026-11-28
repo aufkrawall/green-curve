@@ -5,6 +5,13 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: Exclude stock level tops and uniform offsets from capture flatten recognition
+
+- Reported on RTX 5070 with an external `+100 MHz` global offset: `Import current GPU settings` classified the curve as `Flat at 3292 MHz from 1235 mV (+100 MHz on 125 lower points)` and recommended `Flat curve` while `Core clock` stayed disabled (`No offset (stock)`).
+- Root cause: `profile_capture_prepare_proposals()` (`source/profile_capture_proposals.h`) still called `vf_recognize_flat_tail()` (which ignores per-point offsets and matches `exact && tail >= 1`) instead of `vf_recognize_programmed_flat_tail()` (`source/vf_flat_tail_recognition.h`), so the stock top two equal-frequency bins on RTX 5070 (`125` and `126` at `1235`/`1240 mV`) triggered a false-positive flatten over both stock and uniform global offsets. `Core clock` remains disabled because Windows/Linux live capture leaves scalar/VF composition `CAPTURE_COMPOSITION_UNKNOWN` (`CAPTURE_COMPOSITION_UNRESOLVED`), while NVML scalar readback on Blackwell reads `0` when the global offset sits in the VF table.
+- Fix: switched `profile_capture_prepare_proposals()` and `detect_locked_tail_from_curve()`'s external diagnostic log (`source/gpu_backend.cpp`) to `vf_recognize_programmed_flat_tail()`, updated test `9712` to populate tail offsets, added regression cases `9716-9719` (`tests/profile_capture_proposals_tests.cpp`), and pinned both call sites in `tools/ui_gates.py`.
+- Verified via `python build.py --test` (all unit, cross-link, and wiki/security/UI gates passed); live hardware dialog re-check remains with the user.
+
 ## 2026-11-28: Standby fan stash review follow-ups (Windows & Linux)
 
 - Closed the Linux suspend window (`daemon_standby_window_close()`) on explicit

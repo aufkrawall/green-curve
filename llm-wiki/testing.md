@@ -1,5 +1,10 @@
 # Testing
 
+## Capture flatten recognition over stock level tops and uniform offsets (2026-11-28)
+
+- **`tests/profile_capture_proposals_tests.cpp` (`9716-9719`):** covers a 127-point Blackwell-shaped curve whose top two voltage points share the same stock frequency: stock (`0` offset) reports `"Stock curve (no changes)"` with no flatten proposal (`9716`), `+100 MHz` uniform VF offset reports `"+100 MHz on 127 points"` with `Core clock` unresolved (`"No offset (stock)"`, disabled) and `PROFILE_CAPTURE_EXACT` saving all writable points at `+100 MHz` (`9717`), selective `+100 MHz` reports `"+100 MHz on 82 points"` (`9718`), and a real programmed flatten at `ci=124` with differing tail offsets remains recognized (`9719`). `9712` was updated to carry negative tail offsets so its 128-point flatten models an actual programmed tail.
+- **Source gate (`tools/ui_gates.py`):** `check_observed_editor_lock()` requires `vf_recognize_programmed_flat_tail(` and forbids `vf_recognize_flat_tail(` in `source/profile_capture_proposals.h` and `source/gpu_backend.cpp`.
+
 ## Linux distro package install check (2026-11-28)
 
 `tools/linux_packages_tests.py` (run by `python build.py --test`) builds and

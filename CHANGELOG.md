@@ -40,7 +40,7 @@ Profiles can be captured, checked and moved between platforms; curves, cooling a
 - **Fan stall protection:** custom cooling hands the fan back when a confirmed RPM reading drops to zero.
 - **CMP cards:** experimental modified-driver support.
 - **Dialog copying:** Ctrl+C copies message text.
-- **Linux packages:** Debian/Ubuntu, Fedora and openSUSE packages (rpms signed); every package names its distribution, including Arch.
+- **Linux packages:** signed RPM, Debian/Ubuntu and Arch packages with distribution-tagged names.
 
 ### Improved
 
@@ -49,18 +49,19 @@ Profiles can be captured, checked and moved between platforms; curves, cooling a
 - **Profile matching:** exact values are stored and the active profile is recognized reliably.
 - **Linux switching:** flattened and locked curves are verified; curve-only edits keep memory.
 - **Laptop GPUs:** system-managed fans and power limits are accepted.
-- **Idle disk activity:** background monitoring on Windows no longer reads the configuration file every second.
+- **Idle disk activity:** Windows background monitoring no longer polls configuration on every tick.
 
 ### Fixed
 
 - **Deep undervolting:** per-point undervolts may exceed narrow global limits, such as Pascal's -200 MHz.
 - **Partial profiles:** omitted controls stay untouched, including at logon and after upgrade.
 - **Cooling handback:** Reset, shutdown and failed Linux starts reliably return every fan to Auto.
-- **Fan curves:** keep running after profile switches, standby and Linux wake errors; no stale active profile.
+- **Fan curves:** survive profile switches, standby and wake errors without stale active attribution.
 - **Reset:** restores memory and power changed elsewhere and works on fanless GPUs.
 - **Linux recovery:** the daemon survives an NVIDIA driver that starts late or loses its session.
 - **Linux startup and upgrades:** duplicate daemons are prevented and failed upgrades roll back.
 - **Scoped curves:** unrelated offsets, locked tails and read-only points survive Reset and rollback.
+- **Profile capture:** level stock tops and uniform core offsets are no longer classified as flattened curves.
 - **Profile files:** transfers keep scope and bindings and never overwrite without confirmation.
 - **Curve editing:** no preview spikes; typed values and drafts are kept.
 - **Memory changes:** keep the curve, and fractional offsets restore exactly.
@@ -69,11 +70,11 @@ Profiles can be captured, checked and moved between platforms; curves, cooling a
 - **Windows text:** °C and Unicode display correctly in non-Western locales.
 - **Probe reports:** `--probe` writes to the user data folder by default.
 - **Tray:** no crash when minimizing after profile actions.
-- **Installer:** recovers when another program holds a temporary file open.
+- **Installer:** recovers from locked temporary files.
 
 ### Compatibility notes
 
-Profiles remain compatible. Update the app and service together, as the installer and setup script do. After returning to 0.31.0, apply your profile once.
+Profiles remain compatible. Update the app and service together. After downgrading to 0.31.0, re-apply your profile once.
 
 ### Downloads and verification
 

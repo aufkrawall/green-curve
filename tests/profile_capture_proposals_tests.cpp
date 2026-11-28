@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 #include "profile_capture_commands.h"
 #include "profile_capture_proposal_fixture.h"
+#include "profile_capture_save.h"
 #include "profile_review_fixture.h"
+#include "profile_summary.h"
 #include <climits>
 
 namespace {
@@ -159,6 +161,7 @@ int run_profile_capture_proposals_tests() {
         point.offsetValid = point.frequencyValid = 1;
         point.writableState = i < 10 ? 2 : 1;
         point.frequencyHz = i < 10 ? 180000000 : 1000000000;
+        point.offsetHz = i > 10 ? -(gc_i64)(i - 10) * 5000000LL : 0;
     }
     if (!profile_capture_prepare_proposals(*o, {}, *proposals, why, sizeof(why)) || !proposals->flatten.selectable() ||
         proposals->flatten.anchorVoltageUv != 600000 || proposals->flatten.tailCount != 117 ||
@@ -248,5 +251,90 @@ int run_profile_capture_proposals_tests() {
     if (!profile_capture_commands_run(pinned, "config.ini", io, code) || code != PROFILE_COMMAND_INVALID ||
         io.captures != reads || io.writes != 2)
         return 9706;
+
+    // 9716-9719: a stock curve whose top bins share one frequency (for example
+    // the top two voltage points of a 127-point Blackwell table) and a uniform
+    // or selective global offset over that level top must never be classified
+    // as a flattened curve; only differing tail offsets recognize a flatten.
+    {
+        auto makeLevelTopCurve = [&](gc_i64 floorOffsetHz, gc_i64 writableOffsetHz) {
+            auto cap = std::make_unique<HardwareCaptureObservation>(original);
+            cap->composition = CAPTURE_COMPOSITION_UNKNOWN;
+            cap->graphics = {};
+            cap->graphics.valid = 1;
+            cap->graphics.grid = 1000000;
+            cap->graphics.surface = CLOCK_OFFSET_SURFACE_P0;
+            hardware_capture_domain(*cap, PROFILE_DOMAIN_GRAPHICS_OFFSET, CAPTURE_COMPOSITION_UNRESOLVED);
+            cap->vfLimits = {1, 1, 1, 1, VF_OFFSET_RANGE_SOURCE_NVML_GRAPHICS, -2500000000LL, 3000000000LL, 1000};
+            cap->pointCount = 127;
+            for (int i = 0; i < 127; ++i) {
+                auto &pt = cap->points[i];
+                pt = {};
+                pt.index = (gc_u32)i;
+                pt.voltageUv = (i < 45 ? 500000 : 700000) + i * 5000;
+                pt.offsetValid = pt.frequencyValid = 1;
+                pt.writableState = i < 45 ? 2 : 1;
+                const gc_i64 offHz = i < 45 ? floorOffsetHz : writableOffsetHz;
+                const gc_i64 stockHz = i < 45 ? 177000000LL :
+                    i < 125 ? 200000000LL + (gc_i64)(i - 45) * 37000000LL : 3192000000LL;
+                pt.offsetHz = offHz;
+                pt.frequencyHz = stockHz + offHz;
+            }
+            cap->fingerprint = hardware_capture_fingerprint(*cap);
+            cap->revision = service_control_review_revision(cap->fingerprint, nullptr);
+            return cap;
+        };
+
+        // 9716: stock curve with 2-point level top -> not a flatten.
+        auto stockLevel = makeLevelTopCurve(0, 0);
+        if (!profile_capture_prepare_proposals(*stockLevel, {}, *proposals, why, sizeof(why)) ||
+            proposals->flatten.recognized || proposals->flatten.selectable() ||
+            proposals->suggested != PROFILE_CAPTURE_EXACT ||
+            profile_capture_summary(*stockLevel, proposals.get()).curve.text != "Stock curve (no changes)")
+            return 9716;
+
+        // 9717: +100 MHz uniform global offset on all 127 points -> not a flatten,
+        // summary shows "+100 MHz on 127 points", Core clock shows unresolved stock,
+        // and Exact saves all 82 writable points with +100 MHz captured offset.
+        auto uniformGlobal = makeLevelTopCurve(100000000LL, 100000000LL);
+        if (!profile_capture_prepare_proposals(*uniformGlobal, {}, *proposals, why, sizeof(why)) ||
+            proposals->flatten.recognized || proposals->flatten.selectable() ||
+            proposals->suggested != PROFILE_CAPTURE_EXACT)
+            return 9717;
+        const auto uniformSummary = profile_capture_summary(*uniformGlobal, proposals.get());
+        if (uniformSummary.curve.text != "+100 MHz on 127 points" ||
+            uniformSummary.core.available || uniformSummary.core.text != "No offset (stock)")
+            return 9717;
+        auto savedUniform = std::make_unique<DesiredSettings>();
+        if (!profile_capture_record(*uniformGlobal, *proposals, PROFILE_CAPTURE_EXACT,
+                1u << PROFILE_CAPTURE_GROUP_CURVE, *savedUniform, why, sizeof(why)) ||
+            savedUniform->hasLock || !savedUniform->curvePointCaptured[45] ||
+            savedUniform->curvePointCapturedOffsetHz[45] != 100000000LL ||
+            !savedUniform->curvePointCaptured[126] ||
+            savedUniform->curvePointCapturedOffsetHz[126] != 100000000LL)
+            return 9717;
+
+        // 9718: selective +100 MHz on writable points only -> "+100 MHz on 82 points".
+        auto selectiveGlobal = makeLevelTopCurve(0, 100000000LL);
+        if (!profile_capture_prepare_proposals(*selectiveGlobal, {}, *proposals, why, sizeof(why)) ||
+            proposals->flatten.recognized || proposals->suggested != PROFILE_CAPTURE_EXACT ||
+            profile_capture_summary(*selectiveGlobal, proposals.get()).curve.text != "+100 MHz on 82 points")
+            return 9718;
+
+        // 9719: real programmed flatten at ci=124 (125..126 pulled down) -> still recognized.
+        auto realFlatten = makeLevelTopCurve(100000000LL, 100000000LL);
+        const gc_i64 anchorHz = realFlatten->points[124].frequencyHz;
+        realFlatten->points[125].frequencyHz = anchorHz;
+        realFlatten->points[125].offsetHz = anchorHz - 3192000000LL;
+        realFlatten->points[126].frequencyHz = anchorHz;
+        realFlatten->points[126].offsetHz = anchorHz - 3192000000LL;
+        realFlatten->fingerprint = hardware_capture_fingerprint(*realFlatten);
+        realFlatten->revision = service_control_review_revision(realFlatten->fingerprint, nullptr);
+        if (!profile_capture_prepare_proposals(*realFlatten, {}, *proposals, why, sizeof(why)) ||
+            !proposals->flatten.recognized || !proposals->flatten.selectable() ||
+            proposals->flatten.anchorVoltageUv != realFlatten->points[124].voltageUv ||
+            proposals->flatten.tailCount != 2 || proposals->suggested != PROFILE_CAPTURE_FLATTEN)
+            return 9719;
+    }
     return 0;
 }

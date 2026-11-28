@@ -180,6 +180,7 @@ static inline bool profile_capture_prepare_proposals(const HardwareCaptureObserv
     profile_capture_proposal_reason(proposals->pin, "pin unknown: no validated getter or retained applied intent");
     auto order = std::make_unique<int[]>(VF_NUM_POINTS);
     auto normalized = std::make_unique<VFCurvePoint[]>(VF_NUM_POINTS);
+    auto normalizedOffsetsKHz = std::make_unique<int[]>(VF_NUM_POINTS);
     const int count = proposals->exact.topologyCount;
     for (int i = 0; i < count; ++i)
         order[i] = i;
@@ -194,10 +195,14 @@ static inline bool profile_capture_prepare_proposals(const HardwareCaptureObserv
     for (int i = 0; i < count; ++i) {
         const auto &p = observation.points[order[i]];
         if (!p.frequencyValid || !p.offsetValid || !p.writableState || p.voltageUv <= previousVoltage ||
-            p.voltageUv > UINT_MAX || p.frequencyHz / 1000 <= 0 || p.frequencyHz / 1000 > INT_MAX)
+            p.voltageUv > UINT_MAX || p.frequencyHz / 1000 <= 0 || p.frequencyHz / 1000 > INT_MAX ||
+            p.offsetHz / 1000 < INT_MIN || p.offsetHz / 1000 > INT_MAX)
             floor.valid = false;
         previousVoltage = p.voltageUv;
         normalized[i] = {(unsigned int)(p.frequencyHz / 1000), (unsigned int)p.voltageUv};
+        normalizedOffsetsKHz[i] = (p.offsetHz / 1000 >= INT_MIN && p.offsetHz / 1000 <= INT_MAX)
+            ? (int)(p.offsetHz / 1000)
+            : 0;
         if (p.writableState == 1)
             writable = true;
         else if (writable)
@@ -210,7 +215,10 @@ static inline bool profile_capture_prepare_proposals(const HardwareCaptureObserv
     if (!writable)
         floor.valid = false;
     if (floor.valid && (observation.capturedDomains & PROFILE_DOMAIN_VF_CURVE)) {
-        const auto recognized = vf_recognize_flat_tail(normalized.get(), floor, 1, 3);
+        // Require differing tail offsets so a stock level top (0 offset or a
+        // uniform global offset) is never misclassified as a flat curve.
+        const auto recognized = vf_recognize_programmed_flat_tail(
+            normalized.get(), normalizedOffsetsKHz.get(), floor, 1, 3);
         if (recognized.found) {
             auto &flatten = proposals->flatten;
             const int anchor = order[recognized.anchorCi];

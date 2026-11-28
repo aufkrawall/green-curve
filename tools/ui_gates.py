@@ -1810,6 +1810,14 @@ def check_observed_editor_lock(ctx, require_text, forbid_text):
                  "a level stock top (no programmed tail offsets) is never treated as a programmed flatten")
     require_text(_p(ctx, "gui_observed_lock_policy.h"), "vf_recognize_programmed_flat_tail(",
                  "the observed editor lock uses the shared programmed-flat-tail predicate")
+    require_text(_p(ctx, "profile_capture_proposals.h"), "vf_recognize_programmed_flat_tail(",
+                 "capture flatten recognition excludes stock level tops and uniform offsets")
+    forbid_text(_p(ctx, "profile_capture_proposals.h"), "vf_recognize_flat_tail(",
+                "capture flatten recognition must not ignore per-point offsets")
+    require_text(_p(ctx, "gpu_backend.cpp"), "vf_recognize_programmed_flat_tail(",
+                 "diagnostic external-lock detection excludes stock level tops and uniform offsets")
+    forbid_text(_p(ctx, "gpu_backend.cpp"), "vf_recognize_flat_tail(",
+                "diagnostic external-lock detection must not ignore per-point offsets")
     require_text(_p(ctx, "ui_profile_save_notice.cpp"), "PROFILE_SAVE_NOTICE_OBSERVED_FLATTEN",
                  "Save of the projection names the flatten and offers Import")
     forbid_text(_p(ctx, "gpu_backend.cpp"), "gui_observed_lock",

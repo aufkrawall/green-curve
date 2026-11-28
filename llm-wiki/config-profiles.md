@@ -128,10 +128,16 @@ Current behavior:
 - **Import current GPU settings** (Windows dialog, TUI modal) reads all groups except
   fan on open (`PROFILE_CAPTURE_DEFAULT_DOMAINS`), reviews with partial allowed, and
   shows one row per group (`profile_capture_summary()`). Unreadable groups cannot be
-  included; advanced clocks appear only when the GPU has them. The curve choice lists
-  only selectable representations, suggested first. Tier 3 pin detection is a
-  secondary button shown only when observable; a suspected pin is confirmed at the
-  sampled frequency and preselected. Save builds the record with
+  included; advanced clocks appear only when the GPU has them. Flatten proposal
+  recognition (`profile_capture_prepare_proposals()`) uses
+  `vf_recognize_programmed_flat_tail()` so stock level tops (0 offset or a uniform
+  global VF offset, such as the top two voltage points on RTX 5070) are never
+  classified as flattened curves; `profile_capture_summary()` then reports uniform
+  VF offsets as `+<N> MHz on <M> points` while `Core clock` stays unresolved/disabled
+  when scalar/VF composition is unknown (`CAPTURE_COMPOSITION_UNRESOLVED`). The
+  curve choice lists only selectable representations, suggested first. Tier 3 pin
+  detection is a secondary button shown only when observable; a suspected pin is
+  confirmed at the sampled frequency and preselected. Save builds the record with
   `profile_capture_record()` (left-out groups dropped from the document, mapped onto
   the snapshot's own topology, legacy scope promoted to an explicit one so a slot
   save cannot refill omitted groups from live values) and writes it with the
