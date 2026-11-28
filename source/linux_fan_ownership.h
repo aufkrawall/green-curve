@@ -164,6 +164,7 @@ static void daemon_enter_uncertain_state(LinuxGpuController& ctl, const char* re
         dlog("daemon state: entering uncertain state (%s)\n",
              reason && reason[0] ? reason : "unspecified");
     ctl.stateUncertain = true;
+    ++ctl.uncertainSerial;
     daemon_fan_ownership_release_for_uncertain(ctl, reason);
 }
 
@@ -178,6 +179,7 @@ static void daemon_enter_uncertain_after_fan_lockout(LinuxGpuController& ctl, co
     if (!ctl.stateUncertain)
         dlog("daemon state: entering uncertain state (%s)\n", why);
     ctl.stateUncertain = true;
+    ++ctl.uncertainSerial;
     if (!ctl.fanOwnershipMarkerCommitted) return;
     if (autoOk) {
         daemon_fan_ownership_retire(ctl, why);

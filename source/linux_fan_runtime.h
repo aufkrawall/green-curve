@@ -101,6 +101,11 @@ static void daemon_fan_runtime_lockout(LinuxGpuController& ctl, gc_u32 kind, con
         ctl.activeDesired.fanAuto != 0);
     const GpuAdapterInfo recordTarget = ctl.activeTarget.valid
         ? ctl.activeTarget : ctl.gpu.selectedGpu;
+    // What this lockout replaces, for a resume restore that may still be
+    // ahead (linux_standby_fan_stash_policy.h).
+    const DesiredSettings previousDesired = ctl.activeDesired;
+    const GpuAdapterInfo previousTarget = ctl.activeTarget;
+    const bool wasUncertain = ctl.stateUncertain;
     if (autoOk) {
         // The driver has the fan back: stop claiming the failed/stalled fan so
         // snapshots and later non-fan Applies cannot resurrect it.
@@ -124,8 +129,8 @@ static void daemon_fan_runtime_lockout(LinuxGpuController& ctl, gc_u32 kind, con
     ctl.hasActiveDesired = service_scoped_has_owned_intent(ctl.activeDesired);
     if (!ctl.hasActiveDesired) ctl.activeTarget = {};
     char stateErr[256] = {};
-    store_daemon_record(ctl, LINUX_DAEMON_RECORD_UNCERTAIN, &recordTarget,
-                        &ctl.activeDesired, stateErr, sizeof(stateErr));
+    const bool recordPersisted = store_daemon_record(ctl, LINUX_DAEMON_RECORD_UNCERTAIN,
+        &recordTarget, &ctl.activeDesired, stateErr, sizeof(stateErr));
     dlog("daemon: %s; auto=%d handback=%u fanIntent=%d->%d owned=%d state=%s\n",
          why, autoOk ? 1 : 0, (unsigned int)handback, previousMode,
          fan_owned_intent_mode(ctl.hasActiveDesired && ctl.activeDesired.hasFan,
@@ -135,6 +140,8 @@ static void daemon_fan_runtime_lockout(LinuxGpuController& ctl, gc_u32 kind, con
     daemon_fan_fault_record(ctl, kind, handback,
         fanIndex, commandedPercent, stalledForMs, why);
     daemon_enter_uncertain_after_fan_lockout(ctl, why, autoOk);
+    daemon_standby_fan_stash_note_lockout(ctl, hadIntent, &previousDesired,
+        &previousTarget, wasUncertain, autoOk, recordPersisted);
 }
 
 // Monotonic milliseconds: the clock the worker's waits use.

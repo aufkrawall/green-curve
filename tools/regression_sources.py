@@ -18,6 +18,7 @@ REGRESSION_SOURCES = (
     'fan_stall_tests.cpp',
     'fan_handback_runtime_tests.cpp',
     'standby_fan_stash_tests.cpp',
+    'linux_standby_fan_stash_tests.cpp',
     'security_audit_tests.cpp',
     'installer_fuzz_harness_tests.cpp',
     'review_followup_tests.cpp',

@@ -961,7 +961,8 @@ int run_clock_transition_tests();
 // Service registration / install-location suite (tests/service_install_tests.cpp).
 int run_service_install_tests();
 int run_advanced_apply_tests();
-// Linux fan worker fixture, incl. fault record and stall check (12890-12897).
+// Linux fan worker fixture, incl. fault record, stall check and standby
+// stash hand-off (12890-12899, 14370-14372).
 int run_fan_runtime_followup_tests();
 int run_linux_fan_ownership_tests();
 int run_memory_recovery_tests();
@@ -979,6 +980,9 @@ int run_fan_handback_runtime_tests();
 // The standby window for a fan runtime handback
 // (tests/standby_fan_stash_tests.cpp, 14340-14349, 14358-14365).
 int run_standby_fan_stash_tests();
+// A Linux fan lockout between suspend and the resume restore
+// (tests/linux_standby_fan_stash_tests.cpp, 14373-14399).
+int run_linux_standby_fan_stash_tests();
 int run_debug_log_identity_tests();
 int run_service_client_identity_failure_child();
 int run_security_audit_tests();
@@ -2049,6 +2053,8 @@ int main(int argc, char** argv) {
     if (int fanStallFailure = run_fan_stall_tests()) return fanStallFailure;
     if (int fanHandbackFailure = run_fan_handback_runtime_tests()) return fanHandbackFailure;
     if (int standbyFanStashFailure = run_standby_fan_stash_tests()) return standbyFanStashFailure;
+    if (int linuxStandbyFanStashFailure = run_linux_standby_fan_stash_tests())
+        return linuxStandbyFanStashFailure;
     if (int logFailure = run_debug_log_identity_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", logFailure);
         return logFailure;

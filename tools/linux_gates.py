@@ -1037,8 +1037,17 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
                  "an uncertain daemon has its own refusal verdict")
     require_text(runtime_h,
                  "linux_auto_restore_decide(&ctl.autoRestoreGuard, trigger,\n"
-                 "                                  ctl.stateUncertain, nowMs);",
+                 "                                  stateUncertain, nowMs);",
                  "the unattended-write gate consults the uncertain flag, not only the guard")
+    # The flag reaches that decision through auto_restore_state_uncertain(),
+    # which waives it only for a resume restore replaying a standby fan stash
+    # (linux_standby_fan_stash_policy.h; fan_gates.check_linux_standby_fan_stash).
+    require_text(runtime_h,
+                 "    if (!standbyFanStashReplay) return ctl.stateUncertain;",
+                 "every automatic write except a stash replay is judged on the raw uncertain flag")
+    require_text(runtime_h,
+                 "const bool uncertainAtStart = auto_restore_state_uncertain(ctl, standbyFanStashReplay);",
+                 "the guard decision takes its uncertainty from the stash-aware helper")
     # F-LNX-RESUME-BUDGET: the resume trigger is exempt from the per-boot
     # counter but spends a short-window budget, so the socket command cannot be
     # replayed without bound.  Asserted on behaviour in the regression harness
@@ -1292,8 +1301,15 @@ def check_gpu_location(ctx, require_text, forbid_text, require_order):
                  "the context releases only the NVML reference it acquired")
     require_text(discovery_cpp, "linux_gpu_read_uuid(g->getUuid, g->nvmlDevice)",
                  "the selection fast path reads the UUID through the cached query")
-    require_text(restore_h, "ctl.activeTargetRole, &ctl.activeTargetUuid)",
-                 "resume forwards the committed physical identity")
+    # A standby fan stash replay forwards the identity the lockout recorded,
+    # which is the committed one from before the lockout.
+    require_text(restore_h, "const GpuLocationRole role = replay ? stash.replacedRole : ctl.activeTargetRole;",
+                 "resume forwards the committed physical identity (role)")
+    require_text(restore_h, "const LinuxGpuUuid uuid = replay ? stash.replacedUuid : ctl.activeTargetUuid;",
+                 "resume forwards the committed physical identity (UUID)")
+    require_text(_p(ctx, "linux_standby_fan_stash.h"),
+                 "stash.replacedUuid = ctl.activeTargetUuid;",
+                 "a standby fan stash records the committed physical identity")
     require_text(restore_h, "linux_gpu_uuid_retain(linux_backend_selected_uuid(&ctl.gpu), uuid)",
                  "an unavailable optional query does not erase a learned identity")
     require_text(startup_h,

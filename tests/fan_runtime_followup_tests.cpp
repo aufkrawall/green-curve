@@ -174,18 +174,41 @@ static bool daemon_fan_ownership_resume_deferred_handback(LinuxGpuController& ct
     return true;
 }
 static DesiredSettings storedUncertainDesired;
+// An UNCERTAIN record that does not land (14372).
+static bool storeFails;
 static int storeUncertainCalls;
 static void dlog(const char*, ...) {}
 static bool store_daemon_record(LinuxGpuController&, int, const GpuAdapterInfo*, const DesiredSettings* desired, char*, size_t) {
     ++storeUncertainCalls;
     if (desired) storedUncertainDesired = *desired;
-    return true;
+    return !storeFails;
 }
 static void daemon_enter_uncertain_after_fan_lockout(LinuxGpuController& ctl, const char*, bool autoOk) {
     ++lockouts;
     lockoutAtMs = nowMs;
     lockoutAutoOk = autoOk;
     ctl.stateUncertain = true;
+}
+// What the lockout hands the standby stash (linux_standby_fan_stash.h), and
+// whether it ran after uncertainty was entered.
+struct StashNote {
+    int calls;
+    bool hadIntent, wasUncertain, driverTookFan, recordPersisted, afterUncertain;
+    DesiredSettings previous;
+    GpuAdapterInfo previousTarget;
+};
+static StashNote stashNote;
+static void daemon_standby_fan_stash_note_lockout(LinuxGpuController& ctl, bool hadIntent,
+    const DesiredSettings* previous, const GpuAdapterInfo* previousTarget,
+    bool wasUncertainBefore, bool driverTookFan, bool recordPersisted) {
+    ++stashNote.calls;
+    stashNote.hadIntent = hadIntent;
+    stashNote.wasUncertain = wasUncertainBefore;
+    stashNote.driverTookFan = driverTookFan;
+    stashNote.recordPersisted = recordPersisted;
+    stashNote.afterUncertain = ctl.stateUncertain;
+    stashNote.previous = previous ? *previous : DesiredSettings{};
+    stashNote.previousTarget = previousTarget ? *previousTarget : GpuAdapterInfo{};
 }
 #define LINUX_DAEMON_RECORD_UNCERTAIN 1
 #define pthread_mutex_lock fixture_mutex_lock
@@ -232,6 +255,8 @@ static void initialize(Schedule next) {
     stallSamples = 0;
     storedUncertainDesired = {};
     storeUncertainCalls = 0;
+    stashNote = {};
+    storeFails = false;
     schedule = next;
 }
 
@@ -349,6 +374,13 @@ static int run() {
         polls != (int)FAN_RUNTIME_DEFAULT_FAILURE_LIMIT || !lockOrderValid ||
         fixture.activeDesired.hasFan || fixture.hasActiveDesired ||
         storedUncertainDesired.hasFan) return 7546;
+    // 14370: the lockout hands the standby stash the curve it replaced, after
+    // entering uncertainty, with the driver holding the fan and the record
+    // durable (linux_standby_fan_stash_policy.h decides the rest).
+    if (stashNote.calls != 1 || !stashNote.hadIntent || stashNote.wasUncertain ||
+        !stashNote.driverTookFan || !stashNote.recordPersisted || !stashNote.afterUncertain ||
+        !stashNote.previous.hasFan || stashNote.previous.fanMode != FAN_MODE_CURVE ||
+        stashNote.previous.fanCurve.points[0].fanPercent != 30) return 14370;
     // Clients are told (protocol v39): which kind of handback, and its outcome.
     if (fixture.fanFault.kind != SERVICE_FAN_FAULT_REPEATED_FAILURES ||
         fixture.fanFault.handback != SERVICE_FAN_HANDBACK_DRIVER_AUTO ||
@@ -362,8 +394,17 @@ static int run() {
     fan_reassert_thread(&fixture);
     if (lockouts != 1 || lockoutAutoOk || writes != 1 ||
         lastDuty != FAN_RUNTIME_EMERGENCY_PERCENT) return 7547;
+    // 14371: a refused handback tells the stash the driver did not take the fan.
+    if (stashNote.calls != 1 || stashNote.driverTookFan) return 14371;
     if (fixture.fanFault.handback != SERVICE_FAN_HANDBACK_EMERGENCY_MAX ||
         !service_fan_fault_wire_valid(&fixture.fanFault)) return 12891;
+    // 14372: an UNCERTAIN record that did not land is reported as such.
+    initialize(TELEMETRY_LOST);
+    storeFails = true;
+    commit_curve(30);
+    fan_reassert_thread(&fixture);
+    if (lockouts != 1 || stashNote.calls != 1 || stashNote.recordPersisted ||
+        !stashNote.driverTookFan) return 14372;
     // A committed Apply or Reset ends the lockout's bookkeeping.
     fixture.fanFailureCount = 2;
     daemon_fan_runtime_note_commit(fixture, "test");

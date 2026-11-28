@@ -664,6 +664,52 @@ def check_standby_fan_stash(ctx, require_text, forbid_text, require_order):
                   "a replayed profile's attribution is restored before the proof and restart snapshot")
 
 
+def check_linux_standby_fan_stash(ctx, require_text, forbid_text, require_order):
+    """A Linux fan lockout after a suspend does not cost the resume restore.
+
+    The Linux daemon has no suspend edge; the window is a grown suspended-time
+    offset (CLOCK_BOOTTIME - CLOCK_MONOTONIC) since the last resume restore.  A
+    lockout inside it keeps the intent it replaced, and the resume restore
+    replays it once with only that lockout's uncertainty waived
+    (linux_standby_fan_stash_policy.h).  Executed by
+    tests/linux_standby_fan_stash_tests.cpp and
+    tests/fan_runtime_followup_tests.cpp (14370-14399).
+    """
+    runtime_h = _p(ctx, "linux_fan_runtime.h")
+    require_order(runtime_h, "daemon_enter_uncertain_after_fan_lockout(ctl, why, autoOk);",
+                  "daemon_standby_fan_stash_note_lockout(ctl, hadIntent, &previousDesired,",
+                  "the lockout notes the stash after it entered uncertainty (serial bumped)")
+    ownership_h = _p(ctx, "linux_fan_ownership.h")
+    for anchor in ("    ctl.stateUncertain = true;\n    ++ctl.uncertainSerial;\n    daemon_fan_ownership_release_for_uncertain",
+                   "    ctl.stateUncertain = true;\n    ++ctl.uncertainSerial;\n    if (!ctl.fanOwnershipMarkerCommitted) return;"):
+        require_text(ownership_h, anchor,
+                     "every entry into uncertainty bumps the serial a stash is tagged with")
+    stash_h = _p(ctx, "linux_standby_fan_stash.h")
+    require_text(stash_h, "clock_gettime(CLOCK_BOOTTIME, &boot)",
+                 "the window is the kernel's suspended-time offset, not a timer")
+    daemon_cpp = _p(ctx, "linux_daemon.cpp")
+    require_text(daemon_cpp, 'daemon_standby_fan_stash_clear(ctl, "an explicit Apply");',
+                 "an explicit Apply supersedes a pending resume replay")
+    require_text(daemon_cpp, 'daemon_standby_fan_stash_clear(ctl, "an explicit Reset");',
+                 "an explicit Reset supersedes a pending resume replay")
+    require_order(daemon_cpp, 'daemon_standby_window_close(ctl, "daemon start");',
+                  "pl_thread_start(&fanThread, fan_reassert_thread, &ctl);",
+                  "the window baseline exists before the fan worker can lock out")
+    restore_h = _p(ctx, "linux_auto_restore_runtime.h")
+    require_order(restore_h, 'daemon_standby_window_close(ctl, "the resume restore");',
+                  "const bool replay = daemon_standby_fan_stash_peek(ctl) == LINUX_STANDBY_FAN_STASH_REPLAY;",
+                  "the resume restore closes the window before it decides on the stash")
+    require_text(restore_h, "if (!auto_restore_authorize(ctl, trigger, uncertainAtStart, &verdict)) {",
+                 "the guard decision takes the stash-aware uncertainty")
+    require_text(restore_h, "&ctl.autoRestoreGuard, uncertainAfterPrepare,",
+                 "the post-preparation recheck re-evaluates the stash-aware uncertainty")
+    require_order(restore_h, "LINUX_AUTO_RESTORE_TRIGGER_RESUME, &target, &intent, role, &uuid,",
+                  "if (linux_standby_fan_stash_used_up(replay, outcome.success, outcome.attempted)) {",
+                  "the stash is used up only by a restore that reached the hardware")
+    forbid_text(restore_h, "ctl.stateUncertain, nowMs);",
+                "the guard decision must not bypass the stash-aware uncertainty helper")
+
+
 def check_fan_stall_detection(ctx, require_text, forbid_text, require_order):
     """A commanded fan that does not turn is handed back to the driver.
 
@@ -722,6 +768,7 @@ def check_all(ctx, require_text, forbid_text, require_order, backend_surface):
     check_fan_intent_consistency(ctx, require_text, forbid_text, require_order)
     check_fan_fault_reporting(ctx, require_text, forbid_text, require_order)
     check_standby_fan_stash(ctx, require_text, forbid_text, require_order)
+    check_linux_standby_fan_stash(ctx, require_text, forbid_text, require_order)
     check_fan_stall_detection(ctx, require_text, forbid_text, require_order)
     reset_fan_h = _p(ctx, "main_service_reset_fan.h")
     require_order(reset_fan_h,

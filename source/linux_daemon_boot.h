@@ -26,6 +26,7 @@ static void daemon_apply_boot_policy(LinuxGpuController& ctl) {
     switch (linux_daemon_boot_action(ctl.startupPolicy.mode, load, saved)) {
         case LINUX_DAEMON_BOOT_RECOVERY:
             ctl.stateUncertain = true;
+            ++ctl.uncertainSerial;
             dlog("daemon: startup journal requires explicit recovery (load=%d state=%u named=%u): %s\n",
                  (int)load, saved.state, saved.graphicsControlSurfaces,
                  err[0] ? err : "automatic write withheld");

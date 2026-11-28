@@ -26,6 +26,7 @@
 #include "linux_backend.h"
 #include "linux_daemon_state.h"
 #include "linux_auto_restore_policy.h"
+#include "linux_standby_fan_stash_policy.h"
 #include "ownership_handback_policy.h"
 #include "service_auto_apply_failure.h"
 #include "service_fan_fault.h"
@@ -48,6 +49,14 @@ struct LinuxGpuController {
     LinuxGpuUuid activeTargetUuid = {};
     GpuLocationRole activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
     bool stateUncertain = false;
+    // Bumped by every entry into the uncertain state, so a later cause is
+    // never mistaken for the fan lockout a standby stash waives.
+    unsigned long long uncertainSerial = 0;
+    // linux_standby_fan_stash_policy.h: the suspended-time offset at daemon
+    // start or the last resume restore command, and the intent a fan runtime
+    // lockout after a later suspend replaced.  In memory only.
+    LinuxSuspendMark resumeRestoreSuspendMark = {};
+    LinuxStandbyFanStash standbyFanStash = {};
     ServiceOperationTracker operationTracker = {};
 
     // The committed startup-apply policy.  Zero-initialized means

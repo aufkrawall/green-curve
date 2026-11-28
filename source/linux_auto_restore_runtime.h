@@ -70,7 +70,7 @@ static bool persist_auto_restore_guard(LinuxGpuController& ctl, const char* why,
 // be committed refuses the write, mirroring the Windows rule that an
 // uncommittable proof invalidation aborts before touching the GPU.
 static bool auto_restore_authorize(LinuxGpuController& ctl, LinuxAutoRestoreTrigger trigger,
-                                   LinuxAutoRestoreVerdict* verdictOut) {
+                                   bool stateUncertain, LinuxAutoRestoreVerdict* verdictOut) {
     gc_u32 nowMs = gc_auto_restore_now_ms();
     // Count the resume BEFORE deciding, so the very first request in a window
     // already consumes one and the budget cannot be skipped by asking.  In
@@ -81,7 +81,7 @@ static bool auto_restore_authorize(LinuxGpuController& ctl, LinuxAutoRestoreTrig
     }
     LinuxAutoRestoreVerdict verdict =
         linux_auto_restore_decide(&ctl.autoRestoreGuard, trigger,
-                                  ctl.stateUncertain, nowMs);
+                                  stateUncertain, nowMs);
     // Reported to the caller rather than recomputed by it: latching the lockout
     // below changes what a second call would answer, so "attempts exhausted"
     // would come back as the less specific "locked out".
@@ -300,21 +300,43 @@ static bool auto_restore_prepare_backend(LinuxGpuController& ctl, const GpuAdapt
     return true;
 }
 
+// The uncertainty an unattended write is judged against.  Only the resume
+// restore that replays a standby fan stash may pass the uncertainty that
+// stash's lockout entered (linux_standby_fan_stash_policy.h); the decision is
+// taken against the live state each time, so uncertainty entered after the
+// lockout (backend preparation included) still refuses the write.
+static bool auto_restore_state_uncertain(LinuxGpuController& ctl, bool standbyFanStashReplay) {
+    if (!standbyFanStashReplay) return ctl.stateUncertain;
+    const LinuxStandbyFanStashUse use = linux_standby_fan_stash_use(
+        &ctl.standbyFanStash, ctl.uncertainSerial, ctl.stateUncertain,
+        ctl.hasActiveDesired, &ctl.activeDesired);
+    return linux_standby_fan_stash_effective_uncertain(ctl.stateUncertain, use);
+}
+
 // The single unattended-write entry point.  Callers own *deciding* that an
 // automatic restore is wanted; this owns whether it is allowed, what request it
 // becomes, and what the failure means.
 static LinuxAutoRestoreOutcome daemon_automatic_restore_write(LinuxGpuController& ctl,
     LinuxAutoRestoreTrigger trigger, const GpuAdapterInfo* target,
     const DesiredSettings* intent, GpuLocationRole role, const LinuxGpuUuid* uuid,
-    const LinuxDaemonStateRecord* previousRecord = nullptr) {
+    const LinuxDaemonStateRecord* previousRecord = nullptr,
+    bool standbyFanStashReplay = false) {
     LinuxAutoRestoreOutcome outcome = {};
     if (!target || !intent) {
         gc_strlcpy(outcome.message, sizeof(outcome.message),
                    "no intent to restore");
         return outcome;
     }
+    if (standbyFanStashReplay && trigger != LINUX_AUTO_RESTORE_TRIGGER_RESUME)
+        standbyFanStashReplay = false;
+    const bool uncertainAtStart = auto_restore_state_uncertain(ctl, standbyFanStashReplay);
+    if (standbyFanStashReplay)
+        dlog("daemon auto-restore: %s replays a standby fan stash; stateUncertain=%d "
+             "waived=%d serial=%llu\n", linux_auto_restore_trigger_name(trigger),
+             ctl.stateUncertain ? 1 : 0,
+             ctl.stateUncertain && !uncertainAtStart ? 1 : 0, ctl.uncertainSerial);
     LinuxAutoRestoreVerdict verdict = LINUX_AUTO_RESTORE_ALLOW;
-    if (!auto_restore_authorize(ctl, trigger, &verdict)) {
+    if (!auto_restore_authorize(ctl, trigger, uncertainAtStart, &verdict)) {
         gc_snprintf(outcome.message, sizeof(outcome.message),
             "%s %s", linux_auto_restore_trigger_name(trigger),
             linux_auto_restore_verdict_name(verdict));
@@ -385,8 +407,9 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(LinuxGpuController
     const bool selectedFanTargetOwned =
         daemon_fan_ownership_allows_selected_write(ctl,
             postPrepareOwnershipErr, sizeof(postPrepareOwnershipErr));
+    const bool uncertainAfterPrepare = auto_restore_state_uncertain(ctl, standbyFanStashReplay);
     if (!linux_auto_restore_may_write_after_prepare(
-            &ctl.autoRestoreGuard, ctl.stateUncertain,
+            &ctl.autoRestoreGuard, uncertainAfterPrepare,
             ctl.fanOwnershipHandbackPending, selectedFanTargetOwned)) {
         gc_snprintf(outcome.message, sizeof(outcome.message),
             "automatic restore stopped after backend preparation: %s",
@@ -399,11 +422,11 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(LinuxGpuController
                         ? "fan ownership recovery is still pending"
                         : "daemon state became uncertain");
         dlog("daemon auto-restore: %s aborted after prepare; lockedOut=%d"
-             " reason=%u stateUncertain=%d handbackPending=%d ownership=%d%s%s\n",
+             " reason=%u stateUncertain=%d effectiveUncertain=%d handbackPending=%d ownership=%d%s%s\n",
              linux_auto_restore_trigger_name(trigger),
              ctl.autoRestoreGuard.lockedOut ? 1 : 0,
              (unsigned int)ctl.autoRestoreGuard.lockoutReason,
-             ctl.stateUncertain ? 1 : 0,
+             ctl.stateUncertain ? 1 : 0, uncertainAfterPrepare ? 1 : 0,
              ctl.fanOwnershipHandbackPending ? 1 : 0,
              selectedFanTargetOwned ? 1 : 0,
              postPrepareOwnershipErr[0] ? ": " : "",
@@ -555,10 +578,15 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(LinuxGpuController
 
 // SERVICE_CMD_RESUME_RESTORE.  The Linux counterpart of the Windows
 // PBT_APMRESUME* path: restore the complete in-memory intent exactly once,
-// with no proof gate, using nothing the caller supplied.
+// with no proof gate, using nothing the caller supplied.  A fan runtime
+// lockout since the suspend kept the intent it replaced; that is replayed
+// instead, once (linux_standby_fan_stash_policy.h).
 static void daemon_handle_resume_restore(LinuxGpuController& ctl, ServiceResponse* resp) {
     if (!resp) return;
-    if (!ctl.hasActiveDesired) {
+    // This wake's restore is running: a later lockout is not the waking driver.
+    daemon_standby_window_close(ctl, "the resume restore");
+    const bool replay = daemon_standby_fan_stash_peek(ctl) == LINUX_STANDBY_FAN_STASH_REPLAY;
+    if (!ctl.hasActiveDesired && !replay) {
         // Not an error: a machine with no Green Curve settings applied has
         // nothing to lose across a suspend, and saying so keeps the resume unit
         // from reporting a failure on every wake.
@@ -569,10 +597,36 @@ static void daemon_handle_resume_restore(LinuxGpuController& ctl, ServiceRespons
         populate_snapshot(ctl, &resp->snapshot, &resp->controlState);
         return;
     }
-    dlog("daemon resume: restoring the complete active intent after suspend\n");
+    // Copies: a successful write replaces ctl.activeDesired and a used-up
+    // stash is cleared, so neither may alias the intent being written.
+    const LinuxStandbyFanStash stash = ctl.standbyFanStash;
+    const DesiredSettings intent = replay ? stash.replaced : ctl.activeDesired;
+    const GpuAdapterInfo target = replay ? stash.replacedTarget : ctl.activeTarget;
+    const GpuLocationRole role = replay ? stash.replacedRole : ctl.activeTargetRole;
+    const LinuxGpuUuid uuid = replay ? stash.replacedUuid : ctl.activeTargetUuid;
+    if (replay) {
+        dlog("daemon resume: replaying the intent a fan lockout replaced after suspend "
+             "(fanMode=%d ownedNow=%d serial=%llu)\n",
+             fan_owned_intent_mode(intent.hasFan != 0, intent.fanMode, intent.fanAuto != 0),
+             ctl.hasActiveDesired ? 1 : 0, stash.uncertainSerial);
+    } else {
+        dlog("daemon resume: restoring the complete active intent after suspend\n");
+    }
     LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(ctl,
-        LINUX_AUTO_RESTORE_TRIGGER_RESUME, &ctl.activeTarget, &ctl.activeDesired,
-        ctl.activeTargetRole, &ctl.activeTargetUuid);
+        LINUX_AUTO_RESTORE_TRIGGER_RESUME, &target, &intent, role, &uuid,
+        nullptr, replay);
+    if (linux_standby_fan_stash_used_up(replay, outcome.success, outcome.attempted)) {
+        dlog("daemon standby fan stash: used up by the resume restore (success=%d)\n",
+             outcome.success ? 1 : 0);
+        ctl.standbyFanStash = LinuxStandbyFanStash{};
+    }
+    // The curve the lockout detached is running again; its fault record is
+    // history, as after an explicit Apply that sets the fan.
+    if (replay && outcome.success)
+        daemon_fan_fault_clear(ctl, "the resume restore's fan stash replay");
+    dlog("daemon resume: result success=%d attempted=%d fanStashReplay=%d uncertain=%d: %s\n",
+         outcome.success ? 1 : 0, outcome.attempted ? 1 : 0, replay ? 1 : 0,
+         ctl.stateUncertain ? 1 : 0, outcome.message);
     resp->status = outcome.success ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
     gc_strlcpy(resp->message, sizeof(resp->message),
                outcome.message[0] ? outcome.message : "resume restore failed");

@@ -191,6 +191,9 @@ static bool restore_committed_record(LinuxGpuController& ctl, bool wasUncertain,
 // The fan ownership marker and once-per-crash startup handback.  Before the
 // unattended-write path below, which records ownership through it.
 #include "linux_fan_ownership.h"
+// The suspend window and the copy a fan lockout inside it keeps; used by the
+// fan worker and the resume restore below.
+#include "linux_standby_fan_stash.h"
 #include "linux_daemon_snapshot_runtime.cpp"
 // The single unattended-write path, shared by both boot-apply modes and the
 // standby-resume restore.  Needs store_daemon_record(), populate_snapshot(),
@@ -311,6 +314,7 @@ static void handle_request(LinuxGpuController& ctl, const ServiceRequest* wireRe
                 populate_snapshot(ctl, &resp->snapshot, &resp->controlState);
                 break;
             }
+            daemon_standby_fan_stash_clear(ctl, "an explicit Apply");
             if (!ctl.gpuReady) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_strlcpy(resp->message, sizeof(resp->message), "GPU backend not initialized");
@@ -459,6 +463,7 @@ static void handle_request(LinuxGpuController& ctl, const ServiceRequest* wireRe
                 populate_snapshot(ctl, &resp->snapshot, &resp->controlState);
                 break;
             }
+            daemon_standby_fan_stash_clear(ctl, "an explicit Reset");
             if (!ctl.gpuReady) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_strlcpy(resp->message, sizeof(resp->message), "GPU backend not initialized");
@@ -660,6 +665,9 @@ static int daemon_run_owned(const char* configPath) {
     load_startup_policy_at_boot(ctl);
 
     daemon_apply_boot_policy(ctl);
+    // Before the fan worker exists: a lockout opens the standby window only
+    // after a suspend this daemon lived through.
+    daemon_standby_window_close(ctl, "daemon start");
 
     pl_thread fanThread;
     const bool workerStarted = pl_thread_start(&fanThread, fan_reassert_thread, &ctl);
