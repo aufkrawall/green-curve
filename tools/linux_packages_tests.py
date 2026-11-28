@@ -23,6 +23,7 @@ import linux_payload  # noqa: E402
 import release_manifest  # noqa: E402
 import rpm_header  # noqa: E402
 import rpm_package  # noqa: E402
+import rpm_sign  # noqa: E402
 
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSION = "9.8.7"
@@ -255,6 +256,130 @@ class GroupEnrollmentTests(unittest.TestCase):
         self.assertIn("could not create the 'greencurve' group", out)
 
 
+def _sig_packet(version=4, sig_type=0, pubkey_algo=1, hash_algo=8):
+    body = bytes([version, sig_type, pubkey_algo, hash_algo]) + b"\0" * 8
+    return bytes([0xC2, len(body)]) + body   # new-format header, tag 2
+
+
+class SignaturePacketTests(unittest.TestCase):
+    def test_rsa_sha256_maps_to_rsaheader(self):
+        self.assertEqual(rpm_sign.signature_tag(_sig_packet()), rpm_sign.SIGTAG_RSA)
+
+    def test_eddsa_maps_to_dsaheader(self):
+        self.assertEqual(rpm_sign.signature_tag(_sig_packet(pubkey_algo=22)), rpm_sign.SIGTAG_DSA)
+
+    def test_old_format_header_is_parsed(self):
+        body = bytes([4, 0, 1, 10]) + b"\0" * 8
+        self.assertEqual(rpm_sign.parse_signature_packet(bytes([0x88, len(body)]) + body)[2], 10)
+
+    def test_weak_hash_and_wrong_type_are_rejected(self):
+        for packet, why in ((_sig_packet(hash_algo=2), "hash"), (_sig_packet(sig_type=1), "type"),
+                            (_sig_packet(version=3), "version"), (b"\x99\x01\x0d", "tag")):
+            with self.assertRaises(RuntimeError, msg=why):
+                rpm_sign.parse_signature_packet(packet)
+
+
+def _gpg_tools():
+    return rpm_sign.gpg_tool("gpg") and rpm_sign.gpg_tool("gpgv")
+
+
+@unittest.skipUnless(_gpg_tools(), "gpg/gpgv not installed")
+class RpmSigningTests(unittest.TestCase):
+    """End-to-end header signing with throwaway keys in a private GNUPGHOME."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.mkdtemp(prefix="gc-rpmsign-")
+        cls.home = os.path.join(cls.temp, "gnupg")
+        os.makedirs(cls.home)
+        os.chmod(cls.home, 0o700)
+        cls.old_home = os.environ.get("GNUPGHOME")
+        os.environ["GNUPGHOME"] = cls.home
+        cls.rsa = cls._make_key("Green Curve rpm test RSA", "rsa3072")
+        cls.other = cls._make_key("Green Curve rpm test other", "rsa3072")
+        cls.binary = os.path.join(cls.temp, "greencurve")
+        with open(cls.binary, "wb") as handle:
+            handle.write(b"\x7fELF fixture for signing\n" * 32)
+        cls.files = linux_payload.payload_files(SCRIPT_DIR, cls.binary)
+
+    @classmethod
+    def tearDownClass(cls):
+        gpgconf = rpm_sign.gpg_tool("gpgconf")
+        if gpgconf:
+            subprocess.run([gpgconf, "--kill", "all"], capture_output=True)
+        if cls.old_home is None:
+            os.environ.pop("GNUPGHOME", None)
+        else:
+            os.environ["GNUPGHOME"] = cls.old_home
+        shutil.rmtree(cls.temp, ignore_errors=True)
+
+    @classmethod
+    def _make_key(cls, uid, algo):
+        gpg = rpm_sign.gpg_tool("gpg")
+        subprocess.run([gpg, "--batch", "--pinentry-mode", "loopback", "--passphrase", "",
+                        "--quick-gen-key", uid, algo, "sign", "never"],
+                       check=True, capture_output=True)
+        listing = subprocess.run([gpg, "--batch", "--with-colons", "--list-secret-keys", uid],
+                                 check=True, capture_output=True, text=True).stdout
+        fpr = next(line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:"))
+        pub = os.path.join(cls.temp, f"{fpr}.asc")
+        with open(pub, "wb") as handle:
+            handle.write(subprocess.run([gpg, "--batch", "--armor", "--export", fpr],
+                                        check=True, capture_output=True).stdout)
+        return fpr, pub
+
+    def _build(self, signer, name):
+        out = os.path.join(self.temp, name)
+        return rpm_package.build_rpm_package(SCRIPT_DIR, VERSION, "x64", self.binary, "fedora",
+                                             output_dir=out, signer=signer)
+
+    def test_signed_package_verifies_and_uses_rsaheader(self):
+        fpr, pub = self.rsa
+        path = self._build(rpm_sign.RpmSigner(fpr, pub), "signed")
+        _, sig, _, header_blob, _ = rpm_package.read_rpm(open(path, "rb").read())
+        self.assertIn(rpm_sign.SIGTAG_RSA, sig)
+        self.assertNotIn(rpm_sign.SIGTAG_DSA, sig)
+        rpm_sign.verify_header_signature(header_blob, sig[rpm_sign.SIGTAG_RSA][1], pub)
+
+    def test_signature_does_not_verify_with_another_key_or_altered_header(self):
+        fpr, pub = self.rsa
+        path = self._build(rpm_sign.RpmSigner(fpr, pub), "signed2")
+        _, sig, _, header_blob, _ = rpm_package.read_rpm(open(path, "rb").read())
+        header_sig = sig[rpm_sign.SIGTAG_RSA][1]
+        with self.assertRaisesRegex(RuntimeError, "does not verify"):
+            rpm_sign.verify_header_signature(header_blob, header_sig, self.other[1])
+        altered = header_blob[:-1] + bytes([header_blob[-1] ^ 1])
+        with self.assertRaisesRegex(RuntimeError, "does not verify"):
+            rpm_sign.verify_header_signature(altered, header_sig, pub)
+
+    def test_signer_refuses_a_key_that_is_not_the_published_one(self):
+        with self.assertRaisesRegex(RuntimeError, "does not verify"):
+            self._build(rpm_sign.RpmSigner(self.other[0], self.rsa[1]), "mismatch")
+
+    def test_unsigned_package_fails_a_signed_expectation(self):
+        path = self._build(None, "unsigned")
+        with self.assertRaisesRegex(RuntimeError, "expected one OpenPGP header signature"):
+            rpm_package.verify_rpm_package(path, self.files, VERSION, 1, "x64", "fedora",
+                                           expect_signed=True)
+
+    def test_environment_policy(self):
+        saved = {k: os.environ.pop(k, None) for k in (rpm_sign.SIGNING_KEY_ENV, rpm_sign.REQUIRE_ENV)}
+        try:
+            self.assertIsNone(rpm_sign.signer_from_environment(self.temp))
+            os.environ[rpm_sign.REQUIRE_ENV] = "1"
+            with self.assertRaisesRegex(RuntimeError, "refusing to build unsigned"):
+                rpm_sign.signer_from_environment(self.temp)
+            os.environ[rpm_sign.SIGNING_KEY_ENV] = self.rsa[0]
+            # self.temp has no packaging/greencurve-packages.asc
+            with self.assertRaisesRegex(RuntimeError, "is missing"):
+                rpm_sign.signer_from_environment(self.temp)
+        finally:
+            for key, value in saved.items():
+                os.environ.pop(key, None)
+                if value is not None:
+                    os.environ[key] = value
+
+
 class RpmHeaderTests(unittest.TestCase):
     ENTRIES = {
         1000: (rpm_header.STRING, "greencurve"),
@@ -309,7 +434,8 @@ class RpmHeaderTests(unittest.TestCase):
 def run_tests():
     loader = unittest.defaultTestLoader
     suite = unittest.TestSuite()
-    for case in (FileNameTests, PackageBuildTests, GroupEnrollmentTests, RpmHeaderTests):
+    for case in (FileNameTests, PackageBuildTests, GroupEnrollmentTests, SignaturePacketTests,
+                 RpmSigningTests, RpmHeaderTests):
         suite.addTests(loader.loadTestsFromTestCase(case))
     result = unittest.TextTestRunner().run(suite)
     if not result.wasSuccessful():

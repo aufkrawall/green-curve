@@ -18,7 +18,9 @@ The payload is an xz-compressed ``newc`` cpio archive with ``./``-prefixed
 names.  The signature header carries the SHA-1 and SHA-256 header digests, the
 MD5 over header+payload and the sizes; the main header carries the SHA-256
 payload digest.  These are what rpm's default `%_pkgverify_level digest`
-checks.  The packages are unsigned (no OpenPGP signature).
+checks.  Release builds add an OpenPGP header signature (rpm_sign.py), which
+rpm 6's default `%_pkgverify_level all`, dnf and zypper require; local builds
+without a configured key stay unsigned.
 
 Fedora and openSUSE get separate files with a distro tag in the name so users
 can pick theirs at a glance; their scriptlets and payload are identical.
@@ -32,10 +34,12 @@ import sys
 try:
     import linux_payload
     import rpm_header
+    import rpm_sign
 except ImportError:
     sys.path.insert(0, os.path.dirname(__file__))
     import linux_payload
     import rpm_header
+    import rpm_sign
 
 from rpm_header import (INT16, INT32, STRING, BIN, STRING_ARRAY, I18NSTRING,
                         encode_header, parse_header)
@@ -222,14 +226,18 @@ def main_header_entries(version, release, arch, distro, rows, mtime, functions,
     }
 
 
-def signature_header(header_blob, payload, payload_raw_size):
-    return encode_header({
+def signature_header(header_blob, payload, payload_raw_size, header_sig=None):
+    entries = {
         269: (STRING, hashlib.sha1(header_blob).hexdigest()),     # SHA1 (header)
         273: (STRING, hashlib.sha256(header_blob).hexdigest()),   # SHA256 (header)
         1000: (INT32, [len(header_blob) + len(payload)]),         # SIZE
         1004: (BIN, hashlib.md5(header_blob + payload).digest()),  # MD5
         1007: (INT32, [payload_raw_size]),                        # PAYLOADSIZE
-    }, region_tag=rpm_header.TAG_HEADERSIGNATURES)
+    }
+    if header_sig is not None:
+        # RSAHEADER / DSAHEADER: OpenPGP signature over the main header bytes.
+        entries[rpm_sign.signature_tag(header_sig)] = (BIN, header_sig)
+    return encode_header(entries, region_tag=rpm_header.TAG_HEADERSIGNATURES)
 
 
 def build_lead(name_evr, arch):
@@ -240,9 +248,10 @@ def build_lead(name_evr, arch):
 
 
 def build_rpm_package(script_dir, app_version, arch, binary_path, distro, release=1,
-                      output_dir=None):
+                      output_dir=None, signer=None):
     """Assemble `greencurve-<v>-<rel>-<distro>-<arch>.rpm` (+ .sha256), verify it
-    by reading it back, and return its path."""
+    by reading it back, and return its path.  `signer` (rpm_sign.RpmSigner)
+    adds the OpenPGP header signature; None builds an unsigned package."""
     files = linux_payload.payload_files(script_dir, binary_path)
     functions = linux_payload.read_install_scriptlet(script_dir)
     mtime = linux_payload.build_date()
@@ -254,7 +263,8 @@ def build_rpm_package(script_dir, app_version, arch, binary_path, distro, releas
                             hashlib.sha256(payload).hexdigest(),
                             linux_payload.installed_size(files)),
         region_tag=rpm_header.TAG_HEADERIMMUTABLE)
-    sig = signature_header(header, payload, len(cpio))
+    header_sig = signer(header) if signer else None
+    sig = signature_header(header, payload, len(cpio), header_sig)
     sig += b"\0" * (-len(sig) % 8)
     blob = build_lead(f"greencurve-{app_version}-{release}", arch) + sig + header + payload
 
@@ -265,10 +275,13 @@ def build_rpm_package(script_dir, app_version, arch, binary_path, distro, releas
     linux_payload.remove_stale([path])
     with open(path, "wb") as handle:
         handle.write(blob)
-    verify_rpm_package(path, files, app_version, release, arch, distro)
+    verify_rpm_package(path, files, app_version, release, arch, distro,
+                       expect_signed=signer is not None,
+                       public_key_path=getattr(signer, "public_key_path", None))
     linux_payload.write_sha256_file(path)
     print(f"Packaged {RPM_DISTROS[distro]['label']} package {name} "
-          f"({len(blob):,} bytes / {len(blob) / 1024:.1f} KB)")
+          f"({len(blob):,} bytes / {len(blob) / 1024:.1f} KB, "
+          f"{'signed' if signer else 'unsigned'})")
     return path
 
 
@@ -307,9 +320,10 @@ def parse_cpio(data):
         out.append((name, mode, body))
 
 
-def verify_rpm_package(path, files, version, release, arch, distro):
-    """Read the finished rpm back as rpm would: structure, digests, metadata,
-    scriptlets, header file list and the cpio payload."""
+def verify_rpm_package(path, files, version, release, arch, distro, expect_signed=False,
+                       public_key_path=None):
+    """Read the finished rpm back as rpm would: structure, digests, signature,
+    metadata, scriptlets, header file list and the cpio payload."""
     label = os.path.basename(path)
     with open(path, "rb") as handle:
         data = handle.read()
@@ -324,6 +338,17 @@ def verify_rpm_package(path, files, version, release, arch, distro):
     for name, (got, want) in checks.items():
         if got != want:
             raise RuntimeError(f"{label}: {name} digest/size mismatch")
+    sig_tags = [t for t in (rpm_sign.SIGTAG_DSA, rpm_sign.SIGTAG_RSA) if t in sig]
+    if expect_signed:
+        if len(sig_tags) != 1:
+            raise RuntimeError(f"{label}: expected one OpenPGP header signature, found {len(sig_tags)}")
+        header_sig = sig[sig_tags[0]][1]
+        if rpm_sign.signature_tag(header_sig) != sig_tags[0]:
+            raise RuntimeError(f"{label}: signature stored under the wrong tag for its algorithm")
+        if public_key_path:
+            rpm_sign.verify_header_signature(header_blob, header_sig, public_key_path)
+    elif sig_tags:
+        raise RuntimeError(f"{label}: unexpected OpenPGP signature in an unsigned build")
     expect = {1000: "greencurve", 1001: version, 1002: str(release),
               1022: rpm_architecture(arch), 1010: RPM_DISTROS[distro]["distribution"],
               1124: "cpio", 1125: "xz"}

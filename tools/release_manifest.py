@@ -31,6 +31,7 @@ import toolchain
 from arch_package import build_arch_package
 from deb_package import build_deb_package
 from rpm_package import RPM_DISTROS, build_rpm_package
+import rpm_sign
 
 # Files the binary legitimately writes beside itself at run time.  A developer
 # who runs the freshly built binary out of dist/ must not have that turn into a
@@ -54,15 +55,17 @@ def build_linux_distro_packages(script_dir, app_version, arch, binary_path, outp
     Arch (.pkg.tar.zst), Debian/Ubuntu (.deb), Fedora and openSUSE (.rpm).
 
     Each builder verifies its own output by reading it back and writes the
-    .sha256 beside it; any failure aborts the release build.  Returns the paths
-    in a stable order for logging and tests."""
+    .sha256 beside it; any failure aborts the release build.  The rpms are
+    OpenPGP-signed when the environment names a key (see rpm_sign; the release
+    workflow requires it).  Returns the paths in a stable order."""
+    signer = rpm_sign.signer_from_environment(script_dir)
     paths = [
         build_arch_package(script_dir, app_version, arch, binary_path, output_dir=output_dir),
         build_deb_package(script_dir, app_version, arch, binary_path, output_dir=output_dir),
     ]
     for distro in RPM_DISTROS:
         paths.append(build_rpm_package(script_dir, app_version, arch, binary_path, distro,
-                                       output_dir=output_dir))
+                                       output_dir=output_dir, signer=signer))
     print(f"  linux-pkg: {arch}: {len(paths)} distro packages: "
           + ", ".join(os.path.basename(p) for p in paths))
     return paths
