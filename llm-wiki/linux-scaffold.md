@@ -388,9 +388,14 @@ Source anchors: `tools/linux_payload.py` (shared payload, names, glibc floor),
   missing secret fails the release. The public key is attested and attached to
   each release. `tools/distro_package_gates.py` pins all of this and refuses a
   committed key file containing private material.
-- **Open questions / stale-risk:** the release key must be provisioned (public
-  key committed at `packaging/greencurve-packages.asc`, private key as the
-  release secret) before the next release can publish. The release gate
+- **Release key:** RSA 4096, no expiry (rpm 4.14 on Leap 15 needs RSA),
+  fingerprint `3398 3571 B8BE 81C7 8BF3  286A C852 B47E 8D7D D9D7`, provisioned 2026-11-28; public half at
+  `packaging/greencurve-packages.asc`, private half only as the release
+  workflow secret plus an offline maintainer backup. A dry run of the release
+  step with this key passed the signed container gate on all 11 distros.
+  Rotation replaces the file and the secret in one change and must be announced
+  in the release notes (users re-import).
+- **Open questions / stale-risk:** the release gate
   install-tests x64 only; arm64 release bytes rely on the per-push arm64 CI
   job, which runs the same builder code. The CI jobs have not yet run on
   GitHub (no push since they were added). Image digests are deliberate pins:

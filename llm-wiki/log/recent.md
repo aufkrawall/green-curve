@@ -29,7 +29,8 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   check (`tools/linux_package_container_check.py`) runs in CI (x64 plus native
   arm64) and as a release gate with signature overrides refused. 11/11 distros
   pass locally with podman, signed and unsigned; unsigned rpms fail the signed
-  gate on dnf and zypper. The release key still has to be provisioned.
+  gate on dnf and zypper. Release key provisioned the same day (RSA 4096,
+  `3398 3571 B8BE 81C7 8BF3  286A C852 B47E 8D7D D9D7`); a dry run of the release step with it passed 11/11.
 - Harness lesson: bind mounts into a test root must be `rslave` before
   teardown; a shared rbind propagated a lazy unmount to the WSL instance's own
   `/dev`/`/sys` submounts until the distro was restarted.

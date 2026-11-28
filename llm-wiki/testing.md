@@ -12,8 +12,10 @@ WSL distro that has rpm, dpkg and pacman. It works inside an overlay root and
 leaves the host unchanged; see linux-scaffold.md, "Distribution packages".
 
 `tools/linux_package_container_check.py --engine docker|podman --packages
-dist/linux-x64 --binary dist/linux-x64/greencurve/greencurve [--signed]` is the
-native-distro version (CI and the release run it with docker). Under podman in a
+dist/linux-x64 --binary dist/linux-x64/greencurve/greencurve [--signed]
+[--new-packages DIR]` is the native-distro version (CI and the release run it
+with docker). `--new-packages` supplies a pre-built, already-signed upgrade set,
+so a signed check can run on a host that does not hold the private key. Under podman in a
 WSL distro without systemd as PID 1, point `CONTAINERS_CONF` at a file setting
 `cgroup_manager = "cgroupfs"` and `events_logger = "file"`; the default systemd
 cgroup manager fails with "cannot open sd-bus".

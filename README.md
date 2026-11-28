@@ -194,7 +194,7 @@ sudo dnf install ./greencurve-0.32.0-1-fedora-x86_64.rpm
 sudo zypper install ./greencurve-0.32.0-1-suse-x86_64.rpm
 ```
 
-Then enable the daemon with `sudo systemctl enable --now greencurve.service`. The NVIDIA proprietary driver must be installed separately. Release rpms are OpenPGP-signed with the key in [`packaging/greencurve-packages.asc`](packaging/greencurve-packages.asc) (also attached to each release); `rpm -K <file>` checks a download. Every release is install-tested on Debian, Ubuntu, Fedora, openSUSE and Arch before it is published. Local `python build.py` builds under `dist/linux-<arch>/` produce unsigned rpms.
+Then enable the daemon with `sudo systemctl enable --now greencurve.service`. The NVIDIA proprietary driver must be installed separately. Release rpms are OpenPGP-signed with the key in [`packaging/greencurve-packages.asc`](packaging/greencurve-packages.asc) (also attached to each release; fingerprint `3398 3571 B8BE 81C7 8BF3  286A C852 B47E 8D7D D9D7`); `rpm -K <file>` checks a download. Every release is install-tested on Debian, Ubuntu, Fedora, openSUSE and Arch before it is published. Local `python build.py` builds under `dist/linux-<arch>/` produce unsigned rpms.
 
 On Arch, PKGBUILD templates are also available under [`packaging/arch/`](packaging/arch/) to build from source (`makepkg -si`) or install from prebuilt binaries (`makepkg -si -p PKGBUILD.bin`).
 

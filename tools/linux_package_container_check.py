@@ -14,7 +14,9 @@ anything is published.
         --binary dist/linux-x64/greencurve/greencurve [--signed] [--only fedora-45]
 
 The upgrade set is built here from the same binary with a higher version, and
-signed with the same key when --signed (GREENCURVE_RPM_SIGNING_KEY).
+signed with the same key when --signed (GREENCURVE_RPM_SIGNING_KEY).  With
+--new-packages DIR a pre-built higher-version set is used instead, so a signed
+check can run where the private key is not available.
 """
 import argparse
 import os
@@ -107,6 +109,9 @@ def main(argv=None):
                         help="the rpms are signed: import the published key, and fail unless "
                              "dnf/zypper/rpm accept them without signature overrides")
     parser.add_argument("--only", help="comma-separated distro names")
+    parser.add_argument("--new-packages",
+                        help="pre-built higher-version package set to upgrade to "
+                             "(default: build <VERSION>.1 here)")
     args = parser.parse_args(argv)
 
     engine = find_engine(args.engine)
@@ -116,8 +121,9 @@ def main(argv=None):
                and not (args.arch == "arm64" and d[0] in X64_ONLY)]
     if wanted and len(distros) != len(wanted):
         raise SystemExit(f"unknown distro in --only: {sorted(wanted - {d[0] for d in distros})}")
-    if args.signed and not os.environ.get(rpm_sign.SIGNING_KEY_ENV):
-        raise SystemExit(f"--signed needs {rpm_sign.SIGNING_KEY_ENV} to sign the upgrade set")
+    if args.signed and not args.new_packages and not os.environ.get(rpm_sign.SIGNING_KEY_ENV):
+        raise SystemExit(f"--signed needs {rpm_sign.SIGNING_KEY_ENV} to sign the upgrade set "
+                         "(or a signed --new-packages set)")
     if not args.signed:
         # The upgrade set must match the release set: unsigned here means unsigned there.
         os.environ.pop(rpm_sign.SIGNING_KEY_ENV, None)
@@ -128,8 +134,19 @@ def main(argv=None):
         names = stage_old_set(args.packages, version, args.arch, old_dir)
         print(f"  pkg-container: engine={os.path.basename(engine)} arch={args.arch} "
               f"signed={int(args.signed)} old={version} ({len(names)} packages)")
-        release_manifest.build_linux_distro_packages(
-            SCRIPT_DIR, version + ".1", args.arch, args.binary, new_dir)
+        if args.new_packages:
+            os.makedirs(new_dir)
+            new_names = [n for n in os.listdir(args.new_packages)
+                         if n.startswith("greencurve-") and not n.endswith(".sha256")
+                         and not n.startswith(f"greencurve-{version}-")]
+            if len(new_names) != 4:
+                raise SystemExit(f"--new-packages must hold 4 packages of a newer version, "
+                                 f"found {sorted(new_names)}")
+            for name in new_names:
+                shutil.copy2(os.path.join(args.new_packages, name), new_dir)
+        else:
+            release_manifest.build_linux_distro_packages(
+                SCRIPT_DIR, version + ".1", args.arch, args.binary, new_dir)
         for name in os.listdir(new_dir):
             if name.endswith(".sha256"):
                 os.remove(os.path.join(new_dir, name))
