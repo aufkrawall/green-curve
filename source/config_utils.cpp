@@ -111,15 +111,21 @@ void leave_config_storage_lock(HANDLE acquiredMutex) {
     LeaveCriticalSection(&g_configLock);
 }
 
-bool config_section_has_keys(const char* path, const char* section) {
-    if (!path || !section) return false;
+ConfigSectionPresence config_section_presence(const char* path, const char* section) {
+    if (!path || !section) return CONFIG_SECTION_PRESENCE_ABSENT;
 
     char keys[256] = {};
     HANDLE configMutex = nullptr;
-    if (!enter_config_storage_lock(&configMutex)) return false;
+    if (!enter_config_storage_lock(&configMutex)) return CONFIG_SECTION_PRESENCE_LOCK_FAILED;
     DWORD n = gc_GetPrivateProfileStringUtf8(section, nullptr, "", keys, ARRAY_COUNT(keys), path);
     leave_config_storage_lock(configMutex);
-    return n > 0 && keys[0] != 0;
+    return (n > 0 && keys[0] != 0)
+        ? CONFIG_SECTION_PRESENCE_PRESENT
+        : CONFIG_SECTION_PRESENCE_ABSENT;
+}
+
+bool config_section_has_keys(const char* path, const char* section) {
+    return config_section_presence(path, section) == CONFIG_SECTION_PRESENCE_PRESENT;
 }
 
 int get_config_int(const char* path, const char* section, const char* key, int defaultVal) {
@@ -429,8 +435,9 @@ static bool read_config_location_role_locked(const char* path,
 
 bool load_configured_gpu_selection_from_section(const char* path,
     const char* section, ConfiguredGpuSelection* selectionOut,
-    char* err, size_t errSize) {
+    char* err, size_t errSize, bool* lockFailedOut) {
     if (err && errSize) err[0] = 0;
+    if (lockFailedOut) *lockFailedOut = false;
     if (!path || !path[0] || !section || !section[0] || !selectionOut) {
         set_message(err, errSize, "Invalid configured GPU selection arguments");
         return false;
@@ -438,6 +445,7 @@ bool load_configured_gpu_selection_from_section(const char* path,
     memset(selectionOut, 0, sizeof(*selectionOut));
     HANDLE configMutex = nullptr;
     if (!enter_config_storage_lock(&configMutex)) {
+        if (lockFailedOut) *lockFailedOut = true;
         set_message(err, errSize, "Failed to acquire the config lock for GPU selection");
         return false;
     }
@@ -496,9 +504,10 @@ bool load_configured_gpu_selection_from_section(const char* path,
 }
 
 bool load_configured_gpu_selection(const char* path,
-    ConfiguredGpuSelection* selectionOut, char* err, size_t errSize) {
+    ConfiguredGpuSelection* selectionOut, char* err, size_t errSize,
+    bool* lockFailedOut) {
     return load_configured_gpu_selection_from_section(
-        path, "gpu", selectionOut, err, errSize);
+        path, "gpu", selectionOut, err, errSize, lockFailedOut);
 }
 
 bool format_configured_gpu_selection_section(const char* section,

@@ -167,6 +167,25 @@ static inline bool gc_gui_gpu_selection_maintenance_should_check(
     return fromFullSync && stampChanged;
 }
 
+// Tri-state dispatch for the [gpu] section probe during maintenance.
+// `sectionPresence` uses ConfigSectionPresence semantics (<0 lock failed,
+// 0 genuinely absent, >0 present).  A lock failure MUST NOT settle the adapter
+// set: otherwise a transient contention blip skips refreshing moved GPUs.
+enum GcGpuSectionMaintenanceAction {
+    GC_GPU_MAINT_RETRY_LOCK = 0,
+    GC_GPU_MAINT_AUTO_SAVE_SINGLE = 1,
+    GC_GPU_MAINT_SETTLE_ABSENT = 2,
+    GC_GPU_MAINT_PROCEED_LOAD = 3,
+};
+
+static inline GcGpuSectionMaintenanceAction gc_gui_gpu_selection_section_action(
+    int sectionPresence, unsigned int adapterCount, bool adapter0Valid) {
+    if (sectionPresence < 0) return GC_GPU_MAINT_RETRY_LOCK;
+    if (sectionPresence > 0) return GC_GPU_MAINT_PROCEED_LOAD;
+    if (adapterCount == 1 && adapter0Valid) return GC_GPU_MAINT_AUTO_SAVE_SINGLE;
+    return GC_GPU_MAINT_SETTLE_ABSENT;
+}
+
 // GUI applied-profile metadata sync gate: routine telemetry skips
 // GetFileAttributesExW whenever every in-memory input (service identity,
 // active intent, VF topology, config path, and local config write generation)

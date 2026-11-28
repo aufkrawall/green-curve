@@ -203,8 +203,14 @@ def check_steady_state_lines(ctx, require_text):
         _p(ctx, "gpu_selection_config.cpp"),
         "static void maintain_configured_gpu_selection_record(",
         "gc_gui_gpu_selection_maintenance_should_check(",
-        'config_section_has_keys(g_app.configPath, "gpu")',
+        'config_section_presence(g_app.configPath, "gpu")',
         "GPU selection maintenance checks settled state before reading config.ini")
+    require_text(_p(ctx, "gpu_selection_config.cpp"),
+                 "GC_GPU_MAINT_RETRY_LOCK",
+                 "GPU selection maintenance leaves adapters unsettled on config lock timeout")
+    require_text(_p(ctx, "gpu_selection_config.cpp"),
+                 "if (loadLockFailed)",
+                 "GPU selection maintenance leaves adapters unsettled if load_configured_gpu_selection loses the config lock")
     require_text(_p(ctx, "config_profiles_ui.cpp"),
                  "gc_applied_profile_sync_should_probe_disk(",
                  "applied-profile sync skips disk stats on unchanged telemetry ticks")

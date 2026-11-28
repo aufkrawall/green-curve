@@ -206,6 +206,9 @@ static void maintain_configured_gpu_selection_record(bool fromFullSync) {
             fromFullSync, stampChanged)) {
         return;
     }
+    if (settledValid && sameConfigPath && !adaptersChanged && fromFullSync && stampChanged) {
+        debug_log("gpu selection: re-checking [gpu] on full sync (config stamp changed)\n");
+    }
 
     auto settle = [&]() {
         memcpy(settledAdapters, g_app.adapters, sizeof(settledAdapters));
@@ -217,21 +220,38 @@ static void maintain_configured_gpu_selection_record(bool fromFullSync) {
     };
 
     char err[256] = {};
-    if (!config_section_has_keys(g_app.configPath, "gpu")) {
-        if (g_app.adapterCount == 1 && g_app.adapters[0].valid) {
-            if (!save_configured_gpu_selection_atomic(0, err, sizeof(err))) {
-                debug_log_on_change("gpu selection: auto-save failed for single adapter: %s\n",
-                    err[0] ? err : "unknown error");
-                return;
-            }
+    const ConfigSectionPresence gpuSection =
+        config_section_presence(g_app.configPath, "gpu");
+    const GcGpuSectionMaintenanceAction sectionAction =
+        gc_gui_gpu_selection_section_action(
+            (int)gpuSection, g_app.adapterCount,
+            g_app.adapterCount > 0 && g_app.adapters[0].valid);
+    if (sectionAction == GC_GPU_MAINT_RETRY_LOCK) {
+        debug_log_on_change("gpu selection: config lock unavailable while checking [gpu]; retried on the next snapshot\n");
+        return;
+    }
+    if (sectionAction == GC_GPU_MAINT_AUTO_SAVE_SINGLE) {
+        if (!save_configured_gpu_selection_atomic(0, err, sizeof(err))) {
+            debug_log_on_change("gpu selection: auto-save failed for single adapter: %s\n",
+                err[0] ? err : "unknown error");
+            return;
         }
+        settle();
+        return;
+    }
+    if (sectionAction == GC_GPU_MAINT_SETTLE_ABSENT) {
         settle();
         return;
     }
     ConfiguredGpuSelection configured = {};
     unsigned int resolved = 0;
+    bool loadLockFailed = false;
     if (!load_configured_gpu_selection(g_app.configPath, &configured,
-            err, sizeof(err))) {
+            err, sizeof(err), &loadLockFailed)) {
+        if (loadLockFailed) {
+            debug_log_on_change("gpu selection: config lock unavailable while loading [gpu]; retried on the next snapshot\n");
+            return;
+        }
         // A malformed record waits for an explicit selection, like an
         // unresolved one; only a failed rewrite is worth repeating.
         settle();

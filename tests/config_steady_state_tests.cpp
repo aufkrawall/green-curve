@@ -5,6 +5,10 @@
 // (config_steady_state_policy.h), assertion codes 14300-14315.
 
 #include "config_steady_state_policy.h"
+#if defined(_WIN32)
+#include "app_shared.h"
+#include <stdio.h>
+#endif
 
 #include <string.h>
 
@@ -158,6 +162,68 @@ int run_config_steady_state_tests() {
     gc_debug_config_resolve_after_read(false, false, false,
         true, false, false, true, true, &effEnabled, &effVerbose);
     if (effEnabled || effVerbose) return 14319;
+
+    // 14320-14322: Tri-state [gpu] section maintenance action never settles on
+    // a transient config lock failure (single-GPU or multi-GPU).
+    if (gc_gui_gpu_selection_section_action(-1, 1, true) != GC_GPU_MAINT_RETRY_LOCK ||
+        gc_gui_gpu_selection_section_action(-1, 2, true) != GC_GPU_MAINT_RETRY_LOCK ||
+        gc_gui_gpu_selection_section_action(-1, 0, false) != GC_GPU_MAINT_RETRY_LOCK) {
+        return 14320;
+    }
+    if (gc_gui_gpu_selection_section_action(0, 1, true) != GC_GPU_MAINT_AUTO_SAVE_SINGLE ||
+        gc_gui_gpu_selection_section_action(0, 1, false) != GC_GPU_MAINT_SETTLE_ABSENT ||
+        gc_gui_gpu_selection_section_action(0, 2, true) != GC_GPU_MAINT_SETTLE_ABSENT) {
+        return 14321;
+    }
+    if (gc_gui_gpu_selection_section_action(1, 1, true) != GC_GPU_MAINT_PROCEED_LOAD ||
+        gc_gui_gpu_selection_section_action(1, 2, true) != GC_GPU_MAINT_PROCEED_LOAD) {
+        return 14322;
+    }
+
+#if defined(_WIN32)
+    // 14323-14326: Native Windows execution of config_section_presence() and
+    // load_configured_gpu_selection() lock-failure distinction on a real INI.
+    {
+        char tempDir[MAX_PATH] = {};
+        DWORD dirLen = GetTempPathA(MAX_PATH, tempDir);
+        if (dirLen == 0 || dirLen >= MAX_PATH - 48) return 14323;
+        char iniPath[MAX_PATH] = {};
+        snprintf(iniPath, sizeof(iniPath), "%sgc_steady_cfg_%lu.ini",
+            tempDir, (unsigned long)GetCurrentProcessId());
+        DeleteFileA(iniPath);
+
+        if (config_section_presence(iniPath, "gpu") != CONFIG_SECTION_PRESENCE_ABSENT) {
+            return 14323;
+        }
+        if (!set_config_int(iniPath, "debug", "enabled", 0) ||
+            config_section_presence(iniPath, "gpu") != CONFIG_SECTION_PRESENCE_ABSENT ||
+            config_section_presence(iniPath, "debug") != CONFIG_SECTION_PRESENCE_PRESENT) {
+            DeleteFileA(iniPath);
+            return 14324;
+        }
+        if (!set_config_int(iniPath, "gpu", "selected_index", 0) ||
+            !set_config_int(iniPath, "gpu", "selected_identity_version", 99) ||
+            config_section_presence(iniPath, "gpu") != CONFIG_SECTION_PRESENCE_PRESENT) {
+            DeleteFileA(iniPath);
+            return 14325;
+        }
+        ConfiguredGpuSelection loaded = {};
+        char loadErr[160] = {};
+        bool lockFailed = true;
+        if (load_configured_gpu_selection(iniPath, &loaded, loadErr, sizeof(loadErr), &lockFailed) ||
+            lockFailed) {
+            DeleteFileA(iniPath);
+            return 14325;
+        }
+        if (!set_config_int(iniPath, "gpu", "selected_identity_version", 0) ||
+            !load_configured_gpu_selection(iniPath, &loaded, loadErr, sizeof(loadErr), &lockFailed) ||
+            lockFailed || loaded.legacyIndex != 0) {
+            DeleteFileA(iniPath);
+            return 14326;
+        }
+        DeleteFileA(iniPath);
+    }
+#endif
 
     return 0;
 }

@@ -1020,6 +1020,12 @@ bool enter_config_storage_lock(HANDLE* acquiredMutex);
 bool enter_config_storage_lock_interruptible(HANDLE cancelEvent,
     HANDLE* acquiredMutex);
 void leave_config_storage_lock(HANDLE acquiredMutex);
+enum ConfigSectionPresence {
+    CONFIG_SECTION_PRESENCE_LOCK_FAILED = -1,
+    CONFIG_SECTION_PRESENCE_ABSENT = 0,
+    CONFIG_SECTION_PRESENCE_PRESENT = 1,
+};
+ConfigSectionPresence config_section_presence(const char* path, const char* section);
 bool config_section_has_keys(const char* path, const char* section);
 int get_config_int(const char* path, const char* section, const char* key, int defaultVal);
 bool set_config_int(const char* path, const char* section, const char* key, int value);
@@ -1048,10 +1054,11 @@ bool get_config_string(const char* path, const char* section, const char* key,
                        const char* defaultVal, char* out, size_t outSize);
 bool set_config_string(const char* path, const char* section, const char* key, const char* value);
 bool load_configured_gpu_selection(const char* path,
-    ConfiguredGpuSelection* selectionOut, char* err, size_t errSize);
+    ConfiguredGpuSelection* selectionOut, char* err, size_t errSize,
+    bool* lockFailedOut = nullptr);
 bool load_configured_gpu_selection_from_section(const char* path,
     const char* section, ConfiguredGpuSelection* selectionOut,
-    char* err, size_t errSize);
+    char* err, size_t errSize, bool* lockFailedOut = nullptr);
 bool format_configured_gpu_selection_section(const char* section,
     const ConfiguredGpuSelection* selection, char* out, size_t outSize,
     char* err, size_t errSize);
