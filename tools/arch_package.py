@@ -3,22 +3,27 @@
 Builds pacman-installable Arch Linux packages (.pkg.tar.zst or .pkg.tar.xz) from
 compiled Linux binaries and packaging templates.  Supports building on both
 Linux and Windows hosts using Python standard library plus optional zstandard.
+The installed payload is shared with the deb/rpm builders (linux_payload).
 """
 import gzip
-import hashlib
 import io
 import os
 import shutil
 import subprocess
 import sys
 import tarfile
-import time
 
 try:
-    from icon_render import render_icon, rgba_to_png
+    import linux_payload
 except ImportError:
     sys.path.insert(0, os.path.dirname(__file__))
-    from icon_render import render_icon, rgba_to_png
+    import linux_payload
+
+_normalize_text = linux_payload.normalize_text
+_sha256_bytes = linux_payload.sha256_bytes
+_md5_bytes = linux_payload.md5_bytes
+
+ARCH_PACKAGE_EXTENSIONS = (".pkg.tar.zst", ".pkg.tar.xz", ".pkg.tar.gz")
 
 
 def arch_target_carch(arch):
@@ -31,40 +36,21 @@ def arch_target_carch(arch):
 
 
 def arch_package_filename(version, arch, pkgrel=1, ext=".pkg.tar.zst"):
-    """Standard Arch Linux package filename."""
+    """Release file name; carries `arch` so it is distinguishable at a glance
+    from the Debian/Ubuntu, Fedora and openSUSE packages beside it.  pacman
+    reads identity from .PKGINFO, never from the file name."""
     carch = arch_target_carch(arch)
-    return f"greencurve-{version}-{pkgrel}-{carch}{ext}"
+    return f"greencurve-{version}-{pkgrel}-arch-{carch}{ext}"
 
 
 def arch_package_stale_paths(script_dir, version, arch, pkgrel=1):
-    """Paths of any previous Arch package outputs and checksums for cleanup."""
+    """Earlier Arch outputs for this version/arch, current and legacy names
+    (the pre-distro-tag `greencurve-<v>-<rel>-<carch>.pkg.tar.*`), without the
+    .sha256 suffix (linux_payload.remove_stale adds it)."""
     carch = arch_target_carch(arch)
-    prefix = os.path.join(script_dir, f"greencurve-{version}-{pkgrel}-{carch}.pkg")
-    return [
-        f"{prefix}{ext}{suffix}"
-        for ext in (".tar.zst", ".tar.xz", ".tar.gz")
-        for suffix in ("", ".sha256")
-    ]
-
-
-def _normalize_text(text_or_bytes):
-    """Ensure text is normalized to LF with no CRLF or stray CR."""
-    if isinstance(text_or_bytes, str):
-        data = text_or_bytes.encode("utf-8")
-    else:
-        data = text_or_bytes
-    data = data.replace(b"\r\n", b"\n")
-    if b"\r" in data:
-        raise RuntimeError("text carries lone CR not part of CRLF")
-    return data
-
-
-def _sha256_bytes(data):
-    return hashlib.sha256(data).hexdigest()
-
-
-def _md5_bytes(data):
-    return hashlib.md5(data).hexdigest()
+    current = os.path.join(script_dir, f"greencurve-{version}-{pkgrel}-arch-{carch}")
+    legacy = os.path.join(script_dir, f"greencurve-{version}-{pkgrel}-{carch}")
+    return [f"{prefix}{ext}" for prefix in (current, legacy) for ext in ARCH_PACKAGE_EXTENSIONS]
 
 
 # Every key pacman's install-time .PKGINFO parser (libalpm be_package.c
@@ -125,100 +111,17 @@ def _build_mtree(entries, builddate):
 def build_arch_package(script_dir, app_version, arch, binary_path, pkgrel=1, output_dir=None):
     """Assemble and compress an Arch Linux package installable via pacman -U.
 
-    Creates greencurve-<version>-<pkgrel>-<arch>.pkg.tar.zst (or .pkg.tar.xz if
+    Creates greencurve-<version>-<pkgrel>-arch-<carch>.pkg.tar.zst (or .pkg.tar.xz if
     zstandard is unavailable) in output_dir (defaults to script_dir), along with
     its .sha256 checksum file.
     """
     carch = arch_target_carch(arch)
-    if not os.path.isfile(binary_path):
-        raise RuntimeError(f"binary not found: {binary_path}")
+    fs_files = linux_payload.payload_files(script_dir, binary_path)
+    dirs = linux_payload.payload_dirs()
+    install_data = linux_payload.read_install_scriptlet(script_dir)
 
-    with open(binary_path, "rb") as f:
-        binary_data = f.read()
-
-    arch_dir = os.path.join(script_dir, "packaging", "arch")
-    service_path = os.path.join(arch_dir, "greencurve.service")
-    resume_path = os.path.join(arch_dir, "greencurve-resume.service")
-    sysusers_path = os.path.join(arch_dir, "greencurve.sysusers")
-    desktop_path = os.path.join(arch_dir, "greencurve.desktop")
-    install_path = os.path.join(arch_dir, "greencurve.install")
-    license_path = os.path.join(script_dir, "LICENSE")
-    readme_path = os.path.join(script_dir, "README.md")
-
-    for req in (service_path, resume_path, sysusers_path, desktop_path,
-                install_path, license_path, readme_path):
-        if not os.path.isfile(req):
-            raise RuntimeError(f"missing required packaging file: {req}")
-
-    with open(service_path, "rb") as f:
-        service_data = _normalize_text(f.read())
-    with open(resume_path, "rb") as f:
-        resume_data = _normalize_text(f.read())
-    with open(sysusers_path, "rb") as f:
-        sysusers_data = _normalize_text(f.read())
-    with open(desktop_path, "rb") as f:
-        desktop_data = _normalize_text(f.read())
-    with open(install_path, "rb") as f:
-        install_data = _normalize_text(f.read())
-    with open(license_path, "rb") as f:
-        license_data = _normalize_text(f.read())
-    with open(readme_path, "rb") as f:
-        readme_data = _normalize_text(f.read())
-
-    # Map of all installed filesystem files (path -> (bytes, mode))
-    fs_files = {
-        "usr/bin/greencurve": (binary_data, 0o755),
-        "usr/lib/systemd/system/greencurve.service": (service_data, 0o644),
-        "usr/lib/systemd/system/greencurve-resume.service": (resume_data, 0o644),
-        "usr/lib/sysusers.d/greencurve.conf": (sysusers_data, 0o644),
-        "usr/share/applications/greencurve.desktop": (desktop_data, 0o644),
-        "usr/share/licenses/greencurve/LICENSE": (license_data, 0o644),
-        "usr/share/doc/greencurve/README.md": (readme_data, 0o644),
-    }
-
-    # Render application icons deterministically into hicolor tree and pixmaps
-    icon_sizes = (16, 32, 48, 64, 128, 256)
-    for size in icon_sizes:
-        png_data = rgba_to_png(render_icon(size, "app"), size)
-        fs_files[f"usr/share/icons/hicolor/{size}x{size}/apps/greencurve.png"] = (png_data, 0o644)
-    fs_files["usr/share/pixmaps/greencurve.png"] = (
-        rgba_to_png(render_icon(256, "app"), 256),
-        0o644,
-    )
-
-    # Explicit directory paths in installation order
-    dirs = [
-        "usr",
-        "usr/bin",
-        "usr/lib",
-        "usr/lib/systemd",
-        "usr/lib/systemd/system",
-        "usr/lib/sysusers.d",
-        "usr/share",
-        "usr/share/applications",
-        "usr/share/icons",
-        "usr/share/icons/hicolor",
-        "usr/share/icons/hicolor/16x16",
-        "usr/share/icons/hicolor/16x16/apps",
-        "usr/share/icons/hicolor/32x32",
-        "usr/share/icons/hicolor/32x32/apps",
-        "usr/share/icons/hicolor/48x48",
-        "usr/share/icons/hicolor/48x48/apps",
-        "usr/share/icons/hicolor/64x64",
-        "usr/share/icons/hicolor/64x64/apps",
-        "usr/share/icons/hicolor/128x128",
-        "usr/share/icons/hicolor/128x128/apps",
-        "usr/share/icons/hicolor/256x256",
-        "usr/share/icons/hicolor/256x256/apps",
-        "usr/share/pixmaps",
-        "usr/share/licenses",
-        "usr/share/licenses/greencurve",
-        "usr/share/doc",
-        "usr/share/doc/greencurve",
-    ]
-
-    installed_size = sum(len(data) for data, _ in fs_files.values())
-    builddate = int(os.environ.get("SOURCE_DATE_EPOCH", int(time.time())))
+    installed_size = linux_payload.installed_size(fs_files)
+    builddate = linux_payload.build_date()
 
     # Only keys from PKGINFO_KNOWN_KEYS: pacman logs
     # "unknown key '<key>' in package description" for anything else on every
@@ -293,14 +196,10 @@ def build_arch_package(script_dir, app_version, arch, binary_path, pkgrel=1, out
     pkg_name = arch_package_filename(app_version, arch, pkgrel=pkgrel, ext=pkg_ext)
     archive_path = os.path.join(target_dir, pkg_name)
 
-    # Clean stale previous archives
-    for stale in arch_package_stale_paths(target_dir, app_version, arch, pkgrel=pkgrel):
-        if os.path.exists(stale):
-            os.remove(stale)
+    # Clean stale previous archives (current and legacy file names)
+    linux_payload.remove_stale(arch_package_stale_paths(target_dir, app_version, arch, pkgrel=pkgrel))
     if target_dir != script_dir:
-        for stale in arch_package_stale_paths(script_dir, app_version, arch, pkgrel=pkgrel):
-            if os.path.exists(stale):
-                os.remove(stale)
+        linux_payload.remove_stale(arch_package_stale_paths(script_dir, app_version, arch, pkgrel=pkgrel))
 
     # Assemble tar archive into buffer or file
     tar_buf = io.BytesIO()
@@ -348,7 +247,7 @@ def build_arch_package(script_dir, app_version, arch, binary_path, pkgrel=1, out
             with open(archive_path, "wb") as f:
                 f.write(compressed)
         else:
-            proc = subprocess.run(
+            subprocess.run(
                 ["zstd", "-19", "-T0", "-o", archive_path],
                 input=raw_tar,
                 check=True,
@@ -365,11 +264,7 @@ def build_arch_package(script_dir, app_version, arch, binary_path, pkgrel=1, out
 
     # Write SHA256 checksum file
     pkg_size = os.path.getsize(archive_path)
-    with open(archive_path, "rb") as f:
-        pkg_sha256 = hashlib.sha256(f.read()).hexdigest()
-    hash_path = archive_path + ".sha256"
-    with open(hash_path, "w") as f:
-        f.write(f"{pkg_sha256}  {pkg_name}\n")
+    linux_payload.write_sha256_file(archive_path)
 
     print(f"Packaged Arch Linux package {pkg_name} ({pkg_size:,} bytes / {pkg_size / 1024:.1f} KB)")
     return archive_path

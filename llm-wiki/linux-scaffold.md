@@ -299,11 +299,11 @@ Single multi-role binary (mirrors the Windows one-source-set, two-roles model):
 
 ## Arch Linux Packaging (`tools/arch_package.py` & `packaging/arch/`)
 
-- **Automatic Package Creation**: Running `python build.py` by default on either Windows or Linux builds and packages pacman-installable Arch Linux packages (`greencurve-<version>-1-<arch>.pkg.tar.zst`, along with its `.sha256`) in the release output.
+- **Automatic Package Creation**: Running `python build.py` by default on either Windows or Linux builds and packages pacman-installable Arch Linux packages (`greencurve-<version>-1-arch-<carch>.pkg.tar.zst`, along with its `.sha256`; the `arch` tag marks the distribution, and the builder deletes legacy untagged outputs; installed payload shared via `tools/linux_payload.py`) in the release output.
   - Implemented in `tools/arch_package.py`, called from `build.py:package_release_archive`.
   - Assembles all standard directories (`usr/bin`, `usr/lib/systemd/system`, `usr/lib/sysusers.d`, `usr/share/...`), file permissions (mode `0755` for binary and dirs, `0644` for unit/desktop/config files), metadata (`.PKGINFO`, `.BUILDINFO`, `.INSTALL`, and gzip-compressed `.MTREE`).
   - Supports zstandard compression directly on Windows and Linux via Python `zstandard` or system `zstd`, with fallback to `lzma`/`.pkg.tar.xz`.
-  - Can be installed directly via `sudo pacman -U greencurve-<version>-1-x86_64.pkg.tar.zst`.
+  - Can be installed directly via `sudo pacman -U greencurve-<version>-1-arch-x86_64.pkg.tar.zst`.
   - **`.PKGINFO` key allowlist (2026-09-06)**: the generated metadata may only use keys pacman's install-time parser (`be_package.c parse_descfile`) accepts — `makepkgopt` was removed from .PKGINFO in pacman 5.0 and there was never an `install` key (the scriptlet is the `.INSTALL` tar member); both warned "unknown key ... in package description" on every install. `validate_pkginfo_keys()` now fails the build on any other key, self-tested from `security_gates.run_build_script_regression_tests()` with a source guard. No `xdata = pkgtype=pkg` is emitted either: valid per the PKGINFO v2 spec, but pacman < 6.1 would warn about it.
 
 Arch Linux packaging template files are provided under `packaging/arch/`:

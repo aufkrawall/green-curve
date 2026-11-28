@@ -755,7 +755,7 @@ def check_release_packaging(ctx, require_text, forbid_text):
     require_text(os.path.join(arch_dir, "PKGBUILD.bin"), f"pkgver={ctx.APP_VERSION}",
                  "Arch PKGBUILD.bin version matches APP_VERSION")
     readme = os.path.join(ctx.SCRIPT_DIR, "README.md")
-    require_text(readme, f"greencurve-{ctx.APP_VERSION}-1-x86_64.pkg.tar.zst",
+    require_text(readme, f"greencurve-{ctx.APP_VERSION}-1-arch-x86_64.pkg.tar.zst",
                  "README Arch install example matches APP_VERSION")
     require_text(readme, f"greencurve-{ctx.APP_VERSION}-windows-x64-setup.exe",
                  "README silent install example matches APP_VERSION")

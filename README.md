@@ -90,7 +90,7 @@ Green Curve requires Python 3.10+ to build. The build script automatically downl
 python build.py
 ```
 
-Running `python build.py` builds the release matrix under `dist/`, packaging release archives (`.7z` on Windows, `.tar.xz` on Linux), standalone setup installers (`greencurve-<version>-windows-<arch>-setup.exe`), and Arch Linux packages (`greencurve-<version>-1-<arch>.pkg.tar.zst`).
+Running `python build.py` builds the release matrix under `dist/`, packaging release archives (`.7z` on Windows, `.tar.xz` on Linux), standalone setup installers (`greencurve-<version>-windows-<arch>-setup.exe`), and Arch Linux packages (`greencurve-<version>-1-arch-<arch>.pkg.tar.zst`).
 
 Common build options:
 
@@ -184,7 +184,7 @@ sudo ./greencurve-setup.sh uninstall --purge   # complete removal including /var
 Arch Linux packages are built automatically under `dist/` by `python build.py`. Install directly using `pacman`:
 
 ```bash
-sudo pacman -U dist/linux-x64/greencurve-0.32.0-1-x86_64.pkg.tar.zst
+sudo pacman -U dist/linux-x64/greencurve-0.32.0-1-arch-x86_64.pkg.tar.zst
 ```
 
 Alternatively, PKGBUILD templates are available under [`packaging/arch/`](packaging/arch/) to build from source (`makepkg -si`) or install from prebuilt binaries (`makepkg -si -p PKGBUILD.bin`).

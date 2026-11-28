@@ -40,6 +40,7 @@ Profiles can be captured, checked and moved between platforms; curves, cooling a
 - **Fan stall protection:** custom cooling hands the fan back when a confirmed RPM reading drops to zero.
 - **CMP cards:** experimental modified-driver support.
 - **Dialog copying:** Ctrl+C copies message text.
+- **Linux package names:** the Arch package file name now says `arch`.
 
 ### Improved
 
