@@ -977,7 +977,7 @@ int run_fan_stall_tests();
 // (tests/fan_handback_runtime_tests.cpp, 12856-12879, 12887-12888).
 int run_fan_handback_runtime_tests();
 // The standby window for a fan runtime handback
-// (tests/standby_fan_stash_tests.cpp, 14340-14349).
+// (tests/standby_fan_stash_tests.cpp, 14340-14349, 14358-14365).
 int run_standby_fan_stash_tests();
 int run_debug_log_identity_tests();
 int run_service_client_identity_failure_child();

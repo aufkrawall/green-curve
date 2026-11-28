@@ -227,6 +227,11 @@ struct ServiceLifecycleState {
     gc_u64 logonGeneration;
     gc_u64 suspendGeneration;
     gc_u64 resumedSuspendGeneration;
+    // Bumped by every event after which an intent kept by a fan handback during
+    // standby must no longer be replayed (service_standby_fan_stash_policy.h):
+    // an attempted automatic write, an explicit supersede, a lockout.  A further
+    // suspend before the standby restore writes does NOT bump it.
+    gc_u64 standbyStashEpoch;
     ServiceLifecycleTrigger pendingLogonTrigger;
     ServiceLifecycleIdentity pendingLogonIdentity;
     ServiceLifecycleIdentity lastAppliedLogonIdentity;
@@ -265,6 +270,7 @@ static inline ServiceLifecycleDecision service_lifecycle_reduce(
     if (state->stopped) return decision;
 
     if (event->type == SERVICE_LIFECYCLE_EVENT_LOCKOUT) {
+        state->standbyStashEpoch++;
         state->lockedOut = true;
         state->logonPending = false;
         state->standbyPending = false;
@@ -276,6 +282,7 @@ static inline ServiceLifecycleDecision service_lifecycle_reduce(
         return decision;
     }
     if (event->type == SERVICE_LIFECYCLE_EVENT_EXPLICIT_SUPERSEDE) {
+        state->standbyStashEpoch++;
         state->logonPending = false;
         state->standbyPending = false;
         state->driverPending = false;
@@ -373,6 +380,7 @@ static inline ServiceLifecycleDecision service_lifecycle_reduce(
                 if (!event->writeAttempted) {
                     decision.result = SERVICE_LIFECYCLE_RESULT_TRANSIENT_NOT_READY;
                 } else {
+                    state->standbyStashEpoch++;
                     if (event->success) {
                         state->lastAppliedLogonIdentity = state->pendingLogonIdentity;
                         decision.result = SERVICE_LIFECYCLE_RESULT_APPLIED;
@@ -407,6 +415,15 @@ static inline ServiceLifecycleDecision service_lifecycle_reduce(
                     decision.trigger = SERVICE_LIFECYCLE_TRIGGER_STANDBY_RESUME;
                     decision.result = SERVICE_LIFECYCLE_RESULT_PENDING;
                 }
+            } else if (state->lockedOut && state->suspendArmed) {
+                // The machine is awake again.  A lockout skips the restore,
+                // but must not leave the suspend armed: a later explicit Apply
+                // clears the lockout, and a late duplicate resume would then
+                // run a standby restore for a wake long past (and keep the
+                // standby fan-handback window open while awake).
+                state->resumedSuspendGeneration = state->suspendGeneration;
+                state->suspendArmed = false;
+                decision.result = SERVICE_LIFECYCLE_RESULT_LOCKED_OUT;
             } else if (!state->lockedOut && state->standbyPending &&
                 !state->standbyWriteIssued) {
                 // Windows commonly sends AUTOMATIC first and SUSPEND later for
@@ -438,6 +455,7 @@ static inline ServiceLifecycleDecision service_lifecycle_reduce(
                 if (!event->writeAttempted) {
                     decision.result = SERVICE_LIFECYCLE_RESULT_TRANSIENT_NOT_READY;
                 } else {
+                    state->standbyStashEpoch++;
                     state->standbyPending = false;
                     decision.result = event->success
                         ? SERVICE_LIFECYCLE_RESULT_APPLIED
@@ -480,6 +498,7 @@ static inline ServiceLifecycleDecision service_lifecycle_reduce(
                 if (!event->writeAttempted) {
                     decision.result = SERVICE_LIFECYCLE_RESULT_TRANSIENT_NOT_READY;
                 } else {
+                    state->standbyStashEpoch++;
                     state->driverPending = false;
                     decision.result = event->success
                         ? SERVICE_LIFECYCLE_RESULT_APPLIED

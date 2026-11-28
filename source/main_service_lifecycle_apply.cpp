@@ -593,20 +593,23 @@ static void service_lifecycle_attempt_standby_restore() {
     // A fan runtime handback between suspend and now kept the intent it
     // replaced; replay that instead, once (service_standby_fan_stash_policy.h).
     EnterCriticalSection(&g_appLock);
-    const gc_u64 resumedGeneration = g_serviceLifecycleState.resumedSuspendGeneration;
+    const gc_u64 stashEpoch = g_serviceLifecycleState.standbyStashEpoch;
     LeaveCriticalSection(&g_appLock);
     ServiceStandbyFanStash fanStash = {};
     const bool replayFanStash = service_standby_fan_stash_peek(
-        resumedGeneration, &fanStash) == SERVICE_STANDBY_FAN_STASH_REPLAY;
+        stashEpoch, &fanStash) == SERVICE_STANDBY_FAN_STASH_REPLAY;
     if (replayFanStash) {
         debug_log("lifecycle standby: replaying the intent a fan handback replaced during this standby"
-                  " (generation=%llu fanMode=%s ownedNow=%d)\n",
-            (unsigned long long)resumedGeneration,
+                  " (epoch=%llu fanMode=%s ownedNow=%d)\n",
+            (unsigned long long)stashEpoch,
             fan_mode_label(fan_owned_intent_mode(fanStash.replaced.hasFan != 0,
                 fanStash.replaced.fanMode, fanStash.replaced.fanAuto != 0)),
             g_serviceHasActiveDesired ? 1 : 0);
     }
-    if (!g_serviceHasActiveDesired && !replayFanStash) {
+    const DesiredSettings* restoreIntent = nullptr;
+    if (!service_standby_restore_select(replayFanStash, &fanStash,
+            g_serviceHasActiveDesired, &g_serviceActiveDesired,
+            &g_serviceActiveDesiredGpu, &restoreIntent, &target)) {
         unlock_service_runtime();
         EnterCriticalSection(&g_appLock);
         g_serviceLifecycleState.standbyPending = false;
@@ -616,9 +619,7 @@ static void service_lifecycle_attempt_standby_restore() {
         debug_log("lifecycle standby: no in-memory active intent; no write\n");
         return;
     }
-    service_build_full_restore_request(
-        replayFanStash ? &fanStash.replaced : &g_serviceActiveDesired, &desired);
-    target = replayFanStash ? fanStash.replacedGpu : g_serviceActiveDesiredGpu;
+    service_build_full_restore_request(restoreIntent, &desired);
     char detail[512] = {};
     bool ready = hardware_initialize(detail, sizeof(detail));
     if (ready && target.valid) {
@@ -662,8 +663,8 @@ static void service_lifecycle_attempt_standby_restore() {
         }
         // A refusal before any hardware write leaves the restore pending (the
         // reducer retries it on the next readiness cue), so it keeps the stash.
-        if (replayFanStash && (success || writeAttempted))
-            service_standby_fan_stash_consume();
+        if (service_standby_fan_stash_used_up(replayFanStash, success, writeAttempted))
+            service_standby_fan_stash_consume(success);
         if (success) {
             if (replayFanStash) {
                 // The replayed intent is the profile the handback detached.
@@ -702,8 +703,8 @@ static void service_lifecycle_attempt_standby_restore() {
         service_lifecycle_set_result_locked(
             SERVICE_LIFECYCLE_TRIGGER_STANDBY_RESUME, decision.result);
         LeaveCriticalSection(&g_appLock);
-        debug_log("lifecycle standby: full-intent restore attempted=%d success=%d proof=%s priorAgeMs=%llu detail=%s\n",
-            writeAttempted ? 1 : 0, success ? 1 : 0,
+        debug_log("lifecycle standby: full-intent restore attempted=%d success=%d fanStashReplay=%d proof=%s priorAgeMs=%llu detail=%s\n",
+            writeAttempted ? 1 : 0, success ? 1 : 0, replayFanStash ? 1 : 0,
             !success ? "not-committed" : !proofCommitOk
                 ? "commit-failed-lockout" : preserveMatureProof
                 ? "preserved-mature" : "restarted",

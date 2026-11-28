@@ -385,10 +385,10 @@ static void service_lifecycle_post_selected_gpu_arrival() {
 
 // Whether a fan runtime handback now falls inside a standby window
 // (service_standby_fan_stash_policy.h).  Takes g_appLock: call WITHOUT it.
-static bool service_lifecycle_standby_fan_handback_window(gc_u64* generationOut) {
+static bool service_lifecycle_standby_fan_handback_window(gc_u64* epochOut) {
     EnterCriticalSection(&g_appLock);
     const bool open = service_standby_fan_handback_window(
-        &g_serviceLifecycleState, generationOut);
+        &g_serviceLifecycleState, epochOut);
     LeaveCriticalSection(&g_appLock);
     return open;
 }

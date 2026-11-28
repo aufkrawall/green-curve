@@ -629,27 +629,34 @@ def check_standby_fan_stash(ctx, require_text, forbid_text, require_order):
     The Windows fan worker keeps running across suspend.  A handback between
     suspend and the standby restore's write rewrites the owned intent to driver
     auto, which made that restore skip the fan.  The handback now keeps the
-    intent it replaced (service_standby_fan_stash_policy.h) and the restore of
-    the same wake replays it once.  Executed by tests/standby_fan_stash_tests.cpp
-    and tests/fan_handback_runtime_tests.cpp (14340-14357).
+    intent it replaced (service_standby_fan_stash_policy.h), tagged with the
+    reducer's standby stash epoch, and the next standby restore replays it
+    once.  Executed by tests/standby_fan_stash_tests.cpp and
+    tests/fan_handback_runtime_tests.cpp (14340-14366).
     """
     fault_cpp = _p(ctx, "main_service_fan_fault.cpp")
     require_order(fault_cpp,
-                  "service_lifecycle_standby_fan_handback_window(&standbyGeneration);",
+                  "service_lifecycle_standby_fan_handback_window(&standbyEpoch);",
                   "g_serviceActiveDesired.hasFan = 0;",
-                  "the handback captures the window and the replaced intent before rewriting it")
+                  "the handback reads the standby window before it rewrites the owned intent")
     require_order(fault_cpp, "g_serviceFanFault = ServiceFanFault{};",
                   "service_standby_fan_stash_clear(reason);",
                   "a Reset or a deliberate fan Apply supersedes a pending standby replay")
     require_text(_p(ctx, "main_service_lifecycle_events.cpp"),
-                 "service_standby_fan_handback_window(\n        &g_serviceLifecycleState, generationOut);",
+                 "service_standby_fan_handback_window(\n        &g_serviceLifecycleState, epochOut);",
                  "the window comes from the real lifecycle reducer state")
     apply_cpp = _p(ctx, "main_service_lifecycle_apply.cpp")
+    require_order(apply_cpp, "const gc_u64 stashEpoch = g_serviceLifecycleState.standbyStashEpoch;",
+                  "const bool replayFanStash = service_standby_fan_stash_peek(",
+                  "the standby restore judges the stash against the reducer's current epoch")
     require_order(apply_cpp, "const bool replayFanStash = service_standby_fan_stash_peek(",
-                  "replayFanStash ? &fanStash.replaced : &g_serviceActiveDesired, &desired);",
-                  "the standby restore decides on the stash before it builds its request")
+                  "if (!service_standby_restore_select(replayFanStash, &fanStash,",
+                  "the standby restore decides on the stash before choosing what to restore")
+    require_order(apply_cpp, "if (!service_standby_restore_select(replayFanStash, &fanStash,",
+                  "service_build_full_restore_request(restoreIntent, &desired);",
+                  "the restore request is built from the selected intent")
     require_order(apply_cpp, "success = service_apply_desired_settings(&desired, false,",
-                  "if (replayFanStash && (success || writeAttempted))",
+                  "if (service_standby_fan_stash_used_up(replayFanStash, success, writeAttempted))",
                   "the stash is used up only by a restore that reached the hardware")
     # The restart snapshot write follows the proof commit in the same block.
     require_order(apply_cpp, "g_serviceActiveProfileSlot = fanStash.replacedProfileSlot;",

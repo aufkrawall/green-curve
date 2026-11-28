@@ -15,8 +15,14 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 - Fix: `source/service_standby_fan_stash_policy.h` (window from the real
   reducer state, capture predicate, replay decision) plus the handback stash in
   `main_service_fan_fault.cpp` and the replay in the standby restore. Tests
-  14340-14357; gate `check_standby_fan_stash`. Details in
+  14340-14366; gate `check_standby_fan_stash`. Details in
   [auto-restore-policy](../auto-restore-policy.md).
+- Review follow-up: the stash is tagged with a reducer epoch instead of the
+  suspend generation (a re-sleep before the restore wrote dropped it; explicit
+  actions that left the intent value unchanged did not), and a resume under
+  lockout now disarms the suspend (a stale armed suspend kept the window open
+  while awake and let a late duplicate resume run an old restore). The restore
+  wiring's intent choice and use-up rule are pure helpers with executed tests.
 - Not verified on hardware; whether NVML fan calls fail after a real wake is
   open. Linux follow-up: its fan lockout enters the uncertain state, which
   refuses the whole resume restore until an explicit Apply/Reset.

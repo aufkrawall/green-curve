@@ -6,7 +6,7 @@
 // intent update (main_service_fan_fault.cpp), cases 12856-12869, the stall
 // check after every runtime tick (main_fan_stall.cpp), 12870-12879 and
 // 12887-12888, and the standby fan stash a handback keeps for the standby
-// restore, 14350-14357, against a scripted driver and clock.  No GPU, no sleeps.
+// restore, 14350-14357 and 14366, against a scripted driver and clock.  No GPU, no sleeps.
 #include "app_shared.h"
 #include "fan_curve.h"
 #include "desired_settings_ui_policy.h"
@@ -102,9 +102,9 @@ static void service_clear_restart_reapply_snapshot() {
 static void service_fan_runtime_handback_publish(const ServiceFanFault* fault);
 // Scripted lifecycle reducer answer (main_service_lifecycle_events.cpp).
 static bool standbyWindowOpen;
-static gc_u64 standbyWindowGeneration;
-static bool service_lifecycle_standby_fan_handback_window(gc_u64* generationOut) {
-    if (generationOut) *generationOut = standbyWindowOpen ? standbyWindowGeneration : 0;
+static gc_u64 standbyWindowEpoch;
+static bool service_lifecycle_standby_fan_handback_window(gc_u64* epochOut) {
+    if (epochOut) *epochOut = standbyWindowEpoch;
     return standbyWindowOpen;
 }
 
@@ -187,7 +187,7 @@ static void reset(bool service) {
     g_serviceFanFault = {};
     g_serviceStandbyFanStash = {};
     standbyWindowOpen = false;
-    standbyWindowGeneration = 0;
+    standbyWindowEpoch = 0;
     resetFanPolicyComplete = false;
     resetFanPolicyUnsupported = false;
 }
@@ -452,11 +452,11 @@ static int run_standby_stash_cases() {
     reset(true);
     own_running_curve(true);
     standbyWindowOpen = true;
-    standbyWindowGeneration = 7;
+    standbyWindowEpoch = 7;
     escalate_fan_runtime_failure("Fan curve runtime apply failed", "scripted");
     if (autoWrites != 1 || g_serviceActiveDesired.hasFan || !g_serviceHasActiveDesired ||
         g_serviceFanFault.kind != SERVICE_FAN_FAULT_REPEATED_FAILURES ||
-        !g_serviceStandbyFanStash.valid || g_serviceStandbyFanStash.suspendGeneration != 7 ||
+        !g_serviceStandbyFanStash.valid || g_serviceStandbyFanStash.epoch != 7 ||
         !g_serviceStandbyFanStash.replaced.hasFan ||
         g_serviceStandbyFanStash.replaced.fanMode != FAN_MODE_CURVE ||
         g_serviceStandbyFanStash.replaced.powerLimitPct != 90 ||
@@ -472,7 +472,7 @@ static int run_standby_stash_cases() {
     if (service_standby_fan_stash_peek(7, &peeked) != SERVICE_STANDBY_FAN_STASH_REPLAY ||
         peeked.replaced.fanMode != FAN_MODE_CURVE || !g_serviceStandbyFanStash.valid)
         return 14351;
-    service_standby_fan_stash_consume();
+    service_standby_fan_stash_consume(true);
     if (g_serviceStandbyFanStash.valid ||
         service_standby_fan_stash_peek(7, &peeked) != SERVICE_STANDBY_FAN_STASH_NONE)
         return 14352;
@@ -486,7 +486,7 @@ static int run_standby_stash_cases() {
     reset(true);
     own_running_curve(false);
     standbyWindowOpen = true;
-    standbyWindowGeneration = 7;
+    standbyWindowEpoch = 7;
     escalate_fan_runtime_failure("Fan curve runtime apply failed", "scripted");
     if (g_serviceHasActiveDesired || markerClears != 1 || !g_serviceStandbyFanStash.valid ||
         g_serviceStandbyFanStash.handbackHasIntent ||
@@ -499,24 +499,33 @@ static int run_standby_stash_cases() {
     reset(true);
     own_running_curve(true);
     standbyWindowOpen = true;
-    standbyWindowGeneration = 7;
+    standbyWindowEpoch = 7;
     escalate_fan_runtime_failure("Fan curve runtime apply failed", "scripted");
     g_serviceActiveDesired.powerLimitPct = 80;
     if (service_standby_fan_stash_peek(7, &peeked) != SERVICE_STANDBY_FAN_STASH_INTENT_CHANGED ||
         g_serviceStandbyFanStash.valid) return 14356;
     // The driver refused auto: the intent owns the emergency duty, the kept
-    // copy is still the curve, and another wake's restore drops it.
+    // copy is still the curve, and a restore after the epoch moved drops it.
     reset(true);
     own_running_curve(true);
     standbyWindowOpen = true;
-    standbyWindowGeneration = 7;
+    standbyWindowEpoch = 7;
     autoRefused = true;
     escalate_fan_runtime_failure("Fan curve runtime apply failed", "scripted");
     if (!g_serviceActiveDesired.hasFan || g_serviceActiveDesired.fanMode != FAN_MODE_FIXED ||
         g_serviceActiveDesired.fanPercent != FAN_RUNTIME_EMERGENCY_PERCENT ||
+        g_serviceStandbyFanStash.replaced.fanMode != FAN_MODE_CURVE) return 14357;
+    // A later handback in the same epoch (here: of the emergency duty) keeps
+    // the curve as the copy to replay and follows the intent it left.
+    g_app.fanFixedRuntimeActive = true;
+    autoRefused = false;
+    escalate_fan_runtime_failure("Fixed fan runtime apply failed", "scripted");
+    if (g_serviceActiveDesired.hasFan || !g_serviceStandbyFanStash.valid ||
         g_serviceStandbyFanStash.replaced.fanMode != FAN_MODE_CURVE ||
-        service_standby_fan_stash_peek(8, &peeked) != SERVICE_STANDBY_FAN_STASH_STALE_GENERATION ||
-        g_serviceStandbyFanStash.valid) return 14357;
+        g_serviceStandbyFanStash.handbackIntent.hasFan ||
+        service_standby_fan_stash_peek(7, &peeked) != SERVICE_STANDBY_FAN_STASH_REPLAY ||
+        service_standby_fan_stash_peek(8, &peeked) != SERVICE_STANDBY_FAN_STASH_SUPERSEDED ||
+        g_serviceStandbyFanStash.valid) return 14366;
     return 0;
 }
 

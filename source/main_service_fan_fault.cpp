@@ -31,7 +31,7 @@ static void service_write_restart_reapply_snapshot();
 static void service_clear_restart_reapply_snapshot();
 // main_service_lifecycle_events.cpp: the reducer state is guarded by g_appLock,
 // which this takes; call it WITHOUT g_appLock.
-static bool service_lifecycle_standby_fan_handback_window(gc_u64* generationOut);
+static bool service_lifecycle_standby_fan_handback_window(gc_u64* epochOut);
 
 // Guarded by g_appLock.
 static ServiceFanFault g_serviceFanFault = {};
@@ -41,36 +41,40 @@ static ServiceStandbyFanStash g_serviceStandbyFanStash = {};
 
 static void service_standby_fan_stash_clear(const char* reason) {
     if (!g_serviceStandbyFanStash.valid) return;
-    debug_log("standby fan stash: dropped (generation=%llu) by %s\n",
-        (unsigned long long)g_serviceStandbyFanStash.suspendGeneration,
+    debug_log("standby fan stash: dropped (epoch=%llu) by %s\n",
+        (unsigned long long)g_serviceStandbyFanStash.epoch,
         reason ? reason : "unspecified");
     g_serviceStandbyFanStash = ServiceStandbyFanStash{};
 }
 
-// The standby restore of `resumedGeneration` asks what to do with the stash.
-// A stale or superseded stash is dropped here; a replayable one stays until
-// the restore actually writes (service_standby_fan_stash_consume), so a
-// restore that is still waiting for the GPU keeps it.  Runtime lock held.
+// The standby restore asks what to do with the stash, given the reducer's
+// current epoch.  A superseded stash is dropped here; a replayable one stays
+// until the restore reaches the hardware (service_standby_fan_stash_consume),
+// so a restore that is still waiting for the GPU keeps it.  Runtime lock held.
 static ServiceStandbyFanStashUse service_standby_fan_stash_peek(
-    gc_u64 resumedGeneration, ServiceStandbyFanStash* out) {
+    gc_u64 currentEpoch, ServiceStandbyFanStash* out) {
     if (out) *out = ServiceStandbyFanStash{};
     const ServiceStandbyFanStashUse use = service_standby_fan_stash_use(
-        &g_serviceStandbyFanStash, resumedGeneration,
+        &g_serviceStandbyFanStash, currentEpoch,
         g_serviceHasActiveDesired, &g_serviceActiveDesired);
     if (use == SERVICE_STANDBY_FAN_STASH_REPLAY) {
         if (out) *out = g_serviceStandbyFanStash;
     } else if (use != SERVICE_STANDBY_FAN_STASH_NONE) {
-        debug_log("standby fan stash: not replayed (%s, stash generation=%llu resumed=%llu)\n",
+        debug_log("standby fan stash: not replayed (%s, stash epoch=%llu current=%llu)\n",
             service_standby_fan_stash_use_name(use),
-            (unsigned long long)g_serviceStandbyFanStash.suspendGeneration,
-            (unsigned long long)resumedGeneration);
+            (unsigned long long)g_serviceStandbyFanStash.epoch,
+            (unsigned long long)currentEpoch);
         service_standby_fan_stash_clear(service_standby_fan_stash_use_name(use));
     }
     return use;
 }
 
-// The restore wrote (or failed to): the stash is used up either way.
-static void service_standby_fan_stash_consume() {
+// The restore reached the hardware (success or a failed write): the stash is
+// used up either way.
+static void service_standby_fan_stash_consume(bool success) {
+    if (!g_serviceStandbyFanStash.valid) return;
+    debug_log("standby fan stash: used up by the standby restore (epoch=%llu success=%d)\n",
+        (unsigned long long)g_serviceStandbyFanStash.epoch, success ? 1 : 0);
     g_serviceStandbyFanStash = ServiceStandbyFanStash{};
 }
 
@@ -107,9 +111,9 @@ static void service_fan_runtime_handback_publish(const ServiceFanFault* fault) {
         g_serviceActiveDesired.fanAuto != 0);
     const DesiredSettings previousDesired = g_serviceActiveDesired;
     const GpuAdapterInfo previousGpu = g_serviceActiveDesiredGpu;
-    gc_u64 standbyGeneration = 0;
+    gc_u64 standbyEpoch = 0;
     const bool standbyWindow =
-        service_lifecycle_standby_fan_handback_window(&standbyGeneration);
+        service_lifecycle_standby_fan_handback_window(&standbyEpoch);
     EnterCriticalSection(&g_appLock);
     const ServiceProfileSource previousProfileSource = g_serviceActiveProfileSource;
     const int previousProfileSlot = g_serviceActiveProfileSlot;
@@ -172,15 +176,22 @@ static void service_fan_runtime_handback_publish(const ServiceFanFault* fault) {
     g_serviceFanFault = record;
     LeaveCriticalSection(&g_appLock);
 
-    // Inside a standby window keep what the handback replaced, so the restore
-    // of this wake can replay it.  A second handback in the same window (the
-    // intent no longer owns a manual fan) does not overwrite the first copy.
-    const bool stashCaptured = service_standby_fan_stash_should_capture(
-        standbyWindow, hadIntent, &previousDesired);
-    if (stashCaptured) {
+    // Inside a standby window keep what the handback replaced, so the next
+    // standby restore can replay it.  A copy already kept for this epoch stays
+    // the one replayed (a later handback can only have replaced the emergency
+    // duty or nothing); it just follows the intent this handback left, so the
+    // restore still recognizes it as unchanged.
+    const bool keptForEpoch = standbyWindow && g_serviceStandbyFanStash.valid &&
+        g_serviceStandbyFanStash.epoch == standbyEpoch;
+    const bool stashCaptured = !keptForEpoch &&
+        service_standby_fan_stash_should_capture(standbyWindow, hadIntent, &previousDesired);
+    if (keptForEpoch) {
+        g_serviceStandbyFanStash.handbackHasIntent = g_serviceHasActiveDesired;
+        g_serviceStandbyFanStash.handbackIntent = g_serviceActiveDesired;
+    } else if (stashCaptured) {
         ServiceStandbyFanStash stash = {};
         stash.valid = true;
-        stash.suspendGeneration = standbyGeneration;
+        stash.epoch = standbyEpoch;
         stash.replaced = previousDesired;
         stash.replacedGpu = previousGpu;
         stash.replacedProfileSource = previousProfileSource;
@@ -188,18 +199,14 @@ static void service_fan_runtime_handback_publish(const ServiceFanFault* fault) {
         stash.handbackHasIntent = g_serviceHasActiveDesired;
         stash.handbackIntent = g_serviceActiveDesired;
         g_serviceStandbyFanStash = stash;
-    } else if (standbyWindow && g_serviceStandbyFanStash.valid &&
-               g_serviceStandbyFanStash.suspendGeneration == standbyGeneration) {
-        // Keep the first copy, but follow the intent this handback left so the
-        // restore still recognizes it as unchanged.
-        g_serviceStandbyFanStash.handbackHasIntent = g_serviceHasActiveDesired;
-        g_serviceStandbyFanStash.handbackIntent = g_serviceActiveDesired;
     } else {
-        service_standby_fan_stash_clear("a fan handback outside a standby window");
+        service_standby_fan_stash_clear(standbyWindow
+            ? "a fan handback in a later standby epoch"
+            : "a fan handback outside a standby window");
     }
-    debug_log("standby fan stash: window=%d generation=%llu captured=%d kept=%d previousMode=%s\n",
-        standbyWindow ? 1 : 0, (unsigned long long)standbyGeneration,
-        stashCaptured ? 1 : 0, g_serviceStandbyFanStash.valid ? 1 : 0,
+    debug_log("standby fan stash: window=%d epoch=%llu captured=%d keptEarlier=%d valid=%d previousMode=%s\n",
+        standbyWindow ? 1 : 0, (unsigned long long)standbyEpoch,
+        stashCaptured ? 1 : 0, keptForEpoch ? 1 : 0, g_serviceStandbyFanStash.valid ? 1 : 0,
         fan_mode_label(previousMode));
 
     // Keep the on-disk restart reapply snapshot aligned with the post-handback
