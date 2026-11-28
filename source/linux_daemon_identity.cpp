@@ -22,10 +22,53 @@ static gc_u64 daemon_service_instance_id() {
 static bool daemon_selected_startup_topology(LinuxGpuController& ctl) {
     if (!ctl.gpuReady || !ctl.gpu.writeIdentityResolved || !ctl.gpu.vfSnapshotFresh || !ctl.gpu.numPopulated ||
         ctl.startupPolicy.mode != SERVICE_STARTUP_POLICY_PROFILE) return false;
-    const auto selection = linux_gpu_restore_selection(&ctl.startupPolicy.targetGpu,
-        (GpuLocationRole)ctl.startupPolicy.targetLocationRole, ctl.gpu.adapters, ctl.gpu.adapterCount,
-        &ctl.startupPolicy.targetUuid, ctl.gpu.adapterUuids, nullptr);
-    return selection.writeResolved && selection.index == (int)ctl.gpu.selectedAdapterIndex;
+    return daemon_stored_gpu_index(ctl, ctl.startupPolicy.targetGpu,
+        (GpuLocationRole)ctl.startupPolicy.targetLocationRole, ctl.startupPolicy.targetUuid) ==
+        (int)ctl.gpu.selectedAdapterIndex;
+}
+
+// Protocol v40 adapter summaries (service_adapter_summary.h): every adapter's
+// physical UUID NVML reported, the card holding the active intent, and the
+// runtime summary of the one GPU this daemon serves. The telemetry fallback
+// of a multi-GPU host is not served.
+static void daemon_publish_adapter_summaries(const LinuxGpuController& ctl, ServiceResponse* response) {
+    ServiceSnapshot& s = response->snapshot;
+    const unsigned int count = s.adapterCount < MAX_GPU_ADAPTERS ? s.adapterCount : MAX_GPU_ADAPTERS;
+    ServiceGpuUuid uuids[MAX_GPU_ADAPTERS] = {};
+    for (unsigned int i = 0; i < count && i < ctl.gpu.adapterCount; ++i)
+        service_gpu_uuid_parse(ctl.gpu.adapterUuids[i].text, &uuids[i]);
+    int owner = -1;
+    for (unsigned int i = 0; ctl.hasActiveDesired && i < count; ++i)
+        if (linux_gpu_identity_matches(&ctl.activeTarget, &s.adapters[i]) && daemon_intent_uuid_names(ctl, i))
+            owner = owner == -1 ? (int)i : -2;
+    // A pending fan handback belongs to the card its ownership marker names.
+    int fanHandback = -1;
+    if (ctl.fanOwnershipHandbackPending || ctl.fanOwnershipHandbackDeferred) {
+        const auto marker = linux_gpu_restore_selection(&ctl.fanOwnershipRecord.targetGpu,
+            (GpuLocationRole)ctl.fanOwnershipRecord.targetLocationRole, s.adapters, count,
+            &ctl.fanOwnershipRecord.targetUuid, ctl.gpu.adapterUuids, nullptr);
+        fanHandback = marker.writeResolved ? marker.index : -1;
+    }
+    ServiceAdapterSummaryInputs in = {};
+    in.uuids = uuids;
+    in.count = count;
+    in.ownerIndex = owner;
+    in.fanHandbackIndex = fanHandback;
+    in.servedIndex = ctl.gpu.writeIdentityResolved && s.selectedAdapterIndex < count
+        ? (int)s.selectedAdapterIndex : -1;
+    in.uncertain = ctl.stateUncertain;
+    in.fanOwned = s.fanCurveRuntimeActive || s.fanFixedRuntimeActive;
+    in.fanFault = s.fanFault.kind != SERVICE_FAN_FAULT_NONE;
+    in.gpuPhase = response->state.gpuPhase;
+    in.healthReason = s.health.reason;
+    in.autoRestoreLockoutReason = s.autoRestoreLockoutReason;
+    const unsigned int withheld = service_adapter_summaries_build(in, s.adapterSummaries);
+    static unsigned int lastWithheld = 0;
+    if (withheld != lastWithheld) {
+        dlog("daemon adapters: %u shared UUID(s) withheld; owner=%d served=%d fanHandback=%d\n",
+             withheld, owner, in.servedIndex, fanHandback);
+        lastWithheld = withheld;
+    }
 }
 
 static void daemon_stamp_state_envelope(LinuxGpuController& ctl, ServiceResponse* response, bool passive = false) {
@@ -87,4 +130,5 @@ static void daemon_stamp_state_envelope(LinuxGpuController& ctl, ServiceResponse
     } else if (ctl.gpuReady) {
         response->state.gpuPhase = SERVICE_GPU_PHASE_DEGRADED;
     }
+    if (!passive) daemon_publish_adapter_summaries(ctl, response);
 }

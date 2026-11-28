@@ -5,6 +5,73 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: Linux daemon journal kept per GPU
+
+- `daemon_journal_admit()` attributes `active.bin` to a card through the
+  existing restore resolver before every hardware write and refuses writes
+  while another present card's journal is on disk; an explicit Reset releases
+  only a proven-absent card's settled journal (complete discovery, no other
+  card of its model or UUID) as a durable step of its own before this card's
+  Reset, and never unfinished recovery; unattended writes, the fan marker gate
+  and startup handback prove their own card the same way, and the backend
+  fast path and rediscovery keep a UUID learned for the same location through
+  a failed query, so a known mismatch is refused while a UUID-proven move is
+  still followed; an unresolvable release holds every write until its journal
+  is stored again (14921-14929, 14940, 14942-14949, 14955-14964, 14967-14972).
+  With several GPUs a record naming a UUID (journal, write target, fan marker,
+  startup binding) is proven only by reading that UUID in the current NVML
+  session, with every reported card listed and read; a single GPU and a record without a UUID keep the location rule,
+  and while discovery skipped a device only the exact recorded location.
+  See [multi-gpu.md](../multi-gpu.md).
+- A failed write restores the journal's exact bytes instead of removing it.
+  A k-record journal from a multi-GPU daemon is kept, reported as several
+  records and never replaced or removed.
+- An automatic restore's failed-write UNCERTAIN journal names the card the
+  backend resolved; a fan lockout's keeps the binding's role and UUID.
+- Learned UUIDs carry through Apply/Reset journals; a startup refresh may
+  name the card its binding must be (checked, never re-bound).
+- Distinct unique UUIDs prove a present twin is not the journal's card; an
+  automatic write refuses after the loader removed an unreadable journal.
+- Tests `14900-14920` (policy, incl. boot recovery for several journals),
+  `14930-14939` and `14950-14954` (production daemon handler, incl. resume),
+  `14936`/`14951` (fan lockout binding), `14639-14640` (refresh binding),
+  state file fixture codes 12-16.
+
+## 2026-11-28: Adapter UUIDs and per-adapter summaries (protocol v40)
+
+- `ServiceSnapshot.adapterSummaries[]` (`service_adapter_summary.h`) carries
+  each adapter's NVML UUID (binary, withheld when two adapters share one), the
+  card holding Green Curve settings, and the runtime summary (phase, health,
+  lockout, uncertainty, fan ownership/fault) of the card the service runs;
+  see [multi-gpu.md](../multi-gpu.md). Snapshot 4888 B, response 20016 B.
+- Linux publishes every adapter's UUID from discovery; Windows reads the
+  selected GPU's UUID via an optional `nvmlDeviceGetUUID` after the PCI match.
+- Windows builds an identity-bound UUID inventory for every adapter
+  (`nvml_adapter_uuid_policy.h`); a pending fan handback is marked on its card.
+- Tests `14700-14729` (UUID text, builder, NVML matcher, every validator rule)
+  and `14730-14733` (the production daemon stamp).
+
+## 2026-11-27: One GPU route for every command (protocol v40)
+
+- `ServiceRequest.targetGpu` now has one meaning on both platforms: the GPU a
+  command is about, absent meaning the served GPU. `service_gpu_route.h` holds
+  the command table (machine / required / optional / policy) read by the
+  shared validator and by both dispatchers; see [multi-gpu.md](../multi-gpu.md).
+- Wire: PING, LOGON_HANDOFF and GET_OPERATION_RESULT refuse a target; the
+  daemon-wide startup policy keeps its v39 target rules.
+- Dispatch: `daemon_route_admits()` (Linux) and `service_route_admits()`
+  (Windows) refuse any routed command naming a GPU other than the served one
+  with STALE_STATE before its handler, except GET_SNAPSHOT's guarded switch
+  and Apply/Reset, whose preconditions already bind the target. A route must
+  resolve to exactly one live adapter (`gpu_adapter_route_index()`). Linux
+  GET_TELEMETRY no longer switches GPUs.
+- Windows re-checks the route for file writes under the runtime lock right
+  before writing, and refuses (clearing capture) any other OK answer
+  published for another GPU after a retarget.
+- Tests: `14600-14629`, `14637-14638`, `14641-14643` (route table, wire rule, resolver, serving decision, published answer),
+  `14630-14636` (production daemon handler: refused routes never reach the
+  handler or the backend; the state read still switches; a boot profile may
+  still bind another card).
 ## 2026-11-28: Hard-pin tail no longer reported as a Linux hardware override
 
 - A Linux hard-pinned profile (pin at 2957 MHz, +475 MHz offset prefix) was

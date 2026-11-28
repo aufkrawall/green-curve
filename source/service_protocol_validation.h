@@ -5,17 +5,17 @@
 // published state envelope, and the response.
 //
 // Split out of service_protocol.h to keep that file inside the source-size
-// ratchet; it is included from the bottom of service_protocol.h and is not
-// meant to be included directly.  Everything here is pure and header-only, so
-// the regression harness asserts it on both hosts.
+// ratchet; included from its bottom, not directly. Everything here is pure and
+// header-only, so the regression harness asserts it on both hosts.
 //
 // The rule these functions encode: a request and a response are each either
-// wholly coherent or rejected.  Partial acceptance is what let a half-populated
-// envelope be read as READY.
+// wholly coherent or rejected (partial acceptance let a half-populated envelope
+// be read as READY).
 
 #ifndef GREEN_CURVE_SERVICE_PROTOCOL_VALIDATION_H
 #define GREEN_CURVE_SERVICE_PROTOCOL_VALIDATION_H
 #include "hardware_capture_wire_validation.h"
+#include "service_gpu_route.h"
 static inline bool service_desired_settings_is_zero(const DesiredSettings& desired);
 
 static inline const char* service_control_preconditions_reject_reason(const ServiceRequest& r) {
@@ -191,12 +191,12 @@ static inline const char* service_request_reject_reason(
             return "non-profile startup policy carries a slot or GPU";
         }
     } else if (r->command == SERVICE_CMD_REFRESH_STARTUP_PROFILE) {
-        // Content-only update of an already-bound policy. It must name the slot
-        // it claims to refresh. Live-mapped content carries the entire reviewed
-        // topology attachment. Its target is a precondition only.
+        // Content-only update of an already-bound policy naming its slot; mapped
+        // content carries the complete topology attachment. A target names the
+        // card the stored binding must be, checked by the daemon; never a re-bind.
         if (r->operationId || r->flags || r->resetOcBeforeApply ||
             r->applyOrigin || r->profileSource || r->startupMode ||
-            (r->targetGpu.valid != (anyPrecondition && r->expectedTopologySignature != 0)))
+            (anyPrecondition && r->expectedTopologySignature == 0))
             return "startup profile refresh requires a complete topology attachment";
         if (!r->profileSlot || r->profileSlot > (gc_u32)CONFIG_NUM_SLOTS)
             return "startup profile refresh without a real slot";
@@ -261,6 +261,9 @@ static inline const char* service_request_reject_reason(
         anyPrecondition) {
         return "read-only command carries mutation fields";
     }
+    // One route rule for every command (service_gpu_route.h).
+    if (r->targetGpu.valid && !service_command_accepts_target(r->command))
+        return "machine-wide command carries a target GPU";
     return nullptr;
 }
 
@@ -317,10 +320,8 @@ static inline bool service_control_bool_fields_valid(
 // Canonicalize every boolean and bounded field a published snapshot carries.
 //
 // Moved here from service_protocol.h (2026-08-14) when the v19 updater pushed
-// that file past its size limit.  This is where it belonged anyway: this header
-// is by its own description the trust-boundary validation for a request, the
-// published state envelope, and the response, and a snapshot validator is all
-// three's neighbour rather than a wire declaration.
+// that file past its size limit; a snapshot validator belongs next to the
+// request, envelope and response rules rather than the wire declaration.
 static inline void validate_service_snapshot_for_ipc(ServiceSnapshot* s) {
     if (!s) return;
     canonicalize_gc_bool8(&s->initialized);
@@ -412,6 +413,8 @@ static inline bool validate_service_state_envelope_for_ipc(
         snapshot->autoRestoreLockoutReason >
             SERVICE_AUTO_RESTORE_LOCKOUT_MAX ||
         snapshot->health.reason > SERVICE_GPU_HEALTH_STATE_UNCERTAIN ||
+        service_adapter_summaries_reject_reason(snapshot->adapterSummaries, snapshot->adapterCount,
+            snapshot->selectedAdapterIndex, state->gpuPhase, snapshot->health.reason) ||
         snapshot->health.architectureSource >
             SERVICE_GPU_ARCH_SOURCE_FUTURE_GUESS ||
         (snapshot->health.availableMutationDomains &
@@ -672,6 +675,7 @@ static inline bool service_snapshot_is_zero(const ServiceSnapshot& snapshot) {
     if (!service_scalar_array_is_zero(snapshot.autoApplyFailure.reserved) ||
         !service_scalar_array_is_zero(snapshot.autoApplyFailure.detail)) return false;
     if (!service_fan_fault_is_zero(snapshot.fanFault)) return false;
+    if (!service_adapter_summaries_are_zero(snapshot.adapterSummaries)) return false;
     return service_gpu_health_is_zero(snapshot.health);
 }
 

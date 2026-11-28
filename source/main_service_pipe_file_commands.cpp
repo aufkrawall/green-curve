@@ -18,6 +18,12 @@ static void service_handle_file_write_command(const ServiceRequest& request,
     ServiceResponse& response, HANDLE callerToken, DWORD callerPid) {
     char detail[256] = {};
     lock_service_runtime();
+    // Under the runtime lock no retarget can intervene: a file for another GPU
+    // than the routed one is never written (service_gpu_route.h).
+    if (!service_route_admits(&request, &response)) {
+        unlock_service_runtime();
+        return;
+    }
     bool ok = hardware_initialize(detail, sizeof(detail));
     // A probe report is the diagnostic for a machine where hardware init is
     // exactly what fails, so it is the one command still written without it.
@@ -33,6 +39,12 @@ static void service_handle_file_write_command(const ServiceRequest& request,
     }
     if (ok) {
         refresh_global_state(detail, sizeof(detail));
+    }
+    // Initialization can itself re-enumerate and select: check the route again
+    // right before the file is written, still under the same runtime lock.
+    if (!service_route_admits(&request, &response)) {
+        unlock_service_runtime();
+        return;
     }
     char fileErr[256] = {};
     bool writeOk = false;

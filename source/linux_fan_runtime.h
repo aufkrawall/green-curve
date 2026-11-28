@@ -106,6 +106,11 @@ static void daemon_fan_runtime_lockout(LinuxGpuController& ctl, gc_u32 kind, con
     const DesiredSettings previousDesired = ctl.activeDesired;
     const GpuAdapterInfo previousTarget = ctl.activeTarget;
     const bool wasUncertain = ctl.stateUncertain;
+    // The journal keeps the binding's role and learned UUID with the card it
+    // names, captured before the intent below may release that binding.
+    const bool ownBinding = ctl.activeTarget.valid;
+    const GpuLocationRole recordRole = ownBinding ? ctl.activeTargetRole : GPU_LOCATION_ROLE_UNRECORDED;
+    const auto recordUuid = ctl.activeTargetUuid;
     if (autoOk) {
         // The driver has the fan back: stop claiming the failed/stalled fan so
         // snapshots and later non-fan Applies cannot resurrect it.
@@ -129,8 +134,9 @@ static void daemon_fan_runtime_lockout(LinuxGpuController& ctl, gc_u32 kind, con
     ctl.hasActiveDesired = service_scoped_has_owned_intent(ctl.activeDesired);
     if (!ctl.hasActiveDesired) ctl.activeTarget = {};
     char stateErr[256] = {};
-    const bool recordPersisted = store_daemon_record(ctl, LINUX_DAEMON_RECORD_UNCERTAIN,
-        &recordTarget, &ctl.activeDesired, stateErr, sizeof(stateErr));
+    const bool recordPersisted = store_daemon_record(ctl, LINUX_DAEMON_RECORD_UNCERTAIN, &recordTarget,
+        &ctl.activeDesired, stateErr, sizeof(stateErr), 0, SERVICE_OPERATION_NONE,
+        recordRole, ownBinding ? &recordUuid : nullptr);
     dlog("daemon: %s; auto=%d handback=%u fanIntent=%d->%d owned=%d state=%s\n",
          why, autoOk ? 1 : 0, (unsigned int)handback, previousMode,
          fan_owned_intent_mode(ctl.hasActiveDesired && ctl.activeDesired.hasFan,
@@ -142,6 +148,11 @@ static void daemon_fan_runtime_lockout(LinuxGpuController& ctl, gc_u32 kind, con
     daemon_enter_uncertain_after_fan_lockout(ctl, why, autoOk);
     daemon_standby_fan_stash_note_lockout(ctl, kind, hadIntent, &previousDesired,
         &previousTarget, wasUncertain, autoOk, recordPersisted);
+    // A released intent leaves no binding behind (the stash above took it).
+    if (!ctl.hasActiveDesired) {
+        ctl.activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
+        ctl.activeTargetUuid = {};
+    }
 }
 
 // Monotonic milliseconds: the clock the worker's waits use.
@@ -212,6 +223,22 @@ static void daemon_fan_stall_check(LinuxGpuController& ctl, FanStallTracker* tra
                                r.judgedPercent, r.stalledForMs);
 }
 
+// An owned manual fan whose card can no longer be proven is not silently
+// left: nothing is written to a card that may be another one, so the handback
+// is reported incomplete, a fault and uncertainty are recorded, and the
+// ownership marker keeps the card's binding until a Reset on the proven card
+// returns the fan. The journal is untouched. Caller holds g_lock.
+static void daemon_fan_report_unproven(LinuxGpuController& ctl) {
+    if (!linux_daemon_fan_runtime_active(ctl.gpuReady, ctl.hasActiveDesired, ctl.stateUncertain, true,
+            ctl.activeDesired.hasFan != 0, ctl.activeDesired.fanMode, ctl.activeDesired.fanAuto != 0)) return;
+    static const char kUnproven[] = "fan control stopped: this GPU's identity can no longer be confirmed";
+    daemon_fan_ownership_latch_incomplete(ctl, kUnproven);
+    daemon_fan_fault_record(ctl, SERVICE_FAN_FAULT_REPEATED_FAILURES, SERVICE_FAN_HANDBACK_FAILED,
+                            0, 0, 0, kUnproven);
+    daemon_enter_uncertain_after_fan_lockout(ctl, kUnproven, false);  // marker kept, no write
+    dlog("daemon: %s; no fan write, ownership retained for Reset\n", kUnproven);
+}
+
 static pl_thread_ret fan_reassert_thread(void* arg) {
     if (!arg) {
         dlog("daemon: fan worker started without a GPU controller\n");
@@ -242,11 +269,15 @@ static pl_thread_ret fan_reassert_thread(void* arg) {
             }
         }
         observedGeneration = fan_runtime_generation(ctl);
+        // The intent must be proven on the served card (a revoked binding, or
+        // another card at its old location, is not the card it was written for).
         bool active = linux_daemon_fan_runtime_active(ctl.gpuReady,
             ctl.hasActiveDesired, ctl.stateUncertain,
-            linux_gpu_identity_matches(&ctl.activeTarget, &ctl.gpu.selectedGpu),
+            linux_gpu_identity_matches(&ctl.activeTarget, &ctl.gpu.selectedGpu) && daemon_active_intent_on_served(ctl),
             ctl.activeDesired.hasFan != 0, ctl.activeDesired.fanMode,
             ctl.activeDesired.fanAuto != 0);
+        if (!active && linux_gpu_identity_matches(&ctl.activeTarget, &ctl.gpu.selectedGpu))
+            daemon_fan_report_unproven(ctl);
         if (active && ctl.activeDesired.fanMode == FAN_MODE_FIXED) {
             pollMs = LINUX_FAN_FIXED_MAINTENANCE_INTERVAL_MS;
         } else if (active) {
@@ -315,7 +346,7 @@ static pl_thread_ret fan_reassert_thread(void* arg) {
         }
         active = linux_daemon_fan_runtime_active(ctl.gpuReady,
             ctl.hasActiveDesired, ctl.stateUncertain,
-            linux_gpu_identity_matches(&ctl.activeTarget, &ctl.gpu.selectedGpu),
+            linux_gpu_identity_matches(&ctl.activeTarget, &ctl.gpu.selectedGpu) && daemon_active_intent_on_served(ctl),
             ctl.activeDesired.hasFan != 0, ctl.activeDesired.fanMode,
             ctl.activeDesired.fanAuto != 0);
         if (active && ctl.activeDesired.fanMode == FAN_MODE_FIXED) {

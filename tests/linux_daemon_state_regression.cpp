@@ -215,6 +215,23 @@ int main() {
     if (!write_fixture(scratch.path, old) || chmod(scratch.path, 0644)) return 10;
     if (linux_daemon_state_load(scratch.path, &loaded, why, sizeof(why), &migrated) != LINUX_DAEMON_STATE_INVALID_REMOVED ||
         access(scratch.path, F_OK) == 0) return 11;
-    puts("Linux daemon state files: instance lock, frozen migration, durable coverage and invalid-record rejection passed");
+    // A journal written by a daemon that runs several GPUs (k records back to
+    // back) is kept: reported as several records, never deleted as an
+    // unknown layout, and neither replaced nor removed by this daemon.
+    struct TwoRecords { LinuxDaemonStateRecord first, second; } pair{};
+    pair.first = uncertain;
+    GpuAdapterInfo second = gpu; second.pciBus = 4;
+    linux_daemon_record_initialize(&pair.second, LINUX_DAEMON_RECORD_ACTIVE, &second, &desired,
+        0, SERVICE_OPERATION_NONE, GPU_LOCATION_ROLE_REQUIRED, nullptr, 0);
+    if (!write_fixture(scratch.path, pair)) return 12;
+    if (linux_daemon_state_load(scratch.path, &loaded, why, sizeof(why), &migrated) != LINUX_DAEMON_STATE_MULTIPLE ||
+        !strstr(why, "2 GPU records")) return 13;
+    if (linux_daemon_state_store(scratch.path, &prepared, why, sizeof(why)) ||
+        linux_daemon_state_store(scratch.path, &uncertain, why, sizeof(why)) ||
+        linux_daemon_state_remove(scratch.path, why, sizeof(why))) return 14;
+    TwoRecords kept{};
+    if (!read_fixture(scratch.path, kept) || memcmp(&kept, &pair, sizeof(pair))) return 15;
+    if (unlink(scratch.path) != 0) return 16;
+    puts("Linux daemon state files: instance lock, frozen migration, durable coverage, invalid-record rejection and multi-GPU journal preservation passed");
     return run_install_files_fixture(scratch.path);
 }

@@ -9,7 +9,9 @@
 // Split out of main_service_pipe.cpp only to keep both shards within the
 // project's source-size guideline; it is not an include boundary for reuse.
 
-switch (request->command) {
+if (!service_route_admits(request, response)) {
+    // A route to a GPU this service is not serving; refused and logged.
+} else switch (request->command) {
     case SERVICE_CMD_CAPTURE_CURRENT:
         service_handle_capture_request(request, response);
         break;

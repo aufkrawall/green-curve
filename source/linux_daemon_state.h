@@ -694,7 +694,12 @@ enum LinuxDaemonStateLoadResult {
     LINUX_DAEMON_STATE_LEGACY_REMOVED = 2,
     LINUX_DAEMON_STATE_INVALID_REMOVED = 3,
     LINUX_DAEMON_STATE_IO_ERROR = 4,
+    // The file holds the records of several GPUs (linux_daemon_state_set.h):
+    // kept intact, no single record to return; boot treats it as recovery.
+    LINUX_DAEMON_STATE_MULTIPLE = 5,
 };
+
+#include "linux_daemon_state_set.h"
 
 // Hold the protected state directory lock until all daemon cleanup is done.
 int linux_daemon_lock_instance(const char* statePath, char* err, size_t errSize);

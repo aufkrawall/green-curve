@@ -63,6 +63,7 @@ struct LinuxGpuState {
                           0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
  int freqOffsets[VF_NUM_POINTS]{};
  int powerLimitCurrentmW{},powerLimitDefaultmW{};
+ bool writeIdentityResolved = true;
 };
 static unsigned int cap=0, resets=0, armCalls=0;
 static bool refuseReset=false;
@@ -553,6 +554,13 @@ static int run(){
    pascalSnapshot.curveValid=true;
    int oldOffsetWrites=clockOffsetWrites,oldCurveWrites=curveOffsetWrites;
    char pascalErr[128]{};
+   // A binding whose write identity was revoked (it may address another card)
+   // gets no rollback write at all; the caller keeps recovery state.
+   g.writeIdentityResolved=false;
+   CHECK(!linux_backend_restore_snapshot(&g,tx,&pascalSnapshot,
+     LINUX_MUTATION_RESET_BASELINE|LINUX_MUTATION_CURVE,pascalErr,sizeof(pascalErr)));
+   CHECK(clockOffsetWrites==oldOffsetWrites&&curveOffsetWrites==oldCurveWrites);
+   g.writeIdentityResolved=true;
    CHECK(linux_backend_restore_snapshot(&g,tx,&pascalSnapshot,
      LINUX_MUTATION_RESET_BASELINE|LINUX_MUTATION_CURVE,pascalErr,sizeof(pascalErr)));
    CHECK(clockOffsetWrites==oldOffsetWrites+1&&curveOffsetWrites==oldCurveWrites+1);

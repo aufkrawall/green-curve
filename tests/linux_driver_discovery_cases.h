@@ -8,6 +8,12 @@
 #ifndef GREEN_CURVE_LINUX_DRIVER_DISCOVERY_CASES_H
 #define GREEN_CURVE_LINUX_DRIVER_DISCOVERY_CASES_H
 
+// The selected handle's UUID now reads as another card (14962).
+static nvmlReturn_t discovery_fixture_other_uuid(nvmlDevice_t, char* out, unsigned int size) {
+    snprintf(out, size, "%s", "GPU-44444444-4444-4444-4444-444444444444");
+    return NVML_SUCCESS;
+}
+
 static int linux_driver_discovery_cases(char* err, size_t errSize) {
     // 14247, 14255: a driver reset also invalidates the NvAPI session. The next
     // init's binding initializes NvAPI again (as every binding does) and binds
@@ -86,6 +92,107 @@ static int linux_driver_discovery_cases(char* err, size_t errSize) {
         linux_gpu_uuid_parse("GPU-11111111-1111-1111-1111-111111111111");
     linux_backend_preserve_same_gpu_log_state(&uuidA, &uuidB);
     if (!uuidB.clientLocksLog.seen) return 14280;
+    // Pristine bound states for 14964 and 14969 below, before the cases that follow
+    // reshape boundX.
+    static LinuxGpuState pristine, sessionSource;
+    pristine = boundX;
+    sessionSource = boundX;
+    // 14958: the selected-GPU fast path keeps the UUID discovery learned when
+    // a fresh UUID query fails (this fake driver has no UUID getter), so the
+    // evidence that would expose a replacement card is never erased.
+    boundX.writeIdentityResolved = true;
+    boundX.getUuid = nullptr;
+    const LinuxGpuUuid learned = linux_gpu_uuid_parse("GPU-33333333-3333-3333-3333-333333333333");
+    boundX.adapterUuids[boundX.selectedAdapterIndex] = learned;
+    if (!lifetime_backend_select_target(&boundX, &sameTarget, err, errSize,
+            GPU_LOCATION_ROLE_REQUIRED, &learned) ||
+        strcmp(boundX.adapterUuids[boundX.selectedAdapterIndex].text, learned.text)) return 14958;
+    // 14960: and when that known UUID contradicts the stored binding, the
+    // rediscovery that follows keeps it as evidence (a second failed query
+    // cannot erase it), so the selection is refused as a mismatch.
+    const LinuxGpuUuid other = linux_gpu_uuid_parse("GPU-44444444-4444-4444-4444-444444444444");
+    LinuxGpuUuidVerdict mismatchVerdict = LINUX_GPU_UUID_FALLBACK;
+    if (lifetime_backend_select_target(&boundX, &sameTarget, err, errSize,
+            GPU_LOCATION_ROLE_REQUIRED, &other, &mismatchVerdict) ||
+        mismatchVerdict != LINUX_GPU_UUID_MISMATCH ||
+        strcmp(boundX.adapterUuids[boundX.selectedAdapterIndex].text, learned.text)) return 14960;
+    // 14962: a fresh read on the selected handle that contradicts the cached
+    // UUID is the newest evidence; rediscovery (whose reads fail here) must
+    // not bring the older, matching UUID back and accept the card.
+    boundX.getUuid = discovery_fixture_other_uuid;
+    boundX.adapterUuids[boundX.selectedAdapterIndex] = learned;
+    mismatchVerdict = LINUX_GPU_UUID_FALLBACK;
+    if (lifetime_backend_select_target(&boundX, &sameTarget, err, errSize,
+            GPU_LOCATION_ROLE_REQUIRED, &learned, &mismatchVerdict) ||
+        mismatchVerdict != LINUX_GPU_UUID_MISMATCH) return 14962;
+    // 14924: the earlier discovery saw the requested UUID on two adapters; when
+    // rediscovery cannot read UUIDs at all, that known ambiguity still refuses
+    // instead of becoming a match by location.
+    boundX.getUuid = nullptr;
+    boundX.writeIdentityResolved = true;
+    boundX.adapterCount = 2;
+    boundX.adapters[1] = boundX.adapters[0];
+    boundX.adapters[1].pciBus = boundX.adapters[0].pciBus + 1;
+    boundX.adapterUuids[0] = learned;
+    boundX.adapterUuids[1] = learned;
+    mismatchVerdict = LINUX_GPU_UUID_FALLBACK;
+    if (lifetime_backend_select_target(&boundX, &sameTarget, err, errSize,
+            GPU_LOCATION_ROLE_REQUIRED, &learned, &mismatchVerdict) ||
+        mismatchVerdict != LINUX_GPU_UUID_AMBIGUOUS) return 14924;
+    // 14925: two adapters earlier reported the same UUID, a different one from
+    // the stored binding: the old slot is a known mismatch, and losing both
+    // readings does not make it a match by location.
+    const LinuxGpuUuid shared = linux_gpu_uuid_parse("GPU-55555555-5555-5555-5555-555555555555");
+    boundX.adapterUuids[0] = shared;
+    boundX.adapterUuids[1] = shared;
+    mismatchVerdict = LINUX_GPU_UUID_FALLBACK;
+    if (lifetime_backend_select_target(&boundX, &sameTarget, err, errSize,
+            GPU_LOCATION_ROLE_REQUIRED, &learned, &mismatchVerdict) ||
+        mismatchVerdict == LINUX_GPU_UUID_MATCHED) return 14925;
+    // 14928: a mismatch already known stands when nothing ties it to a
+    // location (no BDF on either side) and rediscovery cannot read UUIDs: a
+    // failed read never turns it into a match by model.
+    boundX.adapterCount = 1;
+    boundX.adapters[0].pciDomain = boundX.adapters[0].pciBus = 0;
+    boundX.adapters[0].pciDevice = boundX.adapters[0].pciFunction = 0;
+    boundX.adapterUuids[0] = shared;
+    GpuAdapterInfo modelOnly = boundX.adapters[0];
+    mismatchVerdict = LINUX_GPU_UUID_FALLBACK;
+    if (lifetime_backend_select_target(&boundX, &modelOnly, err, errSize,
+            GPU_LOCATION_ROLE_UNRECORDED, &learned, &mismatchVerdict) ||
+        mismatchVerdict != LINUX_GPU_UUID_MISMATCH) return 14928;
+    // 14963: with nothing cached and no BDF, a contradiction first read on the
+    // selected handle is known evidence: rediscovery that cannot read UUIDs
+    // does not accept the card by model.
+    boundX.adapterUuids[0] = LinuxGpuUuid{};
+    boundX.getUuid = discovery_fixture_other_uuid;
+    mismatchVerdict = LINUX_GPU_UUID_FALLBACK;
+    if (lifetime_backend_select_target(&boundX, &modelOnly, err, errSize,
+            GPU_LOCATION_ROLE_UNRECORDED, &learned, &mismatchVerdict) ||
+        mismatchVerdict != LINUX_GPU_UUID_MISMATCH) return 14963;
+    // 14964: a UUID carried from the earlier discovery only vetoes. A
+    // rediscovered card whose own read failed is bound without it, so it is
+    // never published or journaled as that card's physical identity.
+    pristine.writeIdentityResolved = false;
+    pristine.getUuid = nullptr;
+    pristine.adapterUuids[pristine.selectedAdapterIndex] = learned;
+    GpuAdapterInfo pristineTarget = pristine.selectedGpu;
+    if (!lifetime_backend_select_target(&pristine, &pristineTarget, err, errSize) ||
+        linux_gpu_uuid_valid(&pristine.adapterUuids[pristine.selectedAdapterIndex])) return 14964;
+    GpuAdapterInfo sessionTarget = sessionSource.selectedGpu;
+    // 14969: the bound fast path in a newer NVML session drops the older
+    // session's reads before its own fresh read, which then stays current.
+    static LinuxGpuState renewed;
+    renewed = sessionSource;
+    renewed.writeIdentityResolved = true;
+    renewed.getUuid = discovery_fixture_other_uuid;
+    renewed.adapterUuids[renewed.selectedAdapterIndex] = learned;
+    renewed.uuidSession = captureCtx.nvmlSessions;
+    ++captureCtx.nvmlSessions;
+    const bool renewedBound = lifetime_backend_select_target(&renewed, &sessionTarget, err, errSize,
+        GPU_LOCATION_ROLE_REQUIRED, &other);
+    linux_backend_expire_session_uuids(&renewed);
+    if (!renewedBound || strcmp(renewed.adapterUuids[renewed.selectedAdapterIndex].text, other.text)) return 14969;
     lifetime_driver_close(&captureCtx);
     return 0;
 }

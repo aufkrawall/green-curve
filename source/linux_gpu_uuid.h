@@ -108,6 +108,99 @@ static inline LinuxGpuInitSelection linux_gpu_restore_selection(
     return fallback;
 }
 
+// Rediscovery keeps what an earlier discovery learned: an adapter whose UUID
+// query failed this time inherits the UUID previously read for the adapter at
+// the same exact PCI identity and location. A failed read is no evidence; it
+// must never turn a known contradiction into a location-only match.
+static inline unsigned int linux_gpu_uuid_carry_forward(const GpuAdapterInfo* previous,
+    const LinuxGpuUuid* previousUuids, unsigned int previousCount,
+    const GpuAdapterInfo* adapters, LinuxGpuUuid* uuids, unsigned int count) {
+    if (!previous || !previousUuids || !adapters || !uuids) return 0;
+    // Decide against this discovery's own reads only, never against a copy
+    // made a moment ago, so carried evidence cannot vouch for itself.
+    LinuxGpuUuid fresh[MAX_GPU_ADAPTERS] = {};
+    for (unsigned int i = 0; i < count && i < MAX_GPU_ADAPTERS; ++i) fresh[i] = uuids[i];
+    unsigned int carried = 0;
+    for (unsigned int i = 0; i < count && i < MAX_GPU_ADAPTERS; ++i) {
+        if (linux_gpu_uuid_valid(&fresh[i])) continue;
+        for (unsigned int j = 0; j < previousCount && j < MAX_GPU_ADAPTERS; ++j) {
+            // Same location; device IDs agree where both are known (missing
+            // optional metadata does not detach the evidence).
+            if (!linux_gpu_uuid_valid(&previousUuids[j]) ||
+                !linux_gpu_bdf_valid(&adapters[i]) || !linux_gpu_bdf_equal(&previous[j], &adapters[i]) ||
+                (previous[j].deviceId && adapters[i].deviceId &&
+                 !gpu_pci_nvidia_device_ids_match(previous[j].deviceId, adapters[i].deviceId)))
+                continue;
+            // A UUID this discovery read elsewhere is that card's now, and one
+            // the earlier discovery saw on two adapters stays ambiguous.
+            bool unusable = false;
+            for (unsigned int k = 0; k < count && k < MAX_GPU_ADAPTERS; ++k)
+                if (k != i && linux_gpu_uuid_valid(&fresh[k]) &&
+                    strcmp(fresh[k].text, previousUuids[j].text) == 0) unusable = true;
+            for (unsigned int k = 0; k < previousCount && k < MAX_GPU_ADAPTERS; ++k)
+                if (k != j && linux_gpu_uuid_valid(&previousUuids[k]) &&
+                    strcmp(previousUuids[k].text, previousUuids[j].text) == 0) unusable = true;
+            if (!unusable) {
+                uuids[i] = previousUuids[j];
+                ++carried;
+            }
+            break;
+        }
+    }
+    return carried;
+}
+
+// Is a rediscovered choice still unproven by what the earlier discovery knew?
+// fresh[] holds only this discovery's own reads. The earlier reading at the
+// chosen location must not have been a different UUID unless this read proves
+// the stored one there, and every other earlier claimant of the stored UUID
+// must be gone or now read something else. Without a stored UUID there is
+// nothing to prove.
+static inline bool linux_gpu_uuid_known_evidence_unresolved(const LinuxGpuUuid* stored,
+    const GpuAdapterInfo* previous, const LinuxGpuUuid* previousUuids, unsigned int previousCount,
+    const GpuAdapterInfo* adapters, const LinuxGpuUuid* fresh, unsigned int count, int chosen,
+    bool discoveryComplete) {
+    if (!linux_gpu_uuid_valid(stored) || !previous || !previousUuids || !adapters || !fresh ||
+        chosen < 0 || (unsigned int)chosen >= count || (unsigned int)chosen >= MAX_GPU_ADAPTERS) return false;
+    // Evidence belongs to a location; optional metadata a rediscovery failed to
+    // read (a zero subsystem, say) never detaches it. Device IDs must agree
+    // only where both sides know them.
+    const auto sameLocation = [](const GpuAdapterInfo& a, const GpuAdapterInfo& b) {
+        return linux_gpu_bdf_valid(&a) && linux_gpu_bdf_equal(&a, &b) &&
+            (!a.deviceId || !b.deviceId || gpu_pci_nvidia_device_ids_match(a.deviceId, b.deviceId));
+    };
+    const bool freshProof = linux_gpu_uuid_valid(&fresh[chosen]) &&
+        strcmp(fresh[chosen].text, stored->text) == 0;
+    for (unsigned int j = 0; j < previousCount && j < MAX_GPU_ADAPTERS; ++j) {
+        if (!linux_gpu_uuid_valid(&previousUuids[j])) continue;
+        const bool storedClaim = strcmp(previousUuids[j].text, stored->text) == 0;
+        if (sameLocation(previous[j], adapters[chosen])) {
+            if (!storedClaim && !freshProof) return true;  // known mismatch, no new proof
+            continue;
+        }
+        if (!storedClaim) continue;
+        for (unsigned int k = 0; k < count && k < MAX_GPU_ADAPTERS; ++k) {
+            if (!sameLocation(previous[j], adapters[k])) continue;
+            // A card at the claimant's old location that has not freshly read
+            // a different UUID may still be that claimant.
+            if (!linux_gpu_uuid_valid(&fresh[k]) || strcmp(fresh[k].text, stored->text) == 0) return true;
+        }
+        // The claimant is not proven at its old location (nothing there, or a
+        // card there reads another UUID, which rules out only that occupant).
+        // It is gone only when discovery listed every reported device with a
+        // usable location and no card of its model elsewhere could be it moved.
+        if (!discoveryComplete) return true;
+        for (unsigned int k = 0; k < count && k < MAX_GPU_ADAPTERS; ++k) {
+            if ((int)k == chosen) continue;
+            const bool sameModel = !previous[j].deviceId || !adapters[k].deviceId ||
+                gpu_pci_nvidia_device_ids_match(previous[j].deviceId, adapters[k].deviceId);
+            const bool ruledOut = linux_gpu_uuid_valid(&fresh[k]) && strcmp(fresh[k].text, stored->text) != 0;
+            if (sameModel && !ruledOut) return true;
+        }
+    }
+    return false;
+}
+
 // A transient query failure must not erase a previously learned binding.
 static inline LinuxGpuUuid linux_gpu_uuid_retain(const LinuxGpuUuid* observed,
                                                  const LinuxGpuUuid* previous) {

@@ -297,6 +297,29 @@ static inline bool gpu_adapter_info_equal(const GpuAdapterInfo* left,
         strncmp(left->name, right->name, sizeof(left->name)) == 0;
 }
 
+// The one live adapter a request route names, or -1 when it names none or is
+// ambiguous. With PCI data on both sides the route names an adapter by base
+// identity plus exact location; without it, only the complete adapter record
+// matches. Identical cards whose location is unknown are never resolved by
+// guessing: two matches are no match.
+static inline int gpu_adapter_route_index(const GpuAdapterInfo* requested,
+                                          const GpuAdapterInfo* adapters,
+                                          unsigned int count) {
+    if (!requested || !requested->valid || !adapters) return -1;
+    int found = -1;
+    for (unsigned int i = 0; i < count; ++i) {
+        const GpuAdapterInfo* live = &adapters[i];
+        const bool match = requested->pciInfoValid && live->pciInfoValid ?
+            configured_gpu_base_identity_matches(requested, live) &&
+                configured_gpu_location_equal(requested, live) :
+            gpu_adapter_info_equal(requested, live);
+        if (!match) continue;
+        if (found >= 0) return -1;
+        found = (int)i;
+    }
+    return found;
+}
+
 static inline bool configured_gpu_selection_equal(
     const ConfiguredGpuSelection* left, const ConfiguredGpuSelection* right) {
     if (!left || !right) return left == right;

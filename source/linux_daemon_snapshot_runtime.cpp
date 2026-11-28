@@ -162,7 +162,7 @@ static void populate_snapshot(LinuxGpuController& ctl, ServiceSnapshot* s, Contr
     }
 
     const bool intentMatchesSelected = ctl.hasActiveDesired &&
-        linux_gpu_identity_matches(&ctl.activeTarget, &ctl.gpu.selectedGpu);
+        linux_gpu_identity_matches(&ctl.activeTarget, &ctl.gpu.selectedGpu) && daemon_active_intent_on_served(ctl);
     const bool fanRuntimeActive = linux_daemon_fan_runtime_active(ctl.gpuReady,
         ctl.hasActiveDesired, ctl.stateUncertain, intentMatchesSelected,
         ctl.activeDesired.hasFan != 0, ctl.activeDesired.fanMode,
@@ -350,8 +350,13 @@ static bool select_request_gpu(LinuxGpuController& ctl, const ServiceRequest* re
                      movedRequests);
         }
     }
-    if (!linux_gpu_switch_preserves_active_intent(
-            ctl.hasActiveDesired, &ctl.activeTarget, &requested)) {
+    // The card reading the intent's UUID (after a renumbering) may be selected
+    // to Reset it; any other card stays refused, and so does a model match.
+    const bool keepsIntent = linux_gpu_switch_preserves_active_intent(
+        ctl.hasActiveDesired, &ctl.activeTarget, &requested);
+    const bool provenOwner = !keepsIntent && live >= 0 && ctl.hasActiveDesired &&
+        daemon_intent_uuid_read_on(ctl, (unsigned int)live);
+    if (!keepsIntent && !provenOwner) {
         char activeBdf[32] = {}, requestedBdf[32] = {};
         gc_snprintf(activeBdf, sizeof(activeBdf), "%04x:%02x:%02x.%u",
             ctl.activeTarget.pciDomain, ctl.activeTarget.pciBus,
@@ -369,6 +374,17 @@ static bool select_request_gpu(LinuxGpuController& ctl, const ServiceRequest* re
     }
     GpuAdapterInfo previous = ctl.gpu.selectedGpu;
     if (!linux_backend_select_target(&ctl.gpu, &requested, err, errSize)) return false;
+    // The intent follows its card to its new location while the new binding
+    // still reads its UUID, so every check by PCI identity -- the fan worker,
+    // Reset's previous intent, the snapshot -- agrees with the proof; if it
+    // does not, an owned manual fan is reported, never silently left.
+    if (provenOwner) {
+        if (ctl.gpu.writeIdentityResolved && daemon_intent_uuid_read_on(ctl, ctl.gpu.selectedAdapterIndex))
+            ctl.activeTarget = ctl.gpu.selectedGpu;
+        else
+            daemon_fan_report_unproven(ctl);
+        wake_fan_runtime(ctl);
+    }
     if (!ctl.gpuReady) {
         // This read-only request brought the backend up. Deferred fan recovery
         // runs in the fan worker, outside the state-read deadline.
@@ -382,6 +398,39 @@ static bool select_request_gpu(LinuxGpuController& ctl, const ServiceRequest* re
     }
     ctl.gpuReady = true;
     return true;
+}
+
+// The adapter a request route must address: the published selected adapter.
+// The read-only telemetry fallback of a multi-GPU host is not served.
+static int daemon_served_adapter_index(const LinuxGpuController& ctl) {
+    return ctl.gpu.writeIdentityResolved &&
+        ctl.gpu.selectedAdapterIndex < ctl.gpu.adapterCount
+        ? (int)ctl.gpu.selectedAdapterIndex : -1;
+}
+
+// One route rule for every command (service_gpu_route.h): a routed command
+// answers for the served GPU, a state read may move the daemon (guarded by
+// select_request_gpu), and Apply/Reset bind their target through their
+// preconditions. Anything else naming another GPU is refused, never answered
+// for the wrong card.
+static bool daemon_route_admits(LinuxGpuController& ctl, const ServiceRequest* req,
+                                ServiceResponse* resp) {
+    const int served = daemon_served_adapter_index(ctl);
+    const ServiceGpuRouteDisposition disposition = service_gpu_route_disposition(
+        req->command, req->targetGpu.valid != 0,
+        service_gpu_route_addresses(req->targetGpu, ctl.gpu.adapters,
+                                    ctl.gpu.adapterCount, served));
+    if (disposition != SERVICE_GPU_ROUTE_NOT_SERVED) return true;
+    resp->status = SERVICE_STATUS_STALE_STATE;
+    gc_strlcpy(resp->message, sizeof(resp->message), SERVICE_GPU_ROUTE_NOT_SERVED_MESSAGE);
+    dlog("daemon route: refused command=%u route=%s target=%04x:%02x:%02x.%u "
+         "resolved=%d served=%d adapters=%u\n", (unsigned int)req->command,
+         service_gpu_route_name(service_command_gpu_route(req->command)),
+         req->targetGpu.pciDomain, req->targetGpu.pciBus, req->targetGpu.pciDevice,
+         req->targetGpu.pciFunction,
+         gpu_adapter_route_index(&req->targetGpu, ctl.gpu.adapters, ctl.gpu.adapterCount),
+         served, ctl.gpu.adapterCount);
+    return false;
 }
 
 static bool mutation_preconditions_match(LinuxGpuController& ctl, const ServiceRequest* req,

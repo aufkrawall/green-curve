@@ -87,7 +87,7 @@ def check_all(ctx, require_text, forbid_text):
                  "the voltage lock, floorless clock limit (4) and memory evidence (5) require a new capture schema")
     require_text(_p(ctx, "hardware_capture_types.h"), "sizeof(HardwareCaptureObservation) == 4960",
                  "the complete passive control observation pins its wire size")
-    require_text(_p(ctx, "service_protocol.h"), "sizeof(ServiceResponse) == 19696",
+    require_text(_p(ctx, "service_protocol.h"), "sizeof(ServiceResponse) == 20016",
                  "the response layout includes both named clock observations")
     require_text(_p(ctx, "linux_daemon_graphics_recovery_schema.h"),
                  "sizeof(LinuxDaemonStateRecordSchema7) == 4808",

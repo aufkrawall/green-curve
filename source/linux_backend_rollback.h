@@ -21,6 +21,12 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, LinuxApplyCeilingTransacti
         gc_strlcpy(err, errSize, "rollback snapshot is invalid");
         return false;
     }
+    // A binding whose write identity was revoked may address another card:
+    // nothing is rolled back onto it, and the caller keeps recovery state.
+    if (!g->writeIdentityResolved) {
+        gc_strlcpy(err, errSize, "rollback refused: the GPU binding is no longer proven");
+        return false;
+    }
     const unsigned int clockPhases = LINUX_MUTATION_RESET_BASELINE |
         LINUX_MUTATION_GPU_OFFSET | LINUX_MUTATION_CURVE |
         LINUX_MUTATION_LOCK | LINUX_MUTATION_LOCK_CEILING;

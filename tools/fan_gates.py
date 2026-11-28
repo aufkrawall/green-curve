@@ -111,6 +111,14 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
                  "Linux fan runtime escalates temperature-read failures")
     require_text(linux_fan_runtime_h, "fan_runtime_escalation_after_auto_restore",
                  "Linux fan runtime forces maximum cooling when auto restore fails")
+    # The fan worker runs only for an intent proven on the served card (the
+    # journal's ownership rule), never one matched by PCI location alone: a
+    # revoked binding, or another card at the old location, gets no write.
+    forbid_text(linux_fan_runtime_h, "&ctl.gpu.selectedGpu),\n",
+                "the Linux fan worker never matches its intent by PCI location alone")
+    require_text(linux_fan_runtime_h,
+                 "linux_gpu_identity_matches(&ctl.activeTarget, &ctl.gpu.selectedGpu) && daemon_active_intent_on_served(ctl),",
+                 "the Linux fan worker requires the intent proven on the served card")
     require_text(linux_fan_runtime_h, "runtimeGeneration != observedGeneration",
                  "a newly applied curve cannot inherit the previous curve's hysteresis state")
     require_text(fan_runtime_policy_h, "FAN_RUNTIME_ESCALATION_EMERGENCY_MAX",

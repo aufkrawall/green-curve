@@ -21,13 +21,17 @@ struct LinuxGpuState {
     GpuAdapterInfo selectedGpu = {};
     int fanMinPct = 0, fanMaxPct = 100;
     bool fanRangeKnown = false;
+    bool writeIdentityResolved = true;
 };
 // The LinuxGpuController members linux_fan_runtime.h reads, over this
 // fixture's reduced LinuxGpuState; the worker receives it explicitly.
+struct FixtureUuid { char text[96]; };
 struct LinuxGpuController {
     LinuxGpuState gpu;
     DesiredSettings activeDesired;
     GpuAdapterInfo activeTarget;
+    GpuLocationRole activeTargetRole = GPU_LOCATION_ROLE_UNRECORDED;
+    FixtureUuid activeTargetUuid = {};
     bool gpuReady, hasActiveDesired, stateUncertain;
     unsigned long long gpuGeneration = 1;
     unsigned int fanFailureCount;
@@ -157,6 +161,13 @@ static bool linux_backend_fan_stall_sample(LinuxGpuState*, FanStallFanSample* sa
     return true;
 }
 static bool linux_gpu_identity_matches(const GpuAdapterInfo*, const GpuAdapterInfo*) { return true; }
+// The daemon's ownership proof (linux_daemon_journal.h) reduced to what this
+// fixture models: a binding whose write identity was revoked is not proof.
+static bool daemon_active_intent_on_served(LinuxGpuController& ctl) {
+    return ctl.hasActiveDesired && ctl.gpu.writeIdentityResolved;
+}
+static int incompleteLatches = 0;
+static void daemon_fan_ownership_latch_incomplete(LinuxGpuController&, const char*) { ++incompleteLatches; }
 static FanFixedMaintenanceDecision linux_backend_fixed_fan_check(LinuxGpuState*, int) {
     return {false, false, "holding"};
 }
@@ -178,9 +189,14 @@ static DesiredSettings storedUncertainDesired;
 static bool storeFails;
 static int storeUncertainCalls;
 static void dlog(const char*, ...) {}
-static bool store_daemon_record(LinuxGpuController&, int, const GpuAdapterInfo*, const DesiredSettings* desired, char*, size_t) {
+static GpuLocationRole storedUncertainRole;
+static FixtureUuid storedUncertainUuid;
+static bool store_daemon_record(LinuxGpuController&, int, const GpuAdapterInfo*, const DesiredSettings* desired,
+                                char*, size_t, gc_u64, gc_u32, GpuLocationRole role, const FixtureUuid* uuid) {
     ++storeUncertainCalls;
     if (desired) storedUncertainDesired = *desired;
+    storedUncertainRole = role;
+    storedUncertainUuid = uuid ? *uuid : FixtureUuid{};
     return !storeFails;
 }
 static void daemon_enter_uncertain_after_fan_lockout(LinuxGpuController& ctl, const char*, bool autoOk) {
@@ -256,10 +272,16 @@ static void initialize(Schedule next) {
     waits = polls = writes = lastDuty = iterations = lockouts = 0;
     nowMs = lockoutAtMs = 0;
     stallSamples = 0;
+    incompleteLatches = 0;
     storedUncertainDesired = {};
     storeUncertainCalls = 0;
     stashNote = {};
     storeFails = false;
+    storedUncertainRole = GPU_LOCATION_ROLE_UNRECORDED;
+    storedUncertainUuid = {};
+    fixture.activeTarget = {};
+    fixture.activeTargetRole = GPU_LOCATION_ROLE_UNRECORDED;
+    fixture.activeTargetUuid = {};
     schedule = next;
 }
 
@@ -269,7 +291,17 @@ static int run_stall() {
     // reading that completes 20 s (5 s cadence: proof at 5 s, stopped from 10 s).
     initialize(STALL_FIXED);
     commit_fixed(40);
+    // 14951: a fan-only intent is released by the handback, and with it the
+    // binding; the uncertain journal still keeps the role and UUID it had.
+    fixture.activeTarget.valid = true;
+    fixture.activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
+    snprintf(fixture.activeTargetUuid.text, sizeof(fixture.activeTargetUuid.text), "%s",
+             "GPU-dddddddd-1111-2222-3333-444444444444");
     fan_reassert_thread(&fixture);
+    if (fixture.hasActiveDesired || fixture.activeTarget.valid || fixture.activeTargetUuid.text[0] ||
+        fixture.activeTargetRole != GPU_LOCATION_ROLE_REQUIRED ||  // the released binding is gone too
+        storedUncertainRole != GPU_LOCATION_ROLE_REQUIRED ||
+        strcmp(storedUncertainUuid.text, "GPU-dddddddd-1111-2222-3333-444444444444")) return 14951;
     if (lockouts != 1 || !lockoutAutoOk || lockoutAtMs != 30000 || writes ||
         fixture.fanFault.kind != SERVICE_FAN_FAULT_STALL || fixture.fanFault.fanIndex != 1 ||
         fixture.fanFault.commandedPercent != 40 || fixture.fanFault.stalledForMs != 20000 ||
@@ -283,6 +315,20 @@ static int run_stall() {
     commit_fixed(40);
     fan_reassert_thread(&fixture);
     if (lockouts || stallSamples < 20) return 12894;
+    // 14973: an owned manual fan whose card can no longer be proven (here a
+    // binding whose write identity was revoked) gets no maintenance, stall
+    // check or write of any kind (the card may be another one), and is not
+    // silently left either: the handback is latched incomplete once, a fault
+    // and uncertainty are recorded, and the intent and journal stay as they
+    // were for a Reset on the proven card.
+    initialize(STALL_FIXED);
+    commit_fixed(40);
+    fixture.gpu.writeIdentityResolved = false;
+    fan_reassert_thread(&fixture);
+    if (writes || stallSamples || lockouts != 1 || lockoutAutoOk || incompleteLatches != 1 ||
+        storeUncertainCalls || !fixture.stateUncertain || !fixture.activeDesired.hasFan ||
+        fixture.fanFault.kind != SERVICE_FAN_FAULT_REPEATED_FAILURES ||
+        fixture.fanFault.handback != SERVICE_FAN_HANDBACK_FAILED) return 14973;
     // A zero-RPM curve below its start temperature commands no manual duty.
     initialize(STALL_ZERO_RPM);
     commit_curve(40);
@@ -310,7 +356,14 @@ static int run_stall() {
     initialize(STALL_FIXED);
     autoRefused = true;
     commit_fixed(40);
+    // 14936: the uncertain journal keeps the binding's role and learned UUID.
+    fixture.activeTarget.valid = true;
+    fixture.activeTargetRole = GPU_LOCATION_ROLE_REQUIRED;
+    snprintf(fixture.activeTargetUuid.text, sizeof(fixture.activeTargetUuid.text), "%s",
+             "GPU-aaaaaaaa-1111-2222-3333-444444444444");
     fan_reassert_thread(&fixture);
+    if (storedUncertainRole != GPU_LOCATION_ROLE_REQUIRED ||
+        strcmp(storedUncertainUuid.text, fixture.activeTargetUuid.text)) return 14936;
     if (lockouts != 1 || writes != 1 || lastDuty != FAN_RUNTIME_EMERGENCY_PERCENT ||
         fixture.fanFault.handback != SERVICE_FAN_HANDBACK_EMERGENCY_MAX ||
         !fixture.hasActiveDesired || !fixture.activeDesired.hasFan ||

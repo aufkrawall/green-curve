@@ -162,12 +162,17 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
     bool protectedRegular = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
                    st.st_uid == 0 && st.st_nlink == 1 &&
                    (st.st_mode & 0077) == 0;
-    // SIZE selects the LAYOUT (see desired_settings_schema.h).  Each known
-    // byte count belongs to exactly one frozen record layout; the version
-    // field inside it then selects the value migrations, and is never asked to
-    // imply a layout -- which is what the old "st_size must equal the CURRENT
-    // struct" gate silently depended on, and what deleted every 0.25.2 record
-    // the moment DesiredSettings grew.
+    // SIZE selects the LAYOUT (see desired_settings_schema.h): each known byte
+    // count is one frozen layout, and the version inside selects value
+    // migrations, never a layout (the old "size must equal the CURRENT struct"
+    // gate deleted every 0.25.2 record when DesiredSettings grew).
+    // Several GPUs' records (linux_daemon_state_set.h): kept intact.
+    if (protectedRegular && linux_daemon_state_set_entry_count(st.st_size) > 1) {
+        gc_snprintf(err, errSize, "daemon state holds %u GPU records", linux_daemon_state_set_entry_count(st.st_size));
+        close(fd);
+        close(dirfd);
+        return LINUX_DAEMON_STATE_MULTIPLE;
+    }
     LinuxDaemonStateRecord record = {};
     ssize_t count = -1;
     gc_u32 generation = LINUX_DAEMON_RECORD_GENERATION_CURRENT;
@@ -381,6 +386,16 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
     return result;
 }
 
+// A daemon writing one GPU never replaces or removes several GPUs' journals.
+static bool keeps_multi_gpu_journal(int dirfd, const char* name, char* err, size_t errSize) {
+    struct stat st = {};
+    if (fstatat(dirfd, name, &st, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(st.st_mode) ||
+        linux_daemon_state_set_entry_count(st.st_size) < 2) return false;
+    gc_snprintf(err, errSize, "daemon state holds %u GPU records; refusing to replace them", linux_daemon_state_set_entry_count(st.st_size));
+    close(dirfd);
+    return true;
+}
+
 bool linux_daemon_state_store(const char* path, const LinuxDaemonStateRecord* record,
                               char* err, size_t errSize) {
     if (err && errSize) err[0] = 0;
@@ -391,6 +406,7 @@ bool linux_daemon_state_store(const char* path, const LinuxDaemonStateRecord* re
     char name[256] = {};
     int dirfd = open_state_directory(path, name, sizeof(name), err, errSize);
     if (dirfd < 0) return false;
+    if (keeps_multi_gpu_journal(dirfd, name, err, errSize)) return false;
     char temp[320] = {};
     bool stored = false;
     for (unsigned int attempt = 0; attempt < 32 && !stored; ++attempt) {
@@ -421,6 +437,7 @@ bool linux_daemon_state_remove(const char* path, char* err, size_t errSize) {
     char name[256] = {};
     int dirfd = open_state_directory(path, name, sizeof(name), err, errSize);
     if (dirfd < 0) return false;
+    if (keeps_multi_gpu_journal(dirfd, name, err, errSize)) return false;
     bool ok = unlinkat(dirfd, name, 0) == 0 || errno == ENOENT;
     if (ok) ok = fsync(dirfd) == 0;
     if (!ok) gc_snprintf(err, errSize, "cannot remove daemon state: %s", strerror(errno));

@@ -330,6 +330,7 @@ static void service_execute_checked_request(ServiceRequest* request,
         populate_service_state_response(response);
         service_capture_check_published_generation(response);
         service_update_populate_response(&response->update);
+        service_route_check_published(request, response);
     } else {
         debug_log("service_pipe_server: withheld the state/update envelope from an unauthorized caller command=%u\n",
             (unsigned int)request->command);
