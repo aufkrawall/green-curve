@@ -9,7 +9,7 @@ Source anchors: `source/config_steady_state_policy.h`,
 `source/config_profiles_gui_state.cpp`, `source/main_state_sync.cpp`,
 `source/main_fan_runtime.cpp`, `source/ui_main_window.cpp`,
 `source/ui_theme_button.cpp`, `tools/log_gates.py`,
-`tests/config_steady_state_tests.cpp` (`14300-14329`).
+`tests/config_steady_state_tests.cpp` (`14300-14331`).
 
 Routine 1-3 s GPU telemetry (`SERVICE_CMD_GET_TELEMETRY` and its GUI snapshot
 adoption) must perform zero `config.ini` reads, zero `GetFileAttributesExW`
@@ -68,12 +68,13 @@ metadata queries, and zero acquisitions of `Global\GreenCurveConfigMutex-v2`:
   `start-on-logon: click reconciled stale painted state (painted=%d disk=%d target=%d)`.
 
 **Open questions / stale-risk:**
-- Verified via unit/native temp-INI tests (`14300-14329`), source gates,
-  `clang-tidy`, and full deliverable builds; live Process Monitor tracing on an
-  installed Windows service + GUI session has not yet been re-run after these
-  commits. An external edit to `[debug]` in `config.ini` while the GUI remains
-  hidden in the tray without any focus/menu/CLI activity takes effect on the
-  next non-telemetry command or window activation (matching the GUI/Linux model).
+- Verified via unit/native temp-INI and real `Global\GreenCurveConfigMutex-v2`
+  lock-timeout tests (`14300-14331`), source gates, `clang-tidy`, and full
+  deliverable builds; live Process Monitor tracing on an installed Windows
+  service + GUI session has not yet been re-run after these commits. An
+  external edit to `[debug]` in `config.ini` while the GUI remains hidden in
+  the tray without any focus/menu/CLI activity takes effect on the next
+  non-telemetry command or window activation (matching the GUI/Linux model).
 
 ## NVML binding identity (2026-11-21)
 

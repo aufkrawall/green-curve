@@ -199,12 +199,29 @@ def check_steady_state_lines(ctx, require_text):
     ctx.forbid_text(_p(ctx, "main_data_paths.cpp"),
                     'get_config_int(g_app.configPath, "debug", "enabled"',
                     "[debug] enabled is no longer read uncached on every request")
+    gpu_sel_path = _p(ctx, "gpu_selection_config.cpp")
     ctx.require_order_in_operation(
-        _p(ctx, "gpu_selection_config.cpp"),
+        gpu_sel_path,
         "static void maintain_configured_gpu_selection_record(",
         "gc_gui_gpu_selection_maintenance_should_check(",
         'config_section_presence(g_app.configPath, "gpu")',
         "GPU selection maintenance checks settled state before reading config.ini")
+    gpu_sel_text = _read(gpu_sel_path)
+    maint_start = gpu_sel_text.find("static void maintain_configured_gpu_selection_record(")
+    maint_gate = gpu_sel_text.find("gc_gui_gpu_selection_maintenance_should_check(", maint_start)
+    if maint_start < 0 or maint_gate < 0:
+        _fail("gpu_selection_config.cpp: could not locate maintain_configured_gpu_selection_record() settled gate")
+    maint_prefix = gpu_sel_text[maint_start:maint_gate]
+    for forbidden_read in (
+        "config_section_has_keys(",
+        "config_section_presence(",
+        "get_config_int(",
+        "get_config_string(",
+        "load_configured_gpu_selection(",
+        "gc_GetPrivateProfile",
+    ):
+        if forbidden_read in maint_prefix:
+            _fail(f"gpu_selection_config.cpp: {forbidden_read} must not run before gc_gui_gpu_selection_maintenance_should_check()")
     require_text(_p(ctx, "gpu_selection_config.cpp"),
                  "GC_GPU_MAINT_RETRY_LOCK",
                  "GPU selection maintenance leaves adapters unsettled on config lock timeout")

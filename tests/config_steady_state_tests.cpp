@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Regression tests for steady-state config.ini read/probe gates
-// (config_steady_state_policy.h), assertion codes 14300-14315.
+// (config_steady_state_policy.h), assertion codes 14300-14331.
 
 #include "config_steady_state_policy.h"
 #if defined(_WIN32)
@@ -208,9 +208,41 @@ int run_config_steady_state_tests() {
 }
 
 #if defined(_WIN32)
+namespace {
+
+struct ConfigMutexHoldFixture {
+    HANDLE heldEvent;
+    HANDLE releaseEvent;
+    bool acquired;
+};
+
+static DWORD WINAPI config_mutex_hold_thread(LPVOID arg) {
+    ConfigMutexHoldFixture* fx = static_cast<ConfigMutexHoldFixture*>(arg);
+    HANDLE mutex = OpenMutexA(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE,
+        "Global\\GreenCurveConfigMutex-v2");
+    if (mutex) {
+        DWORD wait = WaitForSingleObject(mutex, 5000);
+        if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) {
+            fx->acquired = true;
+            SetEvent(fx->heldEvent);
+            WaitForSingleObject(fx->releaseEvent, 5000);
+            ReleaseMutex(mutex);
+        } else {
+            SetEvent(fx->heldEvent);
+        }
+        CloseHandle(mutex);
+    } else {
+        SetEvent(fx->heldEvent);
+    }
+    return 0;
+}
+
+}  // namespace
+
 int run_config_steady_state_native_tests(const char* scratchConfigPath) {
-    // 14323-14326: Native Windows execution of config_section_presence() and
-    // load_configured_gpu_selection() lock-failure distinction on a real INI.
+    // 14323-14326, 14330-14331: Native Windows execution of
+    // config_section_presence() and load_configured_gpu_selection(), including
+    // a deterministic real Global\GreenCurveConfigMutex-v2 lock timeout.
     if (!scratchConfigPath || !scratchConfigPath[0]) return 14323;
     char iniPath[MAX_PATH] = {};
     snprintf(iniPath, sizeof(iniPath), "%s.steady_state.ini", scratchConfigPath);
@@ -244,6 +276,52 @@ int run_config_steady_state_native_tests(const char* scratchConfigPath) {
         lockFailed || loaded.legacyIndex != 0) {
         DeleteFileA(iniPath);
         return 14326;
+    }
+
+    // 14330-14331: Hold Global\GreenCurveConfigMutex-v2 on a peer thread and
+    // trigger a deterministic 0 ms WAIT_TIMEOUT with zero sleeps.
+    ConfigMutexHoldFixture fx = {};
+    fx.heldEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    fx.releaseEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    HANDLE holder = (fx.heldEvent && fx.releaseEvent)
+        ? CreateThread(nullptr, 0, config_mutex_hold_thread, &fx, 0, nullptr)
+        : nullptr;
+    int timeoutResult = 0;
+    if (!holder || WaitForSingleObject(fx.heldEvent, 5000) != WAIT_OBJECT_0 || !fx.acquired) {
+        timeoutResult = 14330;
+    } else {
+        config_storage_lock_set_test_timeout_ms(0);
+        if (config_section_presence(iniPath, "gpu") != CONFIG_SECTION_PRESENCE_LOCK_FAILED ||
+            config_section_has_keys(iniPath, "gpu")) {
+            timeoutResult = 14330;
+        } else {
+            lockFailed = false;
+            if (load_configured_gpu_selection(iniPath, &loaded, loadErr, sizeof(loadErr), &lockFailed) ||
+                !lockFailed) {
+                timeoutResult = 14331;
+            }
+        }
+        config_storage_lock_set_test_timeout_ms(-1);
+    }
+    if (fx.releaseEvent) SetEvent(fx.releaseEvent);
+    if (holder) {
+        WaitForSingleObject(holder, 5000);
+        CloseHandle(holder);
+    }
+    if (fx.heldEvent) CloseHandle(fx.heldEvent);
+    if (fx.releaseEvent) CloseHandle(fx.releaseEvent);
+    if (timeoutResult != 0) {
+        DeleteFileA(iniPath);
+        return timeoutResult;
+    }
+
+    // Confirm recovery once the peer thread releases the mutex.
+    lockFailed = true;
+    if (config_section_presence(iniPath, "gpu") != CONFIG_SECTION_PRESENCE_PRESENT ||
+        !load_configured_gpu_selection(iniPath, &loaded, loadErr, sizeof(loadErr), &lockFailed) ||
+        lockFailed) {
+        DeleteFileA(iniPath);
+        return 14331;
     }
     DeleteFileA(iniPath);
     return 0;

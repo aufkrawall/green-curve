@@ -12,6 +12,12 @@
 // config_strings fuzz target on a Linux host.
 
 static HANDLE g_configInterprocessMutex = nullptr;
+static volatile LONG g_configMutexTestTimeoutMs = -1;
+
+void config_storage_lock_set_test_timeout_ms(int timeoutMs) {
+    InterlockedExchange(&g_configMutexTestTimeoutMs,
+        timeoutMs >= 0 ? (LONG)timeoutMs : -1);
+}
 
 // The GUI runs in an interactive WTS session while the service runs in session
 // 0.  A Local\\ mutex silently creates one unrelated lock per session, so it
@@ -79,7 +85,10 @@ bool enter_config_storage_lock(HANDLE* acquiredMutex) {
         return false;
     }
 
-    const DWORD CONFIG_MUTEX_TIMEOUT_MS = 5000;
+    const LONG testTimeout = InterlockedCompareExchange(
+        &g_configMutexTestTimeoutMs, -1, -1);
+    const DWORD CONFIG_MUTEX_TIMEOUT_MS = testTimeout >= 0
+        ? (DWORD)testTimeout : 5000u;
     DWORD waitResult = WaitForSingleObject(mutex, CONFIG_MUTEX_TIMEOUT_MS);
     if (waitResult == WAIT_TIMEOUT) {
         char warning[128] = {};

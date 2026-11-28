@@ -1022,6 +1022,7 @@ bool enter_config_storage_lock(HANDLE* acquiredMutex);
 bool enter_config_storage_lock_interruptible(HANDLE cancelEvent,
     HANDLE* acquiredMutex);
 void leave_config_storage_lock(HANDLE acquiredMutex);
+void config_storage_lock_set_test_timeout_ms(int timeoutMs);
 enum ConfigSectionPresence {
     CONFIG_SECTION_PRESENCE_LOCK_FAILED = -1,
     CONFIG_SECTION_PRESENCE_ABSENT = 0,

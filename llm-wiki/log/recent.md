@@ -41,9 +41,11 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   `START_ON_LOGON_CHECK_ID` via `sync_start_on_logon_checkbox_presentation_from_cache()`
   and `gc_start_on_logon_click_target()`, gated menu-open applied-profile sync
   on READY authority (`gc_menu_open_should_sync_applied_profile()`), tightened
-  the `localConfigWriteGeneration` comment, expanded native + pure tests to
-  `14300-14329`, and added failure-mode/stale-risk notes to
-  `windows-architecture.md`.
+  the `localConfigWriteGeneration` comment, expanded native + pure tests
+  (including a deterministic peer-thread `Global\GreenCurveConfigMutex-v2`
+  lock-timeout fixture) to `14300-14331`, tightened the `log_gates.py` prefix
+  check forbidding any config read before the GPU settled gate, and added
+  failure-mode/stale-risk notes to `windows-architecture.md`.
 
 ## 2026-11-28: CI fixes for Windows MSYS gpg and openSUSE container hermeticity
 
@@ -54,7 +56,13 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   next to the executable and converting drive paths to `/x/...`) and applied it
   in `sign_header()`, `verify_header_signature()`, and
   `tools/linux_packages_tests.py` (`RpmSigningTests.setUpClass`), plus unit
-  tests in `ContainerCheckTests`.
+  tests in `ContainerCheckTests`. Follow-up: switched `tool_path()` to
+  `ntpath.splitdrive()`/`ntpath.normpath()` with an early return on already-
+  POSIX `/...` paths so it works identically on Linux hosts (where `os.path` is
+  `posixpath`) and stays idempotent when `GNUPGHOME` is already `/c/...` on a
+  `D:\` working directory (previously `abspath("/c/...")` became `/d/c/...` and
+  failed with `No secret key` on Windows CI); verified all 5 `RpmSigningTests`
+  directly against Git's MSYS2 `gpg.exe`/`gpgv.exe`/`gpgconf.exe`.
 - **Linux `linux_package_container_check.py` / `opensuse-leap-15.6`:**
   `zypper --non-interactive --no-refresh` still attempted to fetch uncached
   repo metadata in a fresh container (timing out at 900 s in CI), and
