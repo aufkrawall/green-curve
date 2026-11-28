@@ -21,7 +21,28 @@ struct IntentReadbackStatus {
     gc_u32 divergedDomains;
     gc_u32 unavailableDomains;
     int maxVfDeltaMHz;
+    // Diagnostics only: how many owned VF points exceeded the tolerance and
+    // the first of them (-1 when none), plus the hard-pin anchor/tail points
+    // left out of the comparison because the pin, not the raw table, owns them.
+    int vfDivergedPoints;
+    int firstVfDivergedCi;
+    int hardPinTailPointsSkipped;
 };
+
+// A HARD pin owns the frequency at and above its anchor through the driver's
+// locked clock range, not through a flat raw VF table. The tail it writes is
+// offset-programmed, so the driver's temperature-dependent base curve moves
+// the live MHz of those points by tens of MHz without anything having touched
+// them, while the pin keeps capping the clock. Same rule as the apply-time
+// verifier (gpu_backend_apply_verify.h / linux_curve_targets.h): such a point
+// is never compared with the lock frequency.
+static inline bool intent_point_is_hard_pin_tail(
+    const DesiredSettings* desired, int index) {
+    return desired && desired->hasLock &&
+        desired->lockMode == LOCK_MODE_HARD &&
+        desired->lockCi >= 0 && index >= desired->lockCi &&
+        desired->lockMHz > 0;
+}
 
 static inline int intent_abs_int(int value) {
     return value < 0 ? -value : value;
@@ -49,6 +70,9 @@ static inline bool intent_owned_point_target_mhz(
         index < 0 || index >= VF_NUM_POINTS ||
         response->snapshot.curve[index].freq_kHz == 0) return false;
     const DesiredSettings* desired = &response->desired;
+    // Not owned for comparison, and must not fall through to the offset or
+    // explicit-point rules below: the pin's tail write replaced those targets.
+    if (intent_point_is_hard_pin_tail(desired, index)) return false;
     if (desired->hasLock && desired->lockCi >= 0 &&
         index >= desired->lockCi && desired->lockMHz > 0) {
         if (targetMHz) *targetMHz = (int)desired->lockMHz;
@@ -81,6 +105,7 @@ static inline bool intent_owned_point_target_mhz(
 static inline IntentReadbackStatus compare_intent_to_readback(
     const ServiceResponse* response) {
     IntentReadbackStatus status = {};
+    status.firstVfDivergedCi = -1;
     if (!response || !response->state.activeDesiredValid) return status;
     const DesiredSettings* desired = &response->desired;
     const ServiceSnapshot* snapshot = &response->snapshot;
@@ -137,6 +162,11 @@ static inline IntentReadbackStatus compare_intent_to_readback(
             bool ownedPointFound = false;
             bool diverged = false;
             for (int i = 0; i < VF_NUM_POINTS; ++i) {
+                if (snapshot->curve[i].freq_kHz != 0 &&
+                    intent_point_is_hard_pin_tail(desired, i)) {
+                    ++status.hardPinTailPointsSkipped;
+                    continue;
+                }
                 int target = 0;
                 if (!intent_owned_point_target_mhz(response, i, &target))
                     continue;
@@ -145,8 +175,11 @@ static inline IntentReadbackStatus compare_intent_to_readback(
                     intent_point_live_mhz(snapshot, i) - target);
                 if (delta > status.maxVfDeltaMHz)
                     status.maxVfDeltaMHz = delta;
-                if (delta > INTENT_VF_READBACK_TOLERANCE_MHZ)
+                if (delta > INTENT_VF_READBACK_TOLERANCE_MHZ) {
                     diverged = true;
+                    if (status.vfDivergedPoints++ == 0)
+                        status.firstVfDivergedCi = i;
+                }
             }
             if (ownedPointFound) {
                 status.checkedDomains |= vfRequested;

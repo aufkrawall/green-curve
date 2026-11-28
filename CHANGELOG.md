@@ -27,6 +27,24 @@
 
 # Changelog
 
+## Unreleased
+
+Hard-pinned profiles no longer raise false hardware-override warnings on Linux.
+
+### Fixed
+
+- **Linux hard pin status:** the TUI and live dump no longer report "HW OVERRIDDEN" when the GPU's temperature changes after a hard-pinned profile is applied.
+
+### Compatibility notes
+
+Existing configuration and profiles remain compatible.
+
+### Downloads and verification
+
+These changes are in development; no new public release has been published. Current downloads and verification information remain in the latest release section below.
+
+**Full changelog:** [0.32.0...HEAD](https://github.com/aufkrawall/green-curve/compare/0.32.0...HEAD)
+
 ## 0.32.0
 
 Profiles can be captured, checked and moved between platforms; curves, cooling and Linux recovery are safer.

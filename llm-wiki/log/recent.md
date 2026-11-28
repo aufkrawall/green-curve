@@ -5,6 +5,31 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: Hard-pin tail no longer reported as a Linux hardware override
+
+- A Linux hard-pinned profile (pin at 2957 MHz, +475 MHz offset prefix) was
+  applied successfully (9 phases, 0 failed) but the TUI later showed
+  `HW OVERRIDDEN` and `--dump-live` reported `overridden=0x30` with
+  `max_vf_delta=103 MHz`. Root cause: `compare_intent_to_readback()` held
+  every point at and above a HARD pin's anchor to the pin MHz, while the
+  pin's offset-programmed tail follows the driver's temperature-dependent
+  base curve (applied at 69 C, read at 35 C: +35 MHz at the anchor, +103 MHz
+  at the top point, programmed offsets unchanged, clock still at the pin).
+  The apply-time verifier already skipped that tail.
+- `intent_readback_status.h` now leaves a HARD pin's anchor and tail out of
+  the VF comparison (`intent_point_is_hard_pin_tail()`), without falling
+  through to captured/explicit/offset rules; FLATTEN tails are unchanged.
+  `IntentReadbackStatus` gained diverged-point count, first diverged point
+  and skipped hard-pin point count; the TUI logs one
+  `tui: intent readback diverged=...` line per readback-state change.
+- Regression: `tests/intent_readback_hard_pin_tests.cpp` (14500-14509),
+  modelled on the observed live table; the same fixture reports `0x30`
+  against the previous header.
+- Open: NVML has no locked-clock getter, so a hard pin with no other owned
+  VF point reads as partial. A FLATTEN tail can also drift past the 30 MHz
+  tolerance with temperature; a temperature-immune check would need the
+  daemon to publish the offsets it programmed (protocol change).
+
 ## 2026-11-28: Stable 0.32.0 released with build attestations, signed updater manifests, and Arch digest repinning
 
 - Released `0.32.0` from `00a2e8683ea2b82550faa2acf5c0aa8bdec73be6` after all

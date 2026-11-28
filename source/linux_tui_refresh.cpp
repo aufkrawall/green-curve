@@ -309,6 +309,18 @@ static bool tui_refresh_from_daemon(TuiState* state, bool userRequested,
     bool readbackChanged = !wasOnline ||
         previousReadback.divergedDomains != nextReadback.divergedDomains ||
         previousReadback.unavailableDomains != nextReadback.unavailableDomains;
+    // One line per change of the header's readback state, never per refresh:
+    // the red override banner previously appeared with no trace in the log.
+    if (readbackChanged)
+        linux_debug_logf("tui: intent readback diverged=0x%02x->0x%02x "
+            "unavailable=0x%02x->0x%02x checked=0x%02x maxVfDelta=%dMHz "
+            "vfDivergedPoints=%d firstCi=%d hardPinTailSkipped=%d temp=%dC",
+            previousReadback.divergedDomains, nextReadback.divergedDomains,
+            previousReadback.unavailableDomains, nextReadback.unavailableDomains,
+            nextReadback.checkedDomains, nextReadback.maxVfDeltaMHz,
+            nextReadback.vfDivergedPoints, nextReadback.firstVfDivergedCi,
+            nextReadback.hardPinTailPointsSkipped,
+            next.snapshot.gpuTemperatureValid ? next.snapshot.gpuTemperatureC : -1);
     state->service = next;
     state->serviceOnline = true;
     const GpuAdapterInfo* active = selected_adapter(next);

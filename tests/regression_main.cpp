@@ -1110,6 +1110,9 @@ int run_windows_vf_verified_write_tests();
 // Settings changed by another tool: Reset's live readback decision
 // (tests/external_oc_change_tests.cpp, 12380-12399).
 int run_external_oc_change_tests();
+// Intent/readback under a HARD clock pin: the pin owns its anchor and tail
+// (tests/intent_readback_hard_pin_tests.cpp, 14500-14509).
+int run_intent_readback_hard_pin_tests();
 // Legacy base_plus_gpu_offset locked-tail provenance and ownership matching
 // (tests/profile_lock_tail_ownership_tests.cpp, 12400-12427).
 int run_profile_lock_tail_ownership_tests();
@@ -2902,6 +2905,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int externalChangeFailure = run_external_oc_change_tests()) {
         fprintf(stderr, "External clock change regression failed: %d\n", externalChangeFailure);
         return externalChangeFailure;
+    }
+    if (int hardPinReadbackFailure = run_intent_readback_hard_pin_tests()) {
+        fprintf(stderr, "Hard-pin intent readback regression failed: %d\n", hardPinReadbackFailure);
+        return hardPinReadbackFailure;
     }
     if (int lockTailOwnershipFailure = run_profile_lock_tail_ownership_tests()) {
         fprintf(stderr, "Profile lock-tail ownership regression failed: %d\n", lockTailOwnershipFailure);

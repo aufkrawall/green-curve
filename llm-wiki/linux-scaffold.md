@@ -2068,7 +2068,22 @@ invariant now lives in the full `linux_tui_layout*` family:
   Green Curve intent for editable target fields, but active intent is ownership
   metadata, not evidence that another controller has not overwritten hardware.
   `compare_intent_to_readback()` independently compares P0 GPU/memory offsets,
-  power, fan policy/target, and owned VF/lock points. The header and panel titles
+  power, fan policy/target, and owned VF/lock points. Under a HARD pin the
+  anchor and every point above it are **not** owned for this comparison
+  (`intent_point_is_hard_pin_tail()`), matching the apply-time verifier's
+  tail skip: the pin's locked clock range owns that frequency, and its
+  offset-programmed tail drifts with the driver's temperature-dependent base
+  curve (observed on an RTX 5070: +35 MHz at the anchor and +103 MHz at the
+  top point after cooling from 69 C to 35 C, with the clock still held at the
+  pin). Holding those points to the pin frequency was a false
+  `HARDWARE OVERRIDDEN`. A FLATTEN tail is still compared with its lock MHz.
+  Design limit: NVML has no locked-clock getter, so a hard pin with no other
+  owned VF point reports partial readback, and the pin itself is evidenced
+  only by the apply's clock witness. The TUI logs one
+  `tui: intent readback diverged=...` line per change of the readback state
+  (masks, max VF delta, first diverged point, skipped hard-pin points, GPU
+  temperature); regression codes 14500-14509
+  (`tests/intent_readback_hard_pin_tests.cpp`). The header and panel titles
   show `INTENT MATCHES HW`, `READBACK PARTIAL`, or `HARDWARE OVERRIDDEN`;
   configured fields are explicitly labeled targets and actual scalar values
   remain visible. An override preserves the draft/intent for review and is
