@@ -449,6 +449,10 @@ class ContainerCheckTests(unittest.TestCase):
     def test_msys_tool_path_converts_drive_paths(self):
         self.assertEqual(rpm_sign.tool_path("gpg.exe", "C:\\tmp\\gnupg", _msys=True),
                          "/c/tmp/gnupg")
+        self.assertEqual(rpm_sign.tool_path("gpg.exe", "D:/tmp/gnupg", _msys=True),
+                         "/d/tmp/gnupg")
+        self.assertEqual(rpm_sign.tool_path("gpg.exe", "/c/tmp/gnupg", _msys=True),
+                         "/c/tmp/gnupg")
         self.assertEqual(rpm_sign.tool_path("gpg.exe", "C:\\tmp\\gnupg", _msys=False),
                          "C:\\tmp\\gnupg")
 

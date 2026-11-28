@@ -13,6 +13,7 @@ sets GREENCURVE_REQUIRE_RPM_SIGNATURE=1, so an unsigned release cannot happen
 silently.  The matching public key is published at PUBLIC_KEY_RELPATH and every
 signature is verified against it with gpgv before a package is accepted.
 """
+import ntpath
 import os
 import shutil
 import subprocess
@@ -50,14 +51,22 @@ def _is_msys_tool(tool_exe):
 
 def tool_path(tool_exe, path, _msys=None):
     """Convert a native Windows drive path to /x/... when `tool_exe` is an MSYS
-    binary (which otherwise treats C:\\... as a relative POSIX path)."""
+    binary (which otherwise treats C:\\... as a relative POSIX path).
+    Idempotent on POSIX /x/... paths and host-independent."""
     if _msys is None:
         _msys = _is_msys_tool(tool_exe)
-    if not _msys:
+    if not _msys or not path:
         return path
-    drive, rest = os.path.splitdrive(os.path.abspath(path))
+    if path.startswith("/"):
+        return path
+    drive, rest = ntpath.splitdrive(path)
+    if not drive and os.name == "nt":
+        drive, rest = ntpath.splitdrive(os.path.abspath(path))
     if len(drive) == 2 and drive[1] == ":":
-        return f"/{drive[0].lower()}{rest.replace(os.sep, '/')}"
+        rest = ntpath.normpath(rest).replace("\\", "/")
+        if not rest.startswith("/"):
+            rest = "/" + rest
+        return f"/{drive[0].lower()}{rest}"
     return path
 
 
