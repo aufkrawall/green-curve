@@ -33,8 +33,8 @@ static LinuxSuspendMark daemon_suspend_mark_now() {
         daemon_timespec_ns(boot), daemon_timespec_ns(after));
 }
 
-// Daemon start and every resume restore command: no restore is ahead until
-// the next suspend.
+// Daemon start, every resume restore command, and explicit Apply/Reset: no
+// resume restore is ahead until the next suspend.
 static void daemon_standby_window_close(LinuxGpuController& ctl, const char* why) {
     const LinuxSuspendMark previous = ctl.resumeRestoreSuspendMark;
     ctl.resumeRestoreSuspendMark = daemon_suspend_mark_now();
@@ -54,14 +54,17 @@ static void daemon_standby_fan_stash_clear(LinuxGpuController& ctl, const char* 
 
 // Called by the fan runtime lockout after it entered uncertainty.  The
 // lockout itself is unchanged; this only decides whether the next resume
-// restore may replay what it replaced.
-static void daemon_standby_fan_stash_note_lockout(LinuxGpuController& ctl, bool hadIntent,
-    const DesiredSettings* previous, const GpuAdapterInfo* previousTarget,
-    bool wasUncertainBefore, bool driverTookFan, bool recordPersisted) {
+// restore may replay what it replaced.  A confirmed fan stall never captures
+// and explicitly drops any prior stash.
+static void daemon_standby_fan_stash_note_lockout(LinuxGpuController& ctl,
+    gc_u32 faultKind, bool hadIntent, const DesiredSettings* previous,
+    const GpuAdapterInfo* previousTarget, bool wasUncertainBefore,
+    bool driverTookFan, bool recordPersisted) {
     const LinuxSuspendMark now = daemon_suspend_mark_now();
     const bool windowOpen = linux_suspend_since(&ctl.resumeRestoreSuspendMark, &now);
     const bool capture = linux_standby_fan_stash_should_capture(windowOpen,
-        wasUncertainBefore, driverTookFan, recordPersisted, hadIntent, previous);
+        faultKind, wasUncertainBefore, driverTookFan, recordPersisted,
+        hadIntent, previous);
     if (capture) {
         LinuxStandbyFanStash stash = {};
         stash.valid = true;
@@ -74,14 +77,18 @@ static void daemon_standby_fan_stash_note_lockout(LinuxGpuController& ctl, bool 
         stash.uncertainSerial = ctl.uncertainSerial;
         ctl.standbyFanStash = stash;
     } else {
-        daemon_standby_fan_stash_clear(ctl, windowOpen
-            ? "a lockout inside the window that keeps nothing to replay"
-            : "a lockout outside the suspend window");
+        daemon_standby_fan_stash_clear(ctl,
+            faultKind != SERVICE_FAN_FAULT_REPEATED_FAILURES
+                ? "a confirmed fan stall"
+                : (windowOpen
+                    ? "a lockout inside the window that keeps nothing to replay"
+                    : "a lockout outside the suspend window"));
     }
-    dlog("daemon standby fan stash: lockout window=%d captured=%d wasUncertain=%d "
+    dlog("daemon standby fan stash: lockout window=%d kind=%u captured=%d wasUncertain=%d "
          "driverTookFan=%d recordPersisted=%d previousMode=%d serial=%llu\n",
-         windowOpen ? 1 : 0, capture ? 1 : 0, wasUncertainBefore ? 1 : 0,
-         driverTookFan ? 1 : 0, recordPersisted ? 1 : 0,
+         windowOpen ? 1 : 0, (unsigned int)faultKind, capture ? 1 : 0,
+         wasUncertainBefore ? 1 : 0, driverTookFan ? 1 : 0,
+         recordPersisted ? 1 : 0,
          fan_owned_intent_mode(hadIntent && previous && previous->hasFan,
              previous ? previous->fanMode : FAN_MODE_AUTO,
              previous && previous->fanAuto != 0),

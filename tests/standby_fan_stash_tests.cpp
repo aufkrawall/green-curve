@@ -156,13 +156,24 @@ int run_stash_cases() {
     autoFan.fanMode = FAN_MODE_AUTO;
     DesiredSettings noFan = curve;
     noFan.hasFan = 0;
-    if (!service_standby_fan_stash_should_capture(true, true, &curve) ||
-        !service_standby_fan_stash_should_capture(true, true, &fixed) ||
-        service_standby_fan_stash_should_capture(false, true, &curve) ||
-        service_standby_fan_stash_should_capture(true, false, &curve) ||
-        service_standby_fan_stash_should_capture(true, true, &autoFan) ||
-        service_standby_fan_stash_should_capture(true, true, &noFan) ||
-        service_standby_fan_stash_should_capture(true, true, nullptr))
+    if (!service_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_REPEATED_FAILURES, true, &curve) ||
+        !service_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_REPEATED_FAILURES, true, &fixed) ||
+        service_standby_fan_stash_should_capture(
+            false, SERVICE_FAN_FAULT_REPEATED_FAILURES, true, &curve) ||
+        service_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_STALL, true, &curve) ||
+        service_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_NONE, true, &curve) ||
+        service_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_REPEATED_FAILURES, false, &curve) ||
+        service_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_REPEATED_FAILURES, true, &autoFan) ||
+        service_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_REPEATED_FAILURES, true, &noFan) ||
+        service_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_REPEATED_FAILURES, true, nullptr))
         return 14347;
 
     // The intent the handback left: the curve's OC with the fan released.
@@ -225,6 +236,19 @@ int run_stash_cases() {
         service_standby_fan_stash_used_up(true, false, false) ||
         service_standby_fan_stash_used_up(false, true, true))
         return 14365;
+    // Saved profile attribution is restored only when a replayed restore
+    // succeeded without an error-class post-apply severity.
+    if (!service_standby_fan_stash_should_restore_profile(
+            true, true, SERVICE_OUTCOME_SEVERITY_SUCCESS) ||
+        !service_standby_fan_stash_should_restore_profile(
+            true, true, SERVICE_OUTCOME_SEVERITY_WARNING) ||
+        service_standby_fan_stash_should_restore_profile(
+            true, true, SERVICE_OUTCOME_SEVERITY_ERROR) ||
+        service_standby_fan_stash_should_restore_profile(
+            false, true, SERVICE_OUTCOME_SEVERITY_SUCCESS) ||
+        service_standby_fan_stash_should_restore_profile(
+            true, false, SERVICE_OUTCOME_SEVERITY_SUCCESS))
+        return 14416;
     return 0;
 }
 

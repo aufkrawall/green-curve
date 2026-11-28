@@ -31,7 +31,8 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
     char* result, size_t resultSize, bool* writeAttemptedOut,
     bool replaceActiveIntent,
     const DesiredSettings* replacementIntent,
-    gc_u32* outcomeSeverityOut) {
+    gc_u32* outcomeSeverityOut,
+    bool standbyStashReplay) {
     if (writeAttemptedOut) *writeAttemptedOut = false;
     // Same rule as the backend: every early return here is a refusal.
     if (outcomeSeverityOut)
@@ -273,7 +274,11 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         // repair failed (main_service_fan_fault.cpp).
         if (fan_fault_should_clear_after_apply(desired && desired->hasFan,
                 fanInvariant == SERVICE_FAN_INTENT_REPAIR_FAILED)) {
-            service_fan_fault_clear("an Apply that set the fan");
+            if (standbyStashReplay) {
+                service_fan_fault_clear("the standby restore's fan stash replay", false);
+            } else {
+                service_fan_fault_clear("an Apply that set the fan");
+            }
         } else if (desired && desired->hasFan) {
             debug_log("fan fault: preserving active fan fault record because"
                       " post-apply fan invariant repair failed\n");

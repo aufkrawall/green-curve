@@ -526,6 +526,70 @@ static int run_standby_stash_cases() {
         service_standby_fan_stash_peek(7, &peeked) != SERVICE_STANDBY_FAN_STASH_REPLAY ||
         service_standby_fan_stash_peek(8, &peeked) != SERVICE_STANDBY_FAN_STASH_SUPERSEDED ||
         g_serviceStandbyFanStash.valid) return 14366;
+
+    // Clearing only the fault record during a standby replay leaves the stash
+    // intact so service_standby_fan_stash_consume() can still use it up.
+    reset(true);
+    own_running_curve(true);
+    standbyWindowOpen = true;
+    standbyWindowEpoch = 7;
+    escalate_fan_runtime_failure("Fan curve runtime apply failed", "scripted");
+    if (!g_serviceStandbyFanStash.valid ||
+        g_serviceFanFault.kind != SERVICE_FAN_FAULT_REPEATED_FAILURES)
+        return 14417;
+    service_fan_fault_clear("the standby restore's fan stash replay", false);
+    if (g_serviceFanFault.kind != SERVICE_FAN_FAULT_NONE ||
+        !g_serviceStandbyFanStash.valid)
+        return 14418;
+    service_standby_fan_stash_consume(true);
+    if (g_serviceStandbyFanStash.valid) return 14419;
+
+    // If an automatic non-fan change modifies the intent without bumping the
+    // standby epoch before a second handback, keptForEpoch must NOT preserve
+    // the stale replaced intent from before the change.
+    reset(true);
+    own_running_curve(true);
+    standbyWindowOpen = true;
+    standbyWindowEpoch = 7;
+    autoRefused = true;
+    escalate_fan_runtime_failure("Fan curve runtime apply failed", "scripted");
+    if (!g_serviceStandbyFanStash.valid ||
+        g_serviceStandbyFanStash.replaced.fanMode != FAN_MODE_CURVE ||
+        g_serviceStandbyFanStash.replaced.powerLimitPct != 90)
+        return 14420;
+    // Simulate a non-explicit OC/power apply in the same epoch.
+    g_serviceActiveDesired.powerLimitPct = 80;
+    g_app.fanFixedRuntimeActive = true;
+    autoRefused = false;
+    escalate_fan_runtime_failure("Fixed fan runtime apply failed", "scripted");
+    if (!g_serviceStandbyFanStash.valid ||
+        g_serviceStandbyFanStash.replaced.fanMode != FAN_MODE_FIXED ||
+        g_serviceStandbyFanStash.replaced.powerLimitPct != 80)
+        return 14421;
+
+    // A confirmed fan stall inside the standby window never captures a stash
+    // AND explicitly drops any prior stash (even in the same epoch).
+    reset(true);
+    own_running_curve(true);
+    standbyWindowOpen = true;
+    standbyWindowEpoch = 7;
+    autoRefused = true;
+    escalate_fan_runtime_failure("Fan curve runtime apply failed", "scripted");
+    if (!g_serviceStandbyFanStash.valid) return 14422;
+    g_app.fanFixedRuntimeActive = true;
+    autoRefused = false;
+    {
+        FanRuntimeHandbackCause stallCause = {};
+        stallCause.kind = SERVICE_FAN_FAULT_STALL;
+        stallCause.summary = "Fan 2 did not turn at 100% for 20 s";
+        stallCause.fanIndex = 1;
+        stallCause.commandedPercent = 100;
+        stallCause.stalledForMs = 20000;
+        escalate_fan_runtime_handback(&stallCause);
+    }
+    if (g_serviceStandbyFanStash.valid ||
+        g_serviceFanFault.kind != SERVICE_FAN_FAULT_STALL)
+        return 14423;
     return 0;
 }
 

@@ -654,9 +654,11 @@ static void service_lifecycle_attempt_standby_restore() {
             &standbyTarget, "standby restore pre-write target");
         ServiceSelectedGpuWriteEpoch gpuEpoch =
             service_selected_gpu_capture_write_epoch();
+        gc_u32 applySeverity = (gc_u32)SERVICE_OUTCOME_SEVERITY_ERROR;
         if (service_selected_gpu_write_epoch_is_current(gpuEpoch)) {
             success = service_apply_desired_settings(&desired, false,
-                detail, sizeof(detail), &writeAttempted, true);
+                detail, sizeof(detail), &writeAttempted, true, nullptr,
+                &applySeverity, replayFanStash);
         } else {
             StringCchCopyA(detail, ARRAY_COUNT(detail),
                 "Selected GPU changed/was removed immediately before standby restore");
@@ -666,7 +668,8 @@ static void service_lifecycle_attempt_standby_restore() {
         if (service_standby_fan_stash_used_up(replayFanStash, success, writeAttempted))
             service_standby_fan_stash_consume(success);
         if (success) {
-            if (replayFanStash) {
+            if (service_standby_fan_stash_should_restore_profile(
+                    replayFanStash, success, applySeverity)) {
                 // The replayed intent is the profile the handback detached.
                 EnterCriticalSection(&g_appLock);
                 g_serviceActiveProfileSource = fanStash.replacedProfileSource;
@@ -674,6 +677,9 @@ static void service_lifecycle_attempt_standby_restore() {
                 LeaveCriticalSection(&g_appLock);
                 debug_log("lifecycle standby: fan handback replay restored profile attribution source=%u slot=%d\n",
                     (unsigned int)fanStash.replacedProfileSource, fanStash.replacedProfileSlot);
+            } else if (replayFanStash) {
+                debug_log("lifecycle standby: fan handback replay kept ad-hoc profile attribution (severity=%s)\n",
+                    service_outcome_severity_name(applySeverity));
             }
             service_refresh_selected_gpu_notification_best_effort(
                 &g_serviceActiveDesiredGpu,

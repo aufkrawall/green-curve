@@ -315,6 +315,7 @@ static void handle_request(LinuxGpuController& ctl, const ServiceRequest* wireRe
                 break;
             }
             daemon_standby_fan_stash_clear(ctl, "an explicit Apply");
+            daemon_standby_window_close(ctl, "an explicit Apply");
             if (!ctl.gpuReady) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_strlcpy(resp->message, sizeof(resp->message), "GPU backend not initialized");
@@ -464,6 +465,7 @@ static void handle_request(LinuxGpuController& ctl, const ServiceRequest* wireRe
                 break;
             }
             daemon_standby_fan_stash_clear(ctl, "an explicit Reset");
+            daemon_standby_window_close(ctl, "an explicit Reset");
             if (!ctl.gpuReady) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_strlcpy(resp->message, sizeof(resp->message), "GPU backend not initialized");

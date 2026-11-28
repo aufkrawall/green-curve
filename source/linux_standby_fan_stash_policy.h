@@ -44,6 +44,7 @@
 #include "configured_gpu_selection.h"
 #include "desired_settings_ui_policy.h"
 #include "linux_gpu_uuid.h"
+#include "service_fan_fault.h"
 
 // The suspended-time offset, bracketed by two monotonic reads around one
 // boot-time read: lowNs <= offset <= highNs.  A suspend moves the offset by
@@ -94,13 +95,15 @@ struct LinuxStandbyFanStash {
     unsigned long long uncertainSerial;
 };
 
-// Only a lockout inside the window that took a manual fan (curve or fixed
-// duty) from an owned intent, from a settled daemon, with the fan back under
-// driver control and its UNCERTAIN record durable, has anything to replay.
+// Only a repeated-failure lockout (never a confirmed fan stall) inside the
+// window that took a manual fan (curve or fixed duty) from an owned intent,
+// from a settled daemon, with the fan back under driver control and its
+// UNCERTAIN record durable, has anything to replay.
 static inline bool linux_standby_fan_stash_should_capture(bool windowOpen,
-    bool wasUncertainBefore, bool driverTookFan, bool recordPersisted,
-    bool hadIntent, const DesiredSettings* previous) {
-    if (!windowOpen || wasUncertainBefore || !driverTookFan || !recordPersisted)
+    gc_u32 faultKind, bool wasUncertainBefore, bool driverTookFan,
+    bool recordPersisted, bool hadIntent, const DesiredSettings* previous) {
+    if (!windowOpen || faultKind != SERVICE_FAN_FAULT_REPEATED_FAILURES ||
+        wasUncertainBefore || !driverTookFan || !recordPersisted)
         return false;
     if (!hadIntent || !previous || !previous->hasFan || previous->fanAuto)
         return false;

@@ -140,7 +140,7 @@ static void daemon_fan_runtime_lockout(LinuxGpuController& ctl, gc_u32 kind, con
     daemon_fan_fault_record(ctl, kind, handback,
         fanIndex, commandedPercent, stalledForMs, why);
     daemon_enter_uncertain_after_fan_lockout(ctl, why, autoOk);
-    daemon_standby_fan_stash_note_lockout(ctl, hadIntent, &previousDesired,
+    daemon_standby_fan_stash_note_lockout(ctl, kind, hadIntent, &previousDesired,
         &previousTarget, wasUncertain, autoOk, recordPersisted);
 }
 

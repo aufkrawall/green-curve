@@ -193,15 +193,18 @@ static void daemon_enter_uncertain_after_fan_lockout(LinuxGpuController& ctl, co
 // whether it ran after uncertainty was entered.
 struct StashNote {
     int calls;
+    gc_u32 faultKind;
     bool hadIntent, wasUncertain, driverTookFan, recordPersisted, afterUncertain;
     DesiredSettings previous;
     GpuAdapterInfo previousTarget;
 };
 static StashNote stashNote;
-static void daemon_standby_fan_stash_note_lockout(LinuxGpuController& ctl, bool hadIntent,
-    const DesiredSettings* previous, const GpuAdapterInfo* previousTarget,
-    bool wasUncertainBefore, bool driverTookFan, bool recordPersisted) {
+static void daemon_standby_fan_stash_note_lockout(LinuxGpuController& ctl,
+    gc_u32 faultKind, bool hadIntent, const DesiredSettings* previous,
+    const GpuAdapterInfo* previousTarget, bool wasUncertainBefore,
+    bool driverTookFan, bool recordPersisted) {
     ++stashNote.calls;
+    stashNote.faultKind = faultKind;
     stashNote.hadIntent = hadIntent;
     stashNote.wasUncertain = wasUncertainBefore;
     stashNote.driverTookFan = driverTookFan;
@@ -272,7 +275,9 @@ static int run_stall() {
         fixture.fanFault.commandedPercent != 40 || fixture.fanFault.stalledForMs != 20000 ||
         fixture.fanFault.handback != SERVICE_FAN_HANDBACK_DRIVER_AUTO ||
         !std::strstr(fixture.fanFault.detail, "Fan 2 did not turn at 40%") ||
-        !service_fan_fault_wire_valid(&fixture.fanFault) || !lockOrderValid) return 12893;
+        !service_fan_fault_wire_valid(&fixture.fanFault) || !lockOrderValid ||
+        stashNote.calls != 1 || stashNote.faultKind != SERVICE_FAN_FAULT_STALL)
+        return 12893;
     // No RPM channel: never judged, however long.
     initialize(STALL_UNSUPPORTED);
     commit_fixed(40);
@@ -377,7 +382,8 @@ static int run() {
     // 14370: the lockout hands the standby stash the curve it replaced, after
     // entering uncertainty, with the driver holding the fan and the record
     // durable (linux_standby_fan_stash_policy.h decides the rest).
-    if (stashNote.calls != 1 || !stashNote.hadIntent || stashNote.wasUncertain ||
+    if (stashNote.calls != 1 || stashNote.faultKind != SERVICE_FAN_FAULT_REPEATED_FAILURES ||
+        !stashNote.hadIntent || stashNote.wasUncertain ||
         !stashNote.driverTookFan || !stashNote.recordPersisted || !stashNote.afterUncertain ||
         !stashNote.previous.hasFan || stashNote.previous.fanMode != FAN_MODE_CURVE ||
         stashNote.previous.fanCurve.points[0].fanPercent != 30) return 14370;

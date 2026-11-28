@@ -89,16 +89,27 @@ static int run_pure() {
     if (linux_suspend_since(&invalid, &slept) || linux_suspend_since(&a, &invalid) ||
         linux_suspend_since(nullptr, &slept)) return 14376;
 
-    // Capture: only a manual fan from an owned intent, inside the window, from
-    // a settled daemon, with the driver holding the fan and the record durable.
+    // Capture: only a repeated-failure manual fan lockout from an owned intent,
+    // inside the window, from a settled daemon, with the driver holding the fan
+    // and the UNCERTAIN record durable.  Confirmed stalls are never captured.
     const DesiredSettings curve = curve_intent();
-    if (!linux_standby_fan_stash_should_capture(true, false, true, true, true, &curve))
+    if (!linux_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_REPEATED_FAILURES, false, true, true, true, &curve))
         return 14377;
-    if (linux_standby_fan_stash_should_capture(false, false, true, true, true, &curve) ||
-        linux_standby_fan_stash_should_capture(true, true, true, true, true, &curve) ||
-        linux_standby_fan_stash_should_capture(true, false, false, true, true, &curve) ||
-        linux_standby_fan_stash_should_capture(true, false, true, false, true, &curve) ||
-        linux_standby_fan_stash_should_capture(true, false, true, true, false, &curve))
+    if (linux_standby_fan_stash_should_capture(
+            false, SERVICE_FAN_FAULT_REPEATED_FAILURES, false, true, true, true, &curve) ||
+        linux_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_STALL, false, true, true, true, &curve) ||
+        linux_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_NONE, false, true, true, true, &curve) ||
+        linux_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_REPEATED_FAILURES, true, true, true, true, &curve) ||
+        linux_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_REPEATED_FAILURES, false, false, true, true, &curve) ||
+        linux_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_REPEATED_FAILURES, false, true, false, true, &curve) ||
+        linux_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_REPEATED_FAILURES, false, true, true, false, &curve))
         return 14378;
     DesiredSettings fixed = curve;
     fixed.fanMode = FAN_MODE_FIXED;
@@ -108,9 +119,12 @@ static int run_pure() {
     autoFan.fanMode = FAN_MODE_AUTO;
     DesiredSettings noFan = curve;
     noFan.hasFan = 0;
-    if (!linux_standby_fan_stash_should_capture(true, false, true, true, true, &fixed) ||
-        linux_standby_fan_stash_should_capture(true, false, true, true, true, &autoFan) ||
-        linux_standby_fan_stash_should_capture(true, false, true, true, true, &noFan))
+    if (!linux_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_REPEATED_FAILURES, false, true, true, true, &fixed) ||
+        linux_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_REPEATED_FAILURES, false, true, true, true, &autoFan) ||
+        linux_standby_fan_stash_should_capture(
+            true, SERVICE_FAN_FAULT_REPEATED_FAILURES, false, true, true, true, &noFan))
         return 14379;
 
     // Use: replay only while uncertain from this lockout alone and the owned
@@ -167,7 +181,8 @@ static void reset_daemon() {
 
 // The lockout as linux_fan_runtime.h runs it: intent rewritten, uncertainty
 // entered (serial bumped), then the stash note.
-static void lockout(bool driverTookFan = true, bool recordPersisted = true) {
+static void lockout(bool driverTookFan = true, bool recordPersisted = true,
+                    gc_u32 faultKind = SERVICE_FAN_FAULT_REPEATED_FAILURES) {
     const DesiredSettings previous = ctl.activeDesired;
     const GpuAdapterInfo previousTarget = ctl.activeTarget;
     const bool wasUncertain = ctl.stateUncertain;
@@ -175,8 +190,8 @@ static void lockout(bool driverTookFan = true, bool recordPersisted = true) {
     ctl.activeDesired = after_handback(ctl.activeDesired);
     ctl.stateUncertain = true;
     ++ctl.uncertainSerial;
-    daemon_standby_fan_stash_note_lockout(ctl, hadIntent, &previous, &previousTarget,
-                                          wasUncertain, driverTookFan, recordPersisted);
+    daemon_standby_fan_stash_note_lockout(ctl, faultKind, hadIntent, &previous,
+        &previousTarget, wasUncertain, driverTookFan, recordPersisted);
 }
 
 static void commit_curve() {
@@ -270,6 +285,20 @@ static int run_daemon() {
     lockout();
     suspendedNs += 1000000000ull;
     if (daemon_standby_fan_stash_peek(ctl) != LINUX_STANDBY_FAN_STASH_REPLAY) return 14399;
+
+    // A confirmed fan stall inside the suspend window captures nothing AND
+    // explicitly drops any existing stash.
+    reset_daemon();
+    daemon_standby_window_close(ctl, "daemon start");
+    commit_curve();
+    suspendedNs += 1000000000ull;
+    lockout(true, true, SERVICE_FAN_FAULT_STALL);
+    if (ctl.standbyFanStash.valid) return 14424;
+    commit_curve();
+    lockout(true, true, SERVICE_FAN_FAULT_REPEATED_FAILURES);
+    if (!ctl.standbyFanStash.valid) return 14425;
+    lockout(true, true, SERVICE_FAN_FAULT_STALL);
+    if (ctl.standbyFanStash.valid) return 14426;
     return 0;
 }
 

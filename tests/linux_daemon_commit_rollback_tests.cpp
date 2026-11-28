@@ -1,18 +1,34 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
-// Request-level fixture (assertion codes 14260-14270): the production Linux
-// daemon request handler (linux_daemon.cpp, compiled whole) over fake backend,
-// persistence and log functions. When the durable commit fails after a
-// successful Apply, Reset or automatic resume restore, the daemon must roll
-// the hardware back with the very ceiling transaction that mutation used, so
-// the rollback is bounded by the clamp and outgoing facts it recorded. No
-// driver, socket or GPU is used.
+// Request-level fixture (assertion codes 14260-14270, 14400-14415): the
+// production Linux daemon request handler (linux_daemon.cpp, compiled whole)
+// over fake backend, persistence and log functions. Covers commit/rollback
+// ceiling transaction fidelity (14260-14270) and SERVICE_CMD_RESUME_RESTORE
+// standby fan stash replay, uncertainty waiver, explicit Apply/Reset window
+// closing and stall exclusion (14400-14415). No driver, socket or GPU is used.
 #if !defined(_WIN32)
+#include <ctime>
+#include <new>
+#include <time.h>
+#include <type_traits>
 // Rename the two symbols another fixture (linux_tui_gpu_target_tests.cpp)
 // also defines, so both can link into the one regression binary.
 #define linux_daemon_get_state_ex commit_fixture_daemon_get_state_ex
 #define linux_debug_logf commit_fixture_debug_logf
+static unsigned long long commit_fixture_monotonic_ns = 5000000000ull;
+static unsigned long long commit_fixture_suspended_ns = 0;
+static int commit_fixture_clock_gettime(clockid_t clockId, struct timespec* ts) {
+    if (!ts) return -1;
+    unsigned long long ns = commit_fixture_monotonic_ns;
+    if (clockId == CLOCK_BOOTTIME) ns += commit_fixture_suspended_ns;
+    ts->tv_sec = (time_t)(ns / 1000000000ull);
+    ts->tv_nsec = (long)(ns % 1000000000ull);
+    commit_fixture_monotonic_ns += 1000ull;
+    return 0;
+}
+#define clock_gettime commit_fixture_clock_gettime
 #include "linux_daemon.cpp"
+#undef clock_gettime
 #include <cstdio>
 #include <cstring>
 
@@ -24,6 +40,8 @@ struct DaemonFixture {
     // Every field linux_backend_restore_snapshot() reads, as it received them.
     LinuxApplyCeilingTransaction restoredValues;
     int restoreCalls;
+    int applyCalls;
+    DesiredSettings lastApplied;
     // Persistence: which commit fails.
     bool failActiveStore;
     bool failStateRemove;
@@ -51,7 +69,9 @@ static bool fixture_restored_matches(unsigned int planMHz, unsigned int outgoing
 // --- backend -------------------------------------------------------------
 LinuxMutationResult linux_backend_apply(LinuxGpuState*, LinuxApplyCeilingTransaction& ceiling,
                                         const DesiredSettings*, const DesiredSettings*,
-                                        const DesiredSettings*, char* result, size_t resultSize) {
+                                        const DesiredSettings* committed, char* result, size_t resultSize) {
+    ++fixture.applyCalls;
+    fixture.lastApplied = committed ? *committed : DesiredSettings{};
     fixture.mutated = &ceiling;
     fixture_record(ceiling, 1777, 1888, true);
     gc_strlcpy(result, resultSize, "fixture apply");
@@ -222,6 +242,26 @@ static ServiceStateEnvelope fixture_observe(LinuxGpuController& ctl) {
     handle_request(ctl, &read, &state);
     return state.state;
 }
+static ServiceRequest fixture_curve_apply_req(const LinuxGpuController& ctl,
+                                              gc_u64 operationId,
+                                              const ServiceStateEnvelope& observed) {
+    ServiceRequest r = {};
+    fixture_request(r, ctl, SERVICE_CMD_APPLY, operationId, observed);
+    r.desired.hasFan = 1;
+    r.desired.fanAuto = 0;
+    r.desired.fanMode = FAN_MODE_CURVE;
+    fan_curve_set_default(&r.desired.fanCurve);
+    return r;
+}
+static ServiceRequest fixture_resume_req() {
+    ServiceRequest r = {};
+    r.magic = SERVICE_PROTOCOL_MAGIC;
+    r.version = SERVICE_PROTOCOL_VERSION;
+    r.command = SERVICE_CMD_RESUME_RESTORE;
+    r.flags = service_request_flags_for_command(SERVICE_CMD_RESUME_RESTORE, false);
+    r.callerPid = (gc_u32)getpid();
+    return r;
+}
 }
 
 int run_linux_daemon_commit_rollback_tests() {
@@ -295,12 +335,7 @@ int run_linux_daemon_commit_rollback_tests() {
     if (resp.status != SERVICE_STATUS_OK || !ctl.hasActiveDesired) return 14268;
     fixture = DaemonFixture{};
     fixture.failActiveStore = true;
-    req = ServiceRequest{};
-    req.magic = SERVICE_PROTOCOL_MAGIC;
-    req.version = SERVICE_PROTOCOL_VERSION;
-    req.command = SERVICE_CMD_RESUME_RESTORE;
-    req.flags = service_request_flags_for_command(SERVICE_CMD_RESUME_RESTORE, false);
-    req.callerPid = (gc_u32)getpid();
+    req = fixture_resume_req();
     resp = ServiceResponse{};
     handle_request(ctl, &req, &resp);
     if (!fixture.mutated) {
@@ -312,6 +347,192 @@ int run_linux_daemon_commit_rollback_tests() {
     if (resp.status != SERVICE_STATUS_ERROR ||
         !std::strstr(resp.message, "automatic restore persistence failed after hardware write; hardware rollback succeeded") ||
         !ctl.stateUncertain || !ctl.autoRestoreGuard.lockedOut) return 14270;
+
+    // 14400-14402: Standby fan stash replay through SERVICE_CMD_RESUME_RESTORE
+    // succeeds, replays the replaced fan curve, and clears stateUncertain,
+    // ctl.fanFault, and ctl.standbyFanStash.
+    commit_fixture_monotonic_ns = 5000000000ull;
+    commit_fixture_suspended_ns = 0;
+    fixture = DaemonFixture{};
+    fixture_controller(ctl);
+    daemon_standby_window_close(ctl, "daemon start");
+    req = fixture_curve_apply_req(ctl, 5, fixture_observe(ctl));
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_OK || !ctl.hasActiveDesired ||
+        ctl.activeDesired.fanMode != FAN_MODE_CURVE) return 14400;
+    commit_fixture_suspended_ns += 30ull * 1000000000ull;
+    pl_mutex_lock(&g_lock);
+    daemon_fan_runtime_lockout(ctl, SERVICE_FAN_FAULT_REPEATED_FAILURES,
+        "wake nvml failure", 0, 0, 0);
+    pl_mutex_unlock(&g_lock);
+    if (!ctl.stateUncertain || ctl.activeDesired.hasFan ||
+        ctl.fanFault.kind != SERVICE_FAN_FAULT_REPEATED_FAILURES ||
+        !ctl.standbyFanStash.valid ||
+        ctl.standbyFanStash.replaced.fanMode != FAN_MODE_CURVE) return 14401;
+    fixture = DaemonFixture{};
+    req = fixture_resume_req();
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_OK || fixture.applyCalls != 1 ||
+        !fixture.lastApplied.hasFan || fixture.lastApplied.fanMode != FAN_MODE_CURVE ||
+        ctl.stateUncertain || ctl.fanFault.kind != SERVICE_FAN_FAULT_NONE ||
+        ctl.standbyFanStash.valid || !ctl.hasActiveDesired ||
+        !ctl.activeDesired.hasFan || ctl.activeDesired.fanMode != FAN_MODE_CURVE)
+        return 14402;
+
+    // 14403-14404: Pre-write backend prepare failure preserves the stash so
+    // the next SERVICE_CMD_RESUME_RESTORE replays and clears it once ready.
+    fixture = DaemonFixture{};
+    fixture_controller(ctl);
+    daemon_standby_window_close(ctl, "daemon start");
+    req = fixture_curve_apply_req(ctl, 6, fixture_observe(ctl));
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_OK) return 14403;
+    commit_fixture_suspended_ns += 30ull * 1000000000ull;
+    pl_mutex_lock(&g_lock);
+    daemon_fan_runtime_lockout(ctl, SERVICE_FAN_FAULT_REPEATED_FAILURES,
+        "wake nvml failure", 0, 0, 0);
+    pl_mutex_unlock(&g_lock);
+    fixture = DaemonFixture{};
+    ctl.gpu.writeIdentityResolved = false;
+    req = fixture_resume_req();
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_ERROR || fixture.applyCalls != 0 ||
+        !ctl.standbyFanStash.valid || !ctl.stateUncertain) return 14403;
+    ctl.gpu.writeIdentityResolved = true;
+    req = fixture_resume_req();
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_OK || fixture.applyCalls != 1 ||
+        ctl.standbyFanStash.valid || ctl.stateUncertain ||
+        ctl.fanFault.kind != SERVICE_FAN_FAULT_NONE) return 14404;
+
+    // 14405-14406: A bumped uncertainSerial drops the stash and refuses the
+    // resume restore under the uncertain gate.
+    fixture = DaemonFixture{};
+    fixture_controller(ctl);
+    daemon_standby_window_close(ctl, "daemon start");
+    req = fixture_curve_apply_req(ctl, 7, fixture_observe(ctl));
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_OK) return 14405;
+    commit_fixture_suspended_ns += 30ull * 1000000000ull;
+    pl_mutex_lock(&g_lock);
+    daemon_fan_runtime_lockout(ctl, SERVICE_FAN_FAULT_REPEATED_FAILURES,
+        "wake nvml failure", 0, 0, 0);
+    pl_mutex_unlock(&g_lock);
+    ++ctl.uncertainSerial;
+    fixture = DaemonFixture{};
+    req = fixture_resume_req();
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_ERROR || fixture.applyCalls != 0 ||
+        !ctl.stateUncertain || ctl.standbyFanStash.valid) return 14406;
+
+    // 14407-14409: Explicit Apply drops any pending stash AND closes the
+    // suspend window even when no SERVICE_CMD_RESUME_RESTORE ran after wake.
+    fixture = DaemonFixture{};
+    fixture_controller(ctl);
+    daemon_standby_window_close(ctl, "daemon start");
+    req = fixture_curve_apply_req(ctl, 8, fixture_observe(ctl));
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_OK) return 14407;
+    commit_fixture_suspended_ns += 30ull * 1000000000ull;
+    pl_mutex_lock(&g_lock);
+    daemon_fan_runtime_lockout(ctl, SERVICE_FAN_FAULT_REPEATED_FAILURES,
+        "wake nvml failure", 0, 0, 0);
+    pl_mutex_unlock(&g_lock);
+    if (!ctl.standbyFanStash.valid) return 14407;
+    req = fixture_curve_apply_req(ctl, 9, fixture_observe(ctl));
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_OK || ctl.standbyFanStash.valid ||
+        ctl.stateUncertain) return 14408;
+    // Suspend without a resume command, then explicitly Apply while awake:
+    // a later awake lockout must NOT capture a stash.
+    commit_fixture_suspended_ns += 30ull * 1000000000ull;
+    req = fixture_curve_apply_req(ctl, 10, fixture_observe(ctl));
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_OK) return 14408;
+    pl_mutex_lock(&g_lock);
+    daemon_fan_runtime_lockout(ctl, SERVICE_FAN_FAULT_REPEATED_FAILURES,
+        "awake nvml failure", 0, 0, 0);
+    pl_mutex_unlock(&g_lock);
+    fixture = DaemonFixture{};
+    req = fixture_resume_req();
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (ctl.standbyFanStash.valid || resp.status != SERVICE_STATUS_ERROR ||
+        fixture.applyCalls != 0) return 14409;
+
+    // 14410-14412: Explicit Reset drops any pending stash AND closes the
+    // suspend window.
+    fixture = DaemonFixture{};
+    fixture_controller(ctl);
+    daemon_standby_window_close(ctl, "daemon start");
+    req = fixture_curve_apply_req(ctl, 11, fixture_observe(ctl));
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_OK) return 14410;
+    commit_fixture_suspended_ns += 30ull * 1000000000ull;
+    pl_mutex_lock(&g_lock);
+    daemon_fan_runtime_lockout(ctl, SERVICE_FAN_FAULT_REPEATED_FAILURES,
+        "wake nvml failure", 0, 0, 0);
+    pl_mutex_unlock(&g_lock);
+    fixture_request(req, ctl, SERVICE_CMD_RESET, 12, fixture_observe(ctl));
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_OK || ctl.standbyFanStash.valid ||
+        ctl.stateUncertain) return 14410;
+    // Suspend without resume, Reset, re-Apply curve, then awake lockout:
+    // window was closed by Reset, so awake lockout must not capture a stash.
+    commit_fixture_suspended_ns += 30ull * 1000000000ull;
+    fixture_request(req, ctl, SERVICE_CMD_RESET, 13, fixture_observe(ctl));
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_OK) return 14411;
+    req = fixture_curve_apply_req(ctl, 14, fixture_observe(ctl));
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_OK) return 14411;
+    pl_mutex_lock(&g_lock);
+    daemon_fan_runtime_lockout(ctl, SERVICE_FAN_FAULT_REPEATED_FAILURES,
+        "awake nvml failure", 0, 0, 0);
+    pl_mutex_unlock(&g_lock);
+    fixture = DaemonFixture{};
+    req = fixture_resume_req();
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (ctl.standbyFanStash.valid || resp.status != SERVICE_STATUS_ERROR ||
+        fixture.applyCalls != 0) return 14412;
+
+    // 14413-14415: A confirmed fan stall inside the suspend window captures no
+    // stash and SERVICE_CMD_RESUME_RESTORE refuses to replay onto it.
+    fixture = DaemonFixture{};
+    fixture_controller(ctl);
+    daemon_standby_window_close(ctl, "daemon start");
+    req = fixture_curve_apply_req(ctl, 15, fixture_observe(ctl));
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_OK) return 14413;
+    commit_fixture_suspended_ns += 30ull * 1000000000ull;
+    pl_mutex_lock(&g_lock);
+    daemon_fan_runtime_lockout(ctl, SERVICE_FAN_FAULT_STALL,
+        "Fan 1 did not turn at 40% for 20 s", 0, 40, 20000);
+    pl_mutex_unlock(&g_lock);
+    if (!ctl.stateUncertain || ctl.standbyFanStash.valid ||
+        ctl.fanFault.kind != SERVICE_FAN_FAULT_STALL) return 14414;
+    fixture = DaemonFixture{};
+    req = fixture_resume_req();
+    resp = ServiceResponse{};
+    handle_request(ctl, &req, &resp);
+    if (resp.status != SERVICE_STATUS_ERROR || fixture.applyCalls != 0 ||
+        !ctl.stateUncertain || ctl.standbyFanStash.valid) return 14415;
     return 0;
 }
 #else

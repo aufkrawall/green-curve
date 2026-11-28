@@ -323,7 +323,8 @@ static bool service_refresh_telemetry_for_request(char* detail, size_t detailSiz
 static bool service_apply_desired_settings(const DesiredSettings* desired, bool interactive,
     char* result, size_t resultSize, bool* writeAttemptedOut = nullptr,
     bool replaceActiveIntent = false,
-    const DesiredSettings* replacementIntent = nullptr, gc_u32* outcomeSeverityOut = nullptr);
+    const DesiredSettings* replacementIntent = nullptr, gc_u32* outcomeSeverityOut = nullptr,
+    bool standbyStashReplay = false);
 static bool service_reset_all(char* result, size_t resultSize,
     bool* hardwareWriteAttemptedOut = nullptr);
 static bool service_update_install_reserved();

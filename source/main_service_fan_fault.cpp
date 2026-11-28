@@ -84,13 +84,15 @@ static ServiceFanFault service_fan_fault_for_snapshot_locked() {
 }
 
 // A successful Apply that sets the fan, or a Reset: the handback is history.
-static void service_fan_fault_clear(const char* reason) {
+// When the Apply is the standby stash replay itself, the caller consumes the
+// stash once the write returns so the "used up" trace stays intact.
+static void service_fan_fault_clear(const char* reason, bool clearStandbyStash = true) {
     EnterCriticalSection(&g_appLock);
     const ServiceFanFault previous = g_serviceFanFault;
     g_serviceFanFault = ServiceFanFault{};
     LeaveCriticalSection(&g_appLock);
     // A deliberate fan write or a Reset also supersedes a pending standby replay.
-    service_standby_fan_stash_clear(reason);
+    if (clearStandbyStash) service_standby_fan_stash_clear(reason);
     if (previous.kind != SERVICE_FAN_FAULT_NONE)
         debug_log("fan fault: record kind=%s serial=%u cleared by %s\n",
             gc_fan_fault_kind_name(previous.kind), (unsigned int)previous.serial,
@@ -176,15 +178,20 @@ static void service_fan_runtime_handback_publish(const ServiceFanFault* fault) {
     g_serviceFanFault = record;
     LeaveCriticalSection(&g_appLock);
 
-    // Inside a standby window keep what the handback replaced, so the next
-    // standby restore can replay it.  A copy already kept for this epoch stays
-    // the one replayed (a later handback can only have replaced the emergency
-    // duty or nothing); it just follows the intent this handback left, so the
-    // restore still recognizes it as unchanged.
-    const bool keptForEpoch = standbyWindow && g_serviceStandbyFanStash.valid &&
-        g_serviceStandbyFanStash.epoch == standbyEpoch;
+    // Inside a standby window keep what a repeated-failure handback replaced, so
+    // the next standby restore can replay it.  A copy already kept for this
+    // epoch stays the one replayed only while the pre-handback intent still
+    // matches what that stash left (an automatic pipe APPLY may have changed OC
+    // or power without bumping the epoch); it then follows the intent this
+    // handback left.  A confirmed fan stall never captures or keeps a stash.
+    const bool isRepeatedFailure =
+        fault->kind == SERVICE_FAN_FAULT_REPEATED_FAILURES;
+    const bool keptForEpoch = standbyWindow && isRepeatedFailure &&
+        service_standby_fan_stash_use(&g_serviceStandbyFanStash, standbyEpoch,
+            hadIntent, &previousDesired) == SERVICE_STANDBY_FAN_STASH_REPLAY;
     const bool stashCaptured = !keptForEpoch &&
-        service_standby_fan_stash_should_capture(standbyWindow, hadIntent, &previousDesired);
+        service_standby_fan_stash_should_capture(standbyWindow, fault->kind,
+            hadIntent, &previousDesired);
     if (keptForEpoch) {
         g_serviceStandbyFanStash.handbackHasIntent = g_serviceHasActiveDesired;
         g_serviceStandbyFanStash.handbackIntent = g_serviceActiveDesired;
@@ -200,12 +207,15 @@ static void service_fan_runtime_handback_publish(const ServiceFanFault* fault) {
         stash.handbackIntent = g_serviceActiveDesired;
         g_serviceStandbyFanStash = stash;
     } else {
-        service_standby_fan_stash_clear(standbyWindow
-            ? "a fan handback in a later standby epoch"
-            : "a fan handback outside a standby window");
+        service_standby_fan_stash_clear(!isRepeatedFailure
+            ? "a confirmed fan stall"
+            : (standbyWindow
+                ? "a fan handback that keeps nothing to replay"
+                : "a fan handback outside a standby window"));
     }
-    debug_log("standby fan stash: window=%d epoch=%llu captured=%d keptEarlier=%d valid=%d previousMode=%s\n",
+    debug_log("standby fan stash: window=%d epoch=%llu kind=%s captured=%d keptEarlier=%d valid=%d previousMode=%s\n",
         standbyWindow ? 1 : 0, (unsigned long long)standbyEpoch,
+        gc_fan_fault_kind_name(fault->kind),
         stashCaptured ? 1 : 0, keptForEpoch ? 1 : 0, g_serviceStandbyFanStash.valid ? 1 : 0,
         fan_mode_label(previousMode));
 

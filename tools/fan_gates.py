@@ -588,6 +588,9 @@ def check_fan_fault_reporting(ctx, require_text, forbid_text, require_order):
     require_text(apply_runtime_cpp,
                  'service_fan_fault_clear("an Apply that set the fan");',
                  "a healthy fan Apply clears the fan fault record")
+    require_text(apply_runtime_cpp,
+                 'service_fan_fault_clear("the standby restore\'s fan stash replay", false);',
+                 "a standby stash replay clears the fault record without dropping the stash early")
     require_text(apply_runtime_cpp, 'service_fan_fault_clear("a successful Reset");',
                  "a Reset clears the record")
     validation_h = _p(ctx, "service_protocol_validation.h")
@@ -642,6 +645,14 @@ def check_standby_fan_stash(ctx, require_text, forbid_text, require_order):
     require_order(fault_cpp, "g_serviceFanFault = ServiceFanFault{};",
                   "service_standby_fan_stash_clear(reason);",
                   "a Reset or a deliberate fan Apply supersedes a pending standby replay")
+    require_text(fault_cpp, "fault->kind == SERVICE_FAN_FAULT_REPEATED_FAILURES;",
+                 "only repeated-failure handbacks keep or capture a standby stash")
+    require_text(fault_cpp,
+                 "service_standby_fan_stash_use(&g_serviceStandbyFanStash, standbyEpoch,",
+                 "keeping an existing stash checks the epoch and unchanged pre-handback intent")
+    require_text(_p(ctx, "service_standby_fan_stash_policy.h"),
+                 "faultKind != SERVICE_FAN_FAULT_REPEATED_FAILURES",
+                 "confirmed fan stalls are excluded from Windows standby stash capture")
     require_text(_p(ctx, "main_service_lifecycle_events.cpp"),
                  "service_standby_fan_handback_window(\n        &g_serviceLifecycleState, epochOut);",
                  "the window comes from the real lifecycle reducer state")
@@ -655,9 +666,12 @@ def check_standby_fan_stash(ctx, require_text, forbid_text, require_order):
     require_order(apply_cpp, "if (!service_standby_restore_select(replayFanStash, &fanStash,",
                   "service_build_full_restore_request(restoreIntent, &desired);",
                   "the restore request is built from the selected intent")
-    require_order(apply_cpp, "success = service_apply_desired_settings(&desired, false,",
+    require_order(apply_cpp, "&applySeverity, replayFanStash);",
                   "if (service_standby_fan_stash_used_up(replayFanStash, success, writeAttempted))",
                   "the stash is used up only by a restore that reached the hardware")
+    require_order(apply_cpp, "if (service_standby_fan_stash_should_restore_profile(",
+                  "g_serviceActiveProfileSlot = fanStash.replacedProfileSlot;",
+                  "a replayed profile's attribution is restored only when outcome severity is not error")
     # The restart snapshot write follows the proof commit in the same block.
     require_order(apply_cpp, "g_serviceActiveProfileSlot = fanStash.replacedProfileSlot;",
                   "proofCommitOk = service_restore_mature_oc_apply_proof(",
@@ -672,13 +686,14 @@ def check_linux_standby_fan_stash(ctx, require_text, forbid_text, require_order)
     lockout inside it keeps the intent it replaced, and the resume restore
     replays it once with only that lockout's uncertainty waived
     (linux_standby_fan_stash_policy.h).  Executed by
-    tests/linux_standby_fan_stash_tests.cpp and
-    tests/fan_runtime_followup_tests.cpp (14370-14399).
+    tests/linux_standby_fan_stash_tests.cpp,
+    tests/fan_runtime_followup_tests.cpp and
+    tests/linux_daemon_commit_rollback_tests.cpp.
     """
     runtime_h = _p(ctx, "linux_fan_runtime.h")
     require_order(runtime_h, "daemon_enter_uncertain_after_fan_lockout(ctl, why, autoOk);",
-                  "daemon_standby_fan_stash_note_lockout(ctl, hadIntent, &previousDesired,",
-                  "the lockout notes the stash after it entered uncertainty (serial bumped)")
+                  "daemon_standby_fan_stash_note_lockout(ctl, kind, hadIntent, &previousDesired,",
+                  "the lockout notes the fault kind and stash after it entered uncertainty (serial bumped)")
     ownership_h = _p(ctx, "linux_fan_ownership.h")
     for anchor in ("    ctl.stateUncertain = true;\n    ++ctl.uncertainSerial;\n    daemon_fan_ownership_release_for_uncertain",
                    "    ctl.stateUncertain = true;\n    ++ctl.uncertainSerial;\n    if (!ctl.fanOwnershipMarkerCommitted) return;"):
@@ -687,11 +702,18 @@ def check_linux_standby_fan_stash(ctx, require_text, forbid_text, require_order)
     stash_h = _p(ctx, "linux_standby_fan_stash.h")
     require_text(stash_h, "clock_gettime(CLOCK_BOOTTIME, &boot)",
                  "the window is the kernel's suspended-time offset, not a timer")
+    require_text(_p(ctx, "linux_standby_fan_stash_policy.h"),
+                 "faultKind != SERVICE_FAN_FAULT_REPEATED_FAILURES",
+                 "confirmed fan stalls are excluded from Linux standby stash capture")
     daemon_cpp = _p(ctx, "linux_daemon.cpp")
     require_text(daemon_cpp, 'daemon_standby_fan_stash_clear(ctl, "an explicit Apply");',
                  "an explicit Apply supersedes a pending resume replay")
+    require_text(daemon_cpp, 'daemon_standby_window_close(ctl, "an explicit Apply");',
+                 "an explicit Apply closes the suspend window")
     require_text(daemon_cpp, 'daemon_standby_fan_stash_clear(ctl, "an explicit Reset");',
                  "an explicit Reset supersedes a pending resume replay")
+    require_text(daemon_cpp, 'daemon_standby_window_close(ctl, "an explicit Reset");',
+                 "an explicit Reset closes the suspend window")
     require_order(daemon_cpp, 'daemon_standby_window_close(ctl, "daemon start");',
                   "pl_thread_start(&fanThread, fan_reassert_thread, &ctl);",
                   "the window baseline exists before the fan worker can lock out")
