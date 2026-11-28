@@ -384,6 +384,39 @@ static bool select_request_gpu(LinuxGpuController& ctl, const ServiceRequest* re
     return true;
 }
 
+// The adapter a request route must address: the published selected adapter.
+// The read-only telemetry fallback of a multi-GPU host is not served.
+static int daemon_served_adapter_index(const LinuxGpuController& ctl) {
+    return ctl.gpu.writeIdentityResolved &&
+        ctl.gpu.selectedAdapterIndex < ctl.gpu.adapterCount
+        ? (int)ctl.gpu.selectedAdapterIndex : -1;
+}
+
+// One route rule for every command (service_gpu_route.h): a routed command
+// answers for the served GPU, a state read may move the daemon (guarded by
+// select_request_gpu), and Apply/Reset bind their target through their
+// preconditions. Anything else naming another GPU is refused, never answered
+// for the wrong card.
+static bool daemon_route_admits(LinuxGpuController& ctl, const ServiceRequest* req,
+                                ServiceResponse* resp) {
+    const int served = daemon_served_adapter_index(ctl);
+    const ServiceGpuRouteDisposition disposition = service_gpu_route_disposition(
+        req->command, req->targetGpu.valid != 0,
+        service_gpu_route_addresses(req->targetGpu, ctl.gpu.adapters,
+                                    ctl.gpu.adapterCount, served));
+    if (disposition != SERVICE_GPU_ROUTE_NOT_SERVED) return true;
+    resp->status = SERVICE_STATUS_STALE_STATE;
+    gc_strlcpy(resp->message, sizeof(resp->message), SERVICE_GPU_ROUTE_NOT_SERVED_MESSAGE);
+    dlog("daemon route: refused command=%u route=%s target=%04x:%02x:%02x.%u "
+         "resolved=%d served=%d adapters=%u\n", (unsigned int)req->command,
+         service_gpu_route_name(service_command_gpu_route(req->command)),
+         req->targetGpu.pciDomain, req->targetGpu.pciBus, req->targetGpu.pciDevice,
+         req->targetGpu.pciFunction,
+         gpu_adapter_route_index(&req->targetGpu, ctl.gpu.adapters, ctl.gpu.adapterCount),
+         served, ctl.gpu.adapterCount);
+    return false;
+}
+
 static bool mutation_preconditions_match(LinuxGpuController& ctl, const ServiceRequest* req,
                                          ServiceResponse* resp) {
     if (!req || !resp) return false;

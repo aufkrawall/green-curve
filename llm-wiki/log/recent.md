@@ -5,6 +5,27 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-27: One GPU route for every command (protocol v40)
+
+- `ServiceRequest.targetGpu` now has one meaning on both platforms: the GPU a
+  command is about, absent meaning the served GPU. `service_gpu_route.h` holds
+  the command table (machine / required / optional / policy) read by the
+  shared validator and by both dispatchers; see [multi-gpu.md](../multi-gpu.md).
+- Wire: PING, LOGON_HANDOFF and GET_OPERATION_RESULT refuse a target; the
+  daemon-wide startup policy keeps its v39 target rules.
+- Dispatch: `daemon_route_admits()` (Linux) and `service_route_admits()`
+  (Windows) refuse any routed command naming a GPU other than the served one
+  with STALE_STATE before its handler, except GET_SNAPSHOT's guarded switch
+  and Apply/Reset, whose preconditions already bind the target. A route must
+  resolve to exactly one live adapter (`gpu_adapter_route_index()`). Linux
+  GET_TELEMETRY no longer switches GPUs.
+- Windows re-checks the route for file writes under the runtime lock right
+  before writing, and refuses (clearing capture) any other OK answer
+  published for another GPU after a retarget.
+- Tests: `14600-14629`, `14637-14638`, `14641-14643` (route table, wire rule, resolver, serving decision, published answer),
+  `14630-14636` (production daemon handler: refused routes never reach the
+  handler or the backend; the state read still switches; a boot profile may
+  still bind another card).
 ## 2026-11-28: Hard-pin tail no longer reported as a Linux hardware override
 
 - A Linux hard-pinned profile (pin at 2957 MHz, +475 MHz offset prefix) was

@@ -112,6 +112,18 @@ static void daemon_handle_set_startup_policy(LinuxGpuController& ctl, const Serv
     // easy to believe a handler owned resp->desired.
 }
 
+// A refresh may name the card it expects the stored binding to be. The
+// binding is never changed by a refresh; a named card that is not the one the
+// binding resolves to (or a binding that resolves to none) is refused.
+static bool daemon_startup_refresh_names_binding(LinuxGpuController& ctl, const ServiceRequest* req) {
+    if (!req->targetGpu.valid) return true;
+    const auto binding = linux_gpu_restore_selection(&ctl.startupPolicy.targetGpu,
+        (GpuLocationRole)ctl.startupPolicy.targetLocationRole, ctl.gpu.adapters, ctl.gpu.adapterCount,
+        &ctl.startupPolicy.targetUuid, ctl.gpu.adapterUuids, nullptr);
+    return binding.writeResolved && binding.index >= 0 &&
+        gpu_adapter_route_index(&req->targetGpu, ctl.gpu.adapters, ctl.gpu.adapterCount) == binding.index;
+}
+
 // Content-only refresh of the stored `profile N` snapshot, sent by the client
 // right after it rewrote slot N in config.ini.  The daemon cannot read that
 // file (ProtectHome=yes), so without this the boot-apply kept writing the
@@ -137,6 +149,13 @@ static void daemon_handle_refresh_startup_profile(LinuxGpuController& ctl, const
              (unsigned int)req->profileSlot,
              service_startup_policy_mode_name(ctl.startupPolicy.mode),
              (unsigned int)ctl.startupPolicy.profileSlot);
+    } else if (!daemon_startup_refresh_names_binding(ctl, req)) {
+        resp->status = SERVICE_STATUS_STALE_STATE;
+        gc_snprintf(resp->message, sizeof(resp->message),
+            "startup profile %u is bound to another GPU; refresh it from that GPU",
+            (unsigned int)req->profileSlot);
+        dlog("daemon startup policy: refresh for slot=%u names a GPU its binding does not resolve to\n",
+             (unsigned int)req->profileSlot);
     } else {
         if (req->expectedTopologySignature) {
             ServiceSnapshot current{};

@@ -29,15 +29,16 @@
 
 ## Unreleased
 
-Hard-pinned profiles no longer raise false hardware-override warnings on Linux.
+Hard-pinned profiles no longer raise false hardware-override warnings on Linux; on multi-GPU systems, requests reach only the GPU they name.
 
 ### Fixed
 
 - **Linux hard pin status:** the TUI and live dump no longer report "HW OVERRIDDEN" when the GPU's temperature changes after a hard-pinned profile is applied.
+- **Multi-GPU requests:** a request for a GPU other than the one being shown is refused instead of answered for the shown GPU.
 
 ### Compatibility notes
 
-Existing configuration and profiles remain compatible.
+Update the app and service together: the service protocol changed.
 
 ### Downloads and verification
 

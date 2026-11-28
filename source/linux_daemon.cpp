@@ -249,11 +249,13 @@ static void handle_request(LinuxGpuController& ctl, const ServiceRequest* wireRe
              (unsigned long long)req->expectedServiceInstanceId,
              (unsigned long long)req->expectedGpuGeneration,
              (unsigned long long)req->expectedTopologySignature, reason);
-    } else if ((req->command == SERVICE_CMD_APPLY ||
-                req->command == SERVICE_CMD_RESET) &&
-               (!daemon_control_preconditions_match(ctl, req, resp) ||
-                !mutation_preconditions_match(ctl, req, resp))) {
-        // State and message were filled by the fail-closed precondition gate.
+    } else if (((req->command == SERVICE_CMD_APPLY ||
+                 req->command == SERVICE_CMD_RESET) &&
+                (!daemon_control_preconditions_match(ctl, req, resp) ||
+                 !mutation_preconditions_match(ctl, req, resp))) ||
+               !daemon_route_admits(ctl, req, resp)) {
+        // State and message were filled by the fail-closed precondition gate,
+        // or by the route gate for a GPU this daemon is not serving.
     } else switch (req->command) {
         case SERVICE_CMD_PING:
             resp->status = SERVICE_STATUS_OK;
@@ -264,7 +266,9 @@ static void handle_request(LinuxGpuController& ctl, const ServiceRequest* wireRe
             if (!ctl.gpuReady && !req->targetGpu.valid)
                 daemon_retry_backend_for_read(ctl,
                     (req->flags & SERVICE_REQUEST_FLAG_INTERACTIVE) != 0);
-            if (req->targetGpu.valid) {
+            // Only the full state read moves the daemon; a routed telemetry
+            // read already addresses the served GPU (daemon_route_admits).
+            if (req->targetGpu.valid && req->command == SERVICE_CMD_GET_SNAPSHOT) {
                 char targetErr[256] = {};
                 if (!select_request_gpu(ctl, req, targetErr, sizeof(targetErr))) {
                     resp->status = SERVICE_STATUS_ERROR;

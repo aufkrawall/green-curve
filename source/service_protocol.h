@@ -89,7 +89,8 @@ enum {
     // v37 binds passive review to both named clock APIs and outgoing ownership.
     // v38 identifies the selected topology of a bound startup profile.
     // v39 appends ServiceFanFault (a fan the runtime handed back) to ServiceSnapshot.
-    SERVICE_PROTOCOL_VERSION = 39,
+    // v40 gives targetGpu one routing meaning for every command (service_gpu_route.h).
+    SERVICE_PROTOCOL_VERSION = 40,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply; on a state read it
