@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import arch_package  # noqa: E402
 import deb_package  # noqa: E402
+import linux_package_container_check  # noqa: E402
 import linux_payload  # noqa: E402
 import release_manifest  # noqa: E402
 import rpm_header  # noqa: E402
@@ -294,7 +295,7 @@ class RpmSigningTests(unittest.TestCase):
         os.makedirs(cls.home)
         os.chmod(cls.home, 0o700)
         cls.old_home = os.environ.get("GNUPGHOME")
-        os.environ["GNUPGHOME"] = cls.home
+        os.environ["GNUPGHOME"] = rpm_sign.tool_path(rpm_sign.gpg_tool("gpg"), cls.home)
         cls.rsa = cls._make_key("Green Curve rpm test RSA", "rsa3072")
         cls.other = cls._make_key("Green Curve rpm test other", "rsa3072")
         cls.binary = os.path.join(cls.temp, "greencurve")
@@ -431,11 +432,32 @@ class RpmHeaderTests(unittest.TestCase):
             rpm_header.parse_header(bytes(blob), 0, rpm_header.TAG_HEADERIMMUTABLE, True)
 
 
+class ContainerCheckTests(unittest.TestCase):
+    def test_timeout_expired_bytes_output_does_not_raise(self):
+        from unittest import mock
+
+        exc = subprocess.TimeoutExpired(cmd=["docker"], timeout=900,
+                                        output=b"partial stdout", stderr=b"\npartial stderr")
+        with mock.patch.object(linux_package_container_check.subprocess, "run", side_effect=exc):
+            code, output, _ = linux_package_container_check.run_distro(
+                "docker", "opensuse-leap-15.6", "suse", "img", "/old", "/new", False, "linux/amd64")
+        self.assertEqual(code, 124)
+        self.assertIn("partial stdout", output)
+        self.assertIn("partial stderr", output)
+        self.assertIn("TIMEOUT after 900s", output)
+
+    def test_msys_tool_path_converts_drive_paths(self):
+        self.assertEqual(rpm_sign.tool_path("gpg.exe", "C:\\tmp\\gnupg", _msys=True),
+                         "/c/tmp/gnupg")
+        self.assertEqual(rpm_sign.tool_path("gpg.exe", "C:\\tmp\\gnupg", _msys=False),
+                         "C:\\tmp\\gnupg")
+
+
 def run_tests():
     loader = unittest.defaultTestLoader
     suite = unittest.TestSuite()
     for case in (FileNameTests, PackageBuildTests, GroupEnrollmentTests, SignaturePacketTests,
-                 RpmSigningTests, RpmHeaderTests):
+                 RpmSigningTests, RpmHeaderTests, ContainerCheckTests):
         suite.addTests(loader.loadTestsFromTestCase(case))
     result = unittest.TextTestRunner().run(suite)
     if not result.wasSuccessful():

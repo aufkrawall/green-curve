@@ -5,6 +5,26 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: CI fixes for Windows MSYS gpg and openSUSE container hermeticity
+
+- **Windows `RpmSigningTests`:** Git's MSYS2 `gpg.exe` / `gpgv.exe` / `gpgconf.exe`
+  do not accept native `C:\...` paths in `GNUPGHOME` or path options when
+  invoked from native Win32 Python when GnuPG for Windows is absent. Added
+  `tool_path()` / `_tool_env()` in `tools/rpm_sign.py` (detecting `msys-2.0.dll`
+  next to the executable and converting drive paths to `/x/...`) and applied it
+  in `sign_header()`, `verify_header_signature()`, and
+  `tools/linux_packages_tests.py` (`RpmSigningTests.setUpClass`), plus unit
+  tests in `ContainerCheckTests`.
+- **Linux `linux_package_container_check.py` / `opensuse-leap-15.6`:**
+  `zypper --non-interactive --no-refresh` still attempted to fetch uncached
+  repo metadata in a fresh container (timing out at 900 s in CI), and
+  `run_distro()`'s `TimeoutExpired` handler raised `TypeError` concatenating
+  `bytes` `exc.stdout` to `str`. Added
+  `zypper --non-interactive modifyrepo --disable --all` in
+  `tools/linux_package_container_inner.sh` (matching `dnf --disablerepo=*`),
+  decoded `exc.stdout` / `exc.stderr` in `run_distro()`, and added a mock
+  `TimeoutExpired` regression test in `tools/linux_packages_tests.py`.
+
 ## 2026-11-28: Distro-tagged Linux packages; Debian/Ubuntu, Fedora, openSUSE
 
 - Arch packages are now `greencurve-<v>-1-arch-<carch>.pkg.tar.zst`; new

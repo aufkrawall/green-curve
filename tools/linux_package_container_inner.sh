@@ -68,7 +68,10 @@ fedora|suse)
         pm_install() { $DNF install "$1"; }
         pm_remove() { $DNF remove greencurve; }
     else
+        # Repos off: same hermetic contract as dnf --disablerepo=* above;
+        # --no-refresh alone still fetches uncached repo metadata in a fresh container.
         # Unsigned packages need the documented flag; signed ones must not.
+        zypper --non-interactive modifyrepo --disable --all >/dev/null
         ZYP="zypper --non-interactive --no-refresh"
         ZFLAG=""
         [ "$SIGNED" = 1 ] || ZFLAG="--allow-unsigned-rpm"

@@ -43,6 +43,32 @@ def gpg_tool(name):
     return shutil.which(name)
 
 
+def _is_msys_tool(tool_exe):
+    return os.name == "nt" and bool(tool_exe) and os.path.isfile(
+        os.path.join(os.path.dirname(tool_exe), "msys-2.0.dll"))
+
+
+def tool_path(tool_exe, path, _msys=None):
+    """Convert a native Windows drive path to /x/... when `tool_exe` is an MSYS
+    binary (which otherwise treats C:\\... as a relative POSIX path)."""
+    if _msys is None:
+        _msys = _is_msys_tool(tool_exe)
+    if not _msys:
+        return path
+    drive, rest = os.path.splitdrive(os.path.abspath(path))
+    if len(drive) == 2 and drive[1] == ":":
+        return f"/{drive[0].lower()}{rest.replace(os.sep, '/')}"
+    return path
+
+
+def _tool_env(tool_exe):
+    if _is_msys_tool(tool_exe) and os.environ.get("GNUPGHOME"):
+        env = dict(os.environ)
+        env["GNUPGHOME"] = tool_path(tool_exe, env["GNUPGHOME"], _msys=True)
+        return env
+    return None
+
+
 def _gpg():
     gpg = gpg_tool("gpg")
     if not gpg:
@@ -91,11 +117,12 @@ def signature_tag(sig):
 
 def sign_header(header_blob, key):
     """Detached binary OpenPGP signature (SHA-256) over the main header."""
+    gpg = _gpg()
     result = subprocess.run(
-        [_gpg(), "--batch", "--no-tty", "--yes", "--pinentry-mode", "loopback",
+        [gpg, "--batch", "--no-tty", "--yes", "--pinentry-mode", "loopback",
          "--passphrase", "", "--local-user", key, "--digest-algo", "SHA256",
          "--detach-sign", "--output", "-"],
-        input=header_blob, capture_output=True)
+        input=header_blob, capture_output=True, env=_tool_env(gpg))
     if result.returncode != 0 or not result.stdout:
         detail = result.stderr.decode(errors="replace").strip().splitlines()[-1:] or ["no output"]
         raise RuntimeError(f"gpg failed to sign the rpm header: {detail[0]}")
@@ -108,12 +135,14 @@ def verify_header_signature(header_blob, sig, public_key_path):
     gpgv = gpg_tool("gpgv")
     if not gpgv:
         raise RuntimeError("gpgv is required to verify rpm signatures")
+    gpg = _gpg()
     with open(public_key_path, "rb") as handle:
         armored = handle.read()
     with tempfile.TemporaryDirectory(prefix="gc-rpmsig-") as tmp:
         keyring = os.path.join(tmp, "key.gpg")
-        dearmor = subprocess.run([_gpg(), "--batch", "--dearmor", "--output", keyring],
-                                 input=armored, capture_output=True)
+        dearmor = subprocess.run(
+            [gpg, "--batch", "--dearmor", "--output", tool_path(gpg, keyring)],
+            input=armored, capture_output=True, env=_tool_env(gpg))
         if dearmor.returncode != 0:
             raise RuntimeError(f"cannot read the published rpm public key {public_key_path}")
         data_path = os.path.join(tmp, "header")
@@ -122,8 +151,10 @@ def verify_header_signature(header_blob, sig, public_key_path):
             handle.write(header_blob)
         with open(sig_path, "wb") as handle:
             handle.write(sig)
-        result = subprocess.run([gpgv, "--keyring", keyring, sig_path, data_path],
-                                capture_output=True)
+        result = subprocess.run(
+            [gpgv, "--keyring", tool_path(gpgv, keyring),
+             tool_path(gpgv, sig_path), tool_path(gpgv, data_path)],
+            capture_output=True, env=_tool_env(gpgv))
     if result.returncode != 0:
         raise RuntimeError("rpm header signature does not verify against the published key "
                            f"{os.path.basename(public_key_path)}")

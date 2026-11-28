@@ -95,7 +95,10 @@ def run_distro(engine, name, fmt, image, old_dir, new_dir, signed, platform):
                                 timeout=CONTAINER_TIMEOUT_S)
         output, code = result.stdout + result.stderr, result.returncode
     except subprocess.TimeoutExpired as exc:
-        output, code = (exc.stdout or "") + f"\n  TIMEOUT after {CONTAINER_TIMEOUT_S}s", 124
+        partial = (exc.stdout or b"") + (exc.stderr or b"")
+        if isinstance(partial, bytes):
+            partial = partial.decode(errors="replace")
+        output, code = partial + f"\n  TIMEOUT after {CONTAINER_TIMEOUT_S}s", 124
     return code, output, time.monotonic() - start
 
 
