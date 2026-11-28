@@ -186,8 +186,13 @@ def check_steady_state_lines(ctx, require_text):
     # Steady-state telemetry (1-3 s) must not lock the cross-session config
     # mutex or stat config.ini on every tick in either process.
     require_text(_p(ctx, "main_service_pipe.cpp"),
-                 "gc_service_pipe_should_refresh_debug_config(request->command, userPathsChanged)",
-                 "the service pipe skips steady-state telemetry [debug] config refreshes")
+                 "gc_service_pipe_should_refresh_debug_config(\n"
+                 "                            request->command, userPathsChanged,\n"
+                 "                            service_debug_config_refresh_pending())",
+                 "the service pipe skips steady-state telemetry [debug] config refreshes unless retry is pending")
+    require_text(_p(ctx, "main_data_paths.cpp"),
+                 "gc_debug_config_resolve_after_read(",
+                 "a transient config lock failure preserves active [debug] flags instead of falling back to defaults")
     require_text(_p(ctx, "main_data_paths.cpp"),
                  "debug_log_config_read_cached(",
                  "both [debug] enabled and [debug] verbose share one stamp cache")

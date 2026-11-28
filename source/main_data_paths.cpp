@@ -494,7 +494,13 @@ static GcConfigFileStamp config_file_stamp_win32(const char* path) {
     return stamp;
 }
 
-static void debug_log_config_read_cached(const char* path, bool defaultEnabled,
+static volatile LONG g_serviceDebugConfigRefreshPending = 0;
+
+static bool service_debug_config_refresh_pending() {
+    return InterlockedCompareExchange(&g_serviceDebugConfigRefreshPending, 0, 0) != 0;
+}
+
+static bool debug_log_config_read_cached(const char* path, bool defaultEnabled,
     bool* enabledOut, bool* verboseOut) {
     static SRWLOCK s_lock = SRWLOCK_INIT;
     static GcDebugConfigCache s_cache = {};
@@ -503,7 +509,7 @@ static void debug_log_config_read_cached(const char* path, bool defaultEnabled,
     if (!path || !path[0]) {
         if (enabledOut) *enabledOut = enabled;
         if (verboseOut) *verboseOut = verbose;
-        return;
+        return true;
     }
     const GcConfigFileStamp stamp = config_file_stamp_win32(path);
     AcquireSRWLockShared(&s_lock);
@@ -514,7 +520,7 @@ static void debug_log_config_read_cached(const char* path, bool defaultEnabled,
     }
     ReleaseSRWLockShared(&s_lock);
     if (!hit) {
-        bool storeInCache = !stamp.present;
+        bool readOk = !stamp.present;
         if (stamp.present) {
             HANDLE configMutex = nullptr;
             if (enter_config_storage_lock(&configMutex)) {
@@ -531,18 +537,24 @@ static void debug_log_config_read_cached(const char* path, bool defaultEnabled,
                 enabled = read_int_locked("enabled", defaultEnabled ? 1 : 0) != 0;
                 verbose = read_int_locked("verbose", 0) != 0;
                 leave_config_storage_lock(configMutex);
-                storeInCache = true;
+                readOk = true;
             }
         }
-        if (storeInCache) {
-            AcquireSRWLockExclusive(&s_lock);
-            gc_debug_config_cache_store(&s_cache, path, stamp, defaultEnabled,
-                enabled, verbose);
-            ReleaseSRWLockExclusive(&s_lock);
+        if (!readOk) {
+            return false;
+        }
+        AcquireSRWLockExclusive(&s_lock);
+        gc_debug_config_cache_store(&s_cache, path, stamp, defaultEnabled,
+            enabled, verbose);
+        ReleaseSRWLockExclusive(&s_lock);
+        if (enabled && g_debug_logging) {
+            debug_log("debug log: config stamp changed; loaded [debug] enabled=%d verbose=%d (present=%d)\n",
+                enabled ? 1 : 0, verbose ? 1 : 0, stamp.present ? 1 : 0);
         }
     }
     if (enabledOut) *enabledOut = enabled;
     if (verboseOut) *verboseOut = verbose;
+    return true;
 }
 
 static bool config_file_exists() {
@@ -670,15 +682,23 @@ static void refresh_debug_log_verbose() {
     DWORD n = GetEnvironmentVariableA(APP_DEBUG_ENV, value, ARRAY_COUNT(value));
     bool envVerbose = n > 0 && n < ARRAY_COUNT(value) &&
         gc_log_steady::env_value_requests_verbose(value);
-    bool configVerbose = false;
+    bool configVerbose = g_debug_log_verbose;
+    bool readSucceeded = true;
     if (g_debug_logging && !envVerbose) {
         const bool defaultEnabled = app_is_service_process()
             ? (SERVICE_DEBUG_DEFAULT_ENABLED != 0)
             : (APP_DEBUG_DEFAULT_ENABLED != 0);
-        debug_log_config_read_cached(g_app.configPath, defaultEnabled,
-            nullptr, &configVerbose);
+        readSucceeded = debug_log_config_read_cached(g_app.configPath,
+            defaultEnabled, nullptr, &configVerbose);
+        if (!readSucceeded) {
+            debug_log_on_change("debug log: config lock unavailable while refreshing verbose mode; preserving current state (verbose=%d)\n",
+                g_debug_log_verbose ? 1 : 0);
+        }
     }
-    bool verbose = g_debug_logging && (envVerbose || configVerbose);
+    bool verbose = false;
+    gc_debug_config_resolve_after_read(true, g_debug_logging, envVerbose,
+        readSucceeded, g_debug_logging, configVerbose,
+        g_debug_logging, g_debug_log_verbose, nullptr, &verbose);
     if (verbose == g_debug_log_verbose) return;
     g_debug_log_verbose = verbose;
     debug_log("debug log: per-tick verbose detail %s (env=%d config=%d); steady-state lines otherwise summarize every %llu s\n",
@@ -694,13 +714,25 @@ static void refresh_service_debug_logging_from_config() {
     DWORD n = GetEnvironmentVariableA(APP_DEBUG_ENV, value, ARRAY_COUNT(value));
     bool envVerbose = n > 0 && n < ARRAY_COUNT(value) &&
         gc_log_steady::env_value_requests_verbose(value);
-    bool configEnabled = SERVICE_DEBUG_DEFAULT_ENABLED != 0;
-    bool configVerbose = false;
+    bool configEnabled = g_debug_logging;
+    bool configVerbose = g_debug_log_verbose;
+    bool readSucceeded = true;
     if (gc_debug_config_needs_disk_probe(haveEnv, envEnabled, envVerbose)) {
-        debug_log_config_read_cached(g_app.configPath,
+        readSucceeded = debug_log_config_read_cached(g_app.configPath,
             SERVICE_DEBUG_DEFAULT_ENABLED != 0, &configEnabled, &configVerbose);
     }
-    const bool newDebugLogging = haveEnv ? envEnabled : configEnabled;
+    InterlockedExchange(&g_serviceDebugConfigRefreshPending,
+        readSucceeded ? 0 : 1);
+    if (!readSucceeded) {
+        debug_log_on_change("debug log: config lock unavailable while refreshing [debug]; preserving state (enabled=%d verbose=%d) and retrying\n",
+            g_debug_logging ? 1 : 0, g_debug_log_verbose ? 1 : 0);
+    }
+    bool newDebugLogging = g_debug_logging;
+    bool newVerbose = g_debug_log_verbose;
+    gc_debug_config_resolve_after_read(haveEnv, envEnabled, envVerbose,
+        readSucceeded, configEnabled, configVerbose,
+        g_debug_logging, g_debug_log_verbose,
+        &newDebugLogging, &newVerbose);
     if (newDebugLogging != g_debug_logging) {
         if (!newDebugLogging) {
             debug_log("debug log: disabled by %s (env=%d config=%d)\n",
@@ -717,7 +749,6 @@ static void refresh_service_debug_logging_from_config() {
     } else if (!g_debug_logging) {
         close_debug_log_file();
     }
-    const bool newVerbose = g_debug_logging && (envVerbose || configVerbose);
     if (newVerbose != g_debug_log_verbose) {
         g_debug_log_verbose = newVerbose;
         debug_log("debug log: per-tick verbose detail %s (env=%d config=%d); steady-state lines otherwise summarize every %llu s\n",

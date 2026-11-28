@@ -295,7 +295,9 @@ static void service_execute_checked_request(ServiceRequest* request,
                         set_default_config_path();
                         userPathsChanged = true;
                     }
-                    if (gc_service_pipe_should_refresh_debug_config(request->command, userPathsChanged)) {
+                    if (gc_service_pipe_should_refresh_debug_config(
+                            request->command, userPathsChanged,
+                            service_debug_config_refresh_pending())) {
                         refresh_service_debug_logging_from_config();
                     }
                 } else {

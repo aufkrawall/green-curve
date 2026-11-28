@@ -68,12 +68,32 @@ static inline bool gc_config_path_equal_ascii_ci(const char* a, const char* b) {
 }
 
 // Service pipe gate: steady-state telemetry never touches config.ini once the
-// caller's user paths are already resolved.  Any path/session change or any
-// non-telemetry request (GET_SNAPSHOT on focus/refresh/startup, APPLY, RESET,
-// CLI verbs, update commands) still refreshes through the stamp cache.
+// caller's user paths are already resolved and no prior refresh failed to
+// acquire the config lock.  Any path/session change, pending lock-timeout
+// retry, or non-telemetry request (GET_SNAPSHOT on focus/refresh/startup,
+// APPLY, RESET, CLI verbs, update commands) refreshes through the stamp cache.
 static inline bool gc_service_pipe_should_refresh_debug_config(
-    gc_u32 command, bool userPathsChanged) {
-    return userPathsChanged || command != SERVICE_CMD_GET_TELEMETRY;
+    gc_u32 command, bool userPathsChanged, bool refreshPending = false) {
+    return userPathsChanged || refreshPending ||
+        command != SERVICE_CMD_GET_TELEMETRY;
+}
+
+// Resolve effective [debug] enabled/verbose after a cached or disk read.
+// A transient config lock timeout (readSucceeded == false) must NEVER clobber
+// an active user opt-out (enabled=0) or verbose=1 with defaults: keep the
+// current live flags while still honoring explicit environment overrides.
+static inline void gc_debug_config_resolve_after_read(
+    bool haveEnvEnabled, bool envEnabled, bool envVerbose,
+    bool readSucceeded, bool configEnabled, bool configVerbose,
+    bool currentEnabled, bool currentVerbose,
+    bool* enabledOut, bool* verboseOut) {
+    const bool effectiveEnabled = haveEnvEnabled
+        ? envEnabled
+        : (readSucceeded ? configEnabled : currentEnabled);
+    const bool effectiveVerbose = effectiveEnabled &&
+        (envVerbose || (readSucceeded ? configVerbose : currentVerbose));
+    if (enabledOut) *enabledOut = effectiveEnabled;
+    if (verboseOut) *verboseOut = effectiveVerbose;
 }
 
 // Environment overrides can settle both [debug] flags without touching disk:

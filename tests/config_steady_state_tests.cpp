@@ -10,15 +10,20 @@
 
 int run_config_steady_state_tests() {
     // 14300: Service pipe refresh gate skips steady-state GET_TELEMETRY when
-    // user paths did not change, while refreshing on user/session switches and
-    // on every non-telemetry command.
+    // user paths did not change and no retry is pending, while refreshing on
+    // user/session switches, pending lock-timeout retries, and every
+    // non-telemetry command.
     if (gc_service_pipe_should_refresh_debug_config(
-            SERVICE_CMD_GET_TELEMETRY, false)) {
+            SERVICE_CMD_GET_TELEMETRY, false, false)) {
         return 14300;
     }
     if (!gc_service_pipe_should_refresh_debug_config(
-            SERVICE_CMD_GET_TELEMETRY, true)) {
+            SERVICE_CMD_GET_TELEMETRY, true, false)) {
         return 14301;
+    }
+    if (!gc_service_pipe_should_refresh_debug_config(
+            SERVICE_CMD_GET_TELEMETRY, false, true)) {
+        return 14316;
     }
     const gc_u32 nonTelemetryCommands[] = {
         SERVICE_CMD_PING,
@@ -126,6 +131,33 @@ int run_config_steady_state_tests() {
     if (!gc_config_file_stamp_equal(absent, absentDirty)) return 14315;
     if (gc_config_file_stamp_equal(absent, v1)) return 14315;
     if (!gc_config_file_stamp_equal(v1, v1)) return 14315;
+
+    // 14317-14319: Transient config lock timeout preserves current [debug]
+    // opt-out (enabled=0) and verbose=1 instead of clobbering with defaults,
+    // while still honoring explicit environment overrides.
+    bool effEnabled = true;
+    bool effVerbose = true;
+    // User opted out (currentEnabled=false); lock timeout returns default
+    // configEnabled=true, configVerbose=false -> must keep enabled=false!
+    gc_debug_config_resolve_after_read(false, false, false,
+        false, true, false, false, false, &effEnabled, &effVerbose);
+    if (effEnabled || effVerbose) return 14317;
+    // User enabled verbose (currentEnabled=true, currentVerbose=true); lock
+    // timeout returns configVerbose=false -> must keep both true!
+    gc_debug_config_resolve_after_read(false, false, false,
+        false, true, false, true, true, &effEnabled, &effVerbose);
+    if (!effEnabled || !effVerbose) return 14318;
+    // Env override still wins even when disk read fails.
+    gc_debug_config_resolve_after_read(true, false, false,
+        false, true, true, true, true, &effEnabled, &effVerbose);
+    if (effEnabled || effVerbose) return 14319;
+    gc_debug_config_resolve_after_read(true, true, true,
+        false, false, false, false, false, &effEnabled, &effVerbose);
+    if (!effEnabled || !effVerbose) return 14319;
+    // Once a subsequent retry succeeds, disk values apply cleanly.
+    gc_debug_config_resolve_after_read(false, false, false,
+        true, false, false, true, true, &effEnabled, &effVerbose);
+    if (effEnabled || effVerbose) return 14319;
 
     return 0;
 }
