@@ -279,6 +279,11 @@ static bool profile_slot_is_saved_cached(int slot) {
     return g_app.profileSlotSavedCache[slot - 1];
 }
 
+static bool start_on_logon_enabled_cached() {
+    ensure_profile_slot_cache();
+    return g_app.startOnLogonPresentCache;
+}
+
 static int selected_profile_slot_from_combo() {
     int selected = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
     if (selected < 0) selected = CONFIG_DEFAULT_SLOT - 1;

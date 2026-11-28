@@ -39,4 +39,17 @@ static void update_profile_action_buttons();
 static void update_background_service_controls();
 static bool maybe_confirm_profile_load_replace(int slot);
 static void sync_applied_profile_from_service_metadata();
+#ifndef GREEN_CURVE_SERVICE_BINARY
+static bool g_appliedProfileSyncVerifyDiskStamp = true;
+struct AppliedProfileSyncStampScope {
+    bool previous;
+    explicit AppliedProfileSyncStampScope(bool verifyDiskStamp)
+        : previous(g_appliedProfileSyncVerifyDiskStamp) {
+        g_appliedProfileSyncVerifyDiskStamp = verifyDiskStamp;
+    }
+    ~AppliedProfileSyncStampScope() {
+        g_appliedProfileSyncVerifyDiskStamp = previous;
+    }
+};
+#endif
 static void maybe_load_app_launch_profile_to_gui();

@@ -218,7 +218,7 @@ static bool save_configured_gpu_selection_atomic(unsigned int index,
 static bool validate_configured_gpu_selection_for_client(
     char* err, size_t errSize);
 #ifndef GREEN_CURVE_SERVICE_BINARY
-static void maintain_configured_gpu_selection_record();
+static void maintain_configured_gpu_selection_record(bool fromFullSync = true);
 #endif
 static void populate_gpu_selector();
 static void apply_gpu_selection_from_ui();

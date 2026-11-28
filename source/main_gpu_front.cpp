@@ -197,6 +197,7 @@ void invalidate_tray_profile_cache() {
     // calls this), so it rides along rather than needing a second hook that a
     // future write path could forget.
     g_app.profileSlotCacheValid = false;
+    g_app.localConfigWriteGeneration++;
 }
 static void clear_last_operation_details() {
     g_lastOperationIntent[0] = 0;

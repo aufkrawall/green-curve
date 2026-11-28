@@ -183,6 +183,29 @@ def check_steady_state_lines(ctx, require_text):
                  "a stopped runtime attributes the manual fan to itself")
     if "treating it as external policy" in _read(_p(ctx, "main_fan_runtime.cpp")):
         _fail("main_fan_runtime.cpp: runtime stop misattributes its own manual fan")
+    # Steady-state telemetry (1-3 s) must not lock the cross-session config
+    # mutex or stat config.ini on every tick in either process.
+    require_text(_p(ctx, "main_service_pipe.cpp"),
+                 "gc_service_pipe_should_refresh_debug_config(request->command, userPathsChanged)",
+                 "the service pipe skips steady-state telemetry [debug] config refreshes")
+    require_text(_p(ctx, "main_data_paths.cpp"),
+                 "debug_log_config_read_cached(",
+                 "both [debug] enabled and [debug] verbose share one stamp cache")
+    ctx.forbid_text(_p(ctx, "main_data_paths.cpp"),
+                    'get_config_int(g_app.configPath, "debug", "enabled"',
+                    "[debug] enabled is no longer read uncached on every request")
+    ctx.require_order_in_operation(
+        _p(ctx, "gpu_selection_config.cpp"),
+        "static void maintain_configured_gpu_selection_record(",
+        "gc_gui_gpu_selection_maintenance_should_check(",
+        'config_section_has_keys(g_app.configPath, "gpu")',
+        "GPU selection maintenance checks settled state before reading config.ini")
+    require_text(_p(ctx, "config_profiles_ui.cpp"),
+                 "gc_applied_profile_sync_should_probe_disk(",
+                 "applied-profile sync skips disk stats on unchanged telemetry ticks")
+    require_text(_p(ctx, "ui_theme_button.cpp"),
+                 "start_on_logon_enabled_cached()",
+                 "painting the start-on-logon checkbox reads the in-memory cache")
 
 
 def check_cli_log_appends(ctx, require_text):

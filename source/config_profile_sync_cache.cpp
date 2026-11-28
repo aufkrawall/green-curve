@@ -14,6 +14,7 @@ struct AppliedProfileSyncCache {
     DWORD configSizeHigh;
     DWORD configSizeLow;
     FILETIME configLastWrite;
+    gc_u64 localConfigGeneration;
     DesiredSettings activeDesired;
     // Which VF points are populated, as a bitmask.
     //
@@ -40,6 +41,33 @@ static void applied_profile_config_stamp(const char* path, bool* presentOut,
     *sizeLowOut = present ? data.nFileSizeLow : 0;
     *lastWriteOut = present ? data.ftLastWriteTime : FILETIME{};
 }
+
+#ifndef GREEN_CURVE_SERVICE_BINARY
+static bool applied_profile_sync_in_memory_inputs_unchanged() {
+    if (!g_appliedProfileSyncCache.valid) return false;
+    const AppliedProfileSyncCache& cached = g_appliedProfileSyncCache;
+    if (cached.authoritative != g_app.serviceSnapshotAuthoritative ||
+        cached.activeDesiredValid != g_app.serviceActiveDesiredValid ||
+        cached.source != g_app.serviceActiveProfileSource ||
+        cached.sourceSlot != g_app.serviceActiveProfileSlot ||
+        cached.localConfigGeneration != g_app.localConfigWriteGeneration ||
+        _stricmp(cached.configPath, g_app.configPath) != 0) {
+        return false;
+    }
+    gc_u64 populatedMask[VF_NUM_POINTS / 64] = {};
+    if (g_app.loaded) {
+        for (int i = 0; i < VF_NUM_POINTS; ++i) {
+            if (g_app.curve[i].freq_kHz == 0) continue;
+            populatedMask[i / 64] |= (gc_u64)1 << (i % 64);
+        }
+    }
+    if (memcmp(cached.populatedMask, populatedMask, sizeof(populatedMask)) != 0) {
+        return false;
+    }
+    return !g_app.serviceActiveDesiredValid ||
+        desired_settings_equal(&cached.activeDesired, &g_app.serviceActiveDesired);
+}
+#endif
 
 static bool applied_profile_sync_inputs_unchanged(
     const AppliedProfileSyncCache& current) {
@@ -75,6 +103,7 @@ static AppliedProfileSyncCache current_applied_profile_sync_inputs() {
     applied_profile_config_stamp(current.configPath, &current.configPresent,
         &current.configSizeHigh, &current.configSizeLow,
         &current.configLastWrite);
+    current.localConfigGeneration = g_app.localConfigWriteGeneration;
     if (current.activeDesiredValid) {
         current.activeDesired = g_app.serviceActiveDesired;
     }

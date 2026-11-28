@@ -289,11 +289,15 @@ static void service_execute_checked_request(ServiceRequest* request,
             // process-global user/config paths as part of its authorization.
             if (request->command != SERVICE_CMD_LOGON_HANDOFF) {
                 char userPathErr[256] = {};
-                if (resolve_service_user_data_paths(caller->sessionId, userPathErr, sizeof(userPathErr))) {
+                bool userPathsChanged = false;
+                if (resolve_service_user_data_paths(caller->sessionId, userPathErr, sizeof(userPathErr), &userPathsChanged)) {
                     if (!g_app.configPath[0]) {
                         set_default_config_path();
+                        userPathsChanged = true;
                     }
-                    refresh_service_debug_logging_from_config();
+                    if (gc_service_pipe_should_refresh_debug_config(request->command, userPathsChanged)) {
+                        refresh_service_debug_logging_from_config();
+                    }
                 } else {
                     debug_log("service_pipe_server: failed to resolve user data paths: %s\n", userPathErr);
                 }

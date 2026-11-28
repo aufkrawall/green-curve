@@ -173,35 +173,61 @@ static bool validate_configured_gpu_selection_for_client(
 //    from an identical adapter. An older build reading the refreshed record
 //    finds its exact location again.
 // An unresolved record is never rewritten: it waits for an explicit selection.
-// Runs on every service snapshot, but reads the record only when the adapter
-// list differs from the one it last settled: locations change at boot or on a
-// driver re-enumeration, never between two snapshots of the same adapters.  A
-// record whose rewrite failed is not settled, so the next snapshot tries
-// again; that failure is logged once per distinct reason.
-static void maintain_configured_gpu_selection_record() {
+// Runs on every service snapshot, but checks its settled adapter list BEFORE
+// touching config.ini: locations change at boot or on a driver re-enumeration,
+// never between two steady-state telemetry snapshots of the same adapters.  A
+// full sync (startup, window activation, manual Refresh, reconnect) also
+// re-checks if config.ini's file stamp changed externally.  A record whose
+// auto-save or rewrite failed stays unsettled so the next snapshot retries;
+// that failure is logged once per distinct reason.
+static void maintain_configured_gpu_selection_record(bool fromFullSync) {
     if (!g_app.configPath[0] || g_app.adapterCount == 0) return;
-    char err[256] = {};
-    if (!config_section_has_keys(g_app.configPath, "gpu")) {
-        if (g_app.adapterCount == 1 && g_app.adapters[0].valid &&
-            !save_configured_gpu_selection_atomic(0, err, sizeof(err))) {
-            debug_log_on_change("gpu selection: auto-save failed for single adapter: %s\n",
-                err[0] ? err : "unknown error");
-        }
-        return;
-    }
+    static bool settledValid = false;
+    static char settledConfigPath[MAX_PATH] = {};
+    static GcConfigFileStamp settledConfigStamp = {};
     static GpuAdapterInfo settledAdapters[MAX_GPU_ADAPTERS];
-    static unsigned int settledAdapterCount;
-    bool adaptersChanged = settledAdapterCount != g_app.adapterCount;
+    static unsigned int settledAdapterCount = 0;
+
+    const bool sameConfigPath = settledValid &&
+        _stricmp(settledConfigPath, g_app.configPath) == 0;
+    bool adaptersChanged = !settledValid || settledAdapterCount != g_app.adapterCount;
     for (unsigned int i = 0; !adaptersChanged && i < g_app.adapterCount &&
             i < MAX_GPU_ADAPTERS; ++i) {
         adaptersChanged = !gpu_adapter_info_equal(&settledAdapters[i],
             &g_app.adapters[i]);
     }
-    if (!adaptersChanged) return;
+    bool stampChanged = false;
+    if (settledValid && sameConfigPath && !adaptersChanged && fromFullSync) {
+        const GcConfigFileStamp currentStamp = config_file_stamp_win32(g_app.configPath);
+        stampChanged = !gc_config_file_stamp_equal(settledConfigStamp, currentStamp);
+    }
+    if (!gc_gui_gpu_selection_maintenance_should_check(
+            settledValid, sameConfigPath, adaptersChanged,
+            fromFullSync, stampChanged)) {
+        return;
+    }
+
     auto settle = [&]() {
         memcpy(settledAdapters, g_app.adapters, sizeof(settledAdapters));
         settledAdapterCount = g_app.adapterCount;
+        StringCchCopyA(settledConfigPath, ARRAY_COUNT(settledConfigPath),
+            g_app.configPath);
+        settledConfigStamp = config_file_stamp_win32(g_app.configPath);
+        settledValid = true;
     };
+
+    char err[256] = {};
+    if (!config_section_has_keys(g_app.configPath, "gpu")) {
+        if (g_app.adapterCount == 1 && g_app.adapters[0].valid) {
+            if (!save_configured_gpu_selection_atomic(0, err, sizeof(err))) {
+                debug_log_on_change("gpu selection: auto-save failed for single adapter: %s\n",
+                    err[0] ? err : "unknown error");
+                return;
+            }
+        }
+        settle();
+        return;
+    }
     ConfiguredGpuSelection configured = {};
     unsigned int resolved = 0;
     if (!load_configured_gpu_selection(g_app.configPath, &configured,

@@ -5,6 +5,34 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: Zero steady-state `config.ini` I/O on Windows telemetry
+
+- Audited why both `greencurve.exe` and `greencurve-service.exe` touched
+  `config.ini` every 1-3 s on Windows (Linux already had zero telemetry config
+  I/O): (1) `service_config_debug_logging_enabled()` read `[debug] enabled`
+  uncached under `Global\GreenCurveConfigMutex-v2` on every pipe request while
+  only `[debug] verbose` had a file-stamp cache; (2)
+  `maintain_configured_gpu_selection_record()` called
+  `config_section_has_keys(g_app.configPath, "gpu")` before its `adaptersChanged`
+  early exit; (3) `sync_applied_profile_from_service_metadata()` called
+  `GetFileAttributesExW` on every telemetry tick; and (4)
+  `themed_checkbox_checked_state()` read `is_start_on_logon_enabled()` from disk
+  on `WM_DRAWITEM`.
+- Added host-neutral `source/config_steady_state_policy.h` and wired all four
+  fixes: gated service pipe `[debug]` refreshes to session/path switches and
+  non-telemetry commands with one unified stamp-cached `[debug]` reader
+  (`debug_log_config_read_cached()`, short-circuiting on env overrides and
+  absent files); moved settled-state checks before `config_section_has_keys()`
+  in `gpu_selection_config.cpp` (re-checking on full sync only when the file
+  stamp changed externally); added `g_app.localConfigWriteGeneration` and
+  `AppliedProfileSyncStampScope(fromFullSync)` so telemetry ticks validate
+  applied-profile ownership purely in memory while full syncs, profile actions,
+  and opening the tray/Profiles menu still check disk for external edits; and
+  switched `START_ON_LOGON_CHECK_ID` painting to `start_on_logon_enabled_cached()`.
+- Covered by `tests/config_steady_state_tests.cpp` (`14300-14315`) and source
+  gates in `tools/log_gates.py`. See `windows-architecture.md` and
+  `debug-tools.md`.
+
 ## 2026-11-28: CI fixes for Windows MSYS gpg and openSUSE container hermeticity
 
 - **Windows `RpmSigningTests`:** Git's MSYS2 `gpg.exe` / `gpgv.exe` / `gpgconf.exe`

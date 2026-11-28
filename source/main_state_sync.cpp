@@ -610,8 +610,8 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot,
 #ifndef GREEN_CURVE_SERVICE_BINARY
     if (selectedGpuChanged)
         gui_mutation_advance_gpu_epoch("service snapshot GPU identity", !fromFullSync);
-    sync_applied_profile_from_service_metadata();
-    maintain_configured_gpu_selection_record();
+    { AppliedProfileSyncStampScope verifyDiskStamp(fromFullSync); sync_applied_profile_from_service_metadata(); }
+    maintain_configured_gpu_selection_record(fromFullSync);
 #endif
 }
 

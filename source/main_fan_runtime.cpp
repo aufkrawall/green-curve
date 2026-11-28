@@ -362,6 +362,11 @@ static void show_main_window_from_tray() {
 static HMENU build_auto_profile_menu() {
     HMENU sub = CreatePopupMenu();
     if (!sub) return nullptr;
+#ifndef GREEN_CURVE_SERVICE_BINARY
+    // Verify config.ini on disk when the user opens the tray or Profiles menu
+    // so external edits are reflected even if the main window stayed hidden.
+    sync_applied_profile_from_service_metadata();
+#endif
     int activeSlot = auto_profile_active_slot();
     for (int s = 1; s <= CONFIG_NUM_SLOTS; s++) {
         bool saved = is_profile_slot_saved(g_app.configPath, s);

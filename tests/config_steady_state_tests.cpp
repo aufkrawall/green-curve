@@ -1,0 +1,131 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-License-Identifier: MIT
+//
+// Regression tests for steady-state config.ini read/probe gates
+// (config_steady_state_policy.h), assertion codes 14300-14315.
+
+#include "config_steady_state_policy.h"
+
+#include <string.h>
+
+int run_config_steady_state_tests() {
+    // 14300: Service pipe refresh gate skips steady-state GET_TELEMETRY when
+    // user paths did not change, while refreshing on user/session switches and
+    // on every non-telemetry command.
+    if (gc_service_pipe_should_refresh_debug_config(
+            SERVICE_CMD_GET_TELEMETRY, false)) {
+        return 14300;
+    }
+    if (!gc_service_pipe_should_refresh_debug_config(
+            SERVICE_CMD_GET_TELEMETRY, true)) {
+        return 14301;
+    }
+    const gc_u32 nonTelemetryCommands[] = {
+        SERVICE_CMD_PING,
+        SERVICE_CMD_GET_SNAPSHOT,
+        SERVICE_CMD_APPLY,
+        SERVICE_CMD_RESET,
+        SERVICE_CMD_GET_ACTIVE_DESIRED,
+        SERVICE_CMD_CAPTURE_CURRENT,
+        SERVICE_CMD_WRITE_LOG_SNAPSHOT,
+        SERVICE_CMD_WRITE_JSON_SNAPSHOT,
+        SERVICE_CMD_WRITE_PROBE_REPORT,
+        SERVICE_CMD_GET_UPDATE_STATE,
+    };
+    for (gc_u32 cmd : nonTelemetryCommands) {
+        if (!gc_service_pipe_should_refresh_debug_config(cmd, false)) {
+            return 14302;
+        }
+    }
+
+    // 14303: Env override short-circuit avoids disk probes when the environment
+    // already settles both [debug] flags.
+    if (gc_debug_config_needs_disk_probe(true, false, false)) return 14303;
+    if (gc_debug_config_needs_disk_probe(true, false, true)) return 14303;
+    if (gc_debug_config_needs_disk_probe(true, true, true)) return 14303;
+    if (!gc_debug_config_needs_disk_probe(true, true, false)) return 14304;
+    if (!gc_debug_config_needs_disk_probe(false, false, false)) return 14304;
+    if (!gc_debug_config_needs_disk_probe(false, false, true)) return 14304;
+
+    // 14305-14309: Unified [debug] stamp cache covers both enabled & verbose,
+    // handles absent files without repeating misses, compares paths case-
+    // insensitively on ASCII, invalidates on size/mtime/defaultEnabled change,
+    // and refuses oversized paths rather than caching truncated aliases.
+    GcDebugConfigCache cache = {};
+    const GcConfigFileStamp absent = { false, 0, 0, 0, 0 };
+    const GcConfigFileStamp v1 = { true, 0, 420, 1000, 2000 };
+    const GcConfigFileStamp v2Size = { true, 0, 421, 1000, 2000 };
+    const GcConfigFileStamp v2Time = { true, 0, 420, 1001, 2000 };
+
+    if (gc_debug_config_cache_hit(&cache, "C:\\Users\\a\\config.ini", absent, true)) {
+        return 14305;
+    }
+    gc_debug_config_cache_store(&cache, "C:\\Users\\a\\config.ini", absent, true, true, false);
+    if (!gc_debug_config_cache_hit(&cache, "c:\\users\\A\\CONFIG.INI", absent, true) ||
+        !cache.enabled || cache.verbose) {
+        return 14306;
+    }
+    // Creating config.ini flips present=false -> true and misses the cache.
+    if (gc_debug_config_cache_hit(&cache, "C:\\Users\\a\\config.ini", v1, true)) {
+        return 14307;
+    }
+    gc_debug_config_cache_store(&cache, "C:\\Users\\a\\config.ini", v1, true, false, true);
+    if (!gc_debug_config_cache_hit(&cache, "C:\\Users\\a\\config.ini", v1, true) ||
+        cache.enabled || !cache.verbose) {
+        return 14307;
+    }
+    // Any stamp, path, or defaultEnabled change misses the cache.
+    if (gc_debug_config_cache_hit(&cache, "C:\\Users\\a\\config.ini", v2Size, true) ||
+        gc_debug_config_cache_hit(&cache, "C:\\Users\\a\\config.ini", v2Time, true) ||
+        gc_debug_config_cache_hit(&cache, "C:\\Users\\b\\config.ini", v1, true) ||
+        gc_debug_config_cache_hit(&cache, "C:\\Users\\a\\config.ini", v1, false)) {
+        return 14308;
+    }
+    // Oversized path invalidates rather than caching a truncated prefix.
+    char hugePath[GC_DEBUG_CONFIG_CACHE_PATH_MAX + 8];
+    memset(hugePath, 'x', sizeof(hugePath) - 1);
+    hugePath[sizeof(hugePath) - 1] = '\0';
+    gc_debug_config_cache_store(&cache, hugePath, v1, true, true, false);
+    if (cache.valid || gc_debug_config_cache_hit(&cache, hugePath, v1, true)) {
+        return 14309;
+    }
+
+    // 14310-14312: GUI [gpu] selection maintenance checks before disk I/O.
+    // Settled telemetry never probes config.ini; unsettled / adapter change /
+    // configPath change always checks; full sync re-checks only when the stamp
+    // moved externally.
+    if (gc_gui_gpu_selection_maintenance_should_check(true, true, false, false, false)) {
+        return 14310;
+    }
+    if (gc_gui_gpu_selection_maintenance_should_check(true, true, false, false, true)) {
+        return 14310;
+    }
+    if (gc_gui_gpu_selection_maintenance_should_check(true, true, false, true, false)) {
+        return 14311;
+    }
+    if (!gc_gui_gpu_selection_maintenance_should_check(true, true, false, true, true)) {
+        return 14311;
+    }
+    if (!gc_gui_gpu_selection_maintenance_should_check(false, true, false, false, false) ||
+        !gc_gui_gpu_selection_maintenance_should_check(true, false, false, false, false) ||
+        !gc_gui_gpu_selection_maintenance_should_check(true, true, true, false, false)) {
+        return 14312;
+    }
+
+    // 14313-14314: GUI applied-profile sync skips disk stat on telemetry ticks
+    // when every in-memory input matches, but probes disk on any in-memory
+    // change (including local config writes) or explicit verifyDiskStamp=true
+    // (full sync, tray menu, profile actions).
+    if (gc_applied_profile_sync_should_probe_disk(false, true)) return 14313;
+    if (!gc_applied_profile_sync_should_probe_disk(false, false)) return 14314;
+    if (!gc_applied_profile_sync_should_probe_disk(true, true)) return 14314;
+    if (!gc_applied_profile_sync_should_probe_disk(true, false)) return 14314;
+
+    // 14315: Stamp equality ignores size/mtime fields when both are absent.
+    const GcConfigFileStamp absentDirty = { false, 99, 88, 77, 66 };
+    if (!gc_config_file_stamp_equal(absent, absentDirty)) return 14315;
+    if (gc_config_file_stamp_equal(absent, v1)) return 14315;
+    if (!gc_config_file_stamp_equal(v1, v1)) return 14315;
+
+    return 0;
+}

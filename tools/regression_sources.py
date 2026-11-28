@@ -22,6 +22,7 @@ REGRESSION_SOURCES = (
     'review_followup_tests.cpp',
     'wer_local_dumps_tests.cpp',
     'diagnostics_followup_tests.cpp',
+    'config_steady_state_tests.cpp',
     'gpu_family_wire_tests.cpp',
     'gpu_cmp_policy_tests.cpp',
     'gpu_support_warning_tests.cpp',

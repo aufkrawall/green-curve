@@ -93,7 +93,11 @@ static UiCheckboxState* themed_checkbox_painted_state(UINT id) {
 
 static bool themed_checkbox_checked_state(UINT id, HWND hwnd) {
     (void)hwnd;
-    if (id == START_ON_LOGON_CHECK_ID) return is_start_on_logon_enabled(g_app.configPath);
+#ifdef GREEN_CURVE_SERVICE_BINARY
+    if (id == START_ON_LOGON_CHECK_ID) return false;
+#else
+    if (id == START_ON_LOGON_CHECK_ID) return start_on_logon_enabled_cached();
+#endif
     if (id == SERVICE_ENABLE_CHECK_ID) return g_app.backgroundServiceInstalled;
     if (id == SHARE_ALL_USERS_CHECK_ID) {
         // Checked when the selected profile slot is BOTH published to the shared

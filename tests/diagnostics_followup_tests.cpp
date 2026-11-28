@@ -585,8 +585,10 @@ int run_gpu_support_warning_tests();
 int run_update_release_030_tests();
 int run_update_release_031_tests();
 int run_update_release_032_tests();
+int run_config_steady_state_tests();
 
 int run_diagnostics_followup_tests() {
+    if (int r = run_config_steady_state_tests()) return r;
     if (int r = run_gpu_family_wire_tests()) return r;
     if (int r = run_gpu_cmp_policy_tests()) return r;
     if (int r = run_gpu_support_warning_tests()) return r;

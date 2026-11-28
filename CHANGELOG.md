@@ -49,6 +49,7 @@ Profiles can be captured, checked and moved between platforms; curves, cooling a
 - **Profile matching:** exact values are stored and the active profile is recognized reliably.
 - **Linux switching:** flattened and locked curves are verified; curve-only edits keep memory.
 - **Laptop GPUs:** system-managed fans and power limits are accepted.
+- **Idle disk activity:** background monitoring on Windows no longer reads the configuration file every second.
 
 ### Fixed
 

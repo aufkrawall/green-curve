@@ -139,6 +139,8 @@
 // Per-tick log lines: log state changes at once, steady repeats as a periodic
 // summary, full per-tick detail only with g_debug_log_verbose.
 #include "debug_log_steady_state_policy.h"
+// Steady-state config.ini read/probe gates (service telemetry + GUI sync).
+#include "config_steady_state_policy.h"
 // What the GUI says about a new automatic-restore lockout, and the apply's
 // recovery sentence the service matches to fill the v29 failure record.
 #include "auto_apply_failure_notice_policy.h"
@@ -443,6 +445,11 @@ struct AppData {
     // storage lock.  Invalidated on any config write, next to the tray cache.
     bool profileSlotSavedCache[CONFIG_NUM_SLOTS];
     bool profileSlotCacheValid;
+    // Monotonic counter bumped by invalidate_tray_profile_cache() whenever
+    // this process writes config.ini (or changes configPath), so steady-state
+    // telemetry can validate AppliedProfileSyncCache in memory without statting
+    // config.ini on every 1-3 s tick.
+    gc_u64 localConfigWriteGeneration;
     // Whether each service-dependent assignment currently holds a non-default
     // value. Such a control stays enabled even with no service so the assignment
     // can be cleared -- a logon assignment keeps a Task Scheduler entry alive,

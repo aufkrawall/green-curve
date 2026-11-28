@@ -1,5 +1,51 @@
 # Windows Architecture
 
+## Steady-state config.ini telemetry isolation (2026-11-28)
+
+Source anchors: `source/config_steady_state_policy.h`,
+`source/main_service_pipe.cpp`, `source/main_data_paths.cpp`,
+`source/gpu_selection_config.cpp`, `source/config_profile_sync_cache.cpp`,
+`source/config_profiles_ui.cpp`, `source/config_profiles_gui_state.cpp`,
+`source/main_state_sync.cpp`, `source/main_fan_runtime.cpp`,
+`source/ui_theme_button.cpp`, `tools/log_gates.py`,
+`tests/config_steady_state_tests.cpp` (`14300-14315`).
+
+Routine 1-3 s GPU telemetry (`SERVICE_CMD_GET_TELEMETRY` and its GUI snapshot
+adoption) must perform zero `config.ini` reads, zero `GetFileAttributesExW`
+metadata queries, and zero acquisitions of `Global\GreenCurveConfigMutex-v2`:
+
+- **Service pipe `[debug]` refresh:** `main_service_pipe.cpp` gates
+  `refresh_service_debug_logging_from_config()` on
+  `gc_service_pipe_should_refresh_debug_config(command, userPathsChanged)`,
+  skipping steady-state `SERVICE_CMD_GET_TELEMETRY` when user paths did not
+  change while still refreshing on startup, session/user switches, and every
+  non-telemetry command (`GET_SNAPSHOT` on window activation / Refresh / CLI,
+  `APPLY`, `RESET`, etc.). Both `[debug] enabled` and `[debug] verbose` share
+  one `SRWLOCK`-protected `GcDebugConfigCache` (`debug_log_config_read_cached()`),
+  short-circuiting when environment overrides already settle both flags and
+  caching absent files without touching the cross-session mutex.
+- **GUI `[gpu]` maintenance:** `maintain_configured_gpu_selection_record(fromFullSync)`
+  evaluates `gc_gui_gpu_selection_maintenance_should_check()` BEFORE calling
+  `config_section_has_keys(g_app.configPath, "gpu")`. Once settled for the
+  current `(configPath, adapter list)`, telemetry ticks return immediately;
+  full syncs re-check only if `config.ini`'s stamp moved externally; failed
+  single-adapter auto-saves or location refreshes remain unsettled so the next
+  snapshot retries.
+- **GUI applied-profile ownership sync:** `invalidate_tray_profile_cache()`
+  increments `g_app.localConfigWriteGeneration`, and `apply_service_snapshot_to_app()`
+  wraps `sync_applied_profile_from_service_metadata()` in
+  `AppliedProfileSyncStampScope(fromFullSync)`. On telemetry ticks
+  (`fromFullSync == false`), `gc_applied_profile_sync_should_probe_disk()`
+  short-circuits in memory whenever service metadata, active intent, VF
+  topology, config path, and `localConfigWriteGeneration` are unchanged. Full
+  syncs (`WM_ACTIVATEAPP`, manual Refresh, reconnect), profile actions, and
+  opening the tray/Profiles menu (`build_auto_profile_menu()`) still verify
+  the on-disk stamp so external edits stay visible.
+- **Owner-draw checkbox paint:** `START_ON_LOGON_CHECK_ID` reads
+  `start_on_logon_enabled_cached()` (`g_app.startOnLogonPresentCache`,
+  invalidated on every config write and `refresh_profile_controls_from_config()`)
+  instead of calling `is_start_on_logon_enabled()` on `WM_DRAWITEM`.
+
 ## NVML binding identity (2026-11-21)
 
 `source/main_runtime_nvml_selection.h` compares candidate PCI identity to an

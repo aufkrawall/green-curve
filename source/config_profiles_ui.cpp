@@ -215,6 +215,7 @@ static void handle_share_all_users_toggle() {
 
 static void refresh_profile_controls_from_config() {
     if (!g_app.hProfileCombo) return;
+    g_app.profileSlotCacheValid = false;
     refresh_machine_logon_slot_cache();
     int selectedSlot = get_config_int(g_app.configPath, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
     int appLaunchSlot = get_config_int(g_app.configPath, "profiles", "app_launch_slot", 0);
@@ -591,8 +592,16 @@ static bool select_logon_combo_item_by_data(HWND combo, LRESULT itemData) {
 // applied_slot=0 and the tray tick vanished until the next Apply.  See
 // applied_profile_indicator_policy.h.
 static void sync_applied_profile_from_service_metadata() {
+    if (!gc_applied_profile_sync_should_probe_disk(
+            g_appliedProfileSyncVerifyDiskStamp,
+            applied_profile_sync_in_memory_inputs_unchanged())) {
+        return;
+    }
     AppliedProfileSyncCache inputs = current_applied_profile_sync_inputs();
-    if (applied_profile_sync_inputs_unchanged(inputs)) return;
+    if (applied_profile_sync_inputs_unchanged(inputs)) {
+        g_appliedProfileSyncCache.localConfigGeneration = g_app.localConfigWriteGeneration;
+        return;
+    }
 
     // The tray tooltip names the active profile from applied_slot plus the
     // service's own view of it. A config write invalidates the tray cache on its
@@ -701,6 +710,7 @@ static void sync_applied_profile_from_service_metadata() {
     int persisted = get_config_int(g_app.configPath, "profiles", "applied_slot", 0);
     if (persisted < 0 || persisted > CONFIG_NUM_SLOTS) persisted = 0;
     if (persisted == appliedSlot) {
+        inputs.localConfigGeneration = g_app.localConfigWriteGeneration;
         g_appliedProfileSyncCache = inputs;
         return;
     }
