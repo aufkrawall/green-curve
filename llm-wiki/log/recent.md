@@ -5,6 +5,27 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: Stable 0.32.0 released with build attestations, signed updater manifests, and Arch digest repinning
+
+- Released `0.32.0` from `00a2e8683ea2b82550faa2acf5c0aa8bdec73be6` after all
+  5 CI jobs passed (`46146378842`). Initial release run `46148598203` failed
+  pre-publish at `gpg --import` (`no valid OpenPGP data found`); re-uploading
+  raw LF bytes to `RPM_SIGNING_KEY` resolved it and `release.yml` run
+  `46148965991` succeeded, signing RPMs, attesting all artifacts, creating
+  signed tag `0.32.0`, publishing 30 assets, and posting `Provenance &
+  Attestation` `success`.
+- `tools/release_post.py` (`--dry-run` then live) verified both installers'
+  checksums and exact-commit `release.yml` provenance, signed floorless v1 and
+  v2 manifests (expires `2026-12-28 13:27 UTC`), uploaded all 4 updater assets
+  (34 total), and passed anonymous delivery and `CHANGELOG.md` body checks.
+- C++ `update_manifest_policy.h` harness against the live manifest confirmed
+  `AVAILABLE` (`2`) for every public release `0.23`..`0.31.0` on both `x64`
+  and `arm64`, `UP_TO_DATE` (`1`) for `0.32`/`0.32.0`, and `REJECTED` (`0`) for
+  `0.32.1`.
+- Repinned `packaging/arch/PKGBUILD` and `packaging/arch/PKGBUILD.bin` remote
+  SHA-256 digests from the published `0.32.0` release assets and updated
+  `llm-wiki/updates.md` and `llm-wiki/build.md`.
+
 ## 2026-11-28: Isolated two-hop updater release simulation for 0.32.0
 
 - Autonomously executed the prescribed isolated two-hop updater simulation

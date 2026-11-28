@@ -1174,6 +1174,21 @@ The PE load-config `Security Cookie` field is zero because MinGW uses `__stack_c
 
 ## Last Verified
 
+- 2026-11-28: Stable 0.32.0 release workflow `46148965991` built the full
+  Windows/Linux x64/ARM64 matrix on `ubuntu-24.04` from
+  `00a2e8683ea2b82550faa2acf5c0aa8bdec73be6` with pinned hermetic toolchains,
+  signed RPM packages, and passed native-distro container install checks.
+  Exact-commit `--gates`, `--test`, `--fuzz --fuzz-runs 5000`, clean-tree,
+  and artifact checks passed. All 14 program packages, `greencurve-packages.asc`,
+  and `greencurve-0.32.0-toolchain.json` carry verified exact-commit
+  `release.yml` build-provenance attestations; the commit's
+  `Provenance & Attestation` status (`success`) and signed tag `0.32.0`
+  (`valid`) are verified. CI `46146378842` (all 5 jobs) and local
+  `python build.py --test` / `python build.py` passed. Published x64/ARM64
+  setup assets and `0.32.0` Linux archives matched sidecar SHA-256 digests, and
+  `packaging/arch/PKGBUILD` / `PKGBUILD.bin` remote digests were repinned from
+  the published `0.32.0` release assets.
+
 - 2026-10-22: Stable 0.30.0 release workflow `39832643745` built the full
   Windows/Linux x64/ARM64 matrix from `bba83d97bb4e11da517855f1d9076088cd7a7a35` with pinned hermetic tools.
   Exact-commit tests, fuzzing, source/security gates, clean-tree and artifact

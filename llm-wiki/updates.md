@@ -1708,6 +1708,34 @@ be started, the closed GUIs are not relaunched.
 
 ## Last verified
 
+- 2026-11-28 (**0.32.0 released**): stable tag `0.32.0` targets
+  `00a2e8683ea2b82550faa2acf5c0aa8bdec73be6` (SSH-signed, verified `valid`);
+  CI `46146378842` (all 5 jobs) and release workflow `46148965991` passed. All
+  34 release assets are published (30 workflow assets including signed RPMs and
+  attestations, plus 4 offline-signed updater assets). `tools/release_post.py`
+  verified both GitHub-built installers' `.sha256` digests and exact-commit
+  `release.yml` provenance before signing the floorless v1 manifest (`475`
+  bytes, SHA-256 `d6216a43515c91643ed9c4f324579dbaf5c626d06ee6d92b428048425c528c3e`,
+  `.sig` `86405d083a43630da7403a02d109a61ec40f1c6781ff343f4a2b3bf0523a18f3`) and
+  v2 freshness envelope (`524` bytes, SHA-256
+  `6ea9a98efcd744d7f75cd06a8104ef76b1739b72e02600e7e424a6559044c3a0`, `.sig`
+  `2f0f64a6ad25ff9c0e34199b0ae33c388238ad6927031e4d7e4b8a6d503bade1`, issued
+  `1795872420`, expires `1798464420` / `2026-12-28 13:27 UTC`, verified via
+  `tools/freshness_watch.py`).
+  Published x64 setup: size `2747209`, SHA-256
+  `8bd9bd5456359b9a2de788bee5184778cbc02a0cad1f2994b3bf91748b3b47e4`.
+  Published ARM64 setup: size `4054345`, SHA-256
+  `5de471c80d47eb84a9c9a451237970db1585e167a56114a92375ae34ffe319d6`.
+  Anonymous delivery checks through `releases/latest/download` verified both
+  signatures, exact byte equality, both installer sizes/hashes, allowlisted
+  `release-assets.githubusercontent.com` redirects, and exact `CHANGELOG.md`
+  body parity. The C++ `update_manifest_policy.h` harness against the live
+  fetched manifest returned `AVAILABLE` (`2`) for every public release
+  `0.23`..`0.31.0` (all spellings) on both `x64` and `arm64`, `UP_TO_DATE` (`1`)
+  for `0.32`/`0.32.0`, and `REJECTED` (`0`) for `0.32.1`. Prior to release, the
+  live 2-hop GUI simulation (`0.31.0` -> `0.32.0` -> `0.32.1`) passed both
+  upgrades with 572/572 active settings parity (`0` diffs).
+
 - 2026-11-22 (**0.31.0 freshness renewed**): the documented dry run followed
   by the live `tools/release_post.py --renew-freshness` run replaced only the
   two version-independent v2 assets. The local and remote tags both resolved

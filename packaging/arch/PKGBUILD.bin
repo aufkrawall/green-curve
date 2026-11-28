@@ -27,7 +27,7 @@ source_aarch64=("$url/releases/download/$pkgver/greencurve-$pkgver-linux-arm64.t
 # tag or account then produced a package that installed silently as root with
 # nothing local to notice.  These are the digests the release pipeline already
 # emits as the .sha256 sidecar beside each archive -- bump them with the version.
-# Remote digests verified for release: 0.30.0
+# Remote digests verified for release: 0.32.0
 # Repin every remote digest from the published release bytes, then set this
 # line to pkgver. Until then makepkg rejects the pkgver downloads.
 sha256sums=(
@@ -37,8 +37,8 @@ sha256sums=(
     '70df9616dbba8cd76600dca962432813f2a4562175a8f322cc0c103a760b82e0'
     'b834cc7fc3a5614a65b55f2d1c49c73927bf7d512b7ebb4fb9a02c1408ef19d1'
 )
-sha256sums_x86_64=('1f3100936f43a57abb06e92dd7afe51467904e8054dafac0e16500caaa06cea2')
-sha256sums_aarch64=('c89df724fc82302188d28a9b70994408a1d8ee39528d0021399757119e9f5877')
+sha256sums_x86_64=('2d3bc2595d08a9f1d08622cf6ff51dccf77cca64bd68001815ad57e291604476')
+sha256sums_aarch64=('c00c2291f3ac8bdef99e21c2edc76058978d31df188737780fbef262ee616255')
 
 package() {
     local _gc_arch
