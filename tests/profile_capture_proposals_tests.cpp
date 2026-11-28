@@ -289,21 +289,25 @@ int run_profile_capture_proposals_tests() {
         auto stockLevel = makeLevelTopCurve(0, 0);
         if (!profile_capture_prepare_proposals(*stockLevel, {}, *proposals, why, sizeof(why)) ||
             proposals->flatten.recognized || proposals->flatten.selectable() ||
-            proposals->suggested != PROFILE_CAPTURE_EXACT ||
-            profile_capture_summary(*stockLevel, proposals.get()).curve.text != "Stock curve (no changes)")
+            proposals->suggested != PROFILE_CAPTURE_EXACT)
+            return 9716;
+        const auto stockSummary = profile_capture_summary(*stockLevel, proposals.get());
+        if (stockSummary.curve.text != "Stock curve (no changes)" ||
+            stockSummary.core.available || stockSummary.core.text != "No separate offset (stock)")
             return 9716;
 
         // 9717: +100 MHz uniform global offset on all 127 points -> not a flatten,
-        // summary shows "+100 MHz on 127 points", Core clock shows unresolved stock,
-        // and Exact saves all 82 writable points with +100 MHz captured offset.
+        // summary shows "+100 MHz on all 127 points", Core clock clarifies it is
+        // included in Curve, and Exact saves all 82 writable points with +100 MHz.
         auto uniformGlobal = makeLevelTopCurve(100000000LL, 100000000LL);
         if (!profile_capture_prepare_proposals(*uniformGlobal, {}, *proposals, why, sizeof(why)) ||
             proposals->flatten.recognized || proposals->flatten.selectable() ||
             proposals->suggested != PROFILE_CAPTURE_EXACT)
             return 9717;
         const auto uniformSummary = profile_capture_summary(*uniformGlobal, proposals.get());
-        if (uniformSummary.curve.text != "+100 MHz on 127 points" ||
-            uniformSummary.core.available || uniformSummary.core.text != "No offset (stock)")
+        if (uniformSummary.curve.text != "+100 MHz on all 127 points" ||
+            uniformSummary.core.available ||
+            uniformSummary.core.text != "No separate offset (included in Curve)")
             return 9717;
         auto savedUniform = std::make_unique<DesiredSettings>();
         if (!profile_capture_record(*uniformGlobal, *proposals, PROFILE_CAPTURE_EXACT,

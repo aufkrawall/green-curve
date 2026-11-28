@@ -133,8 +133,10 @@ Current behavior:
   `vf_recognize_programmed_flat_tail()` so stock level tops (0 offset or a uniform
   global VF offset, such as the top two voltage points on RTX 5070) are never
   classified as flattened curves; `profile_capture_summary()` then reports uniform
-  VF offsets as `+<N> MHz on <M> points` while `Core clock` stays unresolved/disabled
-  when scalar/VF composition is unknown (`CAPTURE_COMPOSITION_UNRESOLVED`). The
+  VF offsets as `+<N> MHz on all <M> points` (or `+<N> MHz on <K> points` when
+  selective) while `Core clock` reports `No separate offset (included in Curve)`
+  (or `No separate offset (stock)`) and stays disabled when scalar/VF composition
+  is unknown (`CAPTURE_COMPOSITION_UNRESOLVED`). The
   curve choice lists only selectable representations, suggested first. Tier 3 pin
   detection is a secondary button shown only when observable; a suspected pin is
   confirmed at the sampled frequency and preselected. Save builds the record with

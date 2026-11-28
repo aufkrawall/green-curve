@@ -5,6 +5,11 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: Clarify capture summary text for uniform VF offsets and unresolved zero core scalar
+
+- Updated `profile_capture_summary()` (`source/profile_summary.h`) so a uniform offset across all populated VF points reads `+<N> MHz on all <M> points`, and an unresolved `0` NVML scalar (`CAPTURE_COMPOSITION_UNRESOLVED`) reads `No separate offset (included in Curve)` when paired with a uniform nonzero curve offset or `No separate offset (stock)` otherwise.
+- Updated regression cases `9716-9717` (`tests/profile_capture_proposals_tests.cpp`) and `llm-wiki/config-profiles.md` / `llm-wiki/testing.md`.
+
 ## 2026-11-28: Fix AppData lock-index zero-initialization breaking live GPU offset detection at startup
 
 - Reported after updating on RTX 5070 with an external `+100 MHz` global offset: `Import current GPU settings` now showed `+100 MHz on 127 points`, but the freshly restarted service reported `0 MHz` in the main GUI (`detect_live_selective` logged `tail=ci0(owned,plateau=0)` and `uniform offset=0 kHz`).

@@ -117,12 +117,15 @@ static inline std::string profile_capture_lock_text(const HardwareCaptureObserva
 static inline ProfileCaptureSummary profile_capture_summary(const HardwareCaptureObservation& o,
     const ProfileCaptureProposals* proposals) {
     ProfileCaptureSummary s;
+    bool uniformNonzeroCurve = false;
     if (profile_capture_domain_read(o, PROFILE_DOMAIN_VF_CURVE)) {
         s.curve.available = true;
-        int changed = 0; long long first = 0; bool uniform = true;
+        int changed = 0; int validOffsets = 0; long long first = 0; bool uniform = true;
         for (gc_u32 i = 0; i < o.pointCount && i < 128; ++i) {
             const auto& p = o.points[i];
-            if (!p.offsetValid || !p.offsetHz) continue;
+            if (!p.offsetValid) continue;
+            ++validOffsets;
+            if (!p.offsetHz) continue;
             if (!changed) first = p.offsetHz; else if (p.offsetHz != first) uniform = false;
             ++changed;
         }
@@ -147,7 +150,11 @@ static inline ProfileCaptureSummary profile_capture_summary(const HardwareCaptur
         } else if (!changed) {
             s.curve.text = "Stock curve (no changes)";
         } else if (uniform) {
-            s.curve.text = profile_summary_mhz(first) + " MHz on " + std::to_string(changed) + " points";
+            uniformNonzeroCurve = true;
+            const bool allPoints = o.pointCount > 1 && (gc_u32)changed == o.pointCount && changed == validOffsets;
+            s.curve.text = profile_summary_mhz(first) +
+                (allPoints ? " MHz on all " : " MHz on ") + std::to_string(changed) +
+                (changed == 1 ? " point" : " points");
         } else {
             s.curve.text = "Custom curve, " + std::to_string(changed) + " points changed";
         }
@@ -163,8 +170,9 @@ static inline ProfileCaptureSummary profile_capture_summary(const HardwareCaptur
     // is unknown, so it cannot be saved on its own. Not "unreadable".
     if (!s.core.available && o.graphics.valid &&
         profile_capture_domain_status(o, PROFILE_DOMAIN_GRAPHICS_OFFSET) == CAPTURE_COMPOSITION_UNRESOLVED)
-        s.core.text = o.graphics.value ? profile_summary_mhz(o.graphics.value) + " MHz, cannot be saved separately on this GPU" :
-            "No offset (stock)";
+        s.core.text = o.graphics.value
+            ? profile_summary_mhz(o.graphics.value) + " MHz, cannot be saved separately on this GPU"
+            : (uniformNonzeroCurve ? "No separate offset (included in Curve)" : "No separate offset (stock)");
     s.memory = profile_capture_scalar_row(o, PROFILE_DOMAIN_MEMORY, o.memory);
     s.power.available = profile_capture_domain_read(o, PROFILE_DOMAIN_POWER) && o.power.currentValid && o.power.defaultValid &&
         o.power.defaultMw > 0;
