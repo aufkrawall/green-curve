@@ -95,6 +95,10 @@ static void close_nvapi() {
     g_app.selectedGpuExplicit = false;
     memset(g_app.adapters, 0, sizeof(g_app.adapters));
     g_app.adapterCount = 0;
+    EnterCriticalSection(&g_appLock);  // the v40 summary reads it under g_appLock
+    memset(g_app.adapterNvmlUuidIdentity, 0, sizeof(g_app.adapterNvmlUuidIdentity));
+    memset(g_app.adapterNvmlUuid, 0, sizeof(g_app.adapterNvmlUuid));
+    LeaveCriticalSection(&g_appLock);
     // Clear GPU handle and hardware-init guards so the next call to
     // hardware_initialize() fully re-enumerates GPUs instead of returning
     // early with stale handles from the previous driver session.
@@ -147,6 +151,10 @@ static void reset_gpu_runtime_selection() {
     g_app.gpuName[0] = 0;
     g_app.adapterCount = 0;
     memset(g_app.adapters, 0, sizeof(g_app.adapters));
+    EnterCriticalSection(&g_appLock);  // the v40 summary reads it under g_appLock
+    memset(g_app.adapterNvmlUuidIdentity, 0, sizeof(g_app.adapterNvmlUuidIdentity));
+    memset(g_app.adapterNvmlUuid, 0, sizeof(g_app.adapterNvmlUuid));
+    LeaveCriticalSection(&g_appLock);
     memset(&g_app.selectedGpu, 0, sizeof(g_app.selectedGpu));
     service_clear_lock_markers(&g_app);
     g_app.observedLockValid = false;

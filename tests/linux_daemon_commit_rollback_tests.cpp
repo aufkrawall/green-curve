@@ -9,7 +9,8 @@
 // Codes 14630-14636 and 14639-14640 drive the same handler
 // with routed requests (service_gpu_route.h): only the full state read may
 // move the daemon, and any other command naming a GPU it is not serving is
-// refused before its handler runs.
+// refused before its handler runs. Codes 14730-14733 check the adapter
+// summaries the stamp publishes.
 #if !defined(_WIN32)
 #include <ctime>
 #include <new>
@@ -359,6 +360,26 @@ static int run_linux_daemon_route_cases(LinuxGpuController& ctl, ServiceRequest&
     if (routed(SERVICE_CMD_GET_SNAPSHOT, other) != SERVICE_STATUS_OK ||
         fixture.selectCalls != 1) return 14636;
 
+    // 14730-14733: the v40 adapter summaries the production stamp publishes.
+    // Both UUIDs, the runtime summary on the served card only, agreeing with
+    // the envelope; the card holding the intent marked ACTIVE.
+    fixture = DaemonFixture{};
+    fixture_controller(ctl);
+    ctl.gpu.adapterCount = 2;
+    ctl.gpu.adapters[1] = other;
+    ctl.gpu.adapterUuids[0] = linux_gpu_uuid_parse("GPU-aaaaaaaa-1111-2222-3333-444444444444");
+    ctl.gpu.adapterUuids[1] = linux_gpu_uuid_parse("GPU-bbbbbbbb-1111-2222-3333-444444444444");
+    ctl.hasActiveDesired = true;
+    ctl.activeTarget = served;
+    if (routed(SERVICE_CMD_GET_SNAPSHOT, served) != SERVICE_STATUS_OK) return 14730;
+    const ServiceAdapterSummary* summary = resp.snapshot.adapterSummaries;
+    if (!(summary[0].flags & SERVICE_ADAPTER_UUID) || !(summary[1].flags & SERVICE_ADAPTER_UUID) ||
+        summary[0].uuid.bytes[0] != 0xaa || summary[1].uuid.bytes[0] != 0xbb) return 14731;
+    if (!(summary[0].flags & SERVICE_ADAPTER_RUNTIME) || !(summary[0].flags & SERVICE_ADAPTER_ACTIVE) ||
+        summary[1].flags != SERVICE_ADAPTER_UUID ||
+        summary[0].gpuPhase != resp.state.gpuPhase) return 14732;
+    if (!validate_service_state_envelope_for_ipc(&resp.state, &resp.snapshot, &resp.desired,
+                                                 &resp.controlState)) return 14733;
     return 0;
 }
 

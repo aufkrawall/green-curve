@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "nvml_adapter_uuid_policy.h"  // the v40 adapter UUID inventory
+
 struct ImmutablePublishedServiceState {
     ServiceStateEnvelope state;
     ServiceSnapshot snapshot;
@@ -51,6 +53,12 @@ static void service_publish_gpu_phase(ServiceGpuPhase phase,
     g_servicePublishedState.state.stateRevision = revision;
     g_servicePublishedState.state.gpuGeneration = generation;
     g_servicePublishedState.state.gpuPhase = (gc_u32)phase;
+    // The selected card's v40 summary carries the same phase as its envelope.
+    ServiceSnapshot& published = g_servicePublishedState.snapshot;
+    if (published.selectedAdapterIndex < published.adapterCount &&
+        published.selectedAdapterIndex < MAX_GPU_ADAPTERS &&
+        (published.adapterSummaries[published.selectedAdapterIndex].flags & SERVICE_ADAPTER_RUNTIME))
+        published.adapterSummaries[published.selectedAdapterIndex].gpuPhase = (gc_u32)phase;
     if (phase != SERVICE_GPU_PHASE_READY) {
         g_servicePublishedState.state.validSections &=
             SERVICE_STATE_SECTION_ADAPTER_IDENTITY |
@@ -118,6 +126,44 @@ static ServiceGpuPhase service_effective_gpu_phase_locked() {
 // Build one complete version locally, then atomically replace the immutable
 // published version. Readers copy exactly one version; no response can combine
 // topology, controls, intent, or phase from different publications.
+// Protocol v40 adapter summaries (service_adapter_summary.h), stamped with the
+// final phase of this same publication. The service runs the selected GPU;
+// each adapter's UUID comes from the identity-bound NVML inventory
+// (nvml_refresh_adapter_uuids). Caller holds g_appLock.
+static void service_publish_adapter_summaries_locked(ServiceSnapshot& snapshot, gc_u32 phase) {
+    const unsigned int count = snapshot.adapterCount < MAX_GPU_ADAPTERS
+        ? snapshot.adapterCount : MAX_GPU_ADAPTERS;
+    ServiceGpuUuid uuids[MAX_GPU_ADAPTERS] = {};
+    const int served = g_app.selectedGpuIdentityValid && snapshot.selectedAdapterIndex < count
+        ? (int)snapshot.selectedAdapterIndex : -1;
+    for (unsigned int i = 0; i < count; ++i)
+        if (nvml_adapter_uuid_identity_equal(g_app.adapterNvmlUuidIdentity[i], snapshot.adapters[i]))
+            memcpy(uuids[i].bytes, g_app.adapterNvmlUuid[i], sizeof(uuids[i].bytes));
+    ServiceAdapterSummaryInputs in = {};
+    in.uuids = uuids;
+    in.count = count;
+    // The owner identity may predate NVML's location enrichment of the
+    // selected adapter: match by PCI identity (BDF only where both carry it),
+    // and only a unique match counts.
+    in.ownerIndex = -1;
+    for (unsigned int i = 0; g_serviceHasActiveDesired && i < count; ++i)
+        if (gpu_adapter_has_same_pci_identity(&g_serviceActiveDesiredGpu, &snapshot.adapters[i]))
+            in.ownerIndex = in.ownerIndex == -1 ? (int)i : -2;
+    if (in.ownerIndex < 0) in.ownerIndex = -1;
+    in.servedIndex = served;
+    // Not published on Windows yet: its crash handback worker is not tied to a
+    // summary entry, so a clear flag here does not prove nothing is pending.
+    in.fanHandbackIndex = -1;
+    in.fanOwned = snapshot.fanCurveRuntimeActive || snapshot.fanFixedRuntimeActive;
+    in.fanFault = snapshot.fanFault.kind != SERVICE_FAN_FAULT_NONE;
+    in.gpuPhase = phase;
+    in.healthReason = snapshot.health.reason;
+    in.autoRestoreLockoutReason = snapshot.autoRestoreLockoutReason;
+    in.activeProfileSource = snapshot.activeProfileSource;
+    in.activeProfileSlot = snapshot.activeProfileSlot;
+    service_adapter_summaries_build(in, snapshot.adapterSummaries);
+}
+
 static void populate_service_state_response(ServiceResponse* response) {
     if (!response) return;
     DWORD snapshotLockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
@@ -198,6 +244,7 @@ static void populate_service_state_response(ServiceResponse* response) {
     if ((state.validSections & SERVICE_STATE_SECTION_CURVE_TOPOLOGY) != 0)
         state.topologySignature =
             service_snapshot_topology_signature(&candidate.snapshot);
+    service_publish_adapter_summaries_locked(candidate.snapshot, state.gpuPhase);
     state.stateRevision = (gc_u64)InterlockedIncrement64(
         &g_serviceStateRevision);
     g_servicePublishedState = candidate;

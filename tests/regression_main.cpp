@@ -1135,6 +1135,7 @@ int run_linux_daemon_commit_rollback_tests();
 int run_linux_curve_correction_runtime_tests();
 int run_linux_read_request_tests();
 int run_service_gpu_route_tests();
+int run_service_adapter_summary_tests();
 // A polled ClkDomains reader logs a repeated refusal once
 // (tests/xbar_read_log_tests.cpp, 7730-7739).
 int run_xbar_read_log_tests();
@@ -2977,6 +2978,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int routeFailure = run_service_gpu_route_tests()) {
         fprintf(stderr, "GPU route regression failed: %d\n", routeFailure);
         return routeFailure;
+    }
+    if (int summaryFailure = run_service_adapter_summary_tests()) {
+        fprintf(stderr, "adapter summary regression failed: %d\n", summaryFailure);
+        return summaryFailure;
     }
     if (int xbarLogFailure = run_xbar_read_log_tests()) return xbarLogFailure;
     if (int domainDumpFailure = run_clk_domain_dump_tests()) return domainDumpFailure;
@@ -4877,8 +4882,8 @@ static int run_all_tests(int argc, char** argv) {
         if (sizeof(ServiceRequest) != 5096 ||
             sizeof(ControlState) != 188 ||
             sizeof(DesiredSettings) != 4488 ||
-            sizeof(ServiceSnapshot) != 4568 ||
-            sizeof(ServiceResponse) != 19696) return 4521;
+            sizeof(ServiceSnapshot) != 4888 ||
+            sizeof(ServiceResponse) != 20016) return 4521;
         if (offsetof(ServiceRequest, expectedServiceInstanceId) <=
             offsetof(ServiceRequest, operationId) ||
             offsetof(ServiceResponse, state) <=

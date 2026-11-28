@@ -89,7 +89,8 @@ enum {
     // v37 binds passive review to both named clock APIs and outgoing ownership.
     // v38 identifies the selected topology of a bound startup profile.
     // v39 appends ServiceFanFault (a fan the runtime handed back) to ServiceSnapshot.
-    // v40 gives targetGpu one routing meaning for every command (service_gpu_route.h).
+    // v40 gives targetGpu one routing meaning for every command (service_gpu_route.h)
+    // and appends each adapter's UUID and summary to ServiceSnapshot.
     SERVICE_PROTOCOL_VERSION = 40,
 };
 
@@ -541,6 +542,7 @@ static_assert(offsetof(ServiceGpuHealth, capabilityDomainsPacked) == 20,
 
 #include "service_auto_apply_failure.h"  // v29 snapshot record
 #include "service_fan_fault.h"           // v39 snapshot record
+#include "service_adapter_summary.h"     // v40 per-adapter UUID and summary
 
 struct ServiceSnapshot {
     gc_bool8 initialized;
@@ -638,6 +640,7 @@ struct ServiceSnapshot {
     ServiceGpuHealth health;
     ServiceAutoApplyFailure autoApplyFailure;  // v29
     ServiceFanFault fanFault;                  // v39
+    ServiceAdapterSummary adapterSummaries[MAX_GPU_ADAPTERS];  // v40, parallel to adapters[]
 };
 
 struct ServiceRequest {
@@ -697,7 +700,7 @@ static_assert(sizeof(DesiredSettings) == 4488,
               "DesiredSettingsSchema<N> with a widening migration, then bump "
               "LINUX_DAEMON_RECORD_VERSION, LINUX_DAEMON_STARTUP_VERSION and "
               "SERVICE_ACTIVE_DESIRED_VERSION (see desired_settings_schema.h)");
-static_assert(sizeof(ServiceSnapshot) == 4568,
+static_assert(sizeof(ServiceSnapshot) == 4888,
               "ServiceSnapshot changed without an IPC protocol-version bump");
 static_assert(sizeof(ServiceRequest) == 5096,
               "ServiceRequest changed without an IPC protocol-version bump");
@@ -770,7 +773,7 @@ struct ServiceResponse {
     char message[512];
     HardwareCaptureObservation capture;
 };
-static_assert(sizeof(ServiceResponse) == 19696,
+static_assert(sizeof(ServiceResponse) == 20016,
               "ServiceResponse changed without an IPC protocol-version bump");
 
 static_assert(offsetof(ServiceResponse, magic) == 0, "ServiceResponse.magic must be at offset 0");

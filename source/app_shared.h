@@ -548,6 +548,12 @@ struct AppData {
 
     bool nvmlReady;
     nvmlDevice_t nvmlDevice;
+    // Each adapter's NVML UUID (binary; all zero = none) and the identity it
+    // was matched against (nvml_adapter_uuid_policy.h). Rebuilt when NVML is
+    // matched by PCI identity, cleared with the adapter cache, published only
+    // for an adapter that is still that card. Written and read under g_appLock.
+    unsigned char adapterNvmlUuid[MAX_GPU_ADAPTERS][16];
+    GpuAdapterInfo adapterNvmlUuidIdentity[MAX_GPU_ADAPTERS];
 
     VFCurvePoint curve[VF_NUM_POINTS];
     int freqOffsets[VF_NUM_POINTS];

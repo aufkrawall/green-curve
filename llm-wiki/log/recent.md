@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: Adapter UUIDs and per-adapter summaries (protocol v40)
+
+- `ServiceSnapshot.adapterSummaries[]` (`service_adapter_summary.h`) carries
+  each adapter's NVML UUID (binary, withheld when two adapters share one), the
+  card holding Green Curve settings, and the runtime summary (phase, health,
+  lockout, uncertainty, fan ownership/fault) of the card the service runs;
+  see [multi-gpu.md](../multi-gpu.md). Snapshot 4888 B, response 20016 B.
+- Linux publishes every adapter's UUID from discovery; Windows reads the
+  selected GPU's UUID via an optional `nvmlDeviceGetUUID` after the PCI match.
+- Windows builds an identity-bound UUID inventory for every adapter
+  (`nvml_adapter_uuid_policy.h`); a pending fan handback is marked on its card.
+- Tests `14700-14729` (UUID text, builder, NVML matcher, every validator rule)
+  and `14730-14733` (the production daemon stamp).
+
 ## 2026-11-27: One GPU route for every command (protocol v40)
 
 - `ServiceRequest.targetGpu` now has one meaning on both platforms: the GPU a

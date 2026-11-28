@@ -154,7 +154,7 @@ void set_message(char* out, size_t size, const char* format, ...) {
 }
 #include "main_runtime_nvml_selection.h"
 
-int nvml_binding_tests() {
+int nvml_binding_cases() {
     constexpr unsigned int model = 0x2F0410DEu;
     g_app = {};
     g_app.adapterCount = 2;
@@ -199,6 +199,15 @@ int nvml_binding_tests() {
     if (!nvml_select_device_for_selected_gpu(detail, sizeof(detail)) ||
         g_app.selectedNvmlIndex != 0 || g_app.selectedGpuOrdinalFallback) return 7105;
     return 0;
+}
+
+// A PCI-identity match refreshes the adapter UUIDs under g_appLock, which the
+// harness, unlike the app, does not initialize at startup.
+int nvml_binding_tests() {
+    InitializeCriticalSection(&g_appLock);
+    const int result = nvml_binding_cases();
+    DeleteCriticalSection(&g_appLock);
+    return result;
 }
 #endif
 

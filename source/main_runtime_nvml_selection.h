@@ -1,6 +1,55 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "nvml_adapter_uuid_policy.h"
+
+// Every adapter's physical UUID, for the v40 adapter summary. Rebuilt only
+// once NVML is matched by PCI identity (never on an ordinal fallback), from
+// NVML devices that each match exactly one adapter. An absent getter or a
+// failed query leaves an adapter without one; it is never a prerequisite.
+static void nvml_refresh_adapter_uuids() {
+    NvmlUuidCandidate candidates[64] = {};
+    unsigned int nvmlCount = 0, read = 0, unidentified = 0;
+    if (g_nvml_api.getUuid && g_nvml_api.getPciInfo && g_nvml_api.getCount &&
+        g_nvml_api.getCount(&nvmlCount) == NVML_SUCCESS) {
+        for (unsigned int i = 0; i < nvmlCount && i < 64; ++i) {
+            nvmlDevice_t device = nullptr;
+            nvmlPciInfo_t pci = {};
+            if (g_nvml_api.getHandleByIndex(i, &device) != NVML_SUCCESS || !device ||
+                g_nvml_api.getPciInfo(device, &pci) != NVML_SUCCESS || pci.pciDeviceId == 0) {
+                ++unidentified;
+                continue;
+            }
+            // Every PCI-identified device takes part, with or without a UUID:
+            // dropping one could turn an ambiguous match into a wrong one.
+            NvmlUuidCandidate& candidate = candidates[read++];
+            candidate.pciValid = pci.pciDeviceId != 0;
+            candidate.deviceId = pci.pciDeviceId;
+            candidate.subSystemId = pci.pciSubSystemId;
+            candidate.bus = pci.bus;
+            candidate.device = pci.device;
+            char text[96] = {};
+            if (g_nvml_api.getUuid(device, text, sizeof(text)) == NVML_SUCCESS && memchr(text, 0, sizeof(text)))
+                service_gpu_uuid_parse(text, &candidate.uuid);
+        }
+    }
+    // A device whose identity could not be read could be any adapter's.
+    if (unidentified || nvmlCount > 64) read = 0;
+    EnterCriticalSection(&g_appLock);
+    const unsigned int count = g_app.adapterCount < MAX_GPU_ADAPTERS ? g_app.adapterCount : MAX_GPU_ADAPTERS;
+    ServiceGpuUuid uuids[MAX_GPU_ADAPTERS] = {};
+    const unsigned int assigned = nvml_adapter_uuid_assign(g_app.adapters, count, candidates, read, uuids);
+    memset(g_app.adapterNvmlUuid, 0, sizeof(g_app.adapterNvmlUuid));
+    memset(g_app.adapterNvmlUuidIdentity, 0, sizeof(g_app.adapterNvmlUuidIdentity));
+    for (unsigned int i = 0; i < count; ++i) {
+        if (!service_gpu_uuid_present(uuids[i])) continue;
+        memcpy(g_app.adapterNvmlUuid[i], uuids[i].bytes, sizeof(uuids[i].bytes));
+        g_app.adapterNvmlUuidIdentity[i] = g_app.adapters[i];
+    }
+    LeaveCriticalSection(&g_appLock);
+    debug_log("nvml_select_device: adapter UUIDs assigned=%u of %u adapters (nvml identified=%u unidentified=%u reported=%u%s)\n",
+        assigned, count, read, unidentified, nvmlCount, g_nvml_api.getUuid ? "" : ", getter absent");
+}
 
 // Compare every candidate to the same NvAPI identity. Enrich the selection
 // only after a unique match has been established.
@@ -76,6 +125,7 @@ static bool nvml_select_device_for_selected_gpu(char* detail, size_t detailSize)
                 adapter.pciFunction = matchedIdentity.pciFunction;
             }
             g_app.selectedGpuOrdinalFallback = false;
+            nvml_refresh_adapter_uuids();
             debug_log("nvml_select_device: matched NVAPI index %u to NVML index %u by PCI identity\n",
                 g_app.selectedGpuIndex, matchedIndex);
             return true;

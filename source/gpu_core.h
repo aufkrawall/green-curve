@@ -722,6 +722,7 @@ typedef nvmlReturn_t (*nvmlDeviceSetPowerManagementLimit_t)(nvmlDevice_t, unsign
 typedef nvmlReturn_t (*nvmlDeviceGetClockOffsets_t)(nvmlDevice_t, nvmlClockOffset_t*);
 typedef nvmlReturn_t (*nvmlDeviceSetClockOffsets_t)(nvmlDevice_t, nvmlClockOffset_t*);
 typedef nvmlReturn_t (*nvmlDeviceGetPerformanceState_t)(nvmlDevice_t, unsigned int*);
+typedef nvmlReturn_t (*nvmlDeviceGetUUID_t)(nvmlDevice_t, char*, unsigned int);
 typedef nvmlReturn_t (*nvmlDeviceGetArchitecture_t)(nvmlDevice_t, unsigned int*);
 typedef nvmlReturn_t (*nvmlDeviceGetGpcClkVfOffset_t)(nvmlDevice_t, int*);
 typedef nvmlReturn_t (*nvmlDeviceGetMemClkVfOffset_t)(nvmlDevice_t, int*);
@@ -780,6 +781,7 @@ struct NvmlApi {
     nvmlDeviceGetClockOffsets_t getClockOffsets;
     nvmlDeviceSetClockOffsets_t setClockOffsets;
     nvmlDeviceGetPerformanceState_t getPerformanceState;
+    nvmlDeviceGetUUID_t getUuid;  // optional; publishes the selected GPU's UUID (v40)
     nvmlDeviceGetArchitecture_t getArchitecture;
     nvmlDeviceGetGpcClkVfOffset_t getGpcClkVfOffset;
     nvmlDeviceGetMemClkVfOffset_t getMemClkVfOffset;

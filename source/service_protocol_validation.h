@@ -413,6 +413,8 @@ static inline bool validate_service_state_envelope_for_ipc(
         snapshot->autoRestoreLockoutReason >
             SERVICE_AUTO_RESTORE_LOCKOUT_MAX ||
         snapshot->health.reason > SERVICE_GPU_HEALTH_STATE_UNCERTAIN ||
+        service_adapter_summaries_reject_reason(snapshot->adapterSummaries, snapshot->adapterCount,
+            snapshot->selectedAdapterIndex, state->gpuPhase, snapshot->health.reason) ||
         snapshot->health.architectureSource >
             SERVICE_GPU_ARCH_SOURCE_FUTURE_GUESS ||
         (snapshot->health.availableMutationDomains &
@@ -673,6 +675,7 @@ static inline bool service_snapshot_is_zero(const ServiceSnapshot& snapshot) {
     if (!service_scalar_array_is_zero(snapshot.autoApplyFailure.reserved) ||
         !service_scalar_array_is_zero(snapshot.autoApplyFailure.detail)) return false;
     if (!service_fan_fault_is_zero(snapshot.fanFault)) return false;
+    if (!service_adapter_summaries_are_zero(snapshot.adapterSummaries)) return false;
     return service_gpu_health_is_zero(snapshot.health);
 }
 
