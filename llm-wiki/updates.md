@@ -1278,10 +1278,13 @@ Two things this must get right or it proves nothing:
   after the simulation then kept the hop-2 version (`0.29.1`) as its mark and
   reported the public `0.29.0` as "the update channel is offering an older
   release" on every check. Do not reuse a simulated version number for a real
-  release. The complete 2-hop simulation was run live again on 2026-10-28 for
+  release. The complete 2-hop simulation was run live on 2026-10-28 for
   candidate 0.31.0 (0.30.0 baseline -> 0.31.0 candidate hop 1 -> 0.31.1 hop 2 ->
   normal client restored), with all 334 settings fields matching across all
-  stages and teardown restoring the client watermark cleanly.
+  stages and teardown restoring the client watermark cleanly, and again on
+  2026-11-28 for candidate 0.32.0 (0.31.0 baseline -> 0.32.0 candidate hop 1 ->
+  0.32.1 hop 2 -> real 0.32.0 restored) via live GUI Updates dialog clicks with
+  all 572 settings fields matching (`0` diffs) across both hops and teardown.
 
   The seen-version editor preserves unrelated bytes, original CR/LF endings
   and an unterminated final line. `init` records the original `[updates]` layout

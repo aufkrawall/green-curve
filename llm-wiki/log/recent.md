@@ -5,6 +5,35 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: Isolated two-hop updater release simulation for 0.32.0
+
+- Autonomously executed the prescribed isolated two-hop updater simulation
+  (`update-procedure.md` Section 10, `tools/simulate_release.py`) for candidate
+  0.32.0 against throwaway test repository `aufkrawall/green-curve-update-test`
+  using the offline simulation key.
+- Baseline 0.31.0 was built from git tag `0.31.0` repointed to the test repo,
+  installed silently, and verified on the active GPU configuration (572 exported
+  fields: +475 MHz selective curve offset, 2957 MHz flatten at ci 76, +3000 MHz
+  memory, 85% power, XBAR/SYS/VIDEO offsets, and custom fan curve). Pre-Hop 1
+  Update dialog check returned `"no published update manifest was found"`.
+- Hop 1 published candidate 0.32.0 (`HEAD`) to the test channel; driven through
+  the live `0.31.0` GUI Updates dialog (`Check now` -> `Install update` ->
+  `Yes`), the client verified the v2 freshness envelope, staged and installed
+  `0.32.0`, relaunched the GUI, and replayed `pending-update-restore.ini` with
+  all 572 exported settings fields matching pre-simulation `0.32.0` (`0` diffs;
+  the expected 102 tail `point76..point126_offset_khz` `-1000000 -> -2500000`
+  floor expansion vs `0.31.0` confirmed).
+- Hop 2 published follow-up patch `0.32.1` to the test channel; driven through
+  the newly upgraded `0.32.0` GUI Updates dialog, the client verified, installed,
+  relaunched `0.32.1`, and replayed settings with 572/572 parity (`0` diffs),
+  confirming updater non-regression across protocol v29 -> v39.
+- Teardown deleted test releases/tags (`0.32.0`, `0.32.1`) from
+  `aufkrawall/green-curve-update-test`, reverted repo visibility to `private`,
+  and restored `highest_seen_version` back to `0.31.0` with service-stopped
+  settings carry-over. Reinstalled production-channel `0.32.0` locally with
+  572/572 settings parity and invalidated simulation cache removed. Evidence
+  archived under `dist/test-simulation/20261128-bc9c073/`.
+
 ## 2026-11-28: Clarify capture summary text for uniform VF offsets and unresolved zero core scalar
 
 - Updated `profile_capture_summary()` (`source/profile_summary.h`) so a uniform offset across all populated VF points reads `+<N> MHz on all <M> points`, and an unresolved `0` NVML scalar (`CAPTURE_COMPOSITION_UNRESOLVED`) reads `No separate offset (included in Curve)` when paired with a uniform nonzero curve offset or `No separate offset (stock)` otherwise.
