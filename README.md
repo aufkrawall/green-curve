@@ -90,7 +90,7 @@ Green Curve requires Python 3.10+ to build. The build script automatically downl
 python build.py
 ```
 
-Running `python build.py` builds the release matrix under `dist/`, packaging release archives (`.7z` on Windows, `.tar.xz` on Linux), standalone setup installers (`greencurve-<version>-windows-<arch>-setup.exe`), and Arch Linux packages (`greencurve-<version>-1-arch-<arch>.pkg.tar.zst`).
+Running `python build.py` builds the release matrix under `dist/`, packaging release archives (`.7z` on Windows, `.tar.xz` on Linux), standalone setup installers (`greencurve-<version>-windows-<arch>-setup.exe`), and Linux distribution packages that name their target in the file name: Arch (`greencurve-<version>-1-arch-<arch>.pkg.tar.zst`), Debian/Ubuntu (`greencurve-<version>-1-debian-<arch>.deb`), Fedora (`greencurve-<version>-1-fedora-<arch>.rpm`) and openSUSE (`greencurve-<version>-1-suse-<arch>.rpm`).
 
 Common build options:
 
@@ -179,15 +179,24 @@ sudo ./greencurve-setup.sh uninstall           # uninstall daemon (keeps setting
 sudo ./greencurve-setup.sh uninstall --purge   # complete removal including /var/lib/greencurve
 ```
 
-### Option 2: Arch Linux (pacman)
+### Option 2: Distribution packages
 
-Arch Linux packages are built automatically under `dist/` by `python build.py`. Install directly using `pacman`:
+Each release ships native packages for Arch, Debian/Ubuntu, Fedora and openSUSE; the distribution is part of the file name (examples for x64; ARM64 files use `aarch64`, or `arm64` for the `.deb`). They install the same files as the setup script, under `/usr`, and the install step tries to add the installing user to the `greencurve` group (otherwise it prints the `usermod` command to run).
 
 ```bash
-sudo pacman -U dist/linux-x64/greencurve-0.32.0-1-arch-x86_64.pkg.tar.zst
+# Arch Linux
+sudo pacman -U greencurve-0.32.0-1-arch-x86_64.pkg.tar.zst
+# Debian / Ubuntu
+sudo apt install ./greencurve-0.32.0-1-debian-amd64.deb
+# Fedora
+sudo dnf install ./greencurve-0.32.0-1-fedora-x86_64.rpm
+# openSUSE (the packages are not OpenPGP-signed; verify the .sha256 first)
+sudo zypper install --allow-unsigned-rpm ./greencurve-0.32.0-1-suse-x86_64.rpm
 ```
 
-Alternatively, PKGBUILD templates are available under [`packaging/arch/`](packaging/arch/) to build from source (`makepkg -si`) or install from prebuilt binaries (`makepkg -si -p PKGBUILD.bin`).
+Then enable the daemon with `sudo systemctl enable --now greencurve.service`. The NVIDIA proprietary driver must be installed separately. The packages are built under `dist/linux-<arch>/` by `python build.py`.
+
+On Arch, PKGBUILD templates are also available under [`packaging/arch/`](packaging/arch/) to build from source (`makepkg -si`) or install from prebuilt binaries (`makepkg -si -p PKGBUILD.bin`).
 
 ### Launching and navigation
 

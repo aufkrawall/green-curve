@@ -186,7 +186,13 @@ jobs:
             "dist/linux-x64/greencurve-${version}-linux-x64.tar.xz" \
             "dist/linux-x64/greencurve-${version}-linux-x64.tar.xz.sha256" \
             "dist/linux-x64/greencurve-${version}-1-arch-x86_64.pkg.tar.zst" \
-            "dist/linux-x64/greencurve-${version}-1-arch-x86_64.pkg.tar.zst.sha256"; do
+            "dist/linux-x64/greencurve-${version}-1-arch-x86_64.pkg.tar.zst.sha256" \
+            "dist/linux-x64/greencurve-${version}-1-debian-amd64.deb" \
+            "dist/linux-x64/greencurve-${version}-1-debian-amd64.deb.sha256" \
+            "dist/linux-x64/greencurve-${version}-1-fedora-x86_64.rpm" \
+            "dist/linux-x64/greencurve-${version}-1-fedora-x86_64.rpm.sha256" \
+            "dist/linux-x64/greencurve-${version}-1-suse-x86_64.rpm" \
+            "dist/linux-x64/greencurve-${version}-1-suse-x86_64.rpm.sha256"; do
             test -s "$f" || { echo "::error::missing Linux release artifact: $f"; exit 1; }
           done
           dirty="$(git status --porcelain --untracked-files=all)"

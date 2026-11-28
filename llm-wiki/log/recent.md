@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: Distro-tagged Linux packages; Debian/Ubuntu, Fedora, openSUSE
+
+- Arch packages are now `greencurve-<v>-1-arch-<carch>.pkg.tar.zst`; new
+  `.deb` (`-debian-<amd64|arm64>`) and `.rpm` (`-fedora-`/`-suse-<carch>`)
+  packages built from one shared payload (`tools/linux_payload.py`) by
+  standard-library writers (`deb_package.py`, `rpm_package.py`,
+  `rpm_header.py`). CI and the release workflow check/attest all 14 packages
+  (29 workflow assets, 33 with the updater assets).
+- Validated by read-back parsers, 20 fixtures in
+  `tools/linux_packages_tests.py`, libarchive listing and `sh -n`; pacman
+  reads the renamed Arch package. Not yet installed with real dpkg/rpm/zypper
+  (follow-up: install test on each distro); rpms are unsigned.
+
 ## 2026-11-27: 0.32.0 release preparation (not yet published)
 
 - Pre-release audit of `0.31.0..HEAD` (203 commits; protocol 29 -> 39; Linux

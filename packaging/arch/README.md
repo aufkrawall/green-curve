@@ -14,6 +14,8 @@ This directory contains the packaging specifications for Arch Linux and the Arch
 | `greencurve.desktop` | Desktop application launcher (`greencurve --tui --from-desktop`) |
 | `greencurve.install` | Post-install/upgrade scriptlet for user guidance |
 
+The release build's Debian/Ubuntu (`.deb`) and Fedora/openSUSE (`.rpm`) packages reuse the unit, sysusers, desktop and `greencurve.install` files from this directory, so changes here reach every distro package.
+
 ## Building and Installing
 
 ### Building from source with makepkg

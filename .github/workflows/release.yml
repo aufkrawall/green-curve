@@ -140,6 +140,12 @@ jobs:
             dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-linux-arm64.tar.xz \
             dist/linux-x64/greencurve-${{ steps.version.outputs.version }}-1-arch-x86_64.pkg.tar.zst \
             dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-1-arch-aarch64.pkg.tar.zst \
+            dist/linux-x64/greencurve-${{ steps.version.outputs.version }}-1-debian-amd64.deb \
+            dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-1-debian-arm64.deb \
+            dist/linux-x64/greencurve-${{ steps.version.outputs.version }}-1-fedora-x86_64.rpm \
+            dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-1-fedora-aarch64.rpm \
+            dist/linux-x64/greencurve-${{ steps.version.outputs.version }}-1-suse-x86_64.rpm \
+            dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-1-suse-aarch64.rpm \
             dist/windows-x64/greencurve-${{ steps.version.outputs.version }}-windows-x64.7z.sha256 \
             dist/windows-arm64/greencurve-${{ steps.version.outputs.version }}-windows-arm64.7z.sha256 \
             dist/windows-x64/greencurve-${{ steps.version.outputs.version }}-windows-x64-setup.exe.sha256 \
@@ -147,7 +153,13 @@ jobs:
             dist/linux-x64/greencurve-${{ steps.version.outputs.version }}-linux-x64.tar.xz.sha256 \
             dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-linux-arm64.tar.xz.sha256 \
             dist/linux-x64/greencurve-${{ steps.version.outputs.version }}-1-arch-x86_64.pkg.tar.zst.sha256 \
-            dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-1-arch-aarch64.pkg.tar.zst.sha256; do
+            dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-1-arch-aarch64.pkg.tar.zst.sha256 \
+            dist/linux-x64/greencurve-${{ steps.version.outputs.version }}-1-debian-amd64.deb.sha256 \
+            dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-1-debian-arm64.deb.sha256 \
+            dist/linux-x64/greencurve-${{ steps.version.outputs.version }}-1-fedora-x86_64.rpm.sha256 \
+            dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-1-fedora-aarch64.rpm.sha256 \
+            dist/linux-x64/greencurve-${{ steps.version.outputs.version }}-1-suse-x86_64.rpm.sha256 \
+            dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-1-suse-aarch64.rpm.sha256; do
             test -s "$f" || { echo "::error::missing or empty release artifact: $f"; exit 1; }
           done
           test -s "greencurve-${{ steps.version.outputs.version }}-toolchain.json" \
@@ -163,6 +175,9 @@ jobs:
             dist/**/greencurve-${{ steps.version.outputs.version }}-windows-*-setup.exe
             dist/**/greencurve-${{ steps.version.outputs.version }}-linux-*.tar.xz
             dist/**/greencurve-${{ steps.version.outputs.version }}-1-arch-*.pkg.tar.zst
+            dist/**/greencurve-${{ steps.version.outputs.version }}-1-debian-*.deb
+            dist/**/greencurve-${{ steps.version.outputs.version }}-1-fedora-*.rpm
+            dist/**/greencurve-${{ steps.version.outputs.version }}-1-suse-*.rpm
             greencurve-${{ steps.version.outputs.version }}-toolchain.json
 
       - name: Write release notes
@@ -253,6 +268,12 @@ jobs:
             dist/linux-arm64/greencurve-${VERSION}-linux-arm64.tar.xz \
             dist/linux-x64/greencurve-${VERSION}-1-arch-x86_64.pkg.tar.zst \
             dist/linux-arm64/greencurve-${VERSION}-1-arch-aarch64.pkg.tar.zst \
+            dist/linux-x64/greencurve-${VERSION}-1-debian-amd64.deb \
+            dist/linux-arm64/greencurve-${VERSION}-1-debian-arm64.deb \
+            dist/linux-x64/greencurve-${VERSION}-1-fedora-x86_64.rpm \
+            dist/linux-arm64/greencurve-${VERSION}-1-fedora-aarch64.rpm \
+            dist/linux-x64/greencurve-${VERSION}-1-suse-x86_64.rpm \
+            dist/linux-arm64/greencurve-${VERSION}-1-suse-aarch64.rpm \
             greencurve-${VERSION}-toolchain.json; do
             gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" \
               --source-digest "$GITHUB_SHA" \

@@ -162,7 +162,7 @@ Every compiled binary and release package is written under its target-specific s
 
 - `dist/windows-<arch>/<variant>/`: on native Windows builds, both variants (`msvc` and `release`) stage their payload (`greencurve/`), package archive (`.7z`), and standalone installer (`-setup.exe`) alongside `.sha256` checksums.
 - `dist/windows-<arch>/`: on Linux CI cross-compiles where a single release variant is built.
-- `dist/linux-<arch>/`: Linux tarballs (`.tar.xz`), Arch Linux packages (`.pkg.tar.zst`), and checksums are packaged alongside the binary payload (`greencurve/greencurve`).
+- `dist/linux-<arch>/`: Linux tarballs (`.tar.xz`), the four distro packages (Arch `-arch-*.pkg.tar.zst`, Debian/Ubuntu `-debian-*.deb`, Fedora `-fedora-*.rpm`, openSUSE `-suse-*.rpm`; see linux-scaffold.md, "Distribution packages") and checksums are packaged alongside the binary payload (`greencurve/greencurve`). A stable release therefore has 29 workflow assets (14 packages, 14 checksums, toolchain record) and 33 after the four updater assets.
 - `dist/symbols/<target>/`: private PDB and DWARF debug symbol artifacts.
 
 `tools/build_variants.py:package_dir()` derives the package directory directly from `payload_dir()` (`os.path.dirname(payload_dir(...))`), keeping packaging consistent across all targets and host platforms. Stale artifacts in both `package_dir` and the legacy repository root are purged automatically during the packaging step.

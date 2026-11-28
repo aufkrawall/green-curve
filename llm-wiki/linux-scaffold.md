@@ -297,10 +297,60 @@ Single multi-role binary (mirrors the Windows one-source-set, two-roles model):
   2. Otherwise, for system installs or non-system directories without a local `config.ini`, configuration defaults to `$XDG_CONFIG_HOME/greencurve/config.ini` or `$HOME/.config/greencurve/config.ini`. The directory is created with `0700` permissions.
   This allows non-root users in the `greencurve` group to run `greencurve` from any working directory, save and manage per-user profiles, and generate logs without permission issues.
 
-## Arch Linux Packaging (`tools/arch_package.py` & `packaging/arch/`)
+## Distribution packages (Arch, Debian/Ubuntu, Fedora, openSUSE; verified 2026-11-28)
 
-- **Automatic Package Creation**: Running `python build.py` by default on either Windows or Linux builds and packages pacman-installable Arch Linux packages (`greencurve-<version>-1-arch-<carch>.pkg.tar.zst`, along with its `.sha256`; the `arch` tag marks the distribution, and the builder deletes legacy untagged outputs; installed payload shared via `tools/linux_payload.py`) in the release output.
-  - Implemented in `tools/arch_package.py`, called from `build.py:package_release_archive`.
+Source anchors: `tools/linux_payload.py` (shared payload, names, glibc floor),
+`tools/arch_package.py`, `tools/deb_package.py`, `tools/rpm_package.py`,
+`tools/rpm_header.py`, `tools/release_manifest.py:build_linux_distro_packages`,
+`tools/linux_packages_tests.py` (run by `python build.py --test` through
+`security_gates.check_linux_distro_packages`).
+
+- **Every Linux release build produces four packages per architecture**, each
+  with a `.sha256`, and every file name names its distribution:
+  `greencurve-<v>-1-arch-<x86_64|aarch64>.pkg.tar.zst`,
+  `greencurve-<v>-1-debian-<amd64|arm64>.deb`,
+  `greencurve-<v>-1-fedora-<x86_64|aarch64>.rpm`,
+  `greencurve-<v>-1-suse-<x86_64|aarch64>.rpm`. Package managers read identity
+  from metadata, never from the file name, so the distro tag is free to add.
+  The Arch builder deletes the legacy untagged `greencurve-<v>-1-<carch>.pkg.tar.*`
+  outputs so an old-named copy cannot ship beside the new one.
+- **One payload, four containers.** `linux_payload.payload_files()` is the single
+  list of installed files and modes (binary, both units, sysusers, desktop entry,
+  icons, LICENSE, README); all builders install exactly it. rpm owns only
+  `usr/share/{doc,licenses}/greencurve`, never shared system directories; the
+  tar-based formats carry every directory as a member.
+- **One lifecycle.** The deb maintainer scripts and rpm scriptlets embed
+  `packaging/arch/greencurve.install` verbatim and add only a dispatcher for
+  their argument scheme (dpkg `configure <old>` / `remove`; rpm `$1` counts),
+  plus a `systemctl daemon-reload` after install/upgrade. Scripts are POSIX sh
+  and best-effort (no `set -e`), like the pacman scriptlet.
+- **No distro tooling needed.** deb (ar + `control.tar.xz` + `data.tar.xz`) and
+  rpm (v4 lead, signature header, immutable main header, xz `newc` cpio with
+  `./` names) are written with the standard library, byte-identical from Windows
+  or Linux hosts. xz is used for deb/rpm because every supported dpkg/rpm reads
+  it.
+- **Read-back gates.** Each builder re-parses its output before writing the
+  checksum. `rpm_header.parse_header()` enforces rpm's own header layout rules
+  (region trailer last and covering every entry, increasing offsets, type
+  alignment, registered tag types in the main header); `verify_rpm_package()`
+  recomputes the SHA-1/SHA-256 header digests, MD5, sizes and the SHA-256
+  payload digest and matches the cpio against the header file list.
+- **Dependencies:** deb `libc6 (>= 2.27)`, rpm `glibc >= 2.27` plus `rpmlib()`
+  feature requirements; 2.27 is the newest `GLIBC_` symbol version the Linux
+  binary references (measured 2026-11-28; update `GLIBC_FLOOR` if the binary
+  starts needing a newer one). Fedora and openSUSE rpms currently differ only in
+  the `Distribution` tag; the profile table (`RPM_DISTROS`) is where a real
+  divergence goes.
+- **Open questions / stale-risk:** the deb and rpm packages have been validated
+  by the in-repo read-back parsers, libarchive (`bsdtar` lists both payloads)
+  and `sh -n` on every script, but NOT yet installed with real dpkg/apt,
+  rpm/dnf or zypper. The rpms are unsigned: zypper needs
+  `--allow-unsigned-rpm`, and an rpm configured to require signatures
+  (`%_pkgverify_level signature`) refuses them.
+
+### Arch package details
+
+- Implemented in `tools/arch_package.py`, called from `build.py:package_release_archive` through `build_linux_distro_packages`.
   - Assembles all standard directories (`usr/bin`, `usr/lib/systemd/system`, `usr/lib/sysusers.d`, `usr/share/...`), file permissions (mode `0755` for binary and dirs, `0644` for unit/desktop/config files), metadata (`.PKGINFO`, `.BUILDINFO`, `.INSTALL`, and gzip-compressed `.MTREE`).
   - Supports zstandard compression directly on Windows and Linux via Python `zstandard` or system `zstd`, with fallback to `lzma`/`.pkg.tar.xz`.
   - Can be installed directly via `sudo pacman -U greencurve-<version>-1-arch-x86_64.pkg.tar.zst`.

@@ -40,7 +40,7 @@ Profiles can be captured, checked and moved between platforms; curves, cooling a
 - **Fan stall protection:** custom cooling hands the fan back when a confirmed RPM reading drops to zero.
 - **CMP cards:** experimental modified-driver support.
 - **Dialog copying:** Ctrl+C copies message text.
-- **Linux package names:** the Arch package file name now says `arch`.
+- **Linux packages:** Debian/Ubuntu, Fedora and openSUSE packages; every package names its distribution, including Arch.
 
 ### Improved
 
@@ -77,7 +77,7 @@ Profiles remain compatible. Update the app and service together, as the installe
 ### Downloads and verification
 
 - **Windows:** use the setup installer to install or upgrade, or `.7z` for a portable copy.
-- **Linux:** install the Arch package, or extract `.tar.xz` and run `greencurve-setup.sh`.
+- **Linux:** install the package for your distribution, or extract `.tar.xz` and run `greencurve-setup.sh`.
 - **Verification:** packages include SHA-256 files and [GitHub build attestations](https://github.com/aufkrawall/green-curve/attestations); verify with `gh attestation verify <artifact> --repo aufkrawall/green-curve`.
 
 **Full changelog:** [0.31.0...0.32.0](https://github.com/aufkrawall/green-curve/compare/0.31.0...0.32.0)

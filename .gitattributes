@@ -23,6 +23,8 @@ packaging/** text eol=lf
 *.tar.xz binary
 *.pkg.tar.zst binary
 *.pkg.tar.xz binary
+*.deb binary
+*.rpm binary
 packaging/**/*.png binary
 
 # Fuzz seeds are exact byte strings, not text.  Most existing corpora contain

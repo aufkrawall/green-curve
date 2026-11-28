@@ -757,6 +757,12 @@ def check_release_packaging(ctx, require_text, forbid_text):
     readme = os.path.join(ctx.SCRIPT_DIR, "README.md")
     require_text(readme, f"greencurve-{ctx.APP_VERSION}-1-arch-x86_64.pkg.tar.zst",
                  "README Arch install example matches APP_VERSION")
+    require_text(readme, f"greencurve-{ctx.APP_VERSION}-1-debian-amd64.deb",
+                 "README Debian/Ubuntu install example matches APP_VERSION")
+    require_text(readme, f"greencurve-{ctx.APP_VERSION}-1-fedora-x86_64.rpm",
+                 "README Fedora install example matches APP_VERSION")
+    require_text(readme, f"greencurve-{ctx.APP_VERSION}-1-suse-x86_64.rpm",
+                 "README openSUSE install example matches APP_VERSION")
     require_text(readme, f"greencurve-{ctx.APP_VERSION}-windows-x64-setup.exe",
                  "README silent install example matches APP_VERSION")
     require_text(os.path.join(arch_dir, "greencurve.service"), "ExecStart=/usr/bin/greencurve --daemon",
@@ -788,8 +794,18 @@ def check_release_packaging(ctx, require_text, forbid_text):
                  "Arch install scriptlet mentions resume service")
     require_text(manifest, "from arch_package import build_arch_package",
                  "release manifest connects arch package builder")
-    require_text(build_script, "build_arch_package(SCRIPT_DIR, APP_VERSION, arch, binaries[0], output_dir=package_dir)",
-                 "Linux packaging step builds Arch Linux package")
+    require_text(manifest, "from deb_package import build_deb_package",
+                 "release manifest connects Debian/Ubuntu package builder")
+    require_text(manifest, "from rpm_package import RPM_DISTROS, build_rpm_package",
+                 "release manifest connects Fedora/openSUSE package builder")
+    require_text(build_script, "build_linux_distro_packages(SCRIPT_DIR, APP_VERSION, arch, binaries[0], package_dir)",
+                 "Linux packaging step builds every distro package")
+    for workflow, label in ((".github/workflows/release.yml", "release"),
+                            (".github/workflows/ci.yml", "CI")):
+        wf = os.path.join(ctx.SCRIPT_DIR, *workflow.split("/"))
+        for name in ("-1-arch-x86_64.pkg.tar.zst", "-1-debian-amd64.deb",
+                     "-1-fedora-x86_64.rpm", "-1-suse-x86_64.rpm"):
+            require_text(wf, name, f"{label} workflow checks the {name} package")
     check_packaging_line_endings(arch_dir)
     arch_recipe_checks.check_all(arch_dir)
 

@@ -31,6 +31,7 @@ import update_signing  # ditto; owns the update signer's RFC 6979 vectors
 import toolchain  # ditto; owns pinned-toolchain verification
 import zig_cache  # ditto; owns the cross-process Zig link lock + cache repair
 import arch_package  # ditto; builds pacman-installable Arch Linux packages
+import linux_packages_tests  # ditto; Arch/Debian/Fedora/openSUSE package fixtures
 import build_state  # ditto; owns the Windows resource scripts
 import pe_verify  # ditto; owns the PE checksum / VERSIONINFO identity helpers
 import pe_layout  # ditto; owns the post-link .buildid debug-layout normalization
@@ -1867,7 +1868,7 @@ def run_build_script_regression_tests(ctx):
     finally:
         ctx.cleanup_work_subdir(tmp)
     check_linux_release_packaging(ctx)
-    check_arch_package_roundtrip(ctx)
+    check_linux_distro_packages()
 
 
 def run_debug_tool_discovery_tests(ctx):
@@ -2016,24 +2017,15 @@ def _check_linux_tarball_rejects_broken_members(tmp, expected):
         sys.exit(1)
 
 
-def check_arch_package_roundtrip(ctx):
-    """F-ARCH-PKG: Arch Linux package round-trip and structure verification."""
-    tmp = ctx.prepare_work_subdir("arch_package_roundtrip")
+def check_linux_distro_packages():
+    """F-LINUX-PKG: every Linux distro package (Arch, Debian/Ubuntu, Fedora,
+    openSUSE) builds, names its distribution, survives its own read-back, and
+    the read-back rejects the corruptions dpkg/rpm would reject."""
     try:
-        bin_path = os.path.join(tmp, "greencurve")
-        with open(bin_path, "wb") as f:
-            f.write(b"\x7fELF\x02\x01\x01 fixture binary \n")
-        pkg_path = arch_package.build_arch_package(
-            ctx.SCRIPT_DIR, ctx.APP_VERSION, "x64", bin_path, output_dir=tmp)
-        if not os.path.isfile(pkg_path):
-            print(f"Build-script regression FAILED: Arch package not created: {pkg_path}")
-            sys.exit(1)
-        sha_path = pkg_path + ".sha256"
-        if not os.path.isfile(sha_path):
-            print(f"Build-script regression FAILED: Arch checksum not created: {sha_path}")
-            sys.exit(1)
-    finally:
-        ctx.cleanup_work_subdir(tmp)
+        linux_packages_tests.run_tests()
+    except RuntimeError as exc:
+        print(f"Build-script regression FAILED: {exc}")
+        sys.exit(1)
 
 
 def check_hardening_and_gate_wiring(ctx):

@@ -121,7 +121,7 @@ import build_state  # noqa: E402  (same one-way dependency as security_gates)
 import toolchain  # noqa: E402  (same one-way dependency as security_gates)
 import zig_cache  # noqa: E402  (same one-way dependency as security_gates)
 from release_manifest import (  # noqa: E402  (one-way dependency)
-    RUNTIME_ARTIFACT_NAMES, build_arch_package, check_all as release_manifest_check_all,
+    RUNTIME_ARTIFACT_NAMES, build_linux_distro_packages, check_all as release_manifest_check_all,
     check_packaging_skip_warning, expected_release_names, find_seven_zip,
     purge_runtime_artifacts, release_archive_extension, release_archive_paths,
     release_archive_root, report_packaging_skipped, stage_release_file,
@@ -1425,7 +1425,7 @@ def package_release_archive(os_name, arch, binaries, seven=None, variant=None):
         if os_name == "linux":
             write_linux_tarball(archive, staging, root, expected_names)
             verify_linux_tarball(archive, expected_names, root)
-            build_arch_package(SCRIPT_DIR, APP_VERSION, arch, binaries[0], output_dir=package_dir)
+            build_linux_distro_packages(SCRIPT_DIR, APP_VERSION, arch, binaries[0], package_dir)
         else:
             result = subprocess.run(
                 [seven, "a", "-t7z", "-mx=9", "-bso0", "-bsp0", archive, root],
