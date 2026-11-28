@@ -3,10 +3,10 @@
 //
 // Executes the production Windows fan runtime handback
 // (main_fan_runtime_failure.cpp), the service's fan fault record and owned
-// intent update (main_service_fan_fault.cpp), cases 12856-12869, and the stall
+// intent update (main_service_fan_fault.cpp), cases 12856-12869, the stall
 // check after every runtime tick (main_fan_stall.cpp), 12870-12879 and
-// 12887-12888, against a
-// scripted driver and clock.  No GPU, no sleeps.
+// 12887-12888, and the standby fan stash a handback keeps for the standby
+// restore, 14350-14357, against a scripted driver and clock.  No GPU, no sleeps.
 #include "app_shared.h"
 #include "fan_curve.h"
 #include "desired_settings_ui_policy.h"
@@ -100,6 +100,13 @@ static void service_clear_restart_reapply_snapshot() {
     lastRestartSnapshotSlot = 0;
 }
 static void service_fan_runtime_handback_publish(const ServiceFanFault* fault);
+// Scripted lifecycle reducer answer (main_service_lifecycle_events.cpp).
+static bool standbyWindowOpen;
+static gc_u64 standbyWindowGeneration;
+static bool service_lifecycle_standby_fan_handback_window(gc_u64* generationOut) {
+    if (generationOut) *generationOut = standbyWindowOpen ? standbyWindowGeneration : 0;
+    return standbyWindowOpen;
+}
 
 // Scripted fan readings (nvml_read_fans) and clock (GetTickCount64).
 struct ScriptFan {
@@ -178,6 +185,9 @@ static void reset(bool service) {
     g_serviceActiveProfileSource = SERVICE_PROFILE_SOURCE_NONE;
     g_serviceActiveProfileSlot = 0;
     g_serviceFanFault = {};
+    g_serviceStandbyFanStash = {};
+    standbyWindowOpen = false;
+    standbyWindowGeneration = 0;
     resetFanPolicyComplete = false;
     resetFanPolicyUnsupported = false;
 }
@@ -434,6 +444,82 @@ static int run_reset_handoff_cases() {
     return 0;
 }
 
+// A handback between suspend and the standby restore keeps the intent it
+// replaced for that restore; everywhere else it behaves exactly as before.
+static int run_standby_stash_cases() {
+    // In the window: the handback itself is unchanged (driver auto, record,
+    // fan released), and the curve, its GPU and its profile are kept.
+    reset(true);
+    own_running_curve(true);
+    standbyWindowOpen = true;
+    standbyWindowGeneration = 7;
+    escalate_fan_runtime_failure("Fan curve runtime apply failed", "scripted");
+    if (autoWrites != 1 || g_serviceActiveDesired.hasFan || !g_serviceHasActiveDesired ||
+        g_serviceFanFault.kind != SERVICE_FAN_FAULT_REPEATED_FAILURES ||
+        !g_serviceStandbyFanStash.valid || g_serviceStandbyFanStash.suspendGeneration != 7 ||
+        !g_serviceStandbyFanStash.replaced.hasFan ||
+        g_serviceStandbyFanStash.replaced.fanMode != FAN_MODE_CURVE ||
+        g_serviceStandbyFanStash.replaced.powerLimitPct != 90 ||
+        !g_serviceStandbyFanStash.replacedGpu.valid ||
+        g_serviceStandbyFanStash.replacedProfileSource != SERVICE_PROFILE_SOURCE_USER_SLOT ||
+        g_serviceStandbyFanStash.replacedProfileSlot != 3 ||
+        !g_serviceStandbyFanStash.handbackHasIntent ||
+        !desired_settings_equal(&g_serviceStandbyFanStash.handbackIntent, &g_serviceActiveDesired))
+        return 14350;
+    // The restore of that wake may replay it; peeking does not use it up, so a
+    // restore still waiting for the GPU keeps it.  Writing does.
+    ServiceStandbyFanStash peeked = {};
+    if (service_standby_fan_stash_peek(7, &peeked) != SERVICE_STANDBY_FAN_STASH_REPLAY ||
+        peeked.replaced.fanMode != FAN_MODE_CURVE || !g_serviceStandbyFanStash.valid)
+        return 14351;
+    service_standby_fan_stash_consume();
+    if (g_serviceStandbyFanStash.valid ||
+        service_standby_fan_stash_peek(7, &peeked) != SERVICE_STANDBY_FAN_STASH_NONE)
+        return 14352;
+    // Outside the window nothing is kept.
+    reset(true);
+    own_running_curve(true);
+    escalate_fan_runtime_failure("Fan curve runtime apply failed", "scripted");
+    if (g_serviceStandbyFanStash.valid || g_serviceActiveDesired.hasFan) return 14353;
+    // A fan-only profile: the handback releases everything (marker retired)
+    // and the restore can still bring the curve back.
+    reset(true);
+    own_running_curve(false);
+    standbyWindowOpen = true;
+    standbyWindowGeneration = 7;
+    escalate_fan_runtime_failure("Fan curve runtime apply failed", "scripted");
+    if (g_serviceHasActiveDesired || markerClears != 1 || !g_serviceStandbyFanStash.valid ||
+        g_serviceStandbyFanStash.handbackHasIntent ||
+        service_standby_fan_stash_peek(7, &peeked) != SERVICE_STANDBY_FAN_STASH_REPLAY)
+        return 14354;
+    // A Reset (or a deliberate fan Apply) supersedes it.
+    service_fan_fault_clear("a successful Reset");
+    if (g_serviceStandbyFanStash.valid) return 14355;
+    // Any other change to the intent drops it unreplayed.
+    reset(true);
+    own_running_curve(true);
+    standbyWindowOpen = true;
+    standbyWindowGeneration = 7;
+    escalate_fan_runtime_failure("Fan curve runtime apply failed", "scripted");
+    g_serviceActiveDesired.powerLimitPct = 80;
+    if (service_standby_fan_stash_peek(7, &peeked) != SERVICE_STANDBY_FAN_STASH_INTENT_CHANGED ||
+        g_serviceStandbyFanStash.valid) return 14356;
+    // The driver refused auto: the intent owns the emergency duty, the kept
+    // copy is still the curve, and another wake's restore drops it.
+    reset(true);
+    own_running_curve(true);
+    standbyWindowOpen = true;
+    standbyWindowGeneration = 7;
+    autoRefused = true;
+    escalate_fan_runtime_failure("Fan curve runtime apply failed", "scripted");
+    if (!g_serviceActiveDesired.hasFan || g_serviceActiveDesired.fanMode != FAN_MODE_FIXED ||
+        g_serviceActiveDesired.fanPercent != FAN_RUNTIME_EMERGENCY_PERCENT ||
+        g_serviceStandbyFanStash.replaced.fanMode != FAN_MODE_CURVE ||
+        service_standby_fan_stash_peek(8, &peeked) != SERVICE_STANDBY_FAN_STASH_STALE_GENERATION ||
+        g_serviceStandbyFanStash.valid) return 14357;
+    return 0;
+}
+
 static int run() {
     if (int failure = run_reset_handoff_cases()) return failure;
     InitializeCriticalSection(&g_appLock);
@@ -567,6 +653,7 @@ static int run() {
     if (autoWrites != 1 || g_serviceFanFault.kind != SERVICE_FAN_FAULT_REPEATED_FAILURES)
         return 12868;
     if (int stall = run_stall_cases()) return stall;
+    if (int standby = run_standby_stash_cases()) return standby;
     DeleteCriticalSection(&g_appLock);
     return 0;
 }

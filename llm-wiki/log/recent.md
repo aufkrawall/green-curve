@@ -5,6 +5,22 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: Windows standby restore keeps a fan the runtime handed back during the wake
+
+- Review of standby auto-restore: design sound (one coalesced full-intent
+  restore per wake, readiness-driven, fan curve reasserts and drift-checks, the
+  stall window restarts across the sleep gap). Gap: the service fan worker is
+  not paused across suspend, so a handback between suspend and the restore's
+  write rewrote the owned intent to driver auto and the restore skipped the fan.
+- Fix: `source/service_standby_fan_stash_policy.h` (window from the real
+  reducer state, capture predicate, replay decision) plus the handback stash in
+  `main_service_fan_fault.cpp` and the replay in the standby restore. Tests
+  14340-14357; gate `check_standby_fan_stash`. Details in
+  [auto-restore-policy](../auto-restore-policy.md).
+- Not verified on hardware; whether NVML fan calls fail after a real wake is
+  open. Linux follow-up: its fan lockout enters the uncertain state, which
+  refuses the whole resume restore until an explicit Apply/Reset.
+
 ## 2026-11-28: Zero steady-state `config.ini` I/O on Windows telemetry
 
 - Audited why both `greencurve.exe` and `greencurve-service.exe` touched

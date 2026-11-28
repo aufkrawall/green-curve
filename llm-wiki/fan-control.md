@@ -48,6 +48,11 @@ Source anchors: `source/fan_stall_policy.h`, `source/main_fan_stall.cpp`,
 `tests/fan_runtime_followup_tests.cpp`, `tests/gui_auto_restore_notice_tests.cpp`,
 `tools/fan_gates.py` (`check_fan_fault_reporting()`, `check_fan_stall_detection()`).
 
+Windows standby (2026-11-28): a service handback between suspend and the
+standby restore's write keeps the intent it replaced, and that restore replays
+it once; the handback itself is unchanged. See "A fan handback inside the
+standby window" in [auto-restore-policy](auto-restore-policy.md).
+
 The failure ladder below reacts to a refused write or temperature read. It
 cannot see a fan that accepts every write and does not turn (seized bearing,
 unplugged fan, a duty that never reaches the motor). Under a manual duty the

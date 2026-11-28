@@ -7,7 +7,8 @@
 > a persisted per-boot crash-loop guard. The reset-to-stock rule below is
 > genuinely shared code.
 
-Last verified: 2026-11-13 (named graphics-control recovery, software fixtures);
+Last verified: 2026-11-28 (fan handback inside the standby window, software fixtures);
+2026-11-13 (named graphics-control recovery, software fixtures);
 2026-10-22 (driver-recovery flow extracted and sequence-tested,
 wiring gates mutation-checked); 2026-10-22 (live: two NVIDIA installer runs with a mature proof
 restored the profile through the VEH/controlled-restart path, see invariant 9);
@@ -50,7 +51,7 @@ an immutable profile context itself.
 |---|---|
 | Explicit GUI/CLI/hotkey/tray Apply | Apply. On success, clear sticky automatic-restore lockout and recovery history, record the active profile source/slot when known, and start a new 10-minute proof period. |
 | WTS logon or authenticated scheduled-task handoff | Apply the configured account/shared profile once unless locked out. WTS and task events for the same Windows login are coalesced. |
-| Standby resume | Reapply the complete current in-memory intent once without the proof-period gate. A successful restore preserves an already mature same-boot proof; an immature or unavailable proof starts fresh. |
+| Standby resume | Reapply the complete current in-memory intent once without the proof-period gate. A successful restore preserves an already mature same-boot proof; an immature or unavailable proof starts fresh. A fan handback between suspend and the restore does not drop the fan from it (see "A fan handback inside the standby window"). |
 | Confirmed selected-GPU driver recovery | Reapply once only after 10 minutes of awake stability, in the same boot, and below the recovery-spam threshold. A verified driver update since the apply (stamped NvAPI image version differs from the one on disk) waives the 10 minutes; the spam threshold still applies (2026-10-21). |
 | Service install/start/repair or ordinary SCM restart | Never apply or reset merely because the process started, **except** the once-per-crash ownership handback below. |
 | Task Manager kill, crash, or failure-action restart | Never replay persisted settings. Hand back, once, what the dead instance still owned in this boot: fan to driver auto first, then the whole GPU to stock (the graceful-stop reset). |
@@ -363,6 +364,48 @@ least 10 awake minutes old. The normal pre-write boundary still durably deletes
 the proof. Complete restore success republishes the exact mature stamp; failure
 cannot resurrect it. An immature, missing, corrupt, or cross-boot proof receives
 a fresh stamp only after successful standby restore.
+
+### A fan handback inside the standby window (2026-11-28)
+
+Source anchors: `source/service_standby_fan_stash_policy.h`,
+`source/main_service_fan_fault.cpp`, `source/main_service_lifecycle_apply.cpp`
+(`service_lifecycle_attempt_standby_restore`),
+`source/main_service_lifecycle_events.cpp`
+(`service_lifecycle_standby_fan_handback_window`), tests 14340-14357
+(`tests/standby_fan_stash_tests.cpp`, `tests/fan_handback_runtime_tests.cpp`),
+gate `check_standby_fan_stash` in `tools/fan_gates.py`.
+
+The service fan worker is not paused across suspend. A fan runtime that gives
+up (repeated failures or a stall, see [fan-control](fan-control.md)) hands the
+fan to the driver and rewrites the owned intent to what Green Curve still holds.
+Between suspend and the standby restore's write that rewrite used to make the
+restore skip the fan, so a driver still waking up could leave the custom curve
+off after the wake.
+
+- **Window:** suspended (`suspendArmed`) or resumed with the restore pending
+  and not yet issued, and no lockout, driver recovery or stop. The restore's
+  own write is outside it: a fan that fails while the restore starts it is a
+  real failure and stays handed back.
+- **Stash:** a handback inside the window that took a manual fan (curve or
+  fixed) from an owned intent keeps the replaced intent, its GPU and profile
+  attribution plus the intent it left, tagged with the suspend generation. The
+  handback itself is unchanged: driver auto (else 100%), fault record, owned
+  intent rewritten, marker and restart snapshot as before.
+- **Replay:** the standby restore of the same generation builds its request
+  from the replaced intent only while the owned intent still equals what the
+  handback left (any Apply, profile switch or Reset wins). A refusal before any
+  hardware write keeps the stash for the next readiness cue; a restore that
+  reached the hardware uses it up either way. Success restores the profile
+  attribution and clears the fault record (an Apply that set the fan). A curve
+  that fails again is handed back again, now outside the window.
+- **Dropped by:** another generation, a changed intent, a Reset or a fan
+  Apply (`service_fan_fault_clear`), or a handback outside a window.
+- Diagnostics: `standby fan stash:` (window, capture, drop reason) and
+  `lifecycle standby: replaying the intent a fan handback replaced`.
+- Open: not observed on hardware; whether NVML fan calls actually fail after a
+  real wake is unverified. Windows only: the Linux daemon has no suspend edge
+  and its fan lockout enters the uncertain state, which refuses the resume
+  restore outright (see [linux-scaffold](linux-scaffold.md)).
 
 A confirmed driver recovery is stricter. Its proof age is measured with
 `QueryUnbiasedInterruptTime`, so suspend/hibernate time does not advance the

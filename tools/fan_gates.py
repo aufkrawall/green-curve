@@ -623,6 +623,40 @@ def check_fan_fault_reporting(ctx, require_text, forbid_text, require_order):
                  "the Linux status output names a fan fault")
 
 
+def check_standby_fan_stash(ctx, require_text, forbid_text, require_order):
+    """A fan handback during standby does not cost the restore its fan.
+
+    The Windows fan worker keeps running across suspend.  A handback between
+    suspend and the standby restore's write rewrites the owned intent to driver
+    auto, which made that restore skip the fan.  The handback now keeps the
+    intent it replaced (service_standby_fan_stash_policy.h) and the restore of
+    the same wake replays it once.  Executed by tests/standby_fan_stash_tests.cpp
+    and tests/fan_handback_runtime_tests.cpp (14340-14357).
+    """
+    fault_cpp = _p(ctx, "main_service_fan_fault.cpp")
+    require_order(fault_cpp,
+                  "service_lifecycle_standby_fan_handback_window(&standbyGeneration);",
+                  "g_serviceActiveDesired.hasFan = 0;",
+                  "the handback captures the window and the replaced intent before rewriting it")
+    require_order(fault_cpp, "g_serviceFanFault = ServiceFanFault{};",
+                  "service_standby_fan_stash_clear(reason);",
+                  "a Reset or a deliberate fan Apply supersedes a pending standby replay")
+    require_text(_p(ctx, "main_service_lifecycle_events.cpp"),
+                 "service_standby_fan_handback_window(\n        &g_serviceLifecycleState, generationOut);",
+                 "the window comes from the real lifecycle reducer state")
+    apply_cpp = _p(ctx, "main_service_lifecycle_apply.cpp")
+    require_order(apply_cpp, "const bool replayFanStash = service_standby_fan_stash_peek(",
+                  "replayFanStash ? &fanStash.replaced : &g_serviceActiveDesired, &desired);",
+                  "the standby restore decides on the stash before it builds its request")
+    require_order(apply_cpp, "success = service_apply_desired_settings(&desired, false,",
+                  "if (replayFanStash && (success || writeAttempted))",
+                  "the stash is used up only by a restore that reached the hardware")
+    # The restart snapshot write follows the proof commit in the same block.
+    require_order(apply_cpp, "g_serviceActiveProfileSlot = fanStash.replacedProfileSlot;",
+                  "proofCommitOk = service_restore_mature_oc_apply_proof(",
+                  "a replayed profile's attribution is restored before the proof and restart snapshot")
+
+
 def check_fan_stall_detection(ctx, require_text, forbid_text, require_order):
     """A commanded fan that does not turn is handed back to the driver.
 
@@ -680,6 +714,7 @@ def check_all(ctx, require_text, forbid_text, require_order, backend_surface):
     check_fanless_request_rule(ctx, require_text, forbid_text, require_order)
     check_fan_intent_consistency(ctx, require_text, forbid_text, require_order)
     check_fan_fault_reporting(ctx, require_text, forbid_text, require_order)
+    check_standby_fan_stash(ctx, require_text, forbid_text, require_order)
     check_fan_stall_detection(ctx, require_text, forbid_text, require_order)
     reset_fan_h = _p(ctx, "main_service_reset_fan.h")
     require_order(reset_fan_h,

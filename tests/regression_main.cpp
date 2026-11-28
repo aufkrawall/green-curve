@@ -976,6 +976,9 @@ int run_fan_stall_tests();
 // Windows fan runtime handback, record, owned intent and stall check
 // (tests/fan_handback_runtime_tests.cpp, 12856-12879, 12887-12888).
 int run_fan_handback_runtime_tests();
+// The standby window for a fan runtime handback
+// (tests/standby_fan_stash_tests.cpp, 14340-14349).
+int run_standby_fan_stash_tests();
 int run_debug_log_identity_tests();
 int run_service_client_identity_failure_child();
 int run_security_audit_tests();
@@ -2045,6 +2048,7 @@ int main(int argc, char** argv) {
     if (int fanIntentFailure = run_fan_intent_tests()) return fanIntentFailure;
     if (int fanStallFailure = run_fan_stall_tests()) return fanStallFailure;
     if (int fanHandbackFailure = run_fan_handback_runtime_tests()) return fanHandbackFailure;
+    if (int standbyFanStashFailure = run_standby_fan_stash_tests()) return standbyFanStashFailure;
     if (int logFailure = run_debug_log_identity_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", logFailure);
         return logFailure;

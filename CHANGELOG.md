@@ -56,7 +56,7 @@ Profiles can be captured, checked and moved between platforms; curves, cooling a
 - **Deep undervolting:** per-point undervolts may exceed narrow global limits, such as Pascal's -200 MHz.
 - **Partial profiles:** omitted controls stay untouched, including at logon and after upgrade.
 - **Cooling handback:** Reset, shutdown and failed Linux starts reliably return every fan to Auto.
-- **Fan curves:** keep running after profile switches and no longer show a stale active profile.
+- **Fan curves:** keep running after profile switches and Windows standby; no stale active profile.
 - **Reset:** restores memory and power changed elsewhere and works on fanless GPUs.
 - **Linux recovery:** the daemon survives an NVIDIA driver that starts late or loses its session.
 - **Linux startup and upgrades:** duplicate daemons are prevented and failed upgrades roll back.

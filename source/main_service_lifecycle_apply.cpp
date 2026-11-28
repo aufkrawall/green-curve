@@ -590,7 +590,23 @@ static void service_lifecycle_attempt_standby_restore() {
         debug_log("lifecycle standby: sticky lockout appeared while waiting for runtime serialization; no write\n");
         return;
     }
-    if (!g_serviceHasActiveDesired) {
+    // A fan runtime handback between suspend and now kept the intent it
+    // replaced; replay that instead, once (service_standby_fan_stash_policy.h).
+    EnterCriticalSection(&g_appLock);
+    const gc_u64 resumedGeneration = g_serviceLifecycleState.resumedSuspendGeneration;
+    LeaveCriticalSection(&g_appLock);
+    ServiceStandbyFanStash fanStash = {};
+    const bool replayFanStash = service_standby_fan_stash_peek(
+        resumedGeneration, &fanStash) == SERVICE_STANDBY_FAN_STASH_REPLAY;
+    if (replayFanStash) {
+        debug_log("lifecycle standby: replaying the intent a fan handback replaced during this standby"
+                  " (generation=%llu fanMode=%s ownedNow=%d)\n",
+            (unsigned long long)resumedGeneration,
+            fan_mode_label(fan_owned_intent_mode(fanStash.replaced.hasFan != 0,
+                fanStash.replaced.fanMode, fanStash.replaced.fanAuto != 0)),
+            g_serviceHasActiveDesired ? 1 : 0);
+    }
+    if (!g_serviceHasActiveDesired && !replayFanStash) {
         unlock_service_runtime();
         EnterCriticalSection(&g_appLock);
         g_serviceLifecycleState.standbyPending = false;
@@ -600,8 +616,9 @@ static void service_lifecycle_attempt_standby_restore() {
         debug_log("lifecycle standby: no in-memory active intent; no write\n");
         return;
     }
-    service_build_full_restore_request(&g_serviceActiveDesired, &desired);
-    target = g_serviceActiveDesiredGpu;
+    service_build_full_restore_request(
+        replayFanStash ? &fanStash.replaced : &g_serviceActiveDesired, &desired);
+    target = replayFanStash ? fanStash.replacedGpu : g_serviceActiveDesiredGpu;
     char detail[512] = {};
     bool ready = hardware_initialize(detail, sizeof(detail));
     if (ready && target.valid) {
@@ -643,7 +660,20 @@ static void service_lifecycle_attempt_standby_restore() {
             StringCchCopyA(detail, ARRAY_COUNT(detail),
                 "Selected GPU changed/was removed immediately before standby restore");
         }
+        // A refusal before any hardware write leaves the restore pending (the
+        // reducer retries it on the next readiness cue), so it keeps the stash.
+        if (replayFanStash && (success || writeAttempted))
+            service_standby_fan_stash_consume();
         if (success) {
+            if (replayFanStash) {
+                // The replayed intent is the profile the handback detached.
+                EnterCriticalSection(&g_appLock);
+                g_serviceActiveProfileSource = fanStash.replacedProfileSource;
+                g_serviceActiveProfileSlot = fanStash.replacedProfileSlot;
+                LeaveCriticalSection(&g_appLock);
+                debug_log("lifecycle standby: fan handback replay restored profile attribution source=%u slot=%d\n",
+                    (unsigned int)fanStash.replacedProfileSource, fanStash.replacedProfileSlot);
+            }
             service_refresh_selected_gpu_notification_best_effort(
                 &g_serviceActiveDesiredGpu,
                 "successful standby restore target");
