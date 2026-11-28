@@ -371,11 +371,14 @@ static bool linux_backend_reenumerate_same_nvml_gpu(
         gc_snprintf(err, errSize,
             "NVML recovery enumeration failed status=%d count=%u",
             countStatus, count);
+        linux_backend_recovery_unproven(g);
         return false;
     }
+    LinuxRecoveredUuids seen = linux_backend_recovery_begin(g, count);
     int match = -1;
     nvmlDevice_t matchedDevice = nullptr;
     GpuAdapterInfo matched = {};
+    LinuxGpuUuid matchedUuid = {};
     unsigned int enumerate = count > MAX_GPU_ADAPTERS
         ? MAX_GPU_ADAPTERS : count;
     for (unsigned int index = 0; index < enumerate; ++index) {
@@ -400,10 +403,14 @@ static bool linux_backend_reenumerate_same_nvml_gpu(
             candidate.pciDevice = slot;
             candidate.pciFunction = function;
         }
-        if (!linux_gpu_same_pci_nonconflicting(&g->selectedGpu, &candidate))
-            continue;
         const auto observed = linux_gpu_read_uuid(g->getUuid, device);
+        linux_backend_note_recovered_uuid(g, candidate, observed, index, &seen);
+        if (!linux_gpu_same_pci_nonconflicting(&g->selectedGpu, &candidate)) continue;
         if (!linux_gpu_uuid_compatible(linux_backend_selected_uuid(g), &observed)) {
+            // Another card answers at the bound location: until a rebind proves
+            // which card the handle addresses, it has no identity to write by.
+            g->writeIdentityResolved = false;
+            g->adapterUuids[g->selectedAdapterIndex] = LinuxGpuUuid{};
             gc_strlcpy(err, errSize,
                 "different physical GPU at the selected PCI location during recovery");
             return false;
@@ -411,20 +418,27 @@ static bool linux_backend_reenumerate_same_nvml_gpu(
         if (match >= 0) {
             gc_strlcpy(err, errSize,
                 "selected PCI GPU became ambiguous during recovery");
+            linux_backend_recovery_unproven(g);
             return false;
         }
         match = (int)index;
         matchedDevice = device;
         matched = candidate;
+        matchedUuid = observed;
     }
     if (match < 0 || !matchedDevice) {
         gc_strlcpy(err, errSize,
             "selected PCI GPU disappeared during recovery; refusing ordinal fallback");
+        linux_backend_recovery_unproven(g);
         return false;
     }
+    const bool hadUuid = linux_gpu_uuid_valid(linux_backend_selected_uuid(g));
+    linux_backend_expire_session_uuids(g);  // a new handle or session keeps a UUID only by reading it
+    const bool replaced = matchedDevice != g->nvmlDevice;
     g->nvmlDevice = matchedDevice;
     g->nvmlIndex = (unsigned int)match;
     if (g->selectedAdapterIndex < g->adapterCount) {
+        if (linux_gpu_uuid_valid(&matchedUuid) || replaced) g->adapterUuids[g->selectedAdapterIndex] = matchedUuid;
         GpuAdapterInfo* selected = &g->adapters[g->selectedAdapterIndex];
         selected->nvmlIndex = (unsigned int)match;
         selected->pciInfoValid = matched.pciInfoValid;
@@ -436,6 +450,7 @@ static bool linux_backend_reenumerate_same_nvml_gpu(
         selected->pciFunction = matched.pciFunction;
         g->selectedGpu = *selected;
     }
+    linux_backend_adopt_recovered_uuids(g, &seen, match, hadUuid);
     lb_log("linux_backend: recovery re-enumerated the same PCI GPU at NVML index %d\n",
            match);
     return true;
@@ -518,8 +533,10 @@ static bool linux_backend_bind_discovered(LinuxGpuState* g, LinuxDriverContext* 
     }
     const LinuxGpuDiscovery& discovery = driver->discovery;
     g->adapterCount = discovery.adapterCount;
+    g->adapterReportedCount = discovery.reportedCount;
     memcpy(g->adapters, discovery.adapters, sizeof(g->adapters));
     memcpy(g->adapterUuids, discovery.adapterUuids, sizeof(g->adapterUuids));
+    g->uuidSession = driver->nvmlSessions;
     const nvmlDevice_t* devices = discovery.devices;
 
     // UUID evidence is optional; its fallback is the existing location resolver.
@@ -599,11 +616,28 @@ bool linux_backend_select_target(LinuxGpuState* g,
             return false;
         }
     }
-    if (g->writeIdentityResolved && current >= 0 &&
+    // A stored UUID the known inventory places on another adapter or on
+    // several must not be settled by this slot's location.
+    LinuxGpuUuidVerdict knownVerdict = LINUX_GPU_UUID_FALLBACK;
+    const LinuxGpuInitSelection known = linux_gpu_restore_selection(target, role, g->adapters,
+        g->adapterCount, uuid, g->adapterUuids, &knownVerdict);
+    const bool inventoryElsewhere = knownVerdict == LINUX_GPU_UUID_AMBIGUOUS ||
+        (knownVerdict == LINUX_GPU_UUID_MATCHED && known.index != current);
+    if (!inventoryElsewhere && g->writeIdentityResolved && current >= 0 &&
         (unsigned int)current == g->selectedAdapterIndex) {
-        const LinuxGpuUuid observed = linux_gpu_read_uuid(g->getUuid, g->nvmlDevice);
+        // A failed query never erases what this session read about the handle;
+        // a fresh read replaces it (a contradiction included) before rediscovery.
+        linux_backend_expire_session_uuids(g);
+        const LinuxGpuUuid fresh = linux_gpu_read_uuid(g->getUuid, g->nvmlDevice);
+        if (linux_gpu_uuid_valid(&fresh)) {
+            g->adapterUuids[current] = fresh;
+            // A contradiction first learned by this read is known evidence too.
+            linux_gpu_restore_selection(target, role, g->adapters, g->adapterCount, uuid,
+                                        g->adapterUuids, &knownVerdict);
+        }
+        const LinuxGpuUuid observed = linux_gpu_uuid_retain(&fresh, &g->adapterUuids[current]);
         if (linux_gpu_uuid_compatible(uuid, &observed)) {
-            // A fresh query proves a match. If the optional query fails, keep
+            // A fresh (or retained) UUID proves a match. Without either, keep
             // the old fast path rather than requiring a new NVML init to work.
             g->adapterUuids[current] = observed;
             if (uuidVerdict && linux_gpu_uuid_valid(uuid) && linux_gpu_uuid_valid(&observed))
@@ -613,6 +647,7 @@ bool linux_backend_select_target(LinuxGpuState* g,
                     ? "matched" : "fallback");
             return true;
         }
+        // A known contradiction: rediscovery below decides by UUID first (it may have moved).
     }
     LinuxGpuState replacement = {};
     if (!linux_backend_init(&replacement, g->driver, target, err, errSize, role, uuid) ||
@@ -624,6 +659,41 @@ bool linux_backend_select_target(LinuxGpuState* g,
                 "selected GPU could not be resolved uniquely");
         return false;
     }
+    // The same UUID-first decision on both discoveries' evidence: a UUID the
+    // earlier one read still vetoes (never becoming this card's identity), so a
+    // failed query cannot turn a known mismatch into a match by location.
+    LinuxGpuUuid evidenceUuids[MAX_GPU_ADAPTERS] = {};
+    memcpy(evidenceUuids, replacement.adapterUuids, sizeof(evidenceUuids));
+    const unsigned int carried = linux_gpu_uuid_carry_forward(g->adapters, g->adapterUuids,
+        g->adapterCount, replacement.adapters, evidenceUuids, replacement.adapterCount);
+    LinuxGpuUuidVerdict merged = LINUX_GPU_UUID_FALLBACK;
+    const LinuxGpuInitSelection confirmed = linux_gpu_restore_selection(target, role,
+        replacement.adapters, replacement.adapterCount, uuid, evidenceUuids, &merged);
+    // A known ambiguity or mismatch stands until fresh evidence matches.
+    const bool knownAmbiguous = knownVerdict == LINUX_GPU_UUID_AMBIGUOUS && merged != LINUX_GPU_UUID_MATCHED;
+    const bool knownMismatch = knownVerdict == LINUX_GPU_UUID_MISMATCH && merged != LINUX_GPU_UUID_MATCHED;
+    // Absent means proven absent: every reported device listed, each with a
+    // usable location, so an unlocatable listed device cannot hide a claimant.
+    bool everyLocated = replacement.adapterCount == replacement.adapterReportedCount;
+    for (unsigned int i = 0; everyLocated && i < replacement.adapterCount && i < MAX_GPU_ADAPTERS; ++i)
+        everyLocated = replacement.adapters[i].pciInfoValid && linux_gpu_bdf_valid(&replacement.adapters[i]);
+    const bool stillAmbiguous = knownAmbiguous || knownMismatch ||
+        linux_gpu_uuid_known_evidence_unresolved(uuid, g->adapters, g->adapterUuids, g->adapterCount,
+            replacement.adapters, replacement.adapterUuids, replacement.adapterCount, (int)replacement.selectedAdapterIndex,
+            everyLocated);
+    if (stillAmbiguous || (carried && (!confirmed.writeResolved || confirmed.index < 0 ||
+                    (unsigned int)confirmed.index != replacement.selectedAdapterIndex))) {
+        if (knownAmbiguous || (stillAmbiguous && merged == LINUX_GPU_UUID_MATCHED)) merged = LINUX_GPU_UUID_AMBIGUOUS;
+        if (uuidVerdict) *uuidVerdict = merged == LINUX_GPU_UUID_AMBIGUOUS ? merged : LINUX_GPU_UUID_MISMATCH;
+        linux_backend_shutdown(&replacement);
+        gc_strlcpy(err, errSize, merged == LINUX_GPU_UUID_AMBIGUOUS
+            ? "UUID evidence cannot tell which GPU this is; it is not written until a fresh read resolves it"
+            : "a UUID read earlier shows this location holds a different physical GPU");
+        lb_log("linux_backend: rediscovery contradicted by %u carried UUID(s) or earlier ambiguity (verdict=%s); refused\n",
+               carried, linux_gpu_uuid_verdict_name(merged));
+        return false;
+    }
+    if (carried && merged == LINUX_GPU_UUID_MATCHED) replacement.uuidVerdict = merged;
     if (g->graphicsRecovery.covered) {
         if (!linux_backend_recovery_binding_matches(g, &replacement)) {
             linux_backend_shutdown(&replacement);

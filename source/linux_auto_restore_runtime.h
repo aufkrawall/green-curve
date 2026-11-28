@@ -322,6 +322,7 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(LinuxGpuController
     const LinuxDaemonStateRecord* previousRecord = nullptr,
     bool standbyFanStashReplay = false) {
     LinuxAutoRestoreOutcome outcome = {};
+    const GpuLocationRole storedRole = role;  // the binding as saved, before selection refines it
     if (!target || !intent) {
         gc_strlcpy(outcome.message, sizeof(outcome.message),
                    "no intent to restore");
@@ -393,16 +394,6 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(LinuxGpuController
         : bootProfile ? nullptr : intent;
     GraphicsScalarOperation graphicsOperation(ctl.gpu.graphicsRecovery);
     const gc_u32 graphicsCoverage = previousRecord ? previousRecord->graphicsControlSurfaces : 0;
-    if (graphicsCoverage) {
-        const gc_u32 ownedSurface = desired_named_graphics_surface(*previous);
-        if (graphicsCoverage & ~graphics_scalar_recovery_bit(ownedSurface)) {
-            daemon_enter_uncertain_state(ctl, "automatic restore has unresolved named graphics controls");
-            gc_strlcpy(outcome.message, sizeof(outcome.message), "Named graphics recovery requires explicit Reset");
-            return outcome;
-        }
-        ctl.gpu.graphicsRecovery.covered |= graphicsCoverage;
-        ctl.gpu.graphicsRecovery.ownedSurface = ownedSurface;
-    }
     char postPrepareOwnershipErr[192] = {};
     const bool selectedFanTargetOwned =
         daemon_fan_ownership_allows_selected_write(ctl,
@@ -432,6 +423,43 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(LinuxGpuController
              postPrepareOwnershipErr[0] ? ": " : "",
              postPrepareOwnershipErr);
         return outcome;
+    }
+    // The journal on disk must be this card's (or absent): an automatic write
+    // never takes over another card's state (linux_daemon_journal.h).
+    LinuxJournalPin journal = {};
+    if (!daemon_journal_admit(ctl, LINUX_JOURNAL_WRITE_AUTOMATIC, &journal, err, sizeof(err))) {
+        gc_snprintf(outcome.message, sizeof(outcome.message), "automatic restore refused: %s", err);
+        // The unreadable journal is gone from disk now; hold the refusal until
+        // an explicit Apply/Reset, or the next resume would find nothing left
+        // to refuse on.
+        if (journal.lost) daemon_enter_uncertain_state(ctl, "automatic restore found an unreadable journal");
+        return outcome;
+    }
+    // The card this unattended write binds must be proven, not only the
+    // journal: a boot profile can exist without one. While discovery skipped
+    // a device, following the target's model could land on its twin.
+    const LinuxJournalOwner targetProof = linux_journal_owner(*target, storedRole, uuid ? *uuid : LinuxGpuUuid{},
+        daemon_journal_evidence(ctl), nullptr);
+    if (targetProof != LINUX_JOURNAL_OWNER_SERVED) {
+        gc_snprintf(outcome.message, sizeof(outcome.message),
+            "automatic restore refused: its GPU cannot be proven on the bound card (%s)",
+            linux_journal_owner_name(targetProof));
+        dlog("daemon auto-restore: %s refused; target proof=%s adapters=%u reported=%u\n",
+             linux_auto_restore_trigger_name(trigger), linux_journal_owner_name(targetProof),
+             ctl.gpu.adapterCount, ctl.gpu.adapterReportedCount);
+        return outcome;
+    }
+    // The journal's named graphics coverage joins this card's recovery only
+    // once the journal and the target are proven to be this card's.
+    if (graphicsCoverage) {
+        const gc_u32 ownedSurface = desired_named_graphics_surface(*previous);
+        if (graphicsCoverage & ~graphics_scalar_recovery_bit(ownedSurface)) {
+            daemon_enter_uncertain_state(ctl, "automatic restore has unresolved named graphics controls");
+            gc_strlcpy(outcome.message, sizeof(outcome.message), "Named graphics recovery requires explicit Reset");
+            return outcome;
+        }
+        ctl.gpu.graphicsRecovery.covered |= graphicsCoverage;
+        ctl.gpu.graphicsRecovery.ownedSurface = ownedSurface;
     }
     const LinuxGpuUuid binding = linux_gpu_uuid_retain(linux_backend_selected_uuid(&ctl.gpu), uuid);
     dlog("daemon auto-restore: UUID binding readable=%d retained=%d\n",
@@ -511,7 +539,9 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(LinuxGpuController
     if (!mutation.success) {
         outcome.success = false;
         char stateErr[256] = {};
-        store_daemon_record(ctl, LINUX_DAEMON_RECORD_UNCERTAIN, target, &committed,
+        // The card the backend resolved and wrote, not the stored target,
+        // which may name the card's location before a PCI renumbering.
+        store_daemon_record(ctl, LINUX_DAEMON_RECORD_UNCERTAIN, &ctl.gpu.selectedGpu, &committed,
                             stateErr, sizeof(stateErr), 0, SERVICE_OPERATION_NONE, role, &binding);
         daemon_enter_uncertain_state(ctl, "automatic restore write failed");
         auto_restore_note_automatic_failure(ctl, trigger, outcome.message,
@@ -527,6 +557,11 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(LinuxGpuController
     // the file disagreeing with what is now on the hardware.
     char stateErr[256] = {};
     GpuAdapterInfo committedTarget = ctl.gpu.selectedGpu;
+    // A binding that lost its write identity during the write is never
+    // committed (store_daemon_record refuses ACTIVE): it takes the failure
+    // path below (rollback refused, UNCERTAIN).
+    if (!ctl.gpu.writeIdentityResolved)
+        gc_strlcpy(stateErr, sizeof(stateErr), "the GPU's identity could no longer be confirmed after the write");
     if (!store_daemon_record(ctl, LINUX_DAEMON_RECORD_ACTIVE, &committedTarget,
                              &committed, stateErr, sizeof(stateErr), 0, SERVICE_OPERATION_NONE, role, &binding)) {
         char commitErr[256] = {};

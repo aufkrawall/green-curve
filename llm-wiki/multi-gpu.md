@@ -145,3 +145,200 @@ and is published only while that slot is still the same card; the inventory
 is cleared with the adapter cache (`close_nvapi()`,
 `reset_gpu_runtime_selection()`), and written and read under `g_appLock`.
 A missing getter or failed query only leaves the flag clear.
+
+## Per-GPU daemon journal on Linux (2026-11-28)
+
+Source anchors: `source/linux_journal_owner_policy.h` (owner and write
+decision), `source/linux_daemon_journal.h` (`daemon_journal_admit()`),
+`source/linux_daemon_state_set.h` and `keeps_multi_gpu_journal()` in
+`source/linux_daemon_state.cpp`, `restore_committed_record()` in
+`source/linux_daemon.cpp`; tests `tests/linux_journal_owner_tests.cpp`
+(14900-14929, 14940, 14947), `tests/linux_daemon_commit_rollback_tests.cpp` (14930-14939, 14942-14946, 14948, 14950-14954, 14959),
+`tests/linux_daemon_state_regression.cpp` (codes 12-16).
+
+`active.bin` is an identity-bound single-record journal: the same file every
+earlier build wrote, so an installer rollback to an older daemon reads it
+unchanged. It does not yet store several cards' records; that arrives with
+per-GPU runtimes. Its record already
+carries the card's identity (PCI identity, location role, optional UUID); it
+is attributed to a live card only by the existing restore resolver
+(`linux_gpu_restore_selection()`: UUID first, PCI/location fallback, roles),
+never by file name and never by guessing. No file is moved or migrated.
+
+Before any hardware write (explicit Apply/Reset after target selection;
+boot and resume restores after backend preparation) `daemon_journal_admit()`
+classifies the journal against the served card:
+
+| Owner | Meaning | Apply / automatic | Reset |
+|---|---|---|---|
+| none / served | no journal, or this card's | allowed | allowed |
+| other | resolves to another present card | refused: select it and Reset it | refused |
+| gone | discovery is complete and no other present card could be it: none reports its UUID, and none shares its model unless that card reports its own unique, different UUID | refused | releases a settled journal (ACTIVE, no named controls) as its own durable step, then resets this card normally; never unfinished recovery |
+| unproven | ambiguous, contradicted, or discovery listed fewer devices than NVML reported (or one without PCI identity) and the journal resolves by neither a UUID match nor (for a journal without a UUID) its exact recorded location | refused | refused |
+| unreadable | several GPUs' journals, a read error, or (for an automatic write) a journal the loader just refused and removed | refused | refused |
+
+Until every GPU has its own runtime only one card holds Green Curve state,
+on disk as in memory; the in-memory single-owner guard, the fan ownership gate
+and the named-graphics checks are unchanged. "Not found" is never treated as
+"absent" unless discovery proves it (`LinuxGpuDiscovery::reportedCount`).
+
+Releasing a missing card's settled journal is a durable step of its own,
+completed before the served card's Reset begins; that Reset then journals
+normally (PREPARED, removed on commit). One record never holds both claims,
+and every crash point leaves a consistent journal: the old one, none, or the
+Reset's own PREPARED record. A release that fails (including an unlink whose
+directory sync failed) restores the journal's exact bytes and stops before
+any write. Unfinished recovery
+(PREPARED, UNCERTAIN, named controls) of another card is never taken over,
+even on a one-card host. Unattended writes (boot, resume) also prove their
+own target with the same rule before writing, since a boot profile can exist
+without any journal; a target that is not proven on the bound card is
+refused (`daemon auto-restore: ... target proof=`). An automatic restore that finds an unreadable journal (removed
+by the loader) latches uncertainty, so the next resume still refuses.
+
+The journal's exact bytes are pinned before the write, and the card's learned
+UUID carries through PREPARED, ACTIVE and rollback even when a UUID read
+fails at that moment. When a failed write would otherwise remove the
+card's own journal (no intent in memory: a journal not replayed under startup
+policy `none`), `restore_committed_record()` stores those bytes back instead
+(`daemon state: failed operation restored the journal it replaced`). A release
+whose unlink happened but could be neither synced nor undone keeps the exact
+record in the controller (`journalHold`); every write refuses until it is
+stored again, after which admission proceeds against it (14959). That hold lives in memory: if storage fails that badly and the daemon
+then restarts, whatever the filesystem kept decides, and a removal that
+persisted is exactly the release the user asked for (a missing card's settled
+settings). Backend target selection decides by UUID first on the evidence
+both discoveries hold: a UUID an earlier discovery read for the same exact
+location carries forward when a later query fails
+(`linux_gpu_uuid_carry_forward()`, never a UUID this discovery read
+elsewhere), so a known mismatch is refused instead of becoming a match by
+location, while a card proven by UUID at a new location is still found.
+Carried UUIDs only veto: they are evaluated in a separate evidence array and
+never published or journaled as a card's identity, which stays what the
+current discovery read (14964). On a host with several GPUs (NVML reports or
+discovery lists more than one), a record naming a UUID is proven only by a
+current read of that UUID, and only while every reported card was listed and
+read (`linux_journal_every_uuid_read()`): `linux_journal_owner()` never
+accepts it by location or model there, because no history of earlier reads
+can show which card a location holds once cards can be swapped, moved or left
+unopened, and a UUID that looks unique among partial reads may be a
+duplicate of an unread card. This one rule covers journal admission, the
+unattended-target proof, the fan-marker proof and the startup binding's
+refresh check and published topology (`daemon_stored_gpu_index()`); a single
+GPU, and a record written without a UUID, keep the location rule as before
+(14917, 14940, 14942-14944, 14947). "Current" means read in the present NVML
+session: `LinuxDriverContext::nvmlSessions` counts successful
+initializations, and `linux_backend_expire_session_uuids()` drops a state's
+UUIDs from a replaced session at the start of every request, before journal
+admission and the fan-marker proof, on the bound fast path and in same-PCI
+recovery. Recovery reads every device it enumerates: the selected card keeps
+a UUID only by reading it (or, on the same handle and session, keeping its
+own), every other row becomes exactly what recovery read at that location
+(absent when unread), and a read showing another card at the bound location
+revokes the binding's write identity until a full rebind. The intent in
+memory drives the fan worker, the snapshot's fan state and the adapter
+summary's ACTIVE flag only while `daemon_active_intent_on_served()` holds:
+write identity, the PCI identity, and the served card's own UUID read now
+equal to the intent's (`daemon_intent_uuid_names()`; with several GPUs a
+missing read is no proof; other cards' reads do not matter here, since the
+question is which card the handle addresses), except that a UUID another
+listed card also reads proves neither card, wherever the duplicate was found.
+An owned manual fan that loses
+this proof is not silently left: nothing is written to a card that may be
+another one, so the handback is latched incomplete, a fault (handback failed)
+and uncertainty are recorded, and the ownership marker keeps the card's
+binding until a Reset on the proven card returns the fan (14973-14974). With
+several GPUs a new manual fan is taken only under the proof its return will
+need: every reported card listed and read, this card's UUID unique (14975),
+and likewise a first UUID-bound journal (or one replacing this card's record
+without a UUID) is written only where its own Reset could prove the card
+again (14984); handing a fan back, the safe direction,
+needs only the served card reading the marker's UUID uniquely among the
+cards read (14985), and a selected card that had a UUID and lost it through a new
+handle or NVML session, or whose UUID another device recovery read reports
+too (listed or not, including a UUID read for the first time), loses its
+write identity in recovery; so does any card
+on a host that only now shows several GPUs (its single-GPU binding never
+named it by UUID; a full rebind does), and a recovery that cannot enumerate
+or find the selected card again on such a host. A hardware write refreshing
+through it is refused by preflight (14976, 14981), and a write after which
+the binding lost its identity is never committed: no ACTIVE record is stored
+for a binding without write identity, so Apply, Reset and automatic restores
+end UNCERTAIN instead (14978, 14982); such a record never takes a UUID read
+through the revoked binding (14983), and a binding pinned before a write is
+kept as given, so a UUID first read during the write never enters its record
+(14986). A record stored
+for an explicit UUID keeps it; a different UUID read from the card now at
+that location never re-attributes the journal (14977); an Apply pins the
+UUID it verified before writing through commit, so its own refresh losing
+the read does not leave its records without it (14978); a rollback is never
+written through a binding whose write identity was revoked (the caller keeps
+recovery state); and after a renumbering the card that reads the intent's
+UUID may be selected to Reset it (another card's read does not matter),
+while an unrelated card, an intent without a UUID (a model match is no
+proof), or a UUID another listed card also reads (a duplicate proves
+neither) may not. Once selected, and still reading that UUID on the new
+binding, the intent follows it to its new location, so the fan worker and
+Reset, which compare PCI identity, treat it as that card's; otherwise an
+owned manual fan is reported incomplete like any lost proof (14979). A Reset
+whose journal removal and rollback both fail leaves a durable UNCERTAIN
+record with its pinned UUID, as Apply does, so a restart never replays the
+old settings; after a failed rollback neither Apply nor Reset writes the old
+ACTIVE record back first (14980). Recovery also
+raises the device count to what NVML reports now, so a host that grew is not
+judged as one GPU (only a full discovery, which rebuilds the adapter list,
+lowers it) (14946, 14948-14949, 14967-14972). A journal's named graphics
+coverage joins the card's recovery only after the journal and the target are
+proven (14945);
+the location shortcut is skipped when the known inventory places the stored
+UUID on another adapter or on several, and when the earlier evidence was a
+mismatch at the chosen location or a duplicate claim of the stored UUID,
+the rediscovered choice needs fresh proof
+(`linux_gpu_uuid_known_evidence_unresolved()`: the stored UUID read at the
+chosen card, every other earlier claimant gone or reading something else).
+Earlier evidence belongs to a location (device IDs compared only where both
+are known), so optional metadata a rediscovery failed to read never detaches
+it, and a claimant that is not listed counts as gone only when discovery
+listed every device NVML reported, each with a usable location, and no card
+of its model at another location could be it moved (one that has not freshly
+read a different UUID); a different card now at its old location rules out
+only that occupant. A mismatch or ambiguity the held evidence already
+showed, including one first learned by the selected handle's own fresh read,
+refuses until fresh evidence matches, even when nothing ties it to a location
+(14921-14929, 14958, 14960, 14962-14963); a bound fan marker with no recorded location is
+held to the same proof as the journal (14961).
+
+The fan ownership marker is held to the same proof: its write gate and the
+startup handback accept a bound marker only when `linux_journal_owner()`
+proves its card on the selected adapter (so a marker never follows its model
+to a twin while a reported device was not opened), and a target-less legacy
+marker counts as "one card" only when NVML reported exactly one device
+(`tests/linux_fan_ownership_tests.cpp`, 14955-14957). The backend's
+selected-GPU fast path keeps the UUID discovery learned when a fresh UUID
+query fails, so the evidence that would expose a replacement card is never
+erased (`tests/linux_driver_discovery_cases.h`, 14958).
+
+Two journal writes keep their card's binding: an automatic restore whose
+write failed records UNCERTAIN against the card the backend resolved and
+wrote (not the stored target, which may name the card's pre-renumbering
+location), and a fan lockout's UNCERTAIN journal keeps the binding's location
+role and learned UUID (`tests/fan_runtime_followup_tests.cpp`, 14936, 14951).
+
+A file of k > 1 current-layout records is the per-GPU journal of a daemon that
+runs several GPUs. This daemon reports it as `LINUX_DAEMON_STATE_MULTIPLE`
+(boot treats it as requiring recovery), and refuses to replace or remove it,
+instead of deleting it as an unknown layout. It never writes one itself.
+
+Still daemon-wide until each GPU has its own runtime: the startup policy
+(`startup.bin`, one choice whose PROFILE binding names its card), the
+automatic-restore guard (`restore-guard.bin`; a lockout covers every card,
+which is strictly more conservative) and operation results (`operation.bin`,
+looked up by id). The fan ownership marker keeps its single-record form; its
+existing gate already refuses writes while another card's marker is
+outstanding. Diagnostics: `daemon journal: <write> owner=... decision=...`.
+
+Behavior change for multi-GPU hosts: a journal left on card A (for example
+under policy `none`) now blocks writes to card B until A is Reset, instead of
+being overwritten by B's first write. A single unchanged card behaves as
+before; a single replaced card (a different model in the slot) needs one
+Reset before its first Apply, which releases the old card's journal.

@@ -59,6 +59,10 @@ struct LinuxNvapiInventory {
 // index each adapter records).
 struct LinuxGpuDiscovery {
     unsigned int adapterCount;
+    // What NVML reported. Fewer adapters than reported (an unreadable handle,
+    // or more GPUs than MAX_GPU_ADAPTERS) means discovery cannot prove that a
+    // GPU it did not list is absent.
+    unsigned int reportedCount;
     GpuAdapterInfo adapters[MAX_GPU_ADAPTERS];
     LinuxGpuUuid adapterUuids[MAX_GPU_ADAPTERS];
     nvmlDevice_t devices[MAX_GPU_ADAPTERS];
@@ -79,6 +83,9 @@ struct LinuxDriverContext {
     // gates retries/logging to powers of two up to 64 (1, 2, 4, ..., 64), then
     // every 64 refreshes, and resets on success.
     unsigned int nvmlRecoveryMisses;
+    // Counts successful NVML initializations: what a binding read belongs to
+    // the session it was read in (linux_backend_expire_session_uuids).
+    unsigned int nvmlSessions;
     // NvAPI: every binding initializes it before enumerating; a recovery
     // rebind reuses the session unless an enumeration failure cleared this.
     PlLib nvapiLib;

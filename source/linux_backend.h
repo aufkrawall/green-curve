@@ -69,7 +69,9 @@ struct LinuxGpuState {
     GpuAdapterInfo adapters[MAX_GPU_ADAPTERS];
     GpuAdapterInfo selectedGpu;
     LinuxGpuUuid adapterUuids[MAX_GPU_ADAPTERS];
+    unsigned int adapterReportedCount;  // LinuxGpuDiscovery::reportedCount
     LinuxGpuUuidVerdict uuidVerdict;
+    unsigned int uuidSession;  // the NVML session adapterUuids were read in
     bool writeIdentityResolved;
     LinuxGpuMatchMethod nvapiMatchMethod;
     unsigned int architectureSource;
@@ -166,6 +168,68 @@ struct LinuxGpuState {
     bool lastLoggedFanOk;
     bool fanWriteLogged;
 };
+
+// UUIDs a binding read are current reads only in the NVML session they were
+// read in; once the shared session was replaced they are dropped, and only a
+// new read proves a card again.
+static inline void linux_backend_expire_session_uuids(LinuxGpuState* g) {
+    if (!g || !g->driver || g->uuidSession == g->driver->nvmlSessions) return;
+    for (unsigned int i = 0; i < MAX_GPU_ADAPTERS; ++i) g->adapterUuids[i] = LinuxGpuUuid{};
+    g->uuidSession = g->driver->nvmlSessions;
+}
+
+// What a same-PCI recovery read: every enumerated device's UUID (a device
+// discovery never listed may still report the selected card's UUID), the same
+// reads by listed adapter row, and NVML's count before this recovery.
+struct LinuxRecoveredUuids {
+    LinuxGpuUuid read[MAX_GPU_ADAPTERS];
+    LinuxGpuUuid listed[MAX_GPU_ADAPTERS];
+    unsigned int reportedBefore;
+};
+
+// A grown host is never judged as one GPU; only a full discovery, which
+// rebuilds adapters[], may lower the count.
+static inline LinuxRecoveredUuids linux_backend_recovery_begin(LinuxGpuState* g, unsigned int count) {
+    LinuxRecoveredUuids seen = {};
+    seen.reportedBefore = g->adapterReportedCount;
+    if (count > g->adapterReportedCount) g->adapterReportedCount = count;
+    return seen;
+}
+
+static inline void linux_backend_note_recovered_uuid(const LinuxGpuState* g, const GpuAdapterInfo& device,
+    const LinuxGpuUuid& uuid, unsigned int index, LinuxRecoveredUuids* seen) {
+    if (index < MAX_GPU_ADAPTERS) seen->read[index] = uuid;
+    for (unsigned int k = 0; k < g->adapterCount && k < MAX_GPU_ADAPTERS; ++k)
+        if (linux_gpu_bdf_valid(&device) && linux_gpu_bdf_equal(&device, &g->adapters[k])) seen->listed[k] = uuid;
+}
+
+// A recovery that could not re-establish the selected card on a host with
+// several GPUs leaves the binding unproven: no write goes through the old handle.
+static inline void linux_backend_recovery_unproven(LinuxGpuState* g) {
+    if (g->adapterCount > 1 || g->adapterReportedCount > 1) g->writeIdentityResolved = false;
+}
+
+// After a successful recovery every other row becomes exactly what recovery
+// read (absent when unread). On a host with several GPUs the selected card is
+// proven only by a UUID that no other device recovery read reports; a card
+// that had a UUID loses its write identity without that proof, and a host that
+// only now shows several GPUs always does (its single-GPU binding never named
+// the card by UUID), until a full rebind (every write path, preflight
+// included, checks it).
+static inline void linux_backend_adopt_recovered_uuids(LinuxGpuState* g, const LinuxRecoveredUuids* seen,
+                                                       int match, bool hadUuid) {
+    const unsigned int sel = g->selectedAdapterIndex;
+    for (unsigned int i = 0; i < MAX_GPU_ADAPTERS; ++i)
+        if (i != sel) g->adapterUuids[i] = seen->listed[i];
+    bool proven = sel < MAX_GPU_ADAPTERS && linux_gpu_uuid_valid(&g->adapterUuids[sel]);
+    for (unsigned int j = 0; proven && j < MAX_GPU_ADAPTERS; ++j)
+        proven = (int)j == match || !linux_gpu_uuid_valid(&seen->read[j]) ||
+            strcmp(seen->read[j].text, g->adapterUuids[sel].text) != 0;
+    const bool several = g->adapterCount > 1 || g->adapterReportedCount > 1;
+    const bool wasSeveral = g->adapterCount > 1 || seen->reportedBefore > 1;
+    const bool hasUuid = hadUuid || (sel < MAX_GPU_ADAPTERS && linux_gpu_uuid_valid(&g->adapterUuids[sel]));
+    if (several && (!wasSeveral || (hasUuid && !proven))) g->writeIdentityResolved = false;
+}
 
 static inline const LinuxGpuUuid* linux_backend_selected_uuid(const LinuxGpuState* g) {
     return g && g->selectedAdapterIndex < g->adapterCount

@@ -92,6 +92,7 @@ struct LibraryLifetime {
     // Simulates a broken driver where getCount keeps returning UNINITIALIZED
     // even after nvmlInit_v2 succeeded and acquired a reference.
     bool alwaysReportUninitialized;
+    unsigned int reportedDevices;  // getCount's answer; 0 means one device
 };
 static LibraryLifetime library;
 
@@ -118,23 +119,23 @@ static nvmlReturn_t fake_count(unsigned int* count) {
     }
     if (library.references <= 0) return NVML_ERROR_UNINITIALIZED;
     if (library.refuseCount) return NVML_ERROR_UNKNOWN;
-    *count = 1;
+    *count = library.reportedDevices ? library.reportedDevices : 1;
     return NVML_SUCCESS;
 }
 
 static nvmlReturn_t fake_handle(unsigned int index, nvmlDevice_t* device) {
     if (library.references <= 0) return NVML_ERROR_UNINITIALIZED;
-    if (index != 0) return NVML_ERROR_NOT_FOUND;
-    *device = reinterpret_cast<nvmlDevice_t>(1);
+    if (index != 0 && !(index == 1 && library.reportedDevices >= 2)) return NVML_ERROR_NOT_FOUND;
+    *device = reinterpret_cast<nvmlDevice_t>((uintptr_t)index + 1);
     return NVML_SUCCESS;
 }
 }
 
-static nvmlReturn_t fake_pci(nvmlDevice_t, nvmlPciInfo_t* pci) {
+static nvmlReturn_t fake_pci(nvmlDevice_t device, nvmlPciInfo_t* pci) {
     if (library.references <= 0) return NVML_ERROR_UNINITIALIZED;
     *pci = {};
     pci->pciDeviceId = 0x1e0410deu;
-    pci->bus = 1;
+    pci->bus = device == reinterpret_cast<nvmlDevice_t>(2) ? 2 : 1;  // a second device at bus 2
     return NVML_SUCCESS;
 }
 static int fake_nvapi_init() {
@@ -374,6 +375,7 @@ int run_linux_nvml_lifetime_tests() {
     library.refuseInit = true;
     char recoveryErr[192] = {};
     bool nvmlReinitialized = false;
+    const unsigned int sessionsBeforeRecovery = shared.nvmlSessions;
     if (linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr, sizeof(recoveryErr),
             &nvmlReinitialized) || shared.nvmlInitialized || nvmlReinitialized ||
         library.initCalls != 2 || library.references != 0) return 14243;
@@ -381,6 +383,222 @@ int run_linux_nvml_lifetime_tests() {
     if (!linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr, sizeof(recoveryErr),
             &nvmlReinitialized) || !shared.nvmlInitialized || !nvmlReinitialized ||
         library.initCalls != 3 || library.references != 1) return 14244;
+    if (shared.nvmlSessions != sessionsBeforeRecovery + 1) return 14968;  // only the successful re-init counts
+    // 14967: a recovery that binds another handle (or session) at the same
+    // location keeps the bound UUID only if it reads it again; the same
+    // handle with a failed read keeps it.
+    pciBound.getUuid = nullptr;
+    const LinuxGpuUuid boundUuid = linux_gpu_uuid_parse("GPU-11111111-1111-1111-1111-111111111111");
+    pciBound.adapterUuids[pciBound.selectedAdapterIndex] = boundUuid;
+    const bool sameHandle = linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr,
+        sizeof(recoveryErr), &nvmlReinitialized);
+    if (!sameHandle || !linux_gpu_uuid_valid(&pciBound.adapterUuids[pciBound.selectedAdapterIndex]))
+        return 14967;
+    pciBound.nvmlDevice = (nvmlDevice_t)(uintptr_t)0x5157;
+    nvmlReinitialized = false;
+    if (!linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr, sizeof(recoveryErr),
+            &nvmlReinitialized) ||
+        linux_gpu_uuid_valid(&pciBound.adapterUuids[pciBound.selectedAdapterIndex])) return 14967;
+    // 14968: and the same handle value in a newer NVML session (opened by any
+    // other caller in between) is not the same binding either.
+    pciBound.adapterUuids[pciBound.selectedAdapterIndex] = boundUuid;
+    pciBound.uuidSession = shared.nvmlSessions;
+    ++shared.nvmlSessions;
+    if (!linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr, sizeof(recoveryErr),
+            &nvmlReinitialized) ||
+        linux_gpu_uuid_valid(&pciBound.adapterUuids[pciBound.selectedAdapterIndex])) return 14968;
+    // 14970: recovery records the device count NVML reports now, so a host
+    // that grew to several GPUs is not judged by the old single-GPU count.
+    library.reportedDevices = 2;
+    const bool grownRecovered = linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr,
+        sizeof(recoveryErr), &nvmlReinitialized);
+    library.reportedDevices = 0;
+    if (!grownRecovered || pciBound.adapterReportedCount != 2) return 14970;
+    // ...and never lowers it: recovery does not rebuild adapters[], so a
+    // smaller count cannot turn an incomplete inventory into a complete one.
+    if (!linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr, sizeof(recoveryErr),
+            &nvmlReinitialized) || pciBound.adapterReportedCount != 2) return 14970;
+    pciBound.adapterReportedCount = 1;
+    // 14971: recovery reads every device it enumerates, and every other
+    // adapter's row becomes exactly what it read there: absent when it could
+    // not find the device, the fresh read when it did -- so two cards that
+    // report the same UUID are seen as a duplicate afresh, never as unique.
+    pciBound.adapterCount = 2;
+    pciBound.adapters[1] = pciBound.adapters[0];
+    pciBound.adapters[1].pciBus = 2;
+    pciBound.adapterUuids[1] = linux_gpu_uuid_parse("GPU-77777777-7777-7777-7777-777777777777");
+    const bool otherRowRecovered = linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr,
+        sizeof(recoveryErr), &nvmlReinitialized);
+    if (!otherRowRecovered || linux_gpu_uuid_valid(&pciBound.adapterUuids[1])) return 14971;
+    library.reportedDevices = 2;
+    pciBound.adapterUuids[0] = LinuxGpuUuid{};
+    pciBound.getUuid = [](nvmlDevice_t, char* out, unsigned int size) -> nvmlReturn_t {
+        snprintf(out, size, "%s", "GPU-88888888-8888-8888-8888-888888888888");
+        return NVML_SUCCESS;
+    };
+    const bool duplicateRecovered = linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr,
+        sizeof(recoveryErr), &nvmlReinitialized);
+    library.reportedDevices = 0;
+    pciBound.getUuid = nullptr;
+    pciBound.adapterCount = 1;
+    pciBound.adapters[1] = GpuAdapterInfo{};
+    if (!duplicateRecovered || strcmp(pciBound.adapterUuids[0].text, "GPU-88888888-8888-8888-8888-888888888888") ||
+        strcmp(pciBound.adapterUuids[1].text, pciBound.adapterUuids[0].text)) return 14971;
+    pciBound.adapterUuids[1] = LinuxGpuUuid{};
+    pciBound.adapterReportedCount = 1;
+    // 14981: a recovery that finds another card reporting the selected card's
+    // UUID (a duplicate proves neither) revokes write identity, so the write it
+    // was refreshing for (an Apply's own refresh) is refused by preflight.
+    pciBound.adapterCount = 2;
+    pciBound.adapters[1] = pciBound.adapters[0];
+    pciBound.adapters[1].pciBus = 2;
+    pciBound.adapterUuids[0] = linux_gpu_uuid_parse("GPU-88888888-8888-8888-8888-888888888888");
+    pciBound.writeIdentityResolved = true;
+    library.reportedDevices = 2;
+    pciBound.getUuid = [](nvmlDevice_t, char* out, unsigned int size) -> nvmlReturn_t {
+        snprintf(out, size, "%s", "GPU-88888888-8888-8888-8888-888888888888");
+        return NVML_SUCCESS;
+    };
+    const bool duplicateFound = linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr,
+        sizeof(recoveryErr), &nvmlReinitialized);
+    const bool duplicateResolved = pciBound.writeIdentityResolved;
+    library.reportedDevices = 0;
+    pciBound.getUuid = nullptr;
+    pciBound.adapterCount = 1;
+    pciBound.adapters[1] = GpuAdapterInfo{};
+    pciBound.adapterUuids[0] = pciBound.adapterUuids[1] = LinuxGpuUuid{};
+    pciBound.adapterReportedCount = 1;
+    pciBound.writeIdentityResolved = true;
+    if (!duplicateFound || duplicateResolved) return 14981;
+    // The same when the other device is not even listed (recovery is the
+    // first to see it): every device recovery read counts.
+    pciBound.adapterUuids[0] = linux_gpu_uuid_parse("GPU-88888888-8888-8888-8888-888888888888");
+    library.reportedDevices = 2;
+    pciBound.getUuid = [](nvmlDevice_t, char* out, unsigned int size) -> nvmlReturn_t {
+        snprintf(out, size, "%s", "GPU-88888888-8888-8888-8888-888888888888");
+        return NVML_SUCCESS;
+    };
+    const bool unlistedFound = linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr,
+        sizeof(recoveryErr), &nvmlReinitialized);
+    const bool unlistedResolved = pciBound.writeIdentityResolved;
+    pciBound.writeIdentityResolved = true;
+    pciBound.adapterReportedCount = 1;
+    // A host that only now shows a second GPU is rebound by a full discovery
+    // before any write, whether or not the UUIDs recovery read are distinct:
+    // its single-GPU binding never named the card by UUID.
+    pciBound.adapterUuids[0] = LinuxGpuUuid{};
+    pciBound.getUuid = nullptr;
+    const bool grewFound = linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr,
+        sizeof(recoveryErr), &nvmlReinitialized);
+    const bool grewResolved = pciBound.writeIdentityResolved;
+    pciBound.writeIdentityResolved = true;
+    pciBound.adapterReportedCount = 1;
+    pciBound.getUuid = [](nvmlDevice_t device, char* out, unsigned int size) -> nvmlReturn_t {
+        snprintf(out, size, "GPU-%08x-1111-2222-3333-444444444444",
+                 (unsigned int)reinterpret_cast<uintptr_t>(device));
+        return NVML_SUCCESS;
+    };
+    const bool distinctFound = linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr,
+        sizeof(recoveryErr), &nvmlReinitialized);
+    const bool distinctResolved = pciBound.writeIdentityResolved;
+    library.reportedDevices = 0;
+    pciBound.getUuid = nullptr;
+    pciBound.adapterUuids[0] = LinuxGpuUuid{};
+    pciBound.adapterReportedCount = 1;
+    pciBound.writeIdentityResolved = true;
+    if (!unlistedFound || unlistedResolved || !grewFound || grewResolved || !distinctFound || distinctResolved)
+        return 14981;
+    // A recovery on a host with several GPUs that cannot find the selected card
+    // again leaves no write going through the old handle.
+    library.reportedDevices = 2;
+    pciBound.adapterReportedCount = 2;
+    const unsigned int boundBus = pciBound.selectedGpu.pciBus;
+    pciBound.selectedGpu.pciBus = 9;
+    const bool vanishedFound = linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr,
+        sizeof(recoveryErr), &nvmlReinitialized);
+    const bool vanishedResolved = pciBound.writeIdentityResolved;
+    pciBound.selectedGpu.pciBus = boundBus;
+    library.reportedDevices = 0;
+    pciBound.adapterReportedCount = 1;
+    pciBound.writeIdentityResolved = true;
+    if (vanishedFound || vanishedResolved) return 14981;
+    // ...nor one whose enumeration fails (after a session replacement or not).
+    pciBound.adapterReportedCount = 2;
+    library.refuseCount = true;
+    const bool countFailedFound = linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr,
+        sizeof(recoveryErr), &nvmlReinitialized);
+    const bool countFailedResolved = pciBound.writeIdentityResolved;
+    library.refuseCount = false;
+    pciBound.adapterReportedCount = 1;
+    pciBound.writeIdentityResolved = true;
+    if (countFailedFound || countFailedResolved) return 14981;
+    // On a host already showing two GPUs, a selected card whose UUID recovery
+    // reads for the first time, and finds on another device too, is unproven.
+    pciBound.adapterCount = 2;
+    pciBound.adapters[1] = pciBound.adapters[0];
+    pciBound.adapters[1].pciBus = 2;
+    pciBound.adapterReportedCount = 2;
+    pciBound.adapterUuids[0] = pciBound.adapterUuids[1] = LinuxGpuUuid{};
+    library.reportedDevices = 2;
+    pciBound.getUuid = [](nvmlDevice_t, char* out, unsigned int size) -> nvmlReturn_t {
+        snprintf(out, size, "%s", "GPU-99999999-9999-9999-9999-999999999999");
+        return NVML_SUCCESS;
+    };
+    const bool firstDuplicateFound = linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr,
+        sizeof(recoveryErr), &nvmlReinitialized);
+    const bool firstDuplicateResolved = pciBound.writeIdentityResolved;
+    library.reportedDevices = 0;
+    pciBound.getUuid = nullptr;
+    pciBound.adapterCount = 1;
+    pciBound.adapters[1] = GpuAdapterInfo{};
+    pciBound.adapterUuids[0] = pciBound.adapterUuids[1] = LinuxGpuUuid{};
+    pciBound.adapterReportedCount = 1;
+    pciBound.writeIdentityResolved = true;
+    if (!firstDuplicateFound || firstDuplicateResolved) return 14981;
+    // 14976: with several GPUs, a selected card that had a UUID and lost it
+    // through a new NVML session (or handle) is no longer proven: recovery
+    // revokes the binding's write identity, so the hardware write it was
+    // refreshing for is refused by preflight. A single GPU keeps the location
+    // rule.
+    pciBound.writeIdentityResolved = true;
+    pciBound.adapterUuids[pciBound.selectedAdapterIndex] = boundUuid;
+    pciBound.uuidSession = shared.nvmlSessions;
+    ++shared.nvmlSessions;
+    if (!linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr, sizeof(recoveryErr),
+            &nvmlReinitialized) || !pciBound.writeIdentityResolved) return 14976;
+    pciBound.adapterCount = 2;
+    pciBound.adapters[1] = pciBound.adapters[0];
+    pciBound.adapters[1].pciBus = 2;
+    pciBound.adapterUuids[pciBound.selectedAdapterIndex] = boundUuid;
+    pciBound.uuidSession = shared.nvmlSessions;
+    ++shared.nvmlSessions;
+    const bool lostRecovered = linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr,
+        sizeof(recoveryErr), &nvmlReinitialized);
+    const bool lostResolved = pciBound.writeIdentityResolved;
+    pciBound.adapterCount = 1;
+    pciBound.adapters[1] = GpuAdapterInfo{};
+    pciBound.writeIdentityResolved = true;
+    if (!lostRecovered || lostResolved) return 14976;
+    // 14972: a recovery that reads another card's UUID at the bound location
+    // refuses and revokes the binding's write identity, and keeps neither UUID:
+    // the old one is disproven, the new one may belong to another handle. A
+    // later recovery whose read fails does not restore either.
+    const bool boundWasResolved = pciBound.writeIdentityResolved;
+    pciBound.writeIdentityResolved = true;
+    pciBound.adapterUuids[pciBound.selectedAdapterIndex] = boundUuid;
+    pciBound.getUuid = [](nvmlDevice_t, char* out, unsigned int size) -> nvmlReturn_t {
+        snprintf(out, size, "%s", "GPU-66666666-6666-6666-6666-666666666666");
+        return NVML_SUCCESS;
+    };
+    const bool disprovenAccepted = linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr,
+        sizeof(recoveryErr), &nvmlReinitialized);
+    pciBound.getUuid = nullptr;
+    if (disprovenAccepted || pciBound.writeIdentityResolved ||
+        linux_gpu_uuid_valid(&pciBound.adapterUuids[pciBound.selectedAdapterIndex])) return 14972;
+    if (!linux_backend_reenumerate_same_nvml_gpu(&pciBound, recoveryErr, sizeof(recoveryErr),
+            &nvmlReinitialized) || pciBound.writeIdentityResolved ||
+        linux_gpu_uuid_valid(&pciBound.adapterUuids[pciBound.selectedAdapterIndex])) return 14972;
+    pciBound.writeIdentityResolved = boundWasResolved;
     // Full refresh() recovery when both NVML and NvAPI sessions were lost:
     // re-initializes NVML and renews NvAPI in a single refresh() call.
     library.loseInit = true;

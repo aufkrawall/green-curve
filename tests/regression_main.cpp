@@ -1136,6 +1136,7 @@ int run_linux_curve_correction_runtime_tests();
 int run_linux_read_request_tests();
 int run_service_gpu_route_tests();
 int run_service_adapter_summary_tests();
+int run_linux_journal_owner_tests();
 // A polled ClkDomains reader logs a repeated refusal once
 // (tests/xbar_read_log_tests.cpp, 7730-7739).
 int run_xbar_read_log_tests();
@@ -2982,6 +2983,10 @@ static int run_all_tests(int argc, char** argv) {
     if (int summaryFailure = run_service_adapter_summary_tests()) {
         fprintf(stderr, "adapter summary regression failed: %d\n", summaryFailure);
         return summaryFailure;
+    }
+    if (int journalFailure = run_linux_journal_owner_tests()) {
+        fprintf(stderr, "journal owner regression failed: %d\n", journalFailure);
+        return journalFailure;
     }
     if (int xbarLogFailure = run_xbar_read_log_tests()) return xbarLogFailure;
     if (int domainDumpFailure = run_clk_domain_dump_tests()) return domainDumpFailure;

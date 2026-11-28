@@ -5,6 +5,38 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-11-28: Linux daemon journal kept per GPU
+
+- `daemon_journal_admit()` attributes `active.bin` to a card through the
+  existing restore resolver before every hardware write and refuses writes
+  while another present card's journal is on disk; an explicit Reset releases
+  only a proven-absent card's settled journal (complete discovery, no other
+  card of its model or UUID) as a durable step of its own before this card's
+  Reset, and never unfinished recovery; unattended writes, the fan marker gate
+  and startup handback prove their own card the same way, and the backend
+  fast path and rediscovery keep a UUID learned for the same location through
+  a failed query, so a known mismatch is refused while a UUID-proven move is
+  still followed; an unresolvable release holds every write until its journal
+  is stored again (14921-14929, 14940, 14942-14949, 14955-14964, 14967-14972).
+  With several GPUs a record naming a UUID (journal, write target, fan marker,
+  startup binding) is proven only by reading that UUID in the current NVML
+  session, with every reported card listed and read; a single GPU and a record without a UUID keep the location rule,
+  and while discovery skipped a device only the exact recorded location.
+  See [multi-gpu.md](../multi-gpu.md).
+- A failed write restores the journal's exact bytes instead of removing it.
+  A k-record journal from a multi-GPU daemon is kept, reported as several
+  records and never replaced or removed.
+- An automatic restore's failed-write UNCERTAIN journal names the card the
+  backend resolved; a fan lockout's keeps the binding's role and UUID.
+- Learned UUIDs carry through Apply/Reset journals; a startup refresh may
+  name the card its binding must be (checked, never re-bound).
+- Distinct unique UUIDs prove a present twin is not the journal's card; an
+  automatic write refuses after the loader removed an unreadable journal.
+- Tests `14900-14920` (policy, incl. boot recovery for several journals),
+  `14930-14939` and `14950-14954` (production daemon handler, incl. resume),
+  `14936`/`14951` (fan lockout binding), `14639-14640` (refresh binding),
+  state file fixture codes 12-16.
+
 ## 2026-11-28: Adapter UUIDs and per-adapter summaries (protocol v40)
 
 - `ServiceSnapshot.adapterSummaries[]` (`service_adapter_summary.h`) carries

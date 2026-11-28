@@ -18,6 +18,35 @@
 
 #ifndef GREEN_CURVE_LINUX_FAN_OWNERSHIP_H
 #define GREEN_CURVE_LINUX_FAN_OWNERSHIP_H
+#include "linux_journal_owner_policy.h"
+
+// The marker's card proven on the selected adapter by the same rule as the
+// saved journal (linux_journal_owner): with several GPUs a marker naming a
+// UUID needs that UUID read now, and while discovery skipped a device a model
+// is never followed to a twin.
+static LinuxJournalOwner daemon_fan_marker_owner(LinuxGpuController& ctl,
+                                                 const LinuxFanOwnershipMarker& marker) {
+    linux_backend_expire_session_uuids(&ctl.gpu);
+    // Handing a fan back (driver auto) is the safe direction: a marker naming a
+    // UUID is proven by the served card reading exactly that UUID, unique among
+    // the cards read; another card's unread UUID does not block the handback.
+    const unsigned int sel = ctl.gpu.selectedAdapterIndex;
+    if (linux_gpu_uuid_valid(&marker.targetUuid) && ctl.gpu.writeIdentityResolved && sel < ctl.gpu.adapterCount &&
+        sel < MAX_GPU_ADAPTERS && linux_gpu_uuid_valid(&ctl.gpu.adapterUuids[sel]) &&
+        strcmp(ctl.gpu.adapterUuids[sel].text, marker.targetUuid.text) == 0) {
+        bool unique = true;
+        for (unsigned int j = 0; j < ctl.gpu.adapterCount && j < MAX_GPU_ADAPTERS; ++j)
+            if (j != sel && linux_gpu_uuid_valid(&ctl.gpu.adapterUuids[j]) &&
+                strcmp(ctl.gpu.adapterUuids[j].text, marker.targetUuid.text) == 0) unique = false;
+        if (unique) return LINUX_JOURNAL_OWNER_SERVED;
+    }
+    const LinuxJournalEvidence evidence = {ctl.gpu.adapters, ctl.gpu.adapterUuids, ctl.gpu.adapterCount,
+        ctl.gpu.adapterReportedCount,
+        ctl.gpu.writeIdentityResolved && ctl.gpu.selectedAdapterIndex < ctl.gpu.adapterCount
+            ? (int)ctl.gpu.selectedAdapterIndex : -1};
+    return linux_journal_owner(marker.targetGpu, (GpuLocationRole)marker.targetLocationRole,
+                               marker.targetUuid, evidence, nullptr);
+}
 
 
 // Loaded ownership has the same authority as a new marker. Resolve its full
@@ -32,7 +61,8 @@ static bool daemon_fan_ownership_allows_selected_write(LinuxGpuController& ctl, 
     int recorded = -1;
     if (ctl.gpu.writeIdentityResolved) {
         if (!ctl.fanOwnershipRecord.targetGpu.valid) {
-            matches = explicitReset || ctl.gpu.adapterCount == 1;
+            matches = explicitReset ||
+                (ctl.gpu.adapterCount == 1 && ctl.gpu.adapterReportedCount <= 1);
         } else {
             const auto selected = linux_gpu_restore_selection(
                 &ctl.fanOwnershipRecord.targetGpu,
@@ -42,7 +72,8 @@ static bool daemon_fan_ownership_allows_selected_write(LinuxGpuController& ctl, 
             recorded = selected.index;
             recordedAbsent = selected.index == -1;
             matches = selected.writeResolved &&
-                (unsigned int)selected.index == ctl.gpu.selectedAdapterIndex;
+                (unsigned int)selected.index == ctl.gpu.selectedAdapterIndex &&
+                daemon_fan_marker_owner(ctl, ctl.fanOwnershipRecord) == LINUX_JOURNAL_OWNER_SERVED;
         }
     }
     if (!matches) {
@@ -81,6 +112,24 @@ static bool daemon_fan_ownership_ensure_before_write(LinuxGpuController& ctl,
     if (!daemon_desired_takes_manual_fan(committed)) return true;
     if (!ctl.gpu.writeIdentityResolved) {
         gc_strlcpy(err, errSize, "fan ownership requires a resolved GPU target");
+        return false;
+    }
+    // A manual fan is taken only under the proof its return will need: with
+    // several GPUs every reported card listed and read now (the marker's proof
+    // at Reset, shutdown and the next start) and this card's UUID unique. One
+    // that could not be maintained or handed back is not taken.
+    linux_backend_expire_session_uuids(&ctl.gpu);
+    const unsigned int sel = ctl.gpu.selectedAdapterIndex;
+    const LinuxJournalEvidence reads = {ctl.gpu.adapters, ctl.gpu.adapterUuids, ctl.gpu.adapterCount,
+                                        ctl.gpu.adapterReportedCount, (int)sel};
+    bool ownUuid = sel < ctl.gpu.adapterCount && sel < MAX_GPU_ADAPTERS && linux_journal_every_uuid_read(reads) &&
+        linux_gpu_uuid_valid(&ctl.gpu.adapterUuids[sel]);
+    for (unsigned int j = 0; ownUuid && j < ctl.gpu.adapterCount && j < MAX_GPU_ADAPTERS; ++j)  // and not shared
+        ownUuid = j == sel || !linux_gpu_uuid_valid(&ctl.gpu.adapterUuids[j]) ||
+            strcmp(ctl.gpu.adapterUuids[j].text, ctl.gpu.adapterUuids[sel].text) != 0;
+    if ((ctl.gpu.adapterCount > 1 || ctl.gpu.adapterReportedCount > 1) && !ownUuid) {
+        gc_strlcpy(err, errSize,
+                   "manual fan control with several GPUs needs every GPU's UUID readable and this one's unique");
         return false;
     }
     if (!daemon_fan_ownership_allows_selected_write(ctl, err, errSize)) return false;
@@ -267,7 +316,9 @@ static void daemon_fan_ownership_run_handback(LinuxGpuController& ctl, LinuxFanO
     if (!marker.targetGpu.valid) {
         // A legacy record carries no target. Multiple live adapters provide
         // no evidence about which fan the previous instance controlled.
-        if (ctl.gpu.adapterCount != 1 || !ctl.gpu.writeIdentityResolved) {
+        // NVML reporting more devices than discovery opened is not one card.
+        if (ctl.gpu.adapterCount != 1 || ctl.gpu.adapterReportedCount > 1 ||
+            !ctl.gpu.writeIdentityResolved) {
             daemon_fan_ownership_latch_incomplete(ctl, "legacy fan ownership target is ambiguous");
             dlog("daemon fan ownership: legacy target unresolved; marker retained, no write\n");
             return;
@@ -281,6 +332,14 @@ static void daemon_fan_ownership_run_handback(LinuxGpuController& ctl, LinuxFanO
         daemon_fan_ownership_latch_incomplete(ctl, "owned fan GPU is unavailable or ambiguous");
         dlog("daemon fan ownership: target resolution failed; marker retained, no write (%s)\n",
              err[0] ? err : "unresolved identity");
+        return;
+    }
+    // Following the marker's model to a twin while a reported device was not
+    // opened would write the wrong card's fan and retire the right one's claim.
+    if (marker.targetGpu.valid && daemon_fan_marker_owner(ctl, marker) != LINUX_JOURNAL_OWNER_SERVED) {
+        daemon_fan_ownership_latch_incomplete(ctl, "owned fan GPU cannot be proven on the resolved card");
+        dlog("daemon fan ownership: marker owner not proven (adapters=%u reported=%u); marker retained, no write\n",
+             ctl.gpu.adapterCount, ctl.gpu.adapterReportedCount);
         return;
     }
     marker.targetGpu = ctl.gpu.selectedGpu;

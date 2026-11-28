@@ -117,11 +117,9 @@ static void daemon_handle_set_startup_policy(LinuxGpuController& ctl, const Serv
 // binding resolves to (or a binding that resolves to none) is refused.
 static bool daemon_startup_refresh_names_binding(LinuxGpuController& ctl, const ServiceRequest* req) {
     if (!req->targetGpu.valid) return true;
-    const auto binding = linux_gpu_restore_selection(&ctl.startupPolicy.targetGpu,
-        (GpuLocationRole)ctl.startupPolicy.targetLocationRole, ctl.gpu.adapters, ctl.gpu.adapterCount,
-        &ctl.startupPolicy.targetUuid, ctl.gpu.adapterUuids, nullptr);
-    return binding.writeResolved && binding.index >= 0 &&
-        gpu_adapter_route_index(&req->targetGpu, ctl.gpu.adapters, ctl.gpu.adapterCount) == binding.index;
+    const int binding = daemon_stored_gpu_index(ctl, ctl.startupPolicy.targetGpu,
+        (GpuLocationRole)ctl.startupPolicy.targetLocationRole, ctl.startupPolicy.targetUuid);
+    return binding >= 0 && gpu_adapter_route_index(&req->targetGpu, ctl.gpu.adapters, ctl.gpu.adapterCount) == binding;
 }
 
 // Content-only refresh of the stored `profile N` snapshot, sent by the client

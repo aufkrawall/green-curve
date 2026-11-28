@@ -78,12 +78,16 @@ static bool linux_backend_set_curve_fan_percent(LinuxGpuState* gpu, unsigned int
 
 static void initialize(unsigned int count = 2) {
     fixture.gpu = {};
-    fixture.gpu.adapterCount = count;
+    fixture.gpu.adapterCount = fixture.gpu.adapterReportedCount = count;
     for (unsigned int i = 0; i < count; ++i) {
         auto& gpu = fixture.gpu.adapters[i];
         gpu.valid = gpu.pciInfoValid = true;
         gpu.deviceId = 0x1234;
         gpu.pciBus = i + 1;
+        // Every card's UUID reads back (none is a marker's UUID below).
+        char text[48] = {};
+        std::snprintf(text, sizeof(text), "GPU-0000000f-0000-0000-0000-%012u", i + 1);
+        fixture.gpu.adapterUuids[i] = linux_gpu_uuid_parse(text);
     }
     fixture.gpu.selectedGpu = fixture.gpu.adapters[0];
     fixture.gpu.writeIdentityResolved = count == 1;
@@ -137,8 +141,19 @@ static int run() {
     initialize();
     saved.targetUuid = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000001");
     fixture.gpu.adapterUuids[0] = saved.targetUuid;
+    fixture.gpu.adapterUuids[1] = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000002");
     daemon_fan_ownership_handback_at_start(fixture);
     if (writtenAdapter != 0 || !removed) return 7534;
+    // 14985: handing the fan back is not blocked by another card's unread
+    // UUID: the served card reading the marker's UUID, unique among the cards
+    // read, proves it.
+    initialize();
+    saved.targetUuid = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000001");
+    fixture.gpu.adapterUuids[0] = saved.targetUuid;
+    fixture.gpu.adapterUuids[1] = LinuxGpuUuid{};
+    fixture.gpu.writeIdentityResolved = true;
+    daemon_fan_ownership_handback_at_start(fixture);
+    if (writtenAdapter != 0 || !removed) return 14985;
     initialize();
     storeFails = true;
     daemon_fan_ownership_handback_at_start(fixture);
@@ -162,6 +177,23 @@ static int run() {
     char error[128] = {};
     if (daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error))) return 7539;
     fixture.gpu.writeIdentityResolved = true;
+    // 14975: with several GPUs a manual fan is taken only while the card's own
+    // UUID reads back (the worker could not keep tracking it otherwise).
+    const LinuxGpuUuid readBack = fixture.gpu.adapterUuids[0];
+    fixture.gpu.adapterUuids[0] = LinuxGpuUuid{};
+    if (daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error)) ||
+        !std::strstr(error, "UUID readable")) return 14975;
+    fixture.gpu.adapterUuids[0] = fixture.gpu.adapterUuids[1];  // two cards report one UUID
+    if (daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error)) ||
+        !std::strstr(error, "UUID readable")) return 14975;
+    fixture.gpu.adapterUuids[0] = readBack;
+    // ...nor while another card's UUID is unread: Reset, shutdown and the next
+    // start could not prove the marker's card to hand its fan back.
+    const LinuxGpuUuid siblingRead = fixture.gpu.adapterUuids[1];
+    fixture.gpu.adapterUuids[1] = LinuxGpuUuid{};
+    if (daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error)) ||
+        !std::strstr(error, "UUID readable")) return 14975;
+    fixture.gpu.adapterUuids[1] = siblingRead;
     if (!daemon_fan_ownership_ensure_before_write(fixture, &desired, error, sizeof(error)) ||
         !linux_gpu_identity_matches(&saved.targetGpu, &fixture.gpu.selectedGpu)) return 7540;
     fixture.gpu.selectedGpu = fixture.gpu.adapters[1];
@@ -244,6 +276,7 @@ static int run() {
     initialize();
     saved.targetUuid = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000001");
     fixture.gpu.adapterUuids[0] = saved.targetUuid;
+    fixture.gpu.adapterUuids[1] = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000002");
     autoFails = true;
     daemon_fan_ownership_handback_at_start(fixture);
     if (!daemon_fan_ownership_allows_selected_write(fixture, error, sizeof(error)) ||
@@ -379,6 +412,52 @@ static int run() {
     daemon_enter_uncertain_state(fixture, "fixture: first GPU owns its fan");
     if (!fixture.stateUncertain || writes != 1 || writtenAdapter != 1 ||
         !other.fanOwnershipMarkerCommitted || !other.stateUncertain) return 14233;
+
+    // 14955-14957: NVML reported two cards but only one opened. A marker
+    // bound to the missing card's other location must not follow its model
+    // to the twin that did open: no handback write, the claim is kept, and
+    // ordinary writes stay blocked; a target-less marker is not "one card".
+    initialize(1);
+    fixture.gpu.adapterReportedCount = 2;
+    fixture.gpu.writeIdentityResolved = true;
+    saved.targetGpu = fixture.gpu.adapters[0];
+    saved.targetGpu.pciBus = 9;
+    saved.targetLocationRole = GPU_LOCATION_ROLE_ADVISORY;
+    saved.targetUuid = {};
+    daemon_fan_ownership_handback_at_start(fixture);
+    if (writes || removed || !lockedOut || !fixture.fanOwnershipMarkerCommitted) return 14955;
+    if (daemon_fan_ownership_allows_selected_write(fixture, error, sizeof(error))) return 14956;
+    initialize(1);
+    fixture.gpu.adapterReportedCount = 2;
+    fixture.gpu.writeIdentityResolved = true;
+    fixture.fanOwnershipMarkerCommitted = true;
+    fixture.fanOwnershipRecord = {};
+    if (daemon_fan_ownership_allows_selected_write(fixture, error, sizeof(error))) return 14957;
+    // 14961: a bound marker with no recorded location matches the twin's
+    // model only; that is no proof while a reported device was not opened.
+    initialize(1);
+    fixture.gpu.adapterReportedCount = 2;
+    fixture.gpu.writeIdentityResolved = true;
+    saved.targetGpu = fixture.gpu.adapters[0];
+    saved.targetGpu.pciDomain = saved.targetGpu.pciBus = saved.targetGpu.pciDevice = 0;
+    saved.targetGpu.pciFunction = 0;
+    saved.targetLocationRole = GPU_LOCATION_ROLE_UNRECORDED;
+    saved.targetUuid = {};
+    daemon_fan_ownership_handback_at_start(fixture);
+    if (writes || removed || !fixture.fanOwnershipMarkerCommitted) return 14961;
+    // 14949: a marker naming a UUID is not proven by a read from an NVML
+    // session since replaced: no handback write, the claim is kept.
+    static LinuxDriverContext replacedSession;
+    replacedSession = LinuxDriverContext{};
+    replacedSession.nvmlSessions = 2;
+    initialize();
+    saved.targetUuid = linux_gpu_uuid_parse("GPU-00000000-0000-0000-0000-000000000001");
+    fixture.gpu.adapterUuids[0] = saved.targetUuid;
+    fixture.gpu.driver = &replacedSession;
+    fixture.gpu.uuidSession = 1;
+    daemon_fan_ownership_handback_at_start(fixture);
+    fixture.gpu.driver = nullptr;
+    if (writes || removed || !fixture.fanOwnershipMarkerCommitted) return 14949;
     return 0;
 }
 } // namespace linux_fan_ownership_fixture

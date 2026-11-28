@@ -90,6 +90,11 @@ struct LinuxGpuController {
     // monotonic serial counter stays process-wide (g_daemonFanFaultSerial)
     // because clients deduplicate announcements on (serial, kind).
     ServiceFanFault fanFault = {};
+    // A journal release that removed the file but could neither make that
+    // durable nor put the record back: every write refuses until this exact
+    // record is stored again (linux_daemon_journal.h).
+    bool journalHoldActive = false;
+    LinuxDaemonStateRecord journalHold = {};
 };
 
 static_assert(std::is_trivially_destructible<LinuxGpuController>::value,

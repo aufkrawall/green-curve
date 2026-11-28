@@ -22,10 +22,9 @@ static gc_u64 daemon_service_instance_id() {
 static bool daemon_selected_startup_topology(LinuxGpuController& ctl) {
     if (!ctl.gpuReady || !ctl.gpu.writeIdentityResolved || !ctl.gpu.vfSnapshotFresh || !ctl.gpu.numPopulated ||
         ctl.startupPolicy.mode != SERVICE_STARTUP_POLICY_PROFILE) return false;
-    const auto selection = linux_gpu_restore_selection(&ctl.startupPolicy.targetGpu,
-        (GpuLocationRole)ctl.startupPolicy.targetLocationRole, ctl.gpu.adapters, ctl.gpu.adapterCount,
-        &ctl.startupPolicy.targetUuid, ctl.gpu.adapterUuids, nullptr);
-    return selection.writeResolved && selection.index == (int)ctl.gpu.selectedAdapterIndex;
+    return daemon_stored_gpu_index(ctl, ctl.startupPolicy.targetGpu,
+        (GpuLocationRole)ctl.startupPolicy.targetLocationRole, ctl.startupPolicy.targetUuid) ==
+        (int)ctl.gpu.selectedAdapterIndex;
 }
 
 // Protocol v40 adapter summaries (service_adapter_summary.h): every adapter's
@@ -40,7 +39,7 @@ static void daemon_publish_adapter_summaries(const LinuxGpuController& ctl, Serv
         service_gpu_uuid_parse(ctl.gpu.adapterUuids[i].text, &uuids[i]);
     int owner = -1;
     for (unsigned int i = 0; ctl.hasActiveDesired && i < count; ++i)
-        if (linux_gpu_identity_matches(&ctl.activeTarget, &s.adapters[i]))
+        if (linux_gpu_identity_matches(&ctl.activeTarget, &s.adapters[i]) && daemon_intent_uuid_names(ctl, i))
             owner = owner == -1 ? (int)i : -2;
     // A pending fan handback belongs to the card its ownership marker names.
     int fanHandback = -1;

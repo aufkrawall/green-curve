@@ -291,6 +291,16 @@ fixture and real root ownership path. ASan/UBSan, all-target compile checks and
 static analysis passed; disabling preparation fails case 9060. Physical GPU
 recovery remains unverified.
 
+## Several GPUs' journals in active.bin (2026-11-28)
+
+A file whose size is k > 1 times the current `LinuxDaemonStateRecord` is the
+per-GPU journal of a daemon that runs several GPUs (k records back to back).
+SIZE still selects the layout: `linux_daemon_state_set_entry_count()`. This
+daemon still writes one record; it reports such a file as
+`LINUX_DAEMON_STATE_MULTIPLE` and never replaces, removes or deletes it as an
+unknown layout. Which card a single journal belongs to, and when a write may
+replace it, is described in [multi-gpu.md](multi-gpu.md#per-gpu-daemon-journal-on-linux-2026-11-28).
+
 ## The rule
 
 > **SIZE selects the LAYOUT. VERSION selects the SEMANTICS within it.**

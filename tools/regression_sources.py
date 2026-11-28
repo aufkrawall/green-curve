@@ -99,6 +99,7 @@ REGRESSION_SOURCES = (
     'linux_read_request_tests.cpp',
     'service_gpu_route_tests.cpp',
     'service_adapter_summary_tests.cpp',
+    'linux_journal_owner_tests.cpp',
     'xbar_read_log_tests.cpp',
     'clk_domain_dump_tests.cpp',
     'linux_clk_domain_dump_tests.cpp',
